@@ -1,6 +1,12 @@
 ---
 name: lcars-status
-description: Show the LCARS command-and-control view — every active Mission in this repo as a table with its stage, GitHub issue, and any paused / awaiting-human status, plus the pending questions the captain still needs to answer. Use when the user runs `lcars status`, asks what missions are active / in flight, what's waiting on them, or wants the kanban / board view of LCARS missions.
+description: >-
+  Show the LCARS command-and-control view — every active Mission in this
+  repo as a table with its stage, GitHub issue, and any paused /
+  awaiting-human status, plus the pending questions the captain still needs
+  to answer. Use when the user runs `lcars status`, asks what missions are
+  active / in flight, what's waiting on them, or wants the kanban / board
+  view of LCARS missions.
 ---
 
 # lcars status

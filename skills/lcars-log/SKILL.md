@@ -1,6 +1,15 @@
 ---
 name: lcars-log
-description: Log bugs against an active LCARS Mission — the Mission Log. Takes free-form natural language describing one or more bugs found against a pre-merge Mission, extracts each distinct bug, fast-tracks a Mission per bug straight to the Plan stage (skipping Align, Research, and Validate), and links them all to the referenced parent Mission with the lcars:linked label. The human is expected to name the parent Mission; if none is referenced it asks which active Mission to link against first. Use when the captain runs `lcars log`, says they found a bug / bugs against a mission, or wants to file bug(s) discovered while a Mission is in flight.
+description: >-
+  Log bugs against an active LCARS Mission — the Mission Log. Takes
+  free-form natural language describing one or more bugs found against a
+  pre-merge Mission, extracts each distinct bug, fast-tracks a Mission per
+  bug straight to the Plan stage (skipping Align, Research, and Validate),
+  and links them all to the referenced parent Mission with the lcars:linked
+  label. The human is expected to name the parent Mission; if none is
+  referenced it asks which active Mission to link against first. Use when
+  the captain runs `lcars log`, says they found a bug / bugs against a
+  mission, or wants to file bug(s) discovered while a Mission is in flight.
 ---
 
 # lcars log

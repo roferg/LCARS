@@ -1,6 +1,15 @@
 ---
 name: lcars-answer
-description: The LCARS inbox — every pending decision across ALL Missions in one list, and one place to clear each. Surfaces scope escalations, plan-review stand-offs, blocked tickets, and the Verify ship/send-back gate; each card shows the Mission, the question, and its actions. It absorbs `lcars respond` (answer an escalation), `lcars approve` (ship a Verify card), and `lcars feedback` (send one back) as card actions, delegating to the scripts already built. Use when the user runs `lcars answer`, asks what needs an answer / what's waiting on them, or wants to approve, send back, or respond to a Mission without juggling ids.
+description: >-
+  The LCARS inbox — every pending decision across ALL Missions in one list,
+  and one place to clear each. Surfaces scope escalations, plan-review
+  stand-offs, blocked tickets, and the Verify ship/send-back gate; each card
+  shows the Mission, the question, and its actions. It absorbs `lcars
+  respond` (answer an escalation), `lcars approve` (ship a Verify card), and
+  `lcars feedback` (send one back) as card actions, delegating to the
+  scripts already built. Use when the user runs `lcars answer`, asks what
+  needs an answer / what's waiting on them, or wants to approve, send back,
+  or respond to a Mission without juggling ids.
 ---
 
 # lcars answer

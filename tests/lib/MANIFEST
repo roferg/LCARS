@@ -33,6 +33,7 @@
 100644 tests/lib/phone-mkfixture.py                exercised  lcars-xo-phone
 100755 tests/lib/ptyrun.py                         exercised  harness
 100755 tests/lib/real-worker.sh                    exercised  real-worker-resolution
+100644 tests/lib/skill_frontmatter.py              exercised  skill-frontmatter — the strict SKILL.md frontmatter reader
 100755 tests/lib/stdin_guard.py                    exercised  harness (as "$DIR/lib/stdin_guard.py")
 100755 tests/lib/shims/align-heal-faultinj/copilot exercised  lcars-worker-guard
 100755 tests/lib/shims/deploy-watcher/claude       unused     claude half of the deploy-watcher shim pair; kept as the engine sibling

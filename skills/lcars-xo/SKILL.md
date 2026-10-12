@@ -1,6 +1,18 @@
 ---
 name: lcars-xo
-description: Engage, stand down, and inspect Number One — the AI first officer that holds a Mission on the captain's behalf. `lcars xo on [--engine copilot|claude] [--model M]` turns Number One ON for this repo, recording the choice in `.git/lcars/config.json` as a one-line `numberOne` block; with no `--engine` and a terminal it opens a picker naming the engines installed on this machine, and with no terminal it refuses loudly rather than choosing in silence. `lcars xo off` stands the repo down and hands the conn back on every engaged Mission; `lcars xo off <mission>` opts one Mission out and stands just that one down (signalling its recorded worker pid, recording `stood-down` and a note); `lcars xo on <mission>` puts that Mission back in scope — it clears the per-mission opt-out AND the `stood-down` status, so the next drive can engage it again. `lcars xo answer --mission <id>` is the driver's call at a park: Number One reads the Mission's record in a read-only copy, then either ANSWERS the gate through `lcars respond` (attributed `answeredBy: number-one`, exit 0) or ESCALATES with a note and a recommendation and leaves the gate up (exit 1) — always escalating a `scope` gate, an uncited answer, and anything malformed. Bare `lcars xo` prints the status table — every Mission with its stage, Number One's RECORDED status (engaged / finished / escalated / answered / stood-down / opted-out) and its note. While a Mission is engaged the write verbs (approve, feedback, respond, log, pause, resume, resolve-logs) and the viewscreen's matching endpoints refuse with ONE sentence, because Number One is already acting through them on the captain's behalf. Use when the captain runs `lcars xo`, says "engage Number One", "turn the first officer on/off", "stand Number One down", "who has the conn", or asks what Number One is doing.
+description: >-
+  Engage, stand down, and inspect Number One — the AI first officer that
+  holds a Mission on the captain's behalf. `lcars xo on [--engine
+  copilot|claude] [--model M]` turns Number One ON for this repo, recording
+  the choice in `.git/lcars/config.json` as a one-line `numberOne` block;
+  with no `--engine` and a terminal it opens a picker naming the engines
+  installed on this machine, and with no terminal it refuses loudly rather
+  than choosing in silence. Bare `lcars xo` prints the status table — every
+  Mission with its stage, Number One's RECORDED status (engaged / finished /
+  escalated / answered / stood-down / opted-out) and its note. Use when the
+  captain runs `lcars xo`, says "engage Number One", "turn the first officer
+  on/off", "stand Number One down", "who has the conn", or asks what Number
+  One is doing.
 ---
 
 # lcars xo — Number One
@@ -12,6 +24,33 @@ through the ordinary verbs, and hands the conn back with a report.
 `xo.sh` does all of the mechanical work. It asks no model anything — **the
 worker reasons, the skill executes** (captain ruling, 2026-09-11). You (Claude)
 run it and read out what it printed.
+
+## When to use
+
+The sentences below were part of this skill's frontmatter `description:` until
+S276 moved them here. GitHub Copilot's CLI caps a skill description at 1024
+characters and refused to load this skill over it; the description now keeps
+the identity, the command forms and the `Use when…` trigger phrases that both
+CLIs match on, and the detail it could not hold is relocated here verbatim.
+Nothing was deleted.
+
+`lcars xo off` stands the repo down and hands the conn back on every engaged
+Mission; `lcars xo off <mission>` opts one Mission out and stands just that
+one down (signalling its recorded worker pid, recording `stood-down` and a
+note); `lcars xo on <mission>` puts that Mission back in scope — it clears the
+per-mission opt-out AND the `stood-down` status, so the next drive can engage
+it again.
+
+`lcars xo answer --mission <id>` is the driver's call at a park: Number One
+reads the Mission's record in a read-only copy, then either ANSWERS the gate
+through `lcars respond` (attributed `answeredBy: number-one`, exit 0) or
+ESCALATES with a note and a recommendation and leaves the gate up (exit 1) —
+always escalating a `scope` gate, an uncited answer, and anything malformed.
+
+While a Mission is engaged the write verbs (approve, feedback, respond, log,
+pause, resume, resolve-logs) and the viewscreen's matching endpoints refuse
+with ONE sentence, because Number One is already acting through them on the
+captain's behalf.
 
 ## The verbs
 

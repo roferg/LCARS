@@ -1,6 +1,17 @@
 ---
 name: lcars-buddy
-description: Your LCARS ride-along buddy — a companion you keep with you in ANY repo while you use LCARS, useful from day one and at every point after. Run it anytime (it's read-only and safe) to get extra detail the normal surfaces don't show: where the LCARS source sits and its git state, whether the installed skills actually match that checkout, and a live snapshot of the current repo's Mission(s) — stage, status, and recent events. It rides shotgun while everything's going fine (situational awareness, "what's actually happening under the hood"), and escalates naturally into a live-debug partner the moment something's off — diagnosing and fixing the LCARS source under LCARS's own build contract (author in skills/, TDD, ./install.sh, fast scoped tests). It also has an AUTOPILOT mode: say "run it for me <spec>" and it runs LCARS FOR you — one alignment round, then it files, drives, verifies and lands each milestone through LCARS's own verbs, keeping durable state in .git/lcars/autopilot.json and contacting you only for a product call, a scope change, a standing-rule conflict, or an LCARS bug with no workaround (see AUTOPILOT.md). Use when the captain runs `lcars buddy`, wants a closer look / more detail on what LCARS is doing, is keeping a buddy around while driving a Mission elsewhere, says "run it for me" / "drive this for me" / "autopilot" / "run while I sleep" / "continue" on an autopilot run, or hits something that needs debugging or fixing in LCARS from another repo.
+description: >-
+  Your LCARS ride-along buddy — a companion you keep with you in ANY repo
+  while you use LCARS, useful from day one and at every point after. Run it
+  anytime (it's read-only and safe) to get extra detail the normal surfaces
+  don't show: where the LCARS source sits and its git state, whether the
+  installed skills actually match that checkout, and a live snapshot of the
+  current repo's Mission(s) — stage, status, and recent events. Use when the
+  captain runs `lcars buddy`, wants a closer look / more detail on what
+  LCARS is doing, is keeping a buddy around while driving a Mission
+  elsewhere, says "run it for me" / "drive this for me" / "autopilot" / "run
+  while I sleep" / "continue" on an autopilot run, or hits something that
+  needs debugging or fixing in LCARS from another repo.
 ---
 
 # lcars buddy
@@ -22,6 +33,28 @@ that's useful from the very first mission and stays useful as things evolve:
 
 It works from anywhere because the skill is installed globally (symlinked into
 `~/.claude/skills/` by `install.sh`).
+
+## When to use
+
+The sentences below were part of this skill's frontmatter `description:` until
+S276 moved them here. GitHub Copilot's CLI caps a skill description at 1024
+characters and refused to load this skill over it; the description now keeps
+the identity, the command forms and the `Use when…` trigger phrases that both
+CLIs match on, and the detail it could not hold is relocated here verbatim.
+Nothing was deleted.
+
+It rides shotgun while everything's going fine (situational awareness, "what's
+actually happening under the hood"), and escalates naturally into a live-debug
+partner the moment something's off — diagnosing and fixing the LCARS source
+under LCARS's own build contract (author in skills/, TDD, ./install.sh, fast
+scoped tests).
+
+It also has an AUTOPILOT mode: say "run it for me <spec>" and it runs LCARS
+FOR you — one alignment round, then it files, drives, verifies and lands each
+milestone through LCARS's own verbs, keeping durable state in
+.git/lcars/autopilot.json and contacting you only for a product call, a scope
+change, a standing-rule conflict, or an LCARS bug with no workaround (see
+AUTOPILOT.md).
 
 ## 1. Run the diagnostic collector and show it verbatim
 

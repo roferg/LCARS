@@ -1,6 +1,20 @@
 ---
 name: lcars-respond
-description: Answer an LCARS Mission's awaiting-human gate, walk-away style. When a stage escalates — Research over its 20-question cap, Validate on a scope change, Plan Review after three failed rounds, or Implement after a ticket's three worker sessions — it parks the Mission with `lcars:awaiting-human` and a pending question. `lcars respond` (no id) lists every Mission awaiting the captain and its question(s); `lcars respond <id>` shows that Mission's pending question(s), captures the captain's free-form answer, records it next to the question in answers.json, clears the awaiting-human gate (the stage is unchanged — the Mission stays at the stage that escalated), and removes the `lcars:awaiting-human` label so a plain `lcars run <id>` resumes that same stage and consumes the answer instead of re-asking. Use when the captain runs `lcars respond`, asks what's waiting on them / what needs an answer, or wants to answer a paused / escalated / blocked Mission.
+description: >-
+  Answer an LCARS Mission's awaiting-human gate, walk-away style. When a
+  stage escalates — Research over its 20-question cap, Validate on a scope
+  change, Plan Review after three failed rounds, or Implement after a
+  ticket's three worker sessions — it parks the Mission with
+  `lcars:awaiting-human` and a pending question. `lcars respond` (no id)
+  lists every Mission awaiting the captain and its question(s); `lcars
+  respond <id>` shows that Mission's pending question(s), captures the
+  captain's free-form answer, records it next to the question in
+  answers.json, clears the awaiting-human gate (the stage is unchanged — the
+  Mission stays at the stage that escalated), and removes the
+  `lcars:awaiting-human` label so a plain `lcars run <id>` resumes that same
+  stage and consumes the answer instead of re-asking. Use when the captain
+  runs `lcars respond`, asks what's waiting on them / what needs an answer,
+  or wants to answer a paused / escalated / blocked Mission.
 ---
 
 # lcars respond

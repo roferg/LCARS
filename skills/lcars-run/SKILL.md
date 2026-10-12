@@ -1,6 +1,20 @@
 ---
 name: lcars-run
-description: Advance an LCARS Mission through the pipeline. By default `lcars run <id>` AUTO-ADVANCES — a thin, token-free bash driver sequences the Stages back-to-back (Research → Validate → Plan → Plan Review → Schedule → Implement), each spawned as a cold isolated worker, and stops only at a human gate, firing a walk-away notification. It halts when a Stage escalates a question (awaiting-human), at the Verify review gate, at an `align` feedback re-entry (an interactive re-grill), or on an error; `lcars run <id> --step` advances exactly one Stage (the old one-at-a-time behaviour, for debugging). Research reads the PRD, generates 0–20 questions, dispatches stateless research subagents, and saves their findings; Validate synthesises those findings against the PRD into a validated plan, escalating scope changes to the human; Plan decomposes the validated plan into small, vertical-slice tickets in plan.json; Plan Review runs a fresh reviewer over those tickets alone, approving them to Schedule or looping back to Plan with objections (escalating to the human after three rounds); Schedule builds the ticket dependency graph into sequential waves, opens one GitHub sub-issue per ticket, and advances to Implement; Implement processes the waves sequentially, running each ticket through ONE unified TDD worker whose work is then proven by deterministic gates (fail-on-parent/pass-on-tip flip-flop, declared test edits, a quality floor — a rejection bounces to a fresh worker up to 3 sessions, then parks awaiting-human) and advancing to Verify when every ticket is green; and Verify prints the captain's pre-ship summary and the two next moves, then stops at the human gate. It also handles the Align re-entry after `lcars feedback` bounces a Mission back from Verify — re-grilling against the PRD plus the accumulated feedback before Research. Use when the user runs `lcars run <mission-id>`, asks to advance / progress / continue / auto-run a mission, or to run a single Research, Validate, Plan, Plan Review, Schedule, Implement, or Verify stage.
+description: >-
+  Advance an LCARS Mission through the pipeline. By default `lcars run <id>`
+  AUTO-ADVANCES — a thin, token-free bash driver sequences the Stages
+  back-to-back (Research → Validate → Plan → Plan Review → Schedule →
+  Implement), each spawned as a cold isolated worker, and stops only at a
+  human gate, firing a walk-away notification. It halts when a Stage
+  escalates a question (awaiting-human), at the Verify review gate, at an
+  `align` feedback re-entry (an interactive re-grill), or on an error;
+  `lcars run <id> --step` advances exactly one Stage (the old one-at-a-time
+  behaviour, for debugging). It also handles the Align re-entry after `lcars
+  feedback` bounces a Mission back from Verify — re-grilling against the PRD
+  plus the accumulated feedback before Research. Use when the user runs
+  `lcars run <mission-id>`, asks to advance / progress / continue / auto-run
+  a mission, or to run a single Research, Validate, Plan, Plan Review,
+  Schedule, Implement, or Verify stage.
 ---
 
 # lcars run
@@ -68,6 +82,31 @@ stops, and the captain ships with **`lcars approve`** or bounces it back with
 **`lcars feedback`** (each its own skill). A feedback bounce resets the Mission
 to `align` with `feedback.md` on disk, so the next `lcars run` re-enters Align
 rather than running Research cold.
+
+## When to use
+
+The sentences below were part of this skill's frontmatter `description:` until
+S276 moved them here. GitHub Copilot's CLI caps a skill description at 1024
+characters and refused to load this skill over it; the description now keeps
+the identity, the command forms and the `Use when…` trigger phrases that both
+CLIs match on, and the detail it could not hold is relocated here verbatim.
+Nothing was deleted.
+
+Research reads the PRD, generates 0–20 questions, dispatches stateless
+research subagents, and saves their findings; Validate synthesises those
+findings against the PRD into a validated plan, escalating scope changes to
+the human; Plan decomposes the validated plan into small, vertical-slice
+tickets in plan.json; Plan Review runs a fresh reviewer over those tickets
+alone, approving them to Schedule or looping back to Plan with objections
+(escalating to the human after three rounds); Schedule builds the ticket
+dependency graph into sequential waves, opens one GitHub sub-issue per ticket,
+and advances to Implement; Implement processes the waves sequentially, running
+each ticket through ONE unified TDD worker whose work is then proven by
+deterministic gates (fail-on-parent/pass-on-tip flip-flop, declared test
+edits, a quality floor — a rejection bounces to a fresh worker up to 3
+sessions, then parks awaiting-human) and advancing to Verify when every ticket
+is green; and Verify prints the captain's pre-ship summary and the two next
+moves, then stops at the human gate.
 
 ## How you run it: the auto-advance driver
 

@@ -1,6 +1,20 @@
 ---
 name: lcars-adopt
-description: Pick up an existing LCARS Mission on THIS laptop from its GitHub issue alone — the portability verb. `lcars adopt <issue#>` reads the issue and its machine-readable `lcars:handoff` envelope, REUSES the mission's own id (never mints a new one), and rebuilds `.git/lcars/missions/<id>/` locally: at **Align** it claims the mission (assigns you on GitHub), rebuilds the spec from the issue body and fetches the branch if origin has one; at **Verify** it joins without claiming, resolves the OPEN pull request that closes the issue and records prUrl/prNumber so `lcars approve` and `lcars feedback` work with no further command. Any OTHER stage is refused honestly — v1 portability is the two ENDS, and the stages between keep their working artifacts on the laptop driving them. Idempotent: adopting a mission that is already local refreshes it and keeps local artifacts. Use when the captain runs `lcars adopt <issue#>`, switches laptops, asks to pick up / continue / catch a mission filed on another machine, or wants a mission that exists on GitHub to show up on this clone's board.
+description: >-
+  Pick up an existing LCARS Mission on THIS laptop from its GitHub issue
+  alone — the portability verb. `lcars adopt <issue#>` reads the issue and
+  its machine-readable `lcars:handoff` envelope, REUSES the mission's own id
+  (never mints a new one), and rebuilds `.git/lcars/missions/<id>/` locally:
+  at **Align** it claims the mission (assigns you on GitHub), rebuilds the
+  spec from the issue body and fetches the branch if origin has one; at
+  **Verify** it joins without claiming, resolves the OPEN pull request that
+  closes the issue and records prUrl/prNumber so `lcars approve` and `lcars
+  feedback` work with no further command. Any OTHER stage is refused
+  honestly — v1 portability is the two ENDS, and the stages between keep
+  their working artifacts on the laptop driving them. Use when the captain
+  runs `lcars adopt <issue#>`, switches laptops, asks to pick up / continue
+  / catch a mission filed on another machine, or wants a mission that exists
+  on GitHub to show up on this clone's board.
 ---
 
 # lcars adopt
@@ -10,6 +24,18 @@ laptop A and catches it at Verify on laptop B; the issue is the handoff
 document, and this verb turns it back into a local Mission.
 
 It is purely mechanical — **no LLM** — so run the one script and report.
+
+## When to use
+
+The sentences below were part of this skill's frontmatter `description:` until
+S276 moved them here. GitHub Copilot's CLI caps a skill description at 1024
+characters and refused to load this skill over it; the description now keeps
+the identity, the command forms and the `Use when…` trigger phrases that both
+CLIs match on, and the detail it could not hold is relocated here verbatim.
+Nothing was deleted.
+
+Idempotent: adopting a mission that is already local refreshes it and keeps
+local artifacts.
 
 ## What to run
 

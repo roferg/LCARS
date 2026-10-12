@@ -1,6 +1,19 @@
 ---
 name: lcars-approve
-description: Ship a verified LCARS Mission — MERGE its open pull request and mark it Done. Runs only on a Mission parked at the Verify stage, where `lcars run` has already AUTO-OPENED the PR and left the Mission "in review — PR open" (prUrl recorded in state.json). `lcars approve` is the captain's MERGE signal: it merges that open PR with `gh pr merge` (via the host adapter) and, only on a SUCCESSFUL merge, clears the stage labels, applies `lcars:done`, moves the stage to `done`, and prints the merged PR URL. It NEVER marks a Mission Done without a real merge — a failed merge (conflicts, checks, auth) leaves it at Verify with an actionable message (no false Done). With no open PR recorded it refuses (re-run the mission so Verify opens the PR first). Use when the captain runs `lcars approve <mission-id>`, or asks to approve / ship / merge the PR for a Mission they have finished reviewing in Verify.
+description: >-
+  Ship a verified LCARS Mission — MERGE its open pull request and mark it
+  Done. Runs only on a Mission parked at the Verify stage, where `lcars run`
+  has already AUTO-OPENED the PR and left the Mission "in review — PR open"
+  (prUrl recorded in state.json). `lcars approve` is the captain's MERGE
+  signal: it merges that open PR with `gh pr merge` (via the host adapter)
+  and, only on a SUCCESSFUL merge, clears the stage labels, applies
+  `lcars:done`, moves the stage to `done`, and prints the merged PR URL. It
+  NEVER marks a Mission Done without a real merge — a failed merge
+  (conflicts, checks, auth) leaves it at Verify with an actionable message
+  (no false Done). With no open PR recorded it refuses (re-run the mission
+  so Verify opens the PR first). Use when the captain runs `lcars approve
+  <mission-id>`, or asks to approve / ship / merge the PR for a Mission they
+  have finished reviewing in Verify.
 ---
 
 # lcars approve

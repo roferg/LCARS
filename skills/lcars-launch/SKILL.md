@@ -1,6 +1,21 @@
 ---
 name: lcars-launch
-description: Get an LCARS Mission's app running locally so the captain can view it during Verify. `lcars launch <mission> [hint]` checks the mission's branch out into a disposable DETACHED git worktree, spawns a `launch`-role cold worker that DISCOVERS how to start the app (it never starts it itself), then the skill launches that command detached — owning the whole process group — writes a launch.json record both the CLI and the viewscreen daemon read, and prints an LCARS-voice readout naming the target, URL, and how to stop it. `lcars launch <mission> --stop` kills the process group and prunes the worktree. `lcars launch --main [hint]` deploys the LOCAL default-branch HEAD (whatever is already merged — no fetch) through the same pipeline, with `--main --stop` to tear it down. Failures are plain English, never a raw stack trace. Use when the captain runs `lcars launch`, asks to run / open / preview / see a mission's app while reviewing it, wants to deploy/run local main, or wants to stop a launched app.
+description: >-
+  Get an LCARS Mission's app running locally so the captain can view it
+  during Verify. `lcars launch <mission> [hint]` checks the mission's branch
+  out into a disposable DETACHED git worktree, spawns a `launch`-role cold
+  worker that DISCOVERS how to start the app (it never starts it itself),
+  then the skill launches that command detached — owning the whole process
+  group — writes a launch.json record both the CLI and the viewscreen daemon
+  read, and prints an LCARS-voice readout naming the target, URL, and how to
+  stop it. `lcars launch <mission> --stop` kills the process group and
+  prunes the worktree. `lcars launch --main [hint]` deploys the LOCAL
+  default-branch HEAD (whatever is already merged — no fetch) through the
+  same pipeline, with `--main --stop` to tear it down. Failures are plain
+  English, never a raw stack trace. Use when the captain runs `lcars
+  launch`, asks to run / open / preview / see a mission's app while
+  reviewing it, wants to deploy/run local main, or wants to stop a launched
+  app.
 ---
 
 # lcars launch

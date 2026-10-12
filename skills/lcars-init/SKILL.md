@@ -1,6 +1,11 @@
 ---
 name: lcars-init
-description: Initialize a repo for LCARS mission-based development. Scaffolds .git/lcars/ (config + missions dir), detects CONTEXT.md, verifies the Claude CLI, and creates the LCARS GitHub label set. Use when the user runs `lcars init`, asks to set up / bootstrap LCARS in a repo, or wants to prepare a repo for LCARS missions.
+description: >-
+  Initialize a repo for LCARS mission-based development. Scaffolds
+  .git/lcars/ (config + missions dir), detects CONTEXT.md, verifies the
+  Claude CLI, and creates the LCARS GitHub label set. Use when the user runs
+  `lcars init`, asks to set up / bootstrap LCARS in a repo, or wants to
+  prepare a repo for LCARS missions.
 ---
 
 # lcars init
