@@ -270,6 +270,66 @@ halves the grill.
 
 ---
 
+## 4a. Drive through the HUMAN interfaces — never hand-step the stage machine
+
+**The captain's rule, 2026-10-13, after watching a buddy hand-walk a run:**
+
+> *"Buddy in autopilot should run this like a human. I'd click run from after the
+> align and let it go and click pause when needed. But the harness should drive
+> the states."*
+> *"We don't want it not to solve stuff, just do it through the human interfaces."*
+
+Both halves of that matter, and they are easy to get wrong in opposite
+directions.
+
+**DO — these ARE the human interfaces, and using them is the job. Never defer
+them, never wait for a human, there is nobody there:**
+
+- **Start a mission and let the harness drive it.** `lcars run <id>` WITHOUT
+  `--step` is a token-free bash driver that sequences Research → Validate → Plan
+  → Plan Review → Schedule → Implement by itself and stops only at a real gate.
+- **Answer every human gate, immediately** (`lcars respond`, or the board's
+  ANSWER control). A gate with nobody to answer it is a stopped run.
+- **Pause when something genuinely needs stopping, and resume.**
+- **Accept or send back at Verify, and merge through `lcars approve`.**
+
+**DO NOT — this is reaching behind the interface:**
+
+- Walking a mission forward one verb per Stage, re-issuing `xo off` / `pause` /
+  `resume` / `--step` to advance it yourself.
+- Writing mission state the harness owns while a worker is running.
+
+**WHY, measured on 2026-10-13 (S291).** Hand-stepping writes mission control
+state into `state.json` *while a cold worker is mid-Stage*. The worker fence sees
+that file change under a running worker and blames the WORKER, stopping the Stage
+and painting a red card:
+
+```
+WORKER FENCE BREACH — the repo-read cold worker for this Stage changed
+things it is never allowed to write. MISSION STATE: state.json
+```
+
+**Nothing is wrong with the build when this fires.** It fired five times in one
+run across BOTH engines — Copilot at Plan and at Validate, Claude three times at
+Research — every one of them triggered by the buddy following the product's own
+prescribed sequence (`pause` refuses while Number One is engaged and names
+`xo off` as the cure; both write `state.json`). After the same run switched to
+starting missions and letting the harness drive, the count held flat for the rest
+of the day while missions continued to complete.
+
+**And the failure mode of over-applying this is just as bad.** Told only "stop
+touching control state", a buddy went timid for a whole turn: no merge, no
+resume, no gate answered, and it recorded *"leave control state untouched"* while
+a mission sat parked at a gate nobody could answer. **A rule that only says what
+not to touch produces an agent that solves nothing.** The test is not "did I
+touch state" — it is **"would the captain have done this by clicking
+something?"** If yes, do it.
+
+> **Note for whoever fixes the underlying defect:** the real cure is in LCARS,
+> not here — the fence should distinguish the OPERATOR's sanctioned control
+> writes from a worker writing outside its lane. This section reduces how often
+> the trap is stepped on; only that change removes it.
+
 ## 5. Drive it — backgrounded, with a waiter that watches the process
 
 ```bash
