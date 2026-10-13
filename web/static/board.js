@@ -4659,7 +4659,7 @@ function openDeployMain() {
   m.body.appendChild(intro);
   var hint = el("input", "launch-hint"); hint.type = "text";
   hint.placeholder =
-    "Optional — name the app or its directory (e.g. “the game in web/”)";
+    "Optional — name the app or its directory (e.g. “the web app in web/”)";
   hint.style.cssText = "width:100%;box-sizing:border-box";
   m.body.appendChild(field("Instructions (optional)", hint));
   var err = el("div", "errline"); err.hidden = true; m.body.appendChild(err);
@@ -8415,7 +8415,7 @@ function launchAffordance(mi) {
       }
       var hint = el("input", "launch-hint"); hint.type = "text";
       hint.placeholder =
-        "Optional — name the app or its directory (e.g. “the game in web/”)";
+        "Optional — name the app or its directory (e.g. “the web app in web/”)";
       hint.style.cssText = "width:100%;box-sizing:border-box;margin-bottom:8px";
       wrap.appendChild(hint);
       var run = act("launch", applyWriteState(btn("⚡ RUN", "go", function () {

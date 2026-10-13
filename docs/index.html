@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- lcars-docs-src: README.md sha256:08caaec26efd1a901fb18e292182be92b4ae8df82bde425b4333a84a53d79879 -->
+<!-- lcars-docs-src: README.md sha256:eec62f462dadb73120f9a8080dd0fb22fc9ca5729c0e83c6747ba5164f4a36b0 -->
 <!-- lcars-docs-src: vision.md sha256:8c844c676bd7b9cbae978a14fdb75876ecd0285874aaea3908622b62685add34 -->
 <html lang="en">
 <head>
@@ -47,33 +47,26 @@
     <div class="nav-section" data-color="amber">
       <div class="nav-label">Orientation</div>
       <a href="#intro"><div class="dot"></div>What it does</a>
-      <a href="#crew"><div class="dot"></div>Whose mission is whose <span class="nav-badge">shared</span></a>
-      <a href="#pipeline"><div class="dot"></div>The pipeline</a>
+      <a href="#pipeline"><div class="dot"></div>The eight stages</a>
     </div>
     <div class="nav-section" data-color="peach">
       <div class="nav-label">Operate</div>
       <a href="#install"><div class="dot"></div>Install</a>
-      <a href="#quickstart"><div class="dot"></div>Quick start <span class="nav-badge">viewscreen</span></a>
-      <a href="#zero"><div class="dot"></div>Starting from zero <span class="nav-badge">day zero</span></a>
-      <a href="#holodeck"><div class="dot"></div>The holodeck <span class="nav-badge">design</span></a>
-      <a href="#numberone"><div class="dot"></div>Number One <span class="nav-badge">first officer</span></a>
-      <a href="#autopilot"><div class="dot"></div>Autopilot <span class="nav-badge">the factory</span></a>
-      <a href="#cli"><div class="dot"></div>The CLI</a>
-      <a href="#copilot"><div class="dot"></div>GitHub Copilot</a>
-      <a href="#commands"><div class="dot"></div>Commands</a>
-      <a href="#loop"><div class="dot"></div>Worked loop <span class="nav-badge">walk-away</span></a>
-      <a href="#expect"><div class="dot"></div>What to expect</a>
+      <a href="#fiveminutes"><div class="dot"></div>Five minutes <span class="nav-badge">quick start</span></a>
+      <a href="#commands"><div class="dot"></div>The commands</a>
+      <a href="#features"><div class="dot"></div>What you get</a>
+      <a href="#engines"><div class="dot"></div>Two engines <span class="nav-badge">either CLI</span></a>
     </div>
     <div class="nav-section" data-color="blue">
       <div class="nav-label">Under the hood</div>
-      <a href="#internals"><div class="dot"></div>How it runs</a>
+      <a href="#internals"><div class="dot"></div>How it works</a>
       <a href="#state"><div class="dot"></div>State &amp; labels</a>
-      <a href="#config"><div class="dot"></div>Configuration</a>
     </div>
     <div class="nav-section" data-color="violet">
-      <div class="nav-label">Build</div>
-      <a href="#develop"><div class="dot"></div>Develop</a>
-      <a href="#status"><div class="dot"></div>Status</a>
+      <div class="nav-label">The project</div>
+      <a href="#stands"><div class="dot"></div>Where it stands</a>
+      <a href="#contribute"><div class="dot"></div>Contributing</a>
+      <a href="#license"><div class="dot"></div>License</a>
     </div>
   </nav>
 
@@ -84,197 +77,55 @@
          ═══════════════════════════════════════════════════ -->
     <section id="intro">
       <h1>LCARS</h1>
-      <p class="hero-sub">Mission control · idea → merged pull request · a board your crew shares</p>
+      <p class="hero-sub">You describe what you want. LCARS builds it and brings you back a pull request.</p>
       <hr class="divider" />
 
-      <p>LCARS is a reusable harness that takes a free-form human idea and drives
-      it all the way to a merged pull request — through alignment, research,
-      planning, gate-proven test-and-implement, and a human review gate — mostly
-      <strong>unattended</strong>. You file the idea and give the final yes; the
-      harness does everything in between.</p>
+      <figure class="screenshot">
+        <img src="assets/viewscreen-board.png" alt="The LCARS viewscreen on a busy board: every stage column populated, cost and difficulty pills on each card, a red AWAITING YOU gate, a mid-way wave strip, and a Done column mixing local and forge cards." />
+        <figcaption>The <strong>viewscreen</strong> on a busy board: every stage column populated, cost and difficulty pills on each card, a red AWAITING YOU gate, and a Done column mixing local and forge cards.</figcaption>
+      </figure>
 
-      <p>A Mission belongs to a <strong>person</strong>, not to a laptop. Every
-      card says whose it is, you can see Missions running right now on machines
-      you do not have, you cannot drive someone else's by accident, and you can
-      deliberately take one over — see
-      <a href="#crew">Whose mission is whose</a>.</p>
+      <p>LCARS is a harness that sits on top of an AI coding CLI —
+      <strong>Claude Code</strong> or the <strong>GitHub Copilot CLI</strong> —
+      and runs a whole piece of work end to end. An idea goes in; it is sharpened
+      into a spec, researched, planned, broken into small tickets, built
+      test-first, and handed back to you as a branch and a pull request. It runs
+      unattended between those two points and interrupts you only when a real
+      decision is needed. <strong>You keep the decisions. It keeps the
+      typing.</strong></p>
 
-      <p>It installs as a set of Claude Code skills (<code>lcars init</code>,
-      <code>lcars file</code>, …) that work in <strong>any</strong> repo, and
-      leaves <strong>zero</strong> files in your working tree. The
-      <strong>recommended</strong> way to drive it is the <strong>viewscreen</strong>
-      — a local LCARS web board — with the CLI available as the equivalent power
-      path underneath.</p>
+      <p>It installs once and works in <strong>any</strong> repo, leaving
+      <strong>zero</strong> files in your working tree. The board above — the
+      <strong>viewscreen</strong> — is the usual way to drive it, and everything
+      on it is also a terminal command. <strong>The project does not have to
+      exist yet:</strong> point LCARS at an empty folder and it recommends a
+      stack, builds a running skeleton with a real test system, and proves one
+      thin slice end to end before any feature work starts.</p>
 
       <div class="lcars-alert blue">
-        <div><strong>Read more:</strong> <a href="../vision.md">vision.md</a> is
-        the full design · <a href="../CONTEXT.md">CONTEXT.md</a> is the domain
-        glossary · <a href="vision.html">vision.html</a> is the vision in LCARS
-        livery. This page is the fast path to getting started.</div>
-      </div>
-
-      <figure class="screenshot">
-        <img src="assets/viewscreen-board.png" alt="The LCARS viewscreen — a Star-Trek-themed Kanban board showing missions moving through Validate → Plan → Plan Review → Schedule → Implement → Verify → Done, each card carrying live cost and difficulty pills, real working status, and logged-bug children." />
-        <figcaption>The <strong>viewscreen</strong> — local mission control. Every mission is a card in its stage, with actual/estimated cost, difficulty, live worker activity, and one-click file / pause / review.</figcaption>
-      </figure>
-
-      <h2>What it does</h2>
-      <p>LCARS is <strong>not</strong> a code generator, a chat box, or a one-shot
-      prompt. It is an <strong>orchestration system</strong> — a defined pipeline
-      of LLM operations, automated checks, and human checkpoints — that turns
-      intent into shipped software.</p>
-
-      <p>Every piece of work is a <strong>Mission</strong>: a single human intent
-      (a feature, an improvement, or a bug fix). Each Mission gets its own branch,
-      is mirrored as a GitHub issue, <strong>belongs to whoever that issue is
-      assigned to</strong>, and moves through a fixed sequence of
-      <strong>Stages</strong> as a card on a kanban board. Missions are
-      branch-isolated, so many can run concurrently and merge sequentially when
-      you approve them.</p>
-
-      <p>An idea doesn't have to arrive as a paragraph of text. When the thing
-      you want is easier to <em>draw</em> than to describe, the
-      <strong>holodeck</strong> is a room on the viewscreen where you talk a
-      mockup into existence with an AI, watch it render live, and then hand that
-      drawing to a Mission that builds it — see
-      <a href="#holodeck">The holodeck</a>.</p>
-
-      <p><strong>The project doesn't have to exist yet either.</strong> Point
-      LCARS at an empty folder and it replaces the board with a door: describe
-      what you want, answer a few questions, and it recommends a stack, builds a
-      running skeleton with a real test system, and proves one thin slice end to
-      end — before any feature work starts. See
-      <a href="#zero">Starting from zero</a>.</p>
-
-      <div class="mission-card">
-        <strong>The key idea — set it in motion and walk away:</strong>
-        <ul>
-          <li>The harness auto-advances a Mission stage to stage on its own.</li>
-          <li>It stops only at a genuine human gate — a strategic decision it
-          can't make, or the final review.</li>
-          <li>When it stops, it pings you with a one-line, decision-ready
-          summary. Being notified only when you're actually needed is the normal
-          way to use it.</li>
-        </ul>
-      </div>
-
-      <p>And you can hand over the running of the <strong>factory</strong> itself.
-      <strong>Autopilot</strong> takes a goal, holds a single alignment round with
-      you to agree what to build, and then runs the loop — planning, implementing,
-      <em>using</em> what came out, fixing what it finds, landing it — coming back
-      only when it genuinely needs you, and leaving behind the evidence for
-      everything it decided. On the run that proved it, that was <strong>once</strong>,
-      across a whole night: it built a command-line tool, a page and a CI workflow,
-      found and fixed two bugs a fully green suite had passed, and landed the work.
-      (A human still takes the final merge.) See
-      <a href="#autopilot">Autopilot</a>.</p>
-
-      <div class="diagram-wrap">
-        <div class="diagram-label">The whole point</div>
-        <div class="mermaid">
-flowchart LR
-    H([You: an idea]) --> L[LCARS harness]
-    L --> PR([Merged PR])
-    L -. "pings you only at a real decision" .-> H
-        </div>
+        <div><strong>Read more:</strong> <a href="https://github.com/roferg/lcars/blob/main/vision.md">vision.md</a> is
+        the long-form design and the story of how it got here ·
+        <a href="https://github.com/roferg/lcars/blob/main/CONTEXT.md">CONTEXT.md</a> is the glossary ·
+        <a href="vision.html">vision.html</a> is the vision in LCARS livery.</div>
       </div>
     </section>
 
 
     <!-- ═══════════════════════════════════════════════════
-         WHOSE MISSION IS WHOSE
-         ═══════════════════════════════════════════════════ -->
-    <section id="crew">
-      <h2>Whose mission is whose</h2>
-      <p>A Mission's real home is its <strong>GitHub issue</strong>, not the
-      laptop that filed it — a second clone has no <code>.git/lcars</code> at
-      all. So LCARS reads ownership from the forge (the issue's assignee) rather
-      than keeping a private answer that could disagree with it, and you change
-      who owns a Mission the way you change anything else about an issue: on
-      GitHub.</p>
-
-      <figure class="screenshot">
-        <img src="assets/ownership-board.png" alt="Two LCARS mission cards side by side on the viewscreen: #73 in Implement marked REMOTE — DRIVEN ELSEWHERE, and #74 in Verify reading copilot — chosen at adopt, both carrying their owner's avatar and handle, above an ownership filter strip reading ALL 2, MINE 2, REMOTE 1." />
-        <figcaption>One board, two machines. <strong>#73</strong> is being driven somewhere else — this clone has no copy of it, and the card still shows its real stage. <strong>#74</strong> was adopted onto this laptop and sits at Verify on the engine a human picked at the handoff. The strip counts what you're looking at: <code>ALL · 2</code>, <code>MINE · 2</code>, <code>REMOTE · 1</code>.</figcaption>
-      </figure>
-
-      <div class="mission-card">
-        <strong>What that buys you:</strong>
-        <ul>
-          <li><strong>You're a person, not a machine.</strong> Identity is the
-          <code>(host, login)</code> pair — never a hostname, never a numeric id.
-          The same login has a different numeric id on github.com than on a
-          GitHub Enterprise host, so every lookup is host-scoped and the same
-          handle on two forges is correctly <strong>two different people</strong>.</li>
-          <li><strong>Every card says whose it is</strong> — avatar + handle in an
-          LCARS pill. Yours is a <strong>solid block</strong>, someone else's is
-          <strong>hollow and dashed</strong>, so ownership survives greyscale and
-          colour-blindness instead of relying on hue (8.18:1 measured).</li>
-          <li><strong>You can't drive someone else's mission.</strong> Not a
-          greyed-out button: the daemon refuses <strong>ten write verbs</strong>
-          at the door with a status code (<code>start</code>, <code>pause</code>,
-          <code>resume</code>, <code>respond</code>, <code>verify</code>,
-          <code>reapprove</code>, and the four Mission Log verbs), and the CLI
-          refuses the same work — both with one byte-identical sentence,
-          <em>assigned to &lt;login&gt; — reassign it to yourself on GitHub to
-          take command</em>. The lock is <strong>light</strong> on purpose:
-          reading is never gated, an <em>unassigned</em> mission isn't locked,
-          and an identity LCARS can't resolve never locks anything (a false lock
-          is worse than what it prevents).</li>
-          <li><strong>You see work on machines you don't have.</strong> A mission
-          with no local copy still appears, read from the forge, at its real stage
-          with its pills intact, marked <code>◈ REMOTE · DRIVEN ELSEWHERE</code>;
-          its write controls carry the same sentence the server would answer
-          with.</li>
-          <li><strong>You can take one over</strong> — <code>lcars adopt
-          &lt;issue#&gt;</code>, or the card's <strong>Adopt</strong> button. It
-          rebuilds the mission here from the issue alone (reusing its id, never
-          minting a new one), reads the stage from the label, carries the estimate
-          across, and <strong>asks which engine should drive it here</strong> —
-          recording that a human chose, which is why #74 above reads
-          <code>copilot · chosen at adopt</code>. It claims the mission at
-          <strong>Align</strong>, joins at <strong>Verify</strong> and resolves
-          the open PR so <code>approve</code> / <code>feedback</code> work
-          immediately, and refuses the stages in between honestly.</li>
-          <li><strong>You can filter the board</strong> — <code>ALL</code> /
-          <code>MINE</code> / <code>THEIRS</code> / <code>UNASSIGNED</code> /
-          <code>REMOTE</code>, each with its own count.</li>
-        </ul>
-      </div>
-
-      <p>Proven on two genuinely cold clones against real GitHub, with live
-      pipelines and real merges, repeatedly.</p>
-
-      <div class="lcars-alert teal">
-        <div><strong>Where this goes next.</strong> The multi-person foundation is
-        laid and working — people are distinguishable rather than machines, every
-        mission carries an owner, the lock is enforced per-person on both surfaces,
-        and the board renders and filters by whose work is whose. What remains is
-        the rest of the build-out, and two pieces are worth naming plainly: LCARS
-        has so far only been run against <strong>one GitHub account</strong>
-        (someone else's mission has been exercised with planted owner data, not yet
-        with a second human), and <strong>two people acting in the same
-        moment</strong> — the race tiebreak and contention handling — is
-        deliberately still ahead, owned by the next round. LCARS is set up to
-        support multiple people; the full multi-person experience is what comes
-        after this round.</div>
-      </div>
-    </section>
-
-
-    <!-- ═══════════════════════════════════════════════════
-         PIPELINE
+         THE PIPELINE
          ═══════════════════════════════════════════════════ -->
     <section id="pipeline">
-      <h2>The pipeline</h2>
-      <p>A Mission moves through eight Stages in order. The harness manages every
-      transition; you appear at gates, not at every step.</p>
+      <h2>What it does</h2>
+      <p>Each piece of work is a <strong>Mission</strong>: one human intent, on
+      its own branch, mirrored as a GitHub issue, moving through eight Stages as
+      a card on the board. Many Missions run at once and merge one at a time,
+      when you say so.</p>
 
       <div class="diagram-wrap">
-        <div class="diagram-label">Pipeline overview — with feedback loops</div>
+        <div class="diagram-label">The eight stages — with the loops back to you</div>
         <div class="mermaid">
 flowchart LR
-    E([lcars file]) --> A[Align]
+    E([you file an idea]) --> A[Align]
     A --> R[Research]
     R --> V[Validate]
     V --> P[Plan]
@@ -285,133 +136,47 @@ flowchart LR
     I --> VR[Verify]
     VR --> D([Done ✓])
 
-    R -. "&gt;20 questions" .-> A
+    R -. "too many unknowns" .-> A
     V -. "scope change" .-> A
-    VR -. "feedback" .-> A
+    VR -. "not good enough" .-> A
         </div>
       </div>
 
-      <h3><span class="stage-num">1</span>Align <span class="lcars-status warning" style="margin-left:8px">you + LLM</span></h3>
-      <p>A structured grilling session — not a chat — that resolves ambiguity in
-      the idea and produces a <strong>PRD</strong> (the canonical spec). Adapts to
-      complexity: a one-line bug earns a thin PRD; a complex feature earns a
-      thorough grilling. A complex Mission also gets high-level <strong>engineering
-      ADRs</strong> (architecture/data-shape decisions + rationale), seeded here
-      and refined at Validate. When the PRD is finalized an <strong>estimator</strong>
-      reads it against the real repo and assigns each downstream Stage a model tier
-      (Sonnet or Opus) plus a token-grounded <strong>cost estimate</strong> — shown
-      on the issue and the CLI readout, and overridable in plain language.</p>
+      <h3><span class="stage-num">1</span>Align <span class="lcars-status warning" style="margin-left:8px">you</span></h3>
+      <p>A structured interview — one question at a time, each with a recommended
+      answer — that turns a rough idea into a written spec, then prices the work
+      before anything is spent.</p>
 
       <h3><span class="stage-num">2</span>Research <span class="lcars-status active" style="margin-left:8px">auto</span></h3>
-      <p>Generates 0–20 questions from the PRD; each goes to a stateless parallel
-      Research Agent that returns a recommendation plus supporting points. The
-      agents are blind to the PRD and to each other.</p>
+      <p>Up to twenty open questions, each sent to its own independent agent that
+      comes back with a recommendation and its reasons.</p>
 
       <h3><span class="stage-num">3</span>Validate <span class="lcars-status active" style="margin-left:8px">auto</span></h3>
-      <p>A Validator synthesises all findings into a plan, resolving the
-      <em>how</em>. Escalates to you only when a finding changes <em>what</em>
-      gets built.</p>
+      <p>The findings are synthesised into a plan. It stops for you only if a
+      finding changes <em>what</em> gets built, not <em>how</em>.</p>
 
       <h3><span class="stage-num">4</span>Plan <span class="lcars-status active" style="margin-left:8px">auto</span></h3>
-      <p>Decomposes the validated plan into small, independently testable tickets
-      — each a vertical slice owning <strong>one cohesive behavior</strong>, sized
-      by total <strong>comprehension load</strong> (code-to-read + tests + new
-      code) against a tunable budget, not a flat line count.</p>
-      <p>Every ticket also <strong>declares its seams and entrypoints</strong> —
-      two arrays, not prose: what writes a piece of state, what reads it, the test
-      that drives <strong>both real halves</strong>, and one sentence saying how; plus
-      each workflow or CLI file CI actually runs, the test that runs it the way CI
-      does, and the sentence for that. A ticket with neither writes an empty array
-      and a one-line note saying why. On a Mission whose host isn't github.com, every
-      ticket additionally carries a four-point <strong>host checklist</strong>.</p>
+      <p>The plan becomes small tickets, each one a vertical slice owning a
+      single behaviour.</p>
 
       <h3><span class="stage-num">5</span>Plan Review <span class="lcars-status active" style="margin-left:8px">auto</span></h3>
-      <p>A <em>fresh</em> reviewer with no planning context audits every ticket
-      for slice, size, <strong>coupling</strong> (rejecting tickets whose criteria
-      force changing behavior another ticket's tests pin — the real meaning of
-      "too big"), testability, and dependencies. Loops back to Plan until
-      clean; escalates after 3 rounds.</p>
-      <p>It also audits the <strong>seams and entrypoints</strong>: the shape
-      mechanically, then the proof sentences by reading them — objecting when one
-      describes a <strong>stub</strong> (a mocked producer, a patched consumer, a
-      literal payload) or is boilerplate, and when an empty list is a dodge on a
-      ticket whose own text names a writer and a reader. Objections print
-      <strong>whole</strong> on every surface you read, including the escalation
-      question.</p>
+      <p>A fresh reviewer with no memory of the planning audits every ticket for
+      size, coupling and testability, and sends bad ones back.</p>
 
       <h3><span class="stage-num">6</span>Schedule <span class="lcars-status active" style="margin-left:8px">auto</span></h3>
-      <p>Builds the dependency graph into sequential <strong>Waves</strong> and
-      opens one GitHub sub-issue per ticket, each nested under the Mission's own
-      issue. A single-ticket Mission reuses its own issue instead of opening a
-      redundant one.</p>
-
-      <div class="diagram-wrap">
-        <div class="diagram-label">Schedule — tickets grouped into waves</div>
-        <div class="mermaid">
-flowchart TB
-    subgraph W1["Wave 1 — parallel"]
-        T1[Ticket A]
-        T2[Ticket B]
-        T3[Ticket C]
-    end
-    subgraph W2["Wave 2 — parallel"]
-        T4[Ticket D]
-        T5[Ticket E]
-    end
-    W1 --> W2
-        </div>
-      </div>
+      <p>Tickets are ordered into waves by their dependencies, and each becomes a
+      sub-issue under the Mission.</p>
 
       <h3><span class="stage-num">7</span>Implement <span class="lcars-status active" style="margin-left:8px">auto</span></h3>
-      <p>Per ticket, one <strong>unified TDD worker</strong> writes tests and code,
-      then the harness proves the work with deterministic post-hoc gates:
-      <strong>flip-flop</strong> (its new/changed tests must fail on the parent
-      commit and pass on the tip), a <strong>declared-edits</strong> contract (any
-      edit to an existing test must be declared with a reason, else the ticket
-      blocks), a <strong>quality floor</strong>, and the <strong>whole</strong>-repo
-      green gate so a later ticket can't silently regress an earlier one. A
-      rejection bounces to a fresh worker (≤3 sessions) then parks awaiting-human —
-      never a stage-stop. Independent tickets in a Wave build
-      <strong>concurrently</strong> in isolated worktrees, committing serially in
-      plan order; same-file tickets rebuild serially so every change lands.</p>
-
-      <div class="diagram-wrap">
-        <div class="diagram-label">Implement — unified worker + proof gates</div>
-        <div class="mermaid">
-sequenceDiagram
-    participant H as Harness
-    participant W as Unified TDD Worker
-    participant TS as Test Suite
-    participant G as Proof Gates
-
-    H->>W: Ticket + codebase context
-    W->>TS: Write tests AND code, run freely
-    Note over W,TS: Ping-pong until green; declare test edits
-    W-->>H: result.json v2 (green, declared edits)
-    H->>G: flip-flop · declared-edits · quality
-    G-->>H: Accepted — commit · or bounce (≤3) then park
-        </div>
-      </div>
+      <p>One test-first worker per ticket, checked afterwards by machine: its new
+      tests must fail before its change and pass after it, any edit to an
+      existing test must be declared with a reason, and the whole suite must stay
+      green.</p>
 
       <h3><span class="stage-num">8</span>Verify <span class="lcars-status warning" style="margin-left:8px">you</span></h3>
-      <p>You read the diff, run the app, test the golden path — then
-      <strong>approve</strong> (open the PR) or <strong>send back</strong> with
-      feedback. Auto-advance never passes this gate for you.</p>
-
-      <div class="lcars-alert amber">
-        <div>Four feedback loops keep it honest: Research → Align (too much
-        ambiguity), Validate → Align (scope change), Plan Review → Plan (bad
-        tickets), and Verify → Align (you weren't satisfied).</div>
-      </div>
-
-      <figure class="screenshot">
-        <img src="assets/reverify-gate.png" alt="The consolidated Re-Verify gate — one dialog telling you the logged bugs were fixed and folded onto the parent's branch, with a run-the-app live-launch affordance and Accept-the-fixes / Send-back buttons." />
-        <figcaption>The human review gate: inspect the diff, launch the app live in one click, then accept the fixes or send the mission back with a note.</figcaption>
-      </figure>
+      <p>You read the diff, run the app, and either approve — which opens the
+      pull request — or send it back with a note.</p>
     </section>
-
-
-    <hr class="divider" />
 
 
     <!-- ═══════════════════════════════════════════════════
@@ -419,1349 +184,312 @@ sequenceDiagram
          ═══════════════════════════════════════════════════ -->
     <section id="install">
       <h2>Install</h2>
-      <p>LCARS lives in this repo and installs globally via symlinks, so a
-      <code>git pull</code> delivers updates with no re-install.</p>
-
-      <pre>git clone &lt;this-repo&gt; lcars
-cd lcars
-./install.sh          # symlinks skills/* into ~/.claude/skills/ AND drops the
-                      # lcars-viewscreen / lcars-serve launchers on ~/.local/bin</pre>
-
-      <p><code>./install.sh</code> also installs a real
-      <strong><code>lcars-viewscreen</code></strong> command (alias
-      <code>lcars-serve</code>) into <code>~/.local/bin</code> — a wrapper that
-      execs the repo's <code>viewscreen.sh</code>, so the kanban board is one word
-      to launch from any shell on either CLI. If <code>~/.local/bin</code> isn't
-      already on your <code>PATH</code>, the installer prints the line to add it
-      (e.g. <code>export PATH="$HOME/.local/bin:$PATH"</code> in your shell rc).</p>
 
       <div class="lcars-panel">
-        <div class="lcars-panel-header">Requirements</div>
+        <div class="lcars-panel-header">You need</div>
         <div class="lcars-panel-body">
           <ul>
-            <li><strong>A host CLI</strong> — <strong>Claude CLI</strong> or
-            <strong>GitHub Copilot CLI</strong>. LCARS auto-detects whichever you
-            launch from as the worker binary (see
-            <a href="#copilot">Running under GitHub Copilot</a> for the Copilot
-            setup).</li>
-            <li><strong>gh CLI</strong>, authenticated (<code>gh auth login</code>)
-            — used for issues, labels, sub-issues, and PRs.</li>
+            <li><strong>One AI coding CLI</strong> — Claude Code
+            <strong>or</strong> the GitHub Copilot CLI. LCARS detects which ones
+            are installed and uses one of them. Both installed is fine; you pick
+            per Mission.</li>
+            <li><strong><code>gh</code></strong>, signed in
+            (<code>gh auth login</code>) — for issues, labels and pull
+            requests.</li>
           </ul>
         </div>
       </div>
 
-      <h4>Updating</h4>
-      <pre>git pull              # skill source updates in place — symlinks already point at it
-./install.sh          # only needed to pick up brand-new skills</pre>
-      <p><code>install.sh</code> is idempotent. If a real (non-symlink) skill of
-      the same name already exists in <code>~/.claude/skills/</code>, it is backed
-      up rather than clobbered.</p>
-      <p>From now on LCARS also <strong>knows its version</strong>.
-      <code>lcars init</code> stamps the running version into the repo, and
-      interactive entry points (<code>lcars</code>, <code>lcars file</code>, an
-      interactive run start, the viewscreen launcher) notice on a throttled ~daily
-      basis when the source clone or this repo's stamp has fallen behind and
-      <strong>offer to pull, reinstall, and <code>lcars update</code></strong> for
-      you — always asking first, defaulting to No, so nothing changes by surprise.
-      Headless paths just print a one-line warning and carry on. The manual
-      <code>git pull</code> above still works; run <code>lcars version</code> any
-      time for the running / source / repo-stamp picture, or set
-      <code>LCARS_VERSION_CHECK=0</code> to silence the check.</p>
+      <pre>git clone https://github.com/roferg/lcars.git
+cd lcars
+./install.sh</pre>
+
+      <p><code>./install.sh</code> links the commands into the Claude Code
+      skills directory, and registers this clone as a Copilot CLI plugin too when
+      Copilot is installed. It also puts five real programs on your
+      <code>PATH</code> at <code>~/.local/bin</code>:
+      <strong><code>lcars-viewscreen</code></strong> (alias
+      <strong><code>lcars-serve</code></strong>) opens the board,
+      <strong><code>lcars-launch</code></strong> runs a Mission's app, and
+      <strong><code>lcars-buddy</code></strong> and
+      <strong><code>lcars-autopilot</code></strong> are the companion and the
+      hand-over-the-loop mode. If <code>~/.local/bin</code> is not on your
+      <code>PATH</code>, the installer says so loudly and prints the exact line
+      to add to your shell profile.</p>
+
+      <p>Then, <strong>inside the project you want to ship work in</strong> (not
+      this repo):</p>
+
+      <pre>cd ~/path/to/your-project
+lcars init          # one-time: per-repo state + the GitHub labels</pre>
+
+      <div class="lcars-alert amber">
+        <div><strong>Two kinds of command, and where each one runs.</strong>
+        <code>lcars &lt;verb&gt;</code> (<code>lcars init</code>,
+        <code>lcars file</code>, <code>lcars answer</code>, …) are
+        <em>skills</em> — you type them to your AI CLI inside the repo, not into
+        a shell. <code>lcars-viewscreen</code> is a real program and runs in any
+        plain terminal.</div>
+      </div>
+
+      <p><strong>Updating</strong> is <code>git pull</code> here — the skills are
+      symlinked, so they update in place. Re-run <code>./install.sh</code> only
+      for brand-new commands, and <code>lcars update</code> inside a project to
+      absorb new labels and config keys.</p>
     </section>
 
 
     <!-- ═══════════════════════════════════════════════════
-         QUICK START
+         FIVE MINUTES
          ═══════════════════════════════════════════════════ -->
-    <section id="quickstart">
-      <h2>Quick start — the viewscreen</h2>
-      <p>The <strong>recommended</strong> way to use LCARS is the
-      <strong>viewscreen</strong> — a local, browser-based LCARS-themed kanban
-      board. It's the default experience: file an idea, watch it drive to a merged
-      PR, and answer any gates visually, all from one screen. (Prefer the terminal?
-      Everything here maps to <code>lcars</code> commands — see
-      <a href="#cli">The CLI</a>.)</p>
+    <section id="fiveminutes">
+      <h2>Five minutes</h2>
 
-      <p><strong>Two kinds of commands — and where to run each.</strong> LCARS has
-      two surfaces, and they run in different places:</p>
+      <h3>1 · Open the board</h3>
+      <pre>lcars-viewscreen --open</pre>
+      <p>In a plain terminal, in your project. It starts a local server (Python
+      standard library only — no npm, no build step), picks a free port, and
+      opens the board. Watching it costs nothing: the board itself never calls a
+      model.</p>
 
-      <ul>
-        <li>The <strong><code>lcars &lt;verb&gt;</code></strong> family
-        (<code>lcars init</code>, <code>lcars file</code>, <code>lcars run</code>, …)
-        are <strong>agent skills</strong> — type them to your agent (Claude Code or
-        Copilot) inside the repo. They are not shell binaries.</li>
-        <li><strong><code>lcars-viewscreen</code></strong> (alias
-        <code>lcars-serve</code>) is different: it's a <strong>real command on your
-        <code>PATH</code></strong> that <code>./install.sh</code> installs to
-        <code>~/.local/bin</code>. Run it in <strong>any plain terminal</strong> —
-        you do <strong>not</strong> need Claude Code or Copilot open.</li>
-      </ul>
-
-      <p>So, inside <strong>the repo you want to ship work in</strong> —
-      &#9888;&#65039; <strong><code>cd</code> into that repo first.</strong> Everything below
-      acts on the repo you're currently in: <code>lcars init</code> scaffolds
-      <em>its</em> <code>.git/lcars/</code>, and every Mission files issues against
-      <em>its</em> GitHub repo. Run this in <strong>your</strong> project,
-      <strong>not</strong> the LCARS repo (do that and you'll open a pile of issues
-      against LCARS by mistake):</p>
-
-      <pre># 1. In your agent (Claude Code or Copilot), cd into YOUR project first:
-cd ~/path/to/your-project
-lcars init                # one-time per-repo setup: .git/lcars/ + GitHub labels
-
-# 2. Then in a plain terminal (NOT the agent) — same repo:
-cd ~/path/to/your-project
-lcars-viewscreen --open   # launch the board and open it in your browser</pre>
-
-      <p><code>lcars-viewscreen --open</code> starts a Python-3-stdlib-only daemon
-      (no pip / npm / build step), boots it on a free local port, and opens the
-      kanban board in your browser. Because it's a real command on your
-      <code>PATH</code> (alias <code>lcars-serve</code>), the <strong>same
-      invocation works from any shell</strong> — and the daemon spawns no model
-      workers, so watching the board costs nothing. <strong>Start it from a plain
-      terminal, not from inside a Claude Code / Copilot session:</strong> an agent
-      session is sandboxed, so the board would load but its DEPLOY MAIN /
-      <code>lcars launch</code> buttons couldn't reach your desktop to actually
-      start an app — so if you run it there, LCARS stops and hands you a
-      copy-paste command to run in a real terminal instead. It runs in the
-      foreground and is <strong>session-bound</strong>: it stays up for that
-      terminal and stops when you close it (or Ctrl-C). From there you drive the
-      whole idea → merged PR loop without leaving the page:</p>
-
-      <div class="mission-card">
-        <ul>
-          <li><strong>File a Mission.</strong> Type your idea into the board; the
-          live Align console <strong>grills you</strong> until the spec is sharp,
-          then files the Mission as a card. In a hurry? <strong>Park</strong> it
-          instead — engine + idea, one click, no grill — and it lands as a
-          <em>◇ STANDBY — AWAITING ALIGNMENT</em> card in the Align column; hit
-          <strong>Start Alignment</strong> on it later to run the same grill
-          (seeded with your idea) and the card swaps in place to a normal aligned
-          Mission.</li>
-          <li><strong>Watch it drive.</strong> Each Mission is a card in its Stage
-          column, carrying one <strong>cost pill</strong> and two
-          <strong>difficulty pills</strong> (reasoning + implementation), with
-          nested ticket rows and live Implement wave/ticket progress streamed over
-          SSE. The harness auto-advances; the board updates itself as it goes.</li>
-          <li><strong>Answer the gates, visually.</strong> When LCARS needs you — a
-          scope escalation, a design question, the Verify ship-or-send-back gate —
-          the card flips to an <strong>AWAITING YOU</strong> state and you respond
-          right there: Respond, <strong>Verify</strong> (approve / send back),
-          <strong>Pause</strong> / <strong>Resume</strong>, and the
-          <strong>Mission Log</strong> are all card actions.</li>
-          <li><strong>Paste screenshots.</strong> The File box, the live Align
-          grill, and the Mission Log box all accept pasted images. Each shows as a
-          CLI-style placeholder chip (never a rendered thumbnail), is saved into
-          the Mission's <code>attachments/</code> dir, referenced by relative path
-          in the PRD, and threaded by absolute path into every cold Stage — so the
-          grill and the grounding worker actually <em>see</em> it (Claude via a
-          path in the prompt, Copilot via <code>--attachment</code>).</li>
-        </ul>
-      </div>
-
-      <div class="lcars-alert blue">
-        <div>The viewscreen is a <strong>viewport over the same harness the CLI
-        drives</strong> — not a separate implementation. CLI/UI parity is a core
-        principle: every write the board makes dispatches to the same
-        <code>lcars</code> skills, so the two surfaces never drift. One
-        adapter-neutral board shape backs two read adapters — a <strong>local</strong>
-        one parsing <code>.git/lcars/missions/*</code> (the default, with the
-        operator write endpoints) and a <strong>GitHub</strong> one reading issues
-        + <code>lcars:*</code> labels (<code>--read-only</code>, view-only) — so a
-        hosted, read-only board is a configuration away. When the running LCARS is
-        stale, the board raises a themed topbar <strong>update banner</strong> —
-        <em>LCARS &lt;version&gt; AVAILABLE — ENGAGE UPDATE</em> (source behind) or
-        <em>UPDATE LCARS IN THIS REPO → &lt;version&gt;</em> (the LCARS wired into
-        this repo is older) — each naming LCARS and the target version — with a
-        one-click <strong>update button</strong> on the local build (blue while it
-        runs, teal on success); view-only builds show the banner without the
-        button.</div>
-      </div>
-    </section>
-
-
-    <!-- ═══════════════════════════════════════════════════
-         STARTING FROM ZERO
-         ═══════════════════════════════════════════════════ -->
-    <section id="zero">
-      <h2>Starting from zero</h2>
-      <p>Every ticket in LCARS is proven the same way: its tests are
-      <strong>red on the parent commit and green on the tip</strong>. A repo with
-      no test runner can't produce that proof — so rather than show you an empty
-      board, LCARS shows you a door.</p>
-
-      <p>Open the viewscreen on a repo with no foundation and you get
-      <strong>Establish Vision</strong> instead of the board:</p>
-
-      <ol>
-        <li><strong>Say what you're building</strong> — a sentence is enough.
-        LCARS also reads whatever is already in the repo, so an existing codebase
-        with no tests gets a foundation-only conversation rather than a "what are
-        we building" one.</li>
-        <li><strong>Pick the engine</strong> — Claude Code or GitHub Copilot. Only
-        engines installed on your machine are offered. Your choice runs the
-        conversation <em>and</em> every stage of the mission it files, and becomes
-        the project's default.</li>
-        <li><strong>Answer a few questions</strong>, one at a time. It then
-        recommends a stack <strong>and says why</strong>, in terms of what you told
-        it. Anything you mentioned that isn't the foundation is recorded by name
-        and deferred to later missions. Nothing is filed until you accept.</li>
-        <li><strong>Accept</strong>, and it files an <em>initialization mission</em>
-        that runs the normal pipeline hands-off: a running skeleton, a real test
-        runner, and one thin vertical slice that proves both are wired
-        together.</li>
-        <li><strong>Approve it at Verify</strong> and the repo
-        <strong>graduates</strong> — the test command is promoted into the repo's
-        config, normal missions unlock, and the holodeck opens.</li>
-      </ol>
-
-      <p>The one waiver: the initialization mission's <strong>first ticket</strong>
-      may finish without a flip-flop, because it is the ticket that creates the
-      runner there wasn't one of. It records a reason and surfaces it at Verify.
-      Every later ticket is held to the real gate.</p>
-
-      <p>Until the foundation lands, filing ordinary missions is blocked — a
-      mission on a repo that can't prove anything is a mission whose result nobody
-      can trust.</p>
-
-      <div class="lcars-alert teal">
-        <div><strong>Engine support.</strong> Day zero is proven end to end on
-        <strong>JavaScript/TypeScript, Python, Rust, Go, Ruby and .NET</strong>.
-        <strong>JVM is not proven</strong> — there is no JDK detection arm yet, so
-        a Java/Kotlin project cannot currently establish a foundation this
-        way.</div>
-      </div>
-    </section>
-
-
-    <!-- ═══════════════════════════════════════════════════
-         THE HOLODECK
-         ═══════════════════════════════════════════════════ -->
-    <section id="holodeck">
-      <h2>The holodeck</h2>
-      <p>Some work is far easier to <em>draw</em> than to describe. The
-      <strong>holodeck</strong> — the <code>⬡ HOLODECK</code> control in the
-      viewscreen's top band — is a room where you talk a mockup into existence
-      with an AI, look at it rendered live as it changes, and then hand the
-      drawing to a Mission that builds it.</p>
-
-      <div class="lcars-alert blue">
-        <div>It sits <strong>before</strong> the pipeline. The holodeck runs no
-        Stages and writes no mission state; its one bridge to the harness is that
-        when you file, the finished mockup and its concept doc ride into the new
-        Mission's <code>attachments/</code> — the same road a pasted screenshot
-        takes.</div>
-      </div>
-
+      <h3>2 · File an idea</h3>
+      <p>Press <strong>FILE MISSION</strong>, describe what you want in plain
+      language, and pick which CLI should do the work. Begin the alignment
+      interview now, or park it in the backlog and come back to it.</p>
       <figure class="screenshot">
-        <img src="assets/holodeck.png" alt="The LCARS holodeck — the PROGRAMS list on the left with two sent programs, each naming the Mission it became; the design conversation in the middle with the captain's own turns and the holodeck's replies; and on the right the live-rendered mockup of a tile editor, above the PROGRAM ROOM name and its commit count." />
-        <figcaption>Talk to it on the left, watch the mockup redraw on the right. Every turn is committed to a sidecar repo beside your project — never into your working tree.</figcaption>
+        <img src="assets/file-console.png" alt="The LCARS file console: a free-form box asking what you want to build, improve or fix, an engine choice between Claude and Copilot, and the choice of beginning alignment now or filing it to the backlog." />
+        <figcaption>Filing a Mission: the idea in plain language, the engine choice, and the two ways in — begin alignment now, or file it to the backlog.</figcaption>
       </figure>
 
-      <p><strong>Programs.</strong> A <strong>program</strong> is to design work
-      what a Mission is to build work: one unit, one room. It is a
-      <code>draft</code> while you're working on it and becomes <code>sent</code>
-      — locked — once it has been filed as a Mission, so it stays the record of
-      what was actually handed over.</p>
+      <h3>3 · Walk away</h3>
+      <p>The Mission advances itself through Research, Validate, Plan, Plan
+      Review, Schedule and Implement, the card showing the stage, the cost so far
+      and the ticket it is on. Nothing needs you until something does.</p>
 
-      <p><strong>The files live beside your project, never in it.</strong>
-      Programs are kept in a <strong>sidecar git repo</strong> —
-      <code>&lt;your-repo&gt;-holodeck</code>, alongside your checkout — with
-      every turn committed. That's deliberate: a mockup can never be mistaken for
-      the product, and can never be committed to it by accident. Your own working
-      tree is untouched, exactly as everywhere else in LCARS.</p>
+      <h3>4 · Answer what it asks</h3>
+      <p>When LCARS genuinely needs you, the card turns red and says so, and you
+      get a notification. Everything waiting on you is also in one list — on the
+      board, or in the terminal with <code>lcars answer</code>.</p>
+      <figure class="screenshot">
+        <img src="assets/answer-inbox.png" alt="The lcars answer inbox in a terminal: every decision LCARS is waiting on, each written in plain English with the exact command to approve it, send it back, or answer it." />
+        <figcaption>The answer inbox: every decision LCARS is waiting on, in plain English, each with the exact command to clear it.</figcaption>
+      </figure>
 
-      <p><strong>Grounding.</strong> A new program asks how to start. The
-      recommended option runs a bounded, <strong>read-only</strong> pass over your
-      real project and writes what it finds to <code>basis.md</code> — the actual
-      colour tokens and their values, the type scale, spacing and radius, and the
-      shape of the existing components, each named against the file it came from,
-      plus an honest note about what it could <em>not</em> find. The mockup then
-      arrives looking like it belongs in that product instead of inventing a
-      design system. The pass really has no write tool (on Claude it's fenced by a
-      tool <em>deny</em> list, not merely an allow-list), and it is exactly one
-      turn — after it the program switches to designing. Starting from a blank
-      deck instead spends nothing.</p>
-
-      <p><strong>The room.</strong> Three panes: your programs on the left, the
-      conversation in the middle, and on the right a pane that toggles between
-      <strong>⬡ Preview</strong> — the mockup rendered live in a sandboxed frame
-      jailed to the sidecar — and <strong>▤ Intent</strong>, which shows what has
-      been captured so far: the requirements in <strong>your own words</strong>,
-      each attributed to the turn you said it in; what the mockup <em>implies</em>
-      but you haven't settled, written as questions; and what is explicitly out of
-      scope.</p>
-
-      <p><strong>One file.</strong> The mockup is <code>mockup.html</code> — one
-      self-contained HTML file, inline CSS and JS, no build step and no external
-      dependency, revised in place turn after turn — so even a rich multi-screen
-      prototype stays one atomic thing you can open, send, or hand over whole.</p>
-
-      <p><strong>It survives.</strong> A program outlives the daemon. Reopening
-      one replays the transcript into a <strong>fresh</strong> worker, and says so
-      plainly: it knows what you decided, it remembers nothing itself. Nothing is
-      lost — every turn is in the room's <code>transcript.md</code> and the mockup
-      is exactly as you left it.</p>
-
-      <div class="lcars-alert amber">
-        <div><strong>Send to Align — a gate, not a surprise.</strong> You click
-        <strong>▶ GENERATE THE CHANGE LIST</strong>, and a read-only pass reads
-        your real application as it stands today to produce the one thing a
-        builder needs: <em>what is different between the finished mockup and the
-        app as it is now</em>. That's a diff, not a transcript of the conversation
-        — so a turn where you corrected the <strong>mockup</strong> doesn't read
-        downstream as an instruction to change the <strong>product</strong>. What
-        the pass finds but cannot scope comes back as a <strong>question</strong>
-        rather than silently vanishing. Then <strong>▶ SEND TO ALIGN</strong>
-        files the Mission carrying the mockup, your captured requirements and that
-        change list — and the brief opens with what you actually typed,
-        <strong>byte-for-byte</strong>; nothing rewrites your opening words. If a
-        later turn redraws the mockup or moves the concept doc, the generated list
-        stops matching and the button drops back to <em>generate</em>, so you can
-        never file a change list that describes an older drawing.</div>
-      </div>
-
-      <p><strong>The tickets carry the drawing.</strong> Once a Mission carries a
-      mockup, Plan has to account for it: <strong>every</strong> ticket declares
-      <code>changesScreenAppearance</code>, and a ticket that says
-      <code>true</code> must have an acceptance criterion <strong>naming the
-      mockup file</strong> — naming it in the description doesn't count. A plan
-      that omits the field, or that declares every ticket <code>false</code> while
-      a mockup is riding along, is rejected and re-planned. Across the round that
-      took mockup-referencing acceptance criteria from <strong>0/44 to
-      19/40</strong>. A Mission with no mockup validates exactly as before.</p>
-
-      <p><strong>Duplicate.</strong> A sent program is locked, so
-      <strong>⧉ Duplicate</strong> is how you keep designing from it. It opens a
-      new room carrying the mockup, the concept doc, the grounding, the
-      attachments and the whole conversation, editable from the first turn, while
-      the original stays exactly as it was handed over. The worker is told the
-      history is context and not a contract — <em>"nothing in it is binding"</em>,
-      and where what you ask for now contradicts a decision in the record, what
-      you ask for now wins. Lineage is recorded on the copy, the inherited
-      grounding is marked <strong>possibly stale</strong> in a banner on the file
-      itself, and the change list deliberately does <em>not</em> travel: it
-      described the app as it was when the old draft was filed.</p>
-
-      <p><strong>Local boards only.</strong> The holodeck writes files, so it
-      needs the local adapter. On a <code>--read-only</code> or GitHub-adapter
-      board the control is still there but <strong>disabled</strong>, saying why —
-      <em>"This board is a read-only view. The holodeck writes files, so it is
-      unavailable here — open the board locally to run a program."</em></p>
-
-      <div class="lcars-alert teal">
-        <div><strong>There is no <code>lcars holodeck</code> verb.</strong> The
-        holodeck is a viewscreen room, reached by the <code>⬡ HOLODECK</code>
-        control — deliberately so, since the whole point is looking at the thing
-        you're drawing.</div>
-      </div>
+      <h3>5 · Approve it</h3>
+      <p>At Verify you see what you asked for beside what was built, the estimate
+      beside the real cost, and the open pull request. <strong>⚡ RUN</strong>
+      starts the built app so you can look at it before you decide. Then merge
+      it, or send it back with a note.</p>
+      <figure class="screenshot">
+        <img src="assets/launch-run.png" alt="The Verify gate: the acceptance criteria, what was built, the estimate beside what the run actually cost, the open pull request, a RUN control that launches the built app, and the send-back and merge buttons." />
+        <figcaption>The Verify gate: what you asked for, what was built, estimate against actual, the pull request — and the RUN control that starts the app before you decide.</figcaption>
+      </figure>
     </section>
 
 
     <!-- ═══════════════════════════════════════════════════
-         NUMBER ONE
-         ═══════════════════════════════════════════════════ -->
-    <section id="numberone">
-      <h2>Number One — the AI first officer</h2>
-      <p>LCARS stops at a human gate and waits. <strong>Number One is the optional
-      AI first officer that works those gates for you</strong> when you'd rather
-      walk away — it holds a Mission on your behalf, reviews what got built, and
-      hands the conn back with a report. It is <strong>off by default</strong>.</p>
-
-      <pre>lcars xo on --engine copilot   # engage for this repo (bare `on` opens a picker)
-lcars xo                       # the status table — who has the conn, and what they did
-lcars xo report                # the First Officer's report: what changed since you last looked
-lcars xo off                   # stand down and hand the conn back
-lcars xo off &lt;mission&gt;         # opt ONE mission out, leave the rest engaged</pre>
-
-      <p>Your choice is written into <code>.git/lcars/config.json</code> as a
-      one-line <code>numberOne</code> block, so the engine that reviews your work
-      is a recorded fact rather than a default that drifted. With no
-      <code>--engine</code> and a terminal you get a picker naming the CLIs
-      actually installed on the machine; with no terminal it refuses out loud
-      rather than picking one in silence.</p>
-
-      <div class="control-grid">
-        <div class="control-card">
-          <div class="control-cmd">it takes a park</div>
-          <div class="control-desc">When a Stage escalates, it reads that Mission's
-          record in a read-only copy and either answers through the ordinary
-          <code>lcars respond</code> — attributed <code>answeredBy: number-one</code>,
-          so the record always says who decided — or escalates with a note and a
-          recommendation and leaves the gate standing. It always escalates a scope
-          question, an answer it cannot cite, and anything malformed.</div>
-        </div>
-        <div class="control-card">
-          <div class="control-cmd">it looks at what got built</div>
-          <div class="control-desc">At Verify it writes its checklist <em>before</em>
-          it opens a browser — the PRD's acceptance criteria, the plan's per-ticket
-          criteria, the drawing's place names — then launches the build, walks it
-          headless, takes screenshots, and scores the intent match, with appearance
-          judged on one rail and behaviour on another.</div>
-        </div>
-      </div>
-
-      <p>If the build doesn't come up, the score is <strong>LOW</strong> quoting the
-      launch message and no browser starts at all. Screens that need data to exist
-      can be seeded from a declared <code>verifySeed</code> command or a
-      <code>.lcars/verify-seed.sh</code> your project ships; <strong>with neither
-      declared nothing is invented</strong> — those rows read <em>couldn't
-      check</em>, never a fault in your build.</p>
-
-      <p><strong>While Number One is engaged, the write verbs refuse.</strong>
-      <code>approve</code>, <code>feedback</code>, <code>respond</code>,
-      <code>log</code>, <code>pause</code>, <code>resume</code>,
-      <code>resolve-logs</code> and the viewscreen's matching endpoints all answer
-      with one sentence, because Number One is already acting through those same
-      verbs on your behalf. Reading is never gated — <code>lcars status</code>,
-      <code>lcars buddy</code> and the board all work as normal.</p>
-
-      <div class="lcars-alert amber">
-        <div><strong>Advisory, not autonomous — and that's a measurement, not
-        modesty.</strong> On three identical looks at one build it published
-        <code>high</code> over a review that was only <strong>55–64%
-        checked</strong>, and in <strong>3 of 3</strong> runs two frames filed under
-        the names of screens it meant to reach were byte-identical to the opening
-        shot — it never navigated, and nothing checked that it had. Roughly half of
-        each review goes unchecked, with a nine-point swing run to run. It is a
-        genuinely useful second pair of eyes that names real blockers; it is not yet
-        a gatekeeper. <strong>Number One reviews and recommends; you still
-        ship.</strong></div>
-      </div>
-    </section>
-
-    <!-- ═══════════════════════════════════════════════════
-         AUTOPILOT
-         ═══════════════════════════════════════════════════ -->
-    <section id="autopilot">
-      <h2>Autopilot — hand over the factory</h2>
-      <p>Number One works one mission's gates for you. <strong>Autopilot takes the
-      loop itself.</strong></p>
-
-      <div class="idea-quote">"It helps take on the loop — the factory — for you,
-      and further focuses your time on the most critical things, while handling the
-      rest with evidence and confidence."</div>
-
-      <p>A <strong>software factory</strong> is the shape this pipeline already has:
-      signals in — an idea, a bug, a ticket — triaged into planned changes, then
-      built, tested, reviewed and shipped by agents, and out the other end as a
-      merged pull request. LCARS <em>is</em> that factory. Autopilot is what lets you
-      hand the running of it over, because the repetitive middle — file a milestone,
-      drive it, wait on it, look at what came out, fix what's wrong, land it, start
-      the next one — has to happen and doesn't need you to do it.</p>
-
-      <p>You hand <code>lcars buddy</code> a goal, it holds <strong>one</strong>
-      alignment round with you to agree what to build, and then it runs the factory,
-      milestone after milestone, coming back only when it genuinely needs you.
-      <strong>What you keep is the part that actually needs you:</strong> deciding
-      what to build, and the final yes.</p>
-
-      <p><strong>The hard part of running a factory isn't making the change — it's
-      believing it.</strong> Producing a change is the cheap half now; the expensive
-      half is verifying one you didn't write, and that cost doesn't fall just because
-      the suite came back green. A loop you can't see into turns every output into
-      something you have to re-derive by hand — which is how an agent that's
-      nominally saving you time quietly hands the work back.</p>
-
-      <p><strong>So autopilot doesn't ask to be trusted. It produces the evidence
-      that makes trust unnecessary.</strong> It <em>uses</em> what it built, against a
-      checklist for that kind of product; records what it saw — transcripts,
-      screenshots — under the mission's own state; files what it finds with a
-      reproduction quoting the real output; re-proves a fix on deliberately
-      <em>different</em> data; writes down each decision it made alone with the
-      evidence that decision rests on; and says so plainly when a check found
-      nothing. The trail runs from what it did to the change it made, generated by the
-      loop as it went rather than reconstructed afterwards.</p>
-
-      <p>It's a mode of the buddy — the read-only ride-along that already knows where
-      LCARS lives and what this repo is doing — asked for in plain words, not a new
-      verb:</p>
-
-      <pre>lcars buddy
-buddy&gt; run it for me &lt;spec&gt;     # or "drive this for me" / "run while I sleep"</pre>
-
-      <h3>What one full run looked like</h3>
-
-      <p>Across one night, autopilot took a goal and built a working product — a
-      command-line tool, a page that renders its state, and a CI workflow that
-      republishes that page — driving each milestone through the pipeline and landing
-      the work. It <strong>needed its operator exactly once</strong>: the opening
-      alignment round. Two questions came up after that, and it <strong>resolved both
-      itself</strong> rather than spending him on them.</p>
-
-      <p>It also did the thing the gates can't. Using what it had built instead of
-      trusting a green suite, it <strong>found two real bugs the suite had
-      passed</strong> — a list command that broke its own "one per line" promise on a
-      value containing a line break, and a crash path that silently stored a blank
-      value — filed both with reproductions, fixed them through the ordinary verbs,
-      and re-proved them on deliberately <em>different</em> data. When a check was
-      genuinely clean it <strong>said so</strong>: the browser pass attacked the page
-      first and then reported nothing, rather than flattering it. And it used
-      judgement about what <em>not</em> to file, declining a finding that was real but
-      out of scope — while recording it anyway, because the failure mode there is
-      silence.</p>
-
-      <div class="lcars-alert amber">
-        <div>One step remains yours: on the final milestone, <strong>a human ran the
-        landing</strong>. So autopilot <strong>builds, checks and fixes a round on its
-        own and comes back when it needs you</strong> — it is not claimed to ship a
-        round end to end with nobody there.</div>
-      </div>
-
-      <h3>Using the thing, not just testing it</h3>
-
-      <p>This is where the evidence comes from, and it's the reason the loop can be
-      handed over at all.</p>
-
-      <p>A green suite is not evidence that the product works. Over one weekend of
-      driving LCARS to build a real product, <strong>31 bugs were found and all 31
-      came from someone using the thing by hand</strong> — Number One filed none of
-      them, and every one of its misses was a <strong>reach</strong> problem (no
-      screen to look at, nothing seeded, a stub that made the seam untestable), never
-      a judgement one.</p>
-
-      <p>So that step is an instrument now. At the Verify gate autopilot runs one
-      checklist per <strong>kind of thing the milestone is</strong> —
-      <code>cli</code>, <code>web</code>, <code>workflow</code>, and all three for a
-      CLI that writes a page published by a workflow. Every item is an
-      <strong>action + the evidence to capture + what counts as a defect</strong>;
-      none is "check that X works":</p>
-
-      <pre>autopilot.sh live-check &lt;mission&gt; --type cli,web,workflow    # setup + the checklists
-autopilot.sh workflow-run &lt;mission&gt; .github/workflows/x.yml  # a CI job, run as CI runs it
-autopilot.sh live-check done &lt;mission&gt; --verdict pass|bugs   # there is no default verdict
-autopilot.sh policy --mission &lt;mission&gt; --live-check pass    # the ONE action that follows</pre>
-
-      <div class="mission-card">
-        <ul>
-          <li><strong>Setup is a detached worktree and a throwaway HOME</strong> —
-          never the checked-out branch, and never your own home, where a config you
-          wrote last week makes an unconfigurable product look configured. Evidence
-          lands under <code>.git/lcars/missions/&lt;id&gt;/live-check/</code>,
-          numbered per checklist item; a re-check after a fix round writes a
-          <strong>new</strong> file rather than overwriting the first
-          observation.</li>
-          <li><strong>The items are the ones that caught real bugs:</strong>
-          <code>--help</code> and bad input; two actors, two HOMEs; make the
-          identities that usually coincide differ; <strong>follow one record end to
-          end through both real halves</strong> with no hand-written fixture between
-          them; check the host of every outbound call; real headless Chrome plus a
-          phone-width recipe; <strong>read the deployed artifact</strong>, not
-          "deploy succeeded"; re-verify after every fix round <strong>with different
-          data</strong>.</li>
-          <li><strong>A workflow is run the way CI runs it</strong> — the job's steps
-          in order, each from its own <code>working-directory</code>, with the env
-          Actions always sets, and the first failing step named. This is the check a
-          green suite can't do: a workflow that ran a module as a file died on a
-          relative import while every test importing the same function passed. A
-          packaged <code>uses:</code> step reports <strong>SKIPPED — unproven, never
-          passed</strong>.</li>
-          <li><strong>The verdict is recorded, then the policy decides.</strong> An
-          unrecorded live check would read later as one that passed, so there's no
-          default. <code>policy</code> turns the pair (Number One's verdict + the
-          live check) into exactly one action: merge; merge <strong>and file the
-          gaps</strong> as their own missions; send back; or
-          <strong>override</strong>. A <code>bugs</code> live check sends back even a
-          <code>high</code> review; a <code>low</code> that's purely about
-          infrastructure it couldn't reach is an override, not a stop. Every override
-          is ledgered <strong>with its evidence path and refused when that path isn't
-          on disk</strong>.</li>
-          <li><strong>Bugs go back evidence-first.</strong> <code>file-bug</code>
-          refuses a bug PRD whose first acceptance criterion isn't a live observation
-          quoting the real output, wants a <strong>round-trip</strong> criterion for a
-          bug at a seam, and refuses to report a filing it can't actually see
-          afterwards.</li>
-        </ul>
-      </div>
-
-      <p><strong>Measured:</strong> a fresh tester drove all three checklists against
-      a real fixture product and found <strong>12</strong> faults —
-      <strong>11</strong> named verbatim by a defect bullet, and only 4 of the 12
-      planted deliberately. The 12th is the honest limit: a page visibly broken at
-      phone width, which all six of the web checklist's defect bullets answered "no"
-      to and only looking at the screenshot caught. The checklist gained a clause for
-      that shape, and a second tester confirmed it flips the same screen from
-      <em>pass</em> to <em>bugs</em> on fresh data.</p>
-
-      <h3>How it stays out of your way</h3>
-
-      <div class="mission-card">
-        <ul>
-          <li><strong>One question round, then it goes.</strong> 3–5 questions, each
-          with a recommended answer: scope and its milestones, what counts as a live
-          check, where it deploys, what to do if LCARS itself breaks, and the steps
-          only you can take (tokens, secrets, SSO, renames).</li>
-          <li><strong>State is on disk, never the transcript.</strong> Every answer
-          lands in <code>.git/lcars/autopilot.json</code>, so a context compaction
-          can't lose the brief. A corrupt record <strong>fails closed naming the
-          file</strong> instead of being silently replaced with an empty one.</li>
-          <li><strong>The driver costs nothing.</strong> <code>autopilot.sh</code> is
-          plain shell — it sequences file → drive → wait → verify gate → land over
-          LCARS's own verbs and answers <code>next</code> with the one next step plus
-          the playbook heading for it. It never reasons about your code; every token
-          the run spends is spent by the pipeline's own workers. A waiter watches the
-          driving <strong>process</strong>, not a clock, two milestones in flight is
-          the ceiling, and a crontab heartbeat keeps a long run alive.</li>
-          <li><strong>Four things reach you, and nothing else:</strong> a product
-          call only you can make, a scope change, a standing-rule conflict (every
-          permission denial, and a refused merge), and an LCARS bug with no
-          workaround. Live-check verdicts, bug round-trips and the merge call it
-          makes alone and <strong>records</strong>.</li>
-          <li><strong>One home for a question.</strong>
-          <code>autopilot.sh ask "&lt;what&gt;" --mission &lt;id&gt;</code> is the only
-          way one gets raised, and it always carries the same four fields: what's
-          blocked, why it's safe, the one command that will run, the rollback. It
-          gets its own id, pings you <strong>once</strong>, and doesn't park the run
-          — several can be open at once, each blocking only its own milestone. The
-          single <code>pending</code> line other code reads is now
-          <strong>derived</strong> from that ledger on every write rather than stored
-          beside it, so a hand-written question can't be masked by another open one
-          or destroyed when you answer a different one.</li>
-          <li><strong>It never edits LCARS.</strong> An LCARS bug is ledgered and
-          worked around with another verb, or it becomes one of your four
-          interrupts. Fixing LCARS is the buddy's <em>other</em> mode, and that one
-          briefs you and waits.</li>
-        </ul>
-      </div>
-    </section>
-
-    <!-- ═══════════════════════════════════════════════════
-         THE CLI
-         ═══════════════════════════════════════════════════ -->
-    <section id="cli">
-      <h2>The CLI — the power path</h2>
-      <p>Everything the viewscreen does, you can do from the terminal — same
-      harness underneath. The CLI is the equivalent power path, handy in a headless
-      shell, over SSH, or when you want to script LCARS:</p>
-
-      <pre>lcars init            # one-time per-repo setup: .git/lcars/ + GitHub labels
-lcars file            # file your first Mission — describe the idea, get grilled, get a PRD
-lcars                 # do the right thing: with the mission filed, it drives it forward</pre>
-
-      <p>That's the whole rhythm. <code>lcars init</code> once per repo; then it's
-      <code>lcars file</code> to hand it work and bare <code>lcars</code> to push
-      it along or answer what it's waiting on.</p>
-
-      <div class="diagram-wrap">
-        <div class="diagram-label">The everyday loop</div>
-        <div class="mermaid">
-flowchart LR
-    I[lcars init] --> F[lcars file]
-    F --> Lc["lcars (drives the mission)"]
-    Lc -->|"gate hit"| An["lcars answer (clear the decision)"]
-    An --> Lc
-    Lc -->|"bug found at verify"| Lg["lcars log (file bugs vs mission)"]
-    Lg --> Rl["lcars resolve-logs (drive every bug → one re-verify)"]
-    Rl --> An
-    Lc -->|"verify"| Ap[lcars approve]
-    Ap --> Done([PR opened ✓])
-        </div>
-      </div>
-
-      <h3 id="copilot">Running under GitHub Copilot</h3>
-      <p>LCARS runs on <strong>either Claude Code or GitHub Copilot CLI</strong>.
-      The worker CLI is <strong>auto-detected from whichever CLI you launched
-      from</strong> — launch from Claude Code and workers run on <code>claude</code>;
-      launch from Copilot and they run on <code>copilot</code>. No config needed.
-      (You can override it with <code>LCARS_WORKER_BIN</code> or <code>workerBin</code>
-      in <code>.git/lcars/config.json</code> if you ever need to pin it explicitly.)</p>
-
-      <p><strong>Maturity — the Claude path is stable; the Copilot path is new.</strong>
-      The worker refactor that enabled multi-CLI support was a <em>no-behavior-change</em>
-      extraction (regression-locked by tests), so the <strong>Claude Code experience is
-      unchanged and stable</strong>. The <strong>Copilot path is new</strong>: driven
-      idea→PR end-to-end and working, but with fewer miles — treat it as new and mind the
-      two caveats below. It is <strong>not "beta" in the sense of unstable</strong> — it
-      works when used as documented. <strong>One honest expectation:</strong> Copilot
-      support does <strong>not</strong> yet run on Copilot's <em>included</em> tokens — its
-      workers run on premium <strong>Claude</strong> tiers (Sonnet or Opus, assigned per
-      Stage by the estimator and mapped to <code>claude-sonnet-4.6</code> /
-      <code>claude-opus-4.8</code>). So "LCARS runs on Copilot" is true today; "LCARS runs
-      on Copilot for free" is not yet (that needs an included model that can do the
-      workers' file ops).</p>
-
-      <p>Two Copilot-specific gotchas matter — both are real footguns:</p>
-
-      <div class="lcars-alert amber">
-        <div><strong>⚠ Workers must run on a Claude tier (Sonnet/Opus), never
-        Copilot's non-Claude defaults.</strong> Since the cost estimator landed you
-        no longer hand-pin a model: the Align estimator assigns each Stage a Sonnet
-        or Opus tier, and the per-CLI alias map maps those to Copilot's
-        <code>claude-sonnet-4.6</code> / <code>claude-opus-4.8</code> automatically —
-        both are Claude models that reliably perform the file operations LCARS
-        workers depend on. So filing a Mission and running it under Copilot just
-        works. What you must avoid is letting workers fall back to Copilot's lighter
-        <strong>non-Claude</strong> defaults (e.g. GPT-5.5): those could
-        <strong>not</strong> reliably create/overwrite files in the worker's fenced
-        scratch directory, which <strong>blocked the pipeline</strong> (every worker
-        must write its output file — <code>questions.txt</code>,
-        <code>plan.json</code>, etc.). The alias map keeps workers on Claude tiers
-        for you; if you ever override <code>modelAliases.copilot.*</code>, keep both
-        tiers on a Claude model. You can still pin one model for every Stage with the
-        legacy global if you want to:
-        <pre style="margin-top:10px">{ "workerModel": "claude-opus-4.8" }</pre></div>
-      </div>
-
-      <div class="lcars-alert amber">
-        <div><strong>The Copilot cost figure.</strong> Both Copilot tiers consume
-        billable usage, not Copilot's <em>included</em> tier, and LCARS shows a
-        per-Mission cost estimate at Align. By default it is computed on GitHub's
-        <strong>usage-based "AI Credits" (token) billing</strong> — the model GitHub
-        moved to on <strong>2026-06-01</strong> — rendered as a dollar range with your
-        plan's monthly included credit noted, e.g.
-        <code>$0.48–$3.59 (GitHub AI Credits; first $19/mo included on business)</code>.
-        Set <code>copilotPlan</code> (<code>pro</code> / <code>proPlus</code> /
-        <code>business</code> / <code>enterprise</code>) in <code>config.json</code> so
-        the included-credit line matches your plan. Grandfathered <strong>annual</strong>
-        subscribers still on the old premium-request scheme can switch the estimate back
-        with <code>copilotBilling: "legacy"</code> (the Sonnet 9× / Opus 27× × $0.04
-        figure). Every rate lives in <code>pricing.json</code>, and the Claude
-        <code>$</code> figure and the per-Stage model selection are unaffected by the
-        billing mode.</div>
-      </div>
-
-      <div class="lcars-alert amber">
-        <div><strong>⚠ Launch with <code>--allow-all-tools</code>, NOT
-        <code>--autopilot</code>.</strong> The recommended invocation is:
-        <pre style="margin-top:10px">copilot --model claude-opus-4.8 --allow-all-tools</pre>
-        <code>--allow-all-tools</code> auto-approves tool actions so LCARS isn't
-        blocked waiting for per-command approval — <strong>while keeping the human
-        gates intact</strong>: when LCARS asks you something (the Align grill, an
-        escalation, the Verify gate) it still stops and waits for your answer.
-        <code>--autopilot</code> is different — it makes the agent continue
-        <em>autonomously without asking questions</em>, which <strong>bypasses
-        LCARS's human gates</strong> (it blows straight through the Align grill
-        without letting you answer). Do <strong>not</strong> use
-        <code>--autopilot</code> (or <code>--no-ask-user</code>) for interactive
-        LCARS work. This is the Copilot analog of Claude Code's <code>auto</code>
-        permission mode: auto-approve tools, still stop at real decisions.</div>
-      </div>
-    </section>
-
-
-    <!-- ═══════════════════════════════════════════════════
-         COMMANDS
+         THE COMMANDS
          ═══════════════════════════════════════════════════ -->
     <section id="commands">
       <h2>The commands</h2>
-      <p>LCARS collapses to <strong>two things you do</strong> — hand it work, and
-      answer what it's waiting on — surfaced through the <strong>viewscreen</strong>
-      (the recommended board) or the CLI. The older per-stage verbs still work as
-      power entry points.</p>
+      <p>In the order you meet them. <code>lcars-…</code> names are real
+      programs; the rest are skills you ask your AI CLI for, inside the repo.</p>
+      <div class="lcars-panel">
+        <div class="lcars-panel-header">Nineteen commands, one line each</div>
+        <div class="lcars-panel-body">
+          <ul>
+            <li><code>lcars init</code> — per-repo setup: local state and the GitHub labels. Once.</li>
+            <li><code>lcars-viewscreen</code> — open the board (alias <code>lcars-serve</code>).</li>
+            <li><code>lcars file</code> — turn a free-form idea into a Mission.</li>
+            <li><code>lcars</code> / <code>lcars run &lt;id&gt;</code> — do the obvious next thing; <code>--step</code> advances one Stage.</li>
+            <li><code>lcars status</code> — the board in a terminal; <code>--watch</code> follows a run live.</li>
+            <li><code>lcars answer</code> — the one inbox for everything waiting on you, approve included.</li>
+            <li><code>lcars-launch</code> — start a Mission's app so you can look at it; <code>--stop</code> ends it.</li>
+            <li><code>lcars log</code> — describe bugs you found; each becomes a linked bug Mission.</li>
+            <li><code>lcars resolve-logs</code> — drive those bugs to <strong>one</strong> re-verify gate, not one each.</li>
+            <li><code>lcars pause</code> / <code>lcars resume</code> — stop at the next safe boundary, and go again.</li>
+            <li><code>lcars adopt &lt;issue&gt;</code> — take a Mission over on this machine from its issue alone.</li>
+            <li><code>lcars xo</code> — engage or stand down Number One, and read his report.</li>
+            <li><code>lcars-buddy</code> / <code>lcars-autopilot</code> — the ride-along, and handing it the loop.</li>
+            <li><code>lcars update</code> / <code>lcars version</code> — absorb a <code>git pull</code>, and say where you are.</li>
+          </ul>
+        </div>
+      </div>
+    </section>
 
-      <h4>The everyday surface</h4>
-      <div class="control-grid">
-        <div class="control-card">
-          <div class="control-cmd">lcars viewscreen</div>
-          <div class="control-desc"><strong>The recommended surface — the Kanban
-          web board</strong> (alias <code>lcars serve</code>). A
-          Python-3-stdlib-only daemon — no pip/npm/build — serving every active
-          Mission as a card in its Stage column, with a cost pill +
-          reasoning/implementation difficulty pills, awaiting-you / paused states,
-          nested ticket rows, and live Implement progress over SSE. Drive the whole
-          idea→PR loop from the browser (File, the live Align console, Start with a
-          model override, Respond, Verify, Pause/Resume, Mission Log) — a viewport
-          over the same harness the CLI drives. It launches via the real on-PATH
-          command <code>lcars-viewscreen --open</code> (alias <code>lcars-serve</code>),
-          which you run in <strong>any plain terminal — no Claude Code or Copilot
-          session needed</strong>; it boots on a free port and opens it in your
-          browser.</div>
-        </div>
-        <div class="control-card">
-          <div class="control-cmd">lcars</div>
-          <div class="control-desc">The one CLI entry point. Infers the right action
-          from state and announces it: nothing filed → file a Mission; work in
-          flight → drive it; a decision waiting → open the inbox. No verb to
-          remember, no id to paste.</div>
-        </div>
-        <div class="control-card">
-          <div class="control-cmd">lcars answer</div>
-          <div class="control-desc">The inbox — every pending decision across all
-          Missions in one list. <strong>approve</strong> and <strong>send
-          back</strong> are actions on a Verify card here, not separate commands.
-          (The viewscreen surfaces the same gates on the cards themselves.)</div>
-        </div>
-        <div class="control-card">
-          <div class="control-cmd">lcars status</div>
-          <div class="control-desc">The read-only terminal board: every active
-          Mission, its Stage, and anything awaiting you. Add <code>--watch</code>
-          to follow a running Mission <strong>live</strong> — a streaming event view
-          with a pace line (wave, ticket, tickets green, hire count, any bounces,
-          avg/ticket, elapsed).</div>
-        </div>
-        <div class="control-card">
-          <div class="control-cmd">lcars init</div>
-          <div class="control-desc">One-time per-repo setup — local config +
-          GitHub labels. Safe to re-run: it <strong>preserves</strong> your config
-          customizations, only filling in anything missing.</div>
-        </div>
-        <div class="control-card">
-          <div class="control-cmd">lcars update</div>
-          <div class="control-desc">Bring an already-initialized repo up to date
-          after a <code>git pull</code>: adds any new LCARS labels and config keys,
-          <strong>never</strong> clobbering your customizations or touching
-          <code>missions/</code>, and re-stamps the repo's <code>lcarsVersion</code>.
-          A clean no-op when nothing's changed.</div>
-        </div>
-        <div class="control-card">
-          <div class="control-cmd">lcars version</div>
-          <div class="control-desc">Show the version picture — the
-          <strong>running</strong> version (this LCARS clone's <code>VERSION</code>),
-          the source clone's path + git state, and, inside an initialized repo, its
-          stamped <code>lcarsVersion</code> with a verdict (<strong>current</strong> /
-          <strong>needs <code>lcars update</code></strong> / unknown). Read-only, no
-          network fetch.</div>
-        </div>
-        <div class="control-card">
-          <div class="control-cmd">lcars file</div>
-          <div class="control-desc">File a new Mission from a free-form idea; runs
-          Align to a PRD. <code>lcars file --park "&lt;idea&gt;"</code> instead
-          <strong>parks</strong> it — Mission + issue created instantly in a
-          pre-PRD standby state (no grill, no PRD, no estimate), dropped in the
-          Align column <em>awaiting alignment</em> and never runnable until
-          aligned; <code>lcars file &lt;id&gt;</code> later runs the seeded grill
-          and completes it in place.</div>
-        </div>
-        <div class="control-card">
-          <div class="control-cmd">lcars log</div>
-          <div class="control-desc">Log one or more bugs against an active
-          Mission; files a Mission per bug that enters at <strong>Research in a
-          grounding mode</strong> — anchoring the free-form symptom to the
-          parent's existing code so the fix modifies the real feature rather
-          than a duplicate — then flows the full pipeline to Verify (only Align
-          is skipped), and links them. Each logged bug gets its own dynamic
-          estimate (cost + reasoning/implementation difficulty + per-stage model
-          recommendation, now including the Research/Validate Stages) in a
-          Launch-style review panel, with a plain-language per-bug model
-          override.</div>
-        </div>
-        <div class="control-card">
-          <div class="control-cmd">lcars adopt &lt;issue#&gt;</div>
-          <div class="control-desc"><strong>Pick a Mission up on <em>this</em>
-          machine from its GitHub issue alone</strong> — the portability verb
-          (the board's <strong>Adopt</strong> button on a remote card does the
-          same). Reuses the Mission's own id, rebuilds
-          <code>.git/lcars/missions/&lt;id&gt;/</code> from the issue body and its
-          <code>lcars:handoff</code> envelope, reads the stage from the
-          <code>lcars:&lt;stage&gt;</code> label, seeds a config if this clone has
-          none, carries the estimate across, and <strong>asks which engine should
-          drive it here</strong> (recorded as <code>chosen at adopt</code>).
-          Claims the Mission at <strong>Align</strong>; at <strong>Verify</strong>
-          it joins without claiming and resolves the open PR so
-          <code>approve</code> / <code>feedback</code> work with no further
-          command. Stages between the two ends are refused honestly.
-          Idempotent.</div>
-        </div>
-        <div class="control-card">
-          <div class="control-cmd">lcars resolve-logs &lt;parent&gt;</div>
-          <div class="control-desc">Drive <strong>every</strong> bug logged
-          against a Mission to its Verify gate in a worker-chosen order, then
-          raise <strong>one</strong> consolidated re-verify gate on the parent
-          instead of one per bug. Never auto-approves.</div>
-        </div>
-        <div class="control-card">
-          <div class="control-cmd">lcars launch &lt;mission&gt; [hint]</div>
-          <div class="control-desc"><strong>Run the Mission's app so you can SEE
-          it during Verify</strong> (the board's ⚡ RUN/STOP does the same).
-          Checks the branch into a disposable detached worktree, spawns a
-          <code>launch</code>-role cold worker that <em>discovers</em> how to
-          start the app (never starts it itself), then runs the command detached
-          — the harness owns the process group, records <code>launch.json</code>
-          for the CLI and the board, and <code>--stop</code> kills the group and
-          prunes the worktree. The optional hint picks the target in a multi-app
-          repo ("the example game"); each Mission gets its <strong>own</strong>
-          instance, so two builds can run side by side. Your own checkout is
-          never touched.</div>
-        </div>
-        <div class="control-card">
-          <div class="control-cmd">lcars buddy</div>
-          <div class="control-desc"><strong>The ride-along companion</strong>, safe
-          to run any time — read-only by default: where the LCARS source sits and its
-          git state, whether the installed skills match that checkout, and a live
-          snapshot of this repo's Missions. It's also the way in to the two things
-          that drive LCARS <em>for</em> you: an orchestrated <strong>fix</strong> of
-          LCARS itself, and <strong>autopilot</strong> — <em>"run it for me
-          &lt;spec&gt;"</em> — which holds one alignment round and then runs the
-          factory. See <a href="#autopilot">Autopilot</a>.</div>
-        </div>
+
+    <!-- ═══════════════════════════════════════════════════
+         WHAT YOU GET
+         ═══════════════════════════════════════════════════ -->
+    <section id="features">
+      <h2>What you get</h2>
+
+      <h3>The viewscreen</h3>
+      <p>A local board showing every Mission as a card in its Stage column, with
+      live progress streamed as it happens. Every button on it maps to a command,
+      so the board and the terminal never disagree. A Mission belongs to a
+      <strong>person</strong>, not a laptop: you can see Missions running on
+      machines you do not have, you cannot drive someone else's by accident, and
+      you can deliberately take one over.</p>
+      <figure class="screenshot">
+        <img src="assets/ownership-board.png" alt="Two LCARS mission cards side by side on the viewscreen: one in Implement marked REMOTE — DRIVEN ELSEWHERE, one in Verify reading copilot — chosen at adopt, both carrying their owner's avatar and handle, above an ownership filter strip." />
+        <figcaption>Whose Mission is whose: an owner on every card, a remote Mission driven on another machine, and the filter that separates them.</figcaption>
+      </figure>
+
+      <h3>The holodeck</h3>
+      <p>When the thing you want is easier to draw than to describe, talk a
+      mockup into existence instead. The holodeck renders it live as you discuss
+      it, can learn your project's existing look in one read-only pass, and then
+      hands the finished drawing to a Mission that builds it.</p>
+      <figure class="screenshot">
+        <img src="assets/holodeck.png" alt="The LCARS holodeck: the programs list on the left, the design conversation in the middle, and the live-rendered mockup of a tile editor on the right." />
+        <figcaption>The holodeck: the programs on the left, the design conversation in the middle, the live mockup on the right.</figcaption>
+      </figure>
+
+      <h3>Number One</h3>
+      <p>A first officer who works your gates for you. He takes the stages parked
+      for an answer and the look at Verify, grades what was built against what
+      you asked for, and hands control back with a report — including a plain
+      count of what he could <strong>not</strong> check. He never writes code and
+      never merges.</p>
+      <figure class="screenshot">
+        <img src="assets/number-one-report.png" alt="The First Officer's Report: everything Number One has looked at, grouped by mission, with the ones he is handing back to you beside his verdicts and the entries you can open." />
+        <figcaption>The First Officer's Report: what he looked at, what he decided, and what he is handing back to you.</figcaption>
+      </figure>
+
+      <h3>Run the app, from the board</h3>
+      <p><strong>DEPLOY MAIN</strong> starts whatever is already merged on this
+      machine; <strong>⚡ RUN</strong> on a Verify card starts what the Mission
+      just built. Both take a plain-English hint about which app to start.
+      Looking at the running thing is the check no test suite performs for
+      you.</p>
+
+      <h3>The Mission Log</h3>
+      <p>Found three things wrong while reviewing? Describe them in one go —
+      screenshots included — and LCARS splits them into separate bug Missions
+      linked to the parent, each grounded against the code that Mission actually
+      wrote so the fix lands in the real thing rather than beside it.</p>
+      <figure class="screenshot">
+        <img src="assets/mission-log.png" alt="The Mission Log dialog: a free-form what went wrong box with pasted screenshots, previewing two auto-detected bug Missions, each a child of the parent with its own stage label." />
+        <figcaption>One description in, separate bug Missions out — each linked to the Mission you were reviewing.</figcaption>
+      </figure>
+      <p>Fix them all and you get <strong>one</strong> re-verify gate rather than
+      one per bug.</p>
+      <figure class="screenshot">
+        <img src="assets/reverify-gate.png" alt="The consolidated re-verify gate: one dialog saying the logged bugs were fixed and folded onto the parent's branch, with a live launch control and accept-the-fixes or send-back buttons." />
+        <figcaption>One gate for all of them: the fixes folded back onto the parent's branch, with a live launch before you accept.</figcaption>
+      </figure>
+
+      <h3>Autopilot — handing over the loop</h3>
+      <p>A <strong>software factory</strong> is the shape this pipeline already
+      has: signals in, triaged into planned changes, built, tested, reviewed, out
+      as merged pull requests. Autopilot is what lets you hand the
+      <em>running</em> of it over. You give it a goal, it holds one alignment
+      round with you to agree what to build, and then it works milestone after
+      milestone, coming back only when it genuinely needs you.</p>
+
+      <p>The hard part of running a factory is not making the change — it is
+      <strong>believing</strong> it. Producing a change is the cheap half now;
+      verifying one you did not write is the expensive half, and that cost does
+      not fall because the suite came back green. So autopilot does not ask to be
+      trusted: it <em>uses</em> what it built, records what it saw, files what it
+      finds with a reproduction quoting the real output, re-proves each fix on
+      deliberately different data, writes down every decision it made alone, and
+      says so plainly when a check found nothing.</p>
+
+      <div class="lcars-alert amber">
+        <div>On the run that proved it, across one night, it built a working
+        command-line tool, a page and a CI workflow, needed its operator
+        <strong>once</strong> (the opening alignment round), and <strong>found two
+        real bugs a fully green suite had passed</strong>. A human still ran the
+        final landing — it is not claimed to ship a round with nobody there.</div>
       </div>
 
       <figure class="screenshot">
-        <img src="assets/mission-log.png" alt="The Mission Log dialog — a free-form what-went-wrong box with pasted screenshots, previewing two auto-detected bug Missions, each a child of the parent with its own plan label and images pill." />
-        <figcaption><strong>Mission Log</strong> — dump every bug you spot in plain language; LCARS splits them into linked bug Missions and routes each pasted screenshot to the bug that names it.</figcaption>
+        <img src="assets/autopilot-status.png" alt="Autopilot's own status in a terminal: the spec it is working to, the missions in scope with their stages and gates, the parallel slots in use, and the one question it has parked for you." />
+        <figcaption>Autopilot's own status: the spec, the Missions in scope, the slots in use, and the one question it has parked for you.</figcaption>
       </figure>
 
-      <h4>Power verbs (still supported)</h4>
-      <div class="control-grid">
-        <div class="control-card">
-          <div class="control-cmd">lcars run &lt;id&gt;</div>
-          <div class="control-desc">Auto-advance a Mission stage-to-stage until a
-          human gate.</div>
-        </div>
-        <div class="control-card">
-          <div class="control-cmd">lcars run &lt;id&gt; --step</div>
-          <div class="control-desc">Advance exactly one Stage, then stop — for
-          debugging and inspection.</div>
-        </div>
-        <div class="control-card">
-          <div class="control-cmd">lcars status --watch [&lt;id&gt;]</div>
-          <div class="control-desc">Follow a Mission's run live: tails its event
-          stream and re-renders a pace/position line on a configurable tick
-          (default ~60s; override with <code>LCARS_WATCH_INTERVAL</code> or
-          <code>--interval &lt;secs&gt;</code>) until the run reaches a gate.
-          Rarely needed now that a run relays progress in the launching
-          session.</div>
-        </div>
-        <div class="control-card">
-          <div class="control-cmd">lcars respond [&lt;id&gt;]</div>
-          <div class="control-desc">Answer a Mission's awaiting-human gate. No id
-          lists everything waiting.</div>
-        </div>
-        <div class="control-card">
-          <div class="control-cmd">lcars approve &lt;id&gt;</div>
-          <div class="control-desc">Ship a verified Mission: push the branch, open
-          the PR, mark it Done.</div>
-        </div>
-        <div class="control-card">
-          <div class="control-cmd">lcars feedback &lt;id&gt; "…"</div>
-          <div class="control-desc">Send a Mission at Verify back to Align with a
-          note, kept in an accumulating history.</div>
-        </div>
-        <div class="control-card">
-          <div class="control-cmd">lcars pause &lt;id&gt;</div>
-          <div class="control-desc">Halt a Mission at the next safe boundary
-          (between Stages, or between waves/tickets in Implement) — applies
-          <code>lcars:paused</code>; never hard-kills a worker mid-step.</div>
-        </div>
-        <div class="control-card">
-          <div class="control-cmd">lcars resume &lt;id&gt;</div>
-          <div class="control-desc">Clear the pause and re-enter the driver from
-          the recorded Stage. Both verbs are idempotent.</div>
-        </div>
-        <div class="control-card">
-          <div class="control-cmd">lcars release</div>
-          <div class="control-desc">Drift repair on a clean <code>main</code>:
-          collect the commits that landed without a version bump, summarize them
-          into a <code>CHANGELOG.md</code> entry (one cold worker), bump
-          <code>VERSION</code>, and commit. Idempotent no-op when nothing's
-          unstamped.</div>
-        </div>
-      </div>
-
-      <div class="lcars-alert teal">
-        <div><strong>No id juggling.</strong> A shared resolver picks the target
-        Mission: one candidate → no id needed; several → a fuzzy picker; an
-        explicit id / partial / title always works. <code>lcars</code> and
-        <code>lcars answer</code> both go through it.</div>
-      </div>
+      <h3>Knowing the cost before you spend it</h3>
+      <p>Once the spec is written, LCARS reads it against your actual repo,
+      judges how much reasoning and how much implementation it needs, picks a
+      model tier per Stage accordingly, and prices the run. The estimate sits on
+      the card, and after the run the real figure sits next to it.</p>
+      <figure class="screenshot">
+        <img src="assets/estimate-close-up.png" alt="An estimate close up on a mission card: the cost band, the reasoning and implementation difficulty pills, and the actual spend beside the estimate." />
+        <figcaption>An estimate, close up — the cost band and the two difficulty readings, with the actual spend beside them once the run is over.</figcaption>
+      </figure>
     </section>
 
 
     <!-- ═══════════════════════════════════════════════════
-         WORKED LOOP
+         TWO ENGINES
          ═══════════════════════════════════════════════════ -->
-    <section id="loop">
-      <h2>How a mission runs — a worked loop</h2>
-      <p>Here's the full walk-away rhythm for a real feature, shown on the
-      <strong>CLI</strong> so each step is explicit. The <strong>viewscreen</strong>
-      mirrors it beat for beat — File becomes the board's File panel + live Align
-      console, <em>drive</em> and <em>answer</em> become the card's auto-advancing
-      progress and AWAITING-YOU actions, and ship is the card's Verify button —
-      because both surfaces drive the same harness.</p>
+    <section id="engines">
+      <h2>Two engines</h2>
+      <p>LCARS runs on <strong>either</strong> CLI. It looks at what is installed
+      on the machine and offers you only that; every picker — filing a Mission,
+      starting one, the holodeck, Number One — greys out an engine that is not
+      there rather than failing later.</p>
 
-      <div class="stages-flow">
-        <div class="stage-pill">1 · file</div><div class="stage-arrow">→</div>
-        <div class="stage-pill">2 · drive</div><div class="stage-arrow">→</div>
-        <div class="stage-pill">3 · answer</div><div class="stage-arrow">→</div>
-        <div class="stage-pill">4 · drive</div><div class="stage-arrow">→</div>
-        <div class="stage-pill done">5 · ship ✓</div>
-      </div>
-
-      <h4>1 — File it</h4>
-      <p>You describe the idea; Align grills you until the spec is sharp.</p>
-      <pre>$ lcars file
-&gt; Idea: Add XP, badges, and a per-course leaderboard to motivate learners.
-  [Align asks a handful of clarifying questions; you answer in character.]
-
-Mission filed: lcars-20260604-001
-GitHub issue:  #42
-Stage:         align
-Next:          run `lcars` to continue</pre>
-
-      <h4>2 — Let it drive</h4>
-      <p>Bare <code>lcars</code> auto-advances through the headless stages and
-      stops at the first real decision.</p>
-      <pre>$ lcars
-Driving lcars-20260604-001 from research…
-
-lcars-20260604-001  auto-advance
-─────────────────────────────────────────────
-research    ✓ ⊘ isolated  14 questions, agents complete
-validate    ⏹ awaiting you
-─────────────────────────────────────────────
-⏹ stopped at: validate  (scope decision)
-   Research is split on global vs per-course leaderboard — this changes the
-   DB schema. Global, or per-course?
-   Answer with `lcars answer`
-                                            🔔 (notification fired)</pre>
-
-      <h4>3 — Answer the gate</h4>
-      <p>Clear the one decision from the inbox.</p>
-      <pre>$ lcars answer
-[1] lcars-20260604-001 · Validate · "Global or per-course leaderboard?"
-&gt; Per-course for now.
-✓ answered — next `lcars` resumes validate</pre>
-
-      <h4>4 — Walk away</h4>
-      <p>Bare <code>lcars</code> again resumes and runs the rest of the pipeline
-      unattended — Plan, Plan Review, Schedule, Implement — stopping only at
-      Verify.</p>
-      <pre>$ lcars
-Driving lcars-20260604-001 from validate…
-─────────────────────────────────────────────
-validate    ✓ ⊘ isolated  scope resolved (per-course)
-plan        ✓ ⊘ isolated  11 tickets
-plan-review ✓ ⊘ isolated  passed round 1
-schedule    ✓             3 waves, 11 sub-issues
-implement   ✓ ⊘ isolated  11/11 tickets green
-─────────────────────────────────────────────
-⏹ stopped at: verify  (human review required)
-   Next: review the changes, then `lcars approve lcars-20260604-001`
-                                            🔔 (notification fired)</pre>
-
-      <h4>5 — Verify and ship</h4>
-      <p>You read the diff and run the app. Happy → approve and the PR opens. Not
-      happy → send it back with feedback and it re-enters Align with the full
-      history intact.</p>
-      <pre>$ lcars approve lcars-20260604-001
-✓ branch pushed, PR opened: https://github.com/you/repo/pull/57
-✓ lcars:done — mission complete</pre>
-
-      <div class="lcars-panel violet">
-        <div class="lcars-panel-header">Bugs against work in flight</div>
-        <div class="lcars-panel-body">
-          <p>Found a bug while a Mission is still open? <code>lcars log</code>
-          takes free-form language describing one or many bugs, extracts each,
-          files a Mission per bug that enters at <strong>Research in a grounding
-          mode</strong> — anchoring the casual symptom to the parent's existing
-          code so the fix lands in the real feature, not a duplicate — then
-          flows the full pipeline to Verify (only Align is skipped), and links
-          them to the parent with <code>lcars:linked</code>. Grounding reads the
-          parent's own branch, not whatever's checked out. They run in
-          parallel on their own branches and merge as soon as they verify.</p>
-          <p>Paste screenshots straight into the log box: if you reference them
-          per bug ("see image 1", "the second screenshot"), the split routes each
-          image to the bug that names it (plus any image no bug claims), and the
-          log-split preview shows an <strong>images pill per bug</strong> so you
-          can check the mapping before filing. With no per-bug references, every
-          image goes to every bug.</p>
-          <p>Logged several bugs while reviewing a Mission at Verify?
-          <code>lcars resolve-logs &lt;parent&gt;</code> hands the whole batch to
-          the Harness. It picks a sensible order (root-cause and dependency bugs
-          first, cosmetic last), drives each linked bug to its Verify gate, and
-          collapses what would be one interruption per bug into a
-          <strong>single consolidated re-verify gate</strong> — one notification —
-          on the parent. It never auto-approves; re-inspecting and shipping each
-          fix stays yours. A bug that escalates mid-batch pauses the run (its
-          question lands in <code>lcars answer</code>) without rolling back the
-          bugs already resolved, and a resumed run continues with the rest.</p>
-          <pre style="margin-top:10px">$ lcars resolve-logs lcars-20260604-001
-order: 002 (root cause) → 003 (cosmetic)   [worker-chosen]
-lcars-20260604-002  ✓ ⊘ isolated  fix on branch, at verify
-lcars-20260604-003  ✓ ⊘ isolated  fix on branch, at verify
-⏹ stopped at: verify  (1 consolidated re-verify gate)
-   2 logged bugs resolved [002, 003] — ready for you to re-verify.
-                                            🔔 (one notification fired)</pre>
-        </div>
-      </div>
-    </section>
-
-
-    <!-- ═══════════════════════════════════════════════════
-         WHAT TO EXPECT
-         ═══════════════════════════════════════════════════ -->
-    <section id="expect">
-      <h2>What to expect at each stage</h2>
-      <div class="mission-card">
-        <ul>
-          <li><strong>Align is interactive and adaptive.</strong> A one-line bug
-          fix produces a thin PRD in a minute; a complex feature earns a thorough
-          grilling. This is the one stage that is always a conversation. A complex
-          Mission also comes out with high-level <strong>engineering ADRs</strong>
-          — the framework/architecture/data-shape calls and their rationale — that
-          downstream workers read instead of re-deriving (Validate refines them if
-          research overturns a decision).</li>
-          <li><strong>Cost is estimated up front; the model tier is chosen per
-          Stage.</strong> When Align finishes, an estimator scores the Mission on two
-          axes — <em>reasoning/planning</em> criticality and <em>implementation</em>
-          criticality — and from those assigns each Stage Sonnet or Opus,
-          concentrating the expensive tier where mistakes are costliest (reasoning
-          and implementation) and keeping routine work cheap. It reasons about the
-          <strong>whole problem</strong> (problem type, blast radius, what it sets up
-          for the future), not the line count. It also emits a token-grounded
-          <strong>cost range</strong> in the active CLI's native unit. You see all of
-          it on the GitHub issue and the <code>lcars file</code> readout, and can
-          <strong>override it in natural language</strong> at kickoff — <em>"use Opus
-          the whole way through"</em>, <em>"use Opus for implementation"</em>,
-          <em>"keep reasoning cheap"</em>. A trivial fix no longer pays Opus prices
-          end-to-end, and a genuinely hard feature isn't under-thought on
-          Sonnet.</li>
-          <li><strong>Research scales to ambiguity.</strong> A crisp PRD yields
-          <em>zero</em> questions and skips through. A broad one fans out up to 20
-          parallel agents. More than 20 → it explains why and lets you override or
-          sharpen the PRD.</li>
-          <li><strong>Validate decides the <em>how</em>, escalates the
-          <em>what</em>.</strong> Implementation calls stay with the Validator;
-          only choices that change what gets built come to you.</li>
-          <li><strong>Plan / Plan Review enforce cohesive vertical slices.</strong>
-          Each ticket is a full-stack slice owning <strong>one cohesive
-          behavior</strong>, sized by total comprehension load (existing code to
-          read + tests + new code) against a tunable <code>comprehensionBudget</code>
-          — not a flat line count, so greenfield tickets stay generous and later
-          ones tighten as the codebase grows. An independent reviewer rejects
-          horizontal slices, tickets that are over budget by <em>bundling</em>
-          behaviors, and <strong>coupled</strong> tickets — ones whose criteria
-          can only be met by changing behavior another ticket's tests already
-          pin — naming the seam to re-slice along; it loops until clean (or
-          escalating after 3 rounds).</li>
-          <li><strong>Every ticket declares its seams and entrypoints.</strong> Two
-          arrays, not prose. <code>seams</code>: what <strong>writes</strong> a piece
-          of state, what <strong>reads</strong> it, the test that drives <strong>both
-          real halves</strong>, and one sentence saying how it does.
-          <code>entrypoints</code>: a workflow or CLI file CI actually runs, the test
-          that runs it the way CI runs it, and the sentence for that. Nothing is
-          inferred from prose or scanned out of a diff — the planner records them, a
-          mechanical validator checks only the mechanical parts (present, non-blank,
-          and a rejection that names the ticket and the file), and the reviewer reads
-          the sentences and <strong>rejects a proof that describes a stub</strong> — a
-          mocked producer, a patched consumer, a literal payload, an in-process import
-          standing in for a command — or boilerplate that just restates the rule. No
-          seam and no new entrypoint? An <strong>empty array plus a one-line note
-          saying why</strong>, because an empty list is a claim, not a blank. This
-          exists because <strong>six live bugs shipped past a fully green suite in one
-          weekend</strong> and every one sat at a seam the suite only ever drove one
-          side of. And a Mission whose host <strong>isn't github.com</strong> (resolved
-          from the repo's origin or named in the PRD) makes every ticket carry a
-          four-point <strong>host checklist</strong> — URLs built from the host, every
-          runner <code>gh</code> pinned to it, the auth check naming it, and a test
-          asserting the host a real call would hit — after three
-          hardcoded-<code>github.com</code> bugs shipped past stubbed suites in one
-          product.</li>
-          <li><strong>Implement is one unified TDD worker, proven by the harness, not
-          the prompt.</strong> Each ticket is built by a single cold worker that writes
-          both tests and code and runs the suite freely — its work proven
-          <strong>afterward</strong> by deterministic post-hoc gates against git itself,
-          because an LLM rewarded for a green suite will game any contract another LLM
-          writes. The <strong>flip-flop gate</strong> re-runs the ticket's new/changed
-          tests scoped twice — green on the tip, <strong>red on the parent commit</strong>
-          — so a green-on-nothing contract can't slip through even in a repo whose own
-          suite is green (zero tests collected on either leg is <em>inconclusive, never
-          a pass</em>). The worker may adapt an existing test the ticket genuinely
-          invalidates, but every edit must be <strong>declared with a reason</strong> in
-          <code>result.json</code> — an <strong>undeclared</strong> test change blocks the
-          ticket (the parent commit is the snapshot; git diff is the check), and declared
-          edits ride to Verify as a first-class <strong>contract-amendments</strong>
-          readout. A <strong>quality floor</strong> requires at least one new/changed test
-          that actually asserts something (a behavior-free ticket may declare
-          <code>flipFlop: not-applicable</code> with a reason). Tests are authored
-          <strong>in-tree at the repo's own convention</strong> (co-located
-          <code>*.test.ts</code>, a <code>__tests__/</code> dir, or a top-level
-          <code>tests/</code>) so the coverage merges to the trunk, and every ticket
-          commit must leave the <strong>whole</strong> repo suite green. <strong>No worker
-          fails terminally on quality:</strong> a gate rejection re-spawns a fresh worker
-          carrying the verdict, up to <strong>3 sessions</strong>, then parks the ticket
-          awaiting-human with the failing gate named — never a stage-stop. Independent
-          tickets in a Wave build <strong>concurrently</strong> in isolated per-ticket
-          worktrees (capped by <code>LCARS_MAX_PARALLEL</code>) and commit serially in
-          plan order, and each worker reads a per-ticket <strong>context manifest +
-          repo pack</strong> instead of cold-exploring the tree. And the gates
-          <strong>survive the repo's real test setup</strong>: a runner preflight probes
-          the ticket's package <em>before the worker is spent</em> (a runner that can't
-          launch is a truthful "cannot run tests here" — never blamed on the tests); a
-          package with <strong>no runner</strong> in a repo that tests elsewhere invites
-          the worker to <strong>declare the missing setup</strong> (evidence-gated,
-          ADD-only, package-manager installs only), applied
-          <strong>probe-verified</strong> — exit codes are never trusted, pnpm's
-          silent symlink no-ops are healed by a forced relink — with a verified
-          green recorded to the repo's <strong>test landscape</strong>
-          (<code>.git/lcars/test-landscape/</code>) as a durable, proven fact. And
-          the gates are <strong>multi-stack</strong>: <code>lcars init</code> detects
-          the repo's toolchain (Rust, Go, Python, JS/TS, plus .NET / JVM for failure
-          legibility) and seeds per-stack defaults, and the flip-flop scoped runs speak
-          each runner's idiom — a directory scope for JS/Python, <code>cargo test
-          --test</code> for Rust, <code>go test -run</code> for Go — so a compiled
-          crate/package proves fail-on-parent / pass-on-tip and rides its test along at
-          its own convention (<code>tests/*.rs</code>, <code>*_test.go</code>) without
-          ever faking a green on no tests.</li>
-          <li><strong>Verify never auto-passes.</strong> Auto-advance always stops
-          here. Shipping is your call — and <strong>seeing it run is one
-          click</strong>: <code>lcars launch &lt;mission&gt; [hint]</code> (or the
-          ⚡ RUN/STOP on the board's Verify dialogs) checks the branch into a
-          disposable worktree, has a cold worker <em>discover</em> how to start the
-          app, runs it detached with the harness owning the process group, and
-          stops/prunes on demand. Per-Mission instances, plain-English failures,
-          and your own checkout is never touched. The Verify readout also lists
-          <strong>every seam the plan declared</strong> — its round-trip test, whether
-          that test exists in the repo, and its proof sentence in full. It grades none
-          of it: it's there so you read the boundary the suite claims to cover, in the
-          planner's own words.</li>
-        </ul>
-      </div>
-
-      <h4>The proof-of-work gates</h4>
-      <div class="control-grid">
-        <div class="control-card">
-          <div class="control-cmd">Flip-flop gate</div>
-          <div class="control-desc">The ticket's new/changed tests must
-          <strong>fail on the parent commit and pass on the tip</strong> — run
-          scoped in a scratch worktree at the parent. A test file <strong>new at
-          the parent</strong> is staged in, so its red proves the test depends on
-          the change; one that <strong>already existed</strong> runs the parent's
-          <strong>own copy</strong>, so its red proves that file was already
-          failing — which is what makes an honest <strong>repair</strong>
-          provable. One source-blind check guards that path: the runner must
-          not execute fewer tests on the tip than on the parent. It is vacuous
-          when the parent's copy was dead at import (it executed nothing), so the
-          harness does not claim a repair removed nothing &mdash; it lists every
-          repaired file at Verify for the human instead. A leg whose runner
-          announces it collected nothing is <em>inconclusive, never a
-          pass</em>.</div>
-        </div>
-        <div class="control-card">
-          <div class="control-cmd">Declared-edits contract</div>
-          <div class="control-desc">The worker may adapt an existing test the
-          ticket invalidates, but every edit must be <strong>declared with a
-          reason</strong>. An undeclared test change (git diff vs the parent)
-          blocks the ticket; declared edits surface at Verify as contract
-          amendments.</div>
-        </div>
-        <div class="control-card">
-          <div class="control-cmd">Quality floor</div>
-          <div class="control-desc">At least one new/changed test that actually
-          asserts something — else the ticket is rejected. A behavior-free ticket
-          may declare <code>flipFlop: not-applicable</code> with a reason.</div>
-        </div>
-      </div>
-      <p>These live in the deterministic harness because an LLM rewarded for a
-      green suite will otherwise game the contract. A gate rejection bounces to a
-      fresh worker (up to 3 sessions), then parks awaiting-human with the failing
-      gate named — never a stage-stop.</p>
-    </section>
-
-
-    <hr class="divider" />
-
-
-    <!-- ═══════════════════════════════════════════════════
-         INTERNALS
-         ═══════════════════════════════════════════════════ -->
-    <section id="internals">
-      <h2>How it runs under the hood</h2>
-
-      <div class="diagram-wrap">
-        <div class="diagram-label">Token-free driver · model-selected workers</div>
-        <div class="mermaid">
-flowchart TB
-    D["Token-free bash driver (no model, no tokens)<br/>reads state.json, picks next stage, spawns a worker, records result"]
-    subgraph WORKERS["Cold subprocess workers — all the thinking"]
-      direction TB
-      W1["Research xN — read + web"]
-      W2["Validate — read-only"]
-      W3["Plan — read-only"]
-      W4["Plan Review — read-only"]
-      W5["Unified TDD Implementer — read + write + shell"]
-    end
-    D ==>|"spawns each Stage cold"| WORKERS
-    WORKERS -.->|"structured output to disk"| D
-        </div>
-      </div>
-
-      <p>Three deliberate properties make this robust:</p>
-
-      <div class="lcars-panel blue">
-        <div class="lcars-panel-header">Token-free driver, model-selected workers</div>
-        <div class="lcars-panel-body">
-          <p>The loop is plain shell — it never reasons about your code. Every
-          token LCARS spends is spent in a worker, on <strong>whichever CLI you
-          launched from</strong>. Run LCARS inside Claude Code and every worker is
-          Claude. CLI choice is an implementation detail; <strong>model choice is
-          the meaningful one</strong> — and model choice is made <strong>per Stage,
-          not once per run</strong>. The Align estimator assigns each Stage a tier
-          (Sonnet/Opus) sized to that Stage's criticality; the tiers are
-          <strong>logical</strong>, and a per-CLI <strong>alias map</strong> translates
-          them to each CLI's flag string (on Copilot, <code>claude-opus-4.8</code> /
-          <code>claude-sonnet-4.6</code>), so the estimate stays CLI-agnostic and
-          Copilot only ever runs Sonnet/Opus. Precedence is explicit: a global pin
-          (<code>LCARS_WORKER_MODEL</code>) beats a captain's natural-language
-          override, which beats the estimate, which beats a manual per-stage config,
-          which beats the legacy global <code>workerModel</code>. With <strong>no
-          estimate and no override the legacy single-model path is byte-for-byte
-          unchanged</strong> — no <code>--model</code> flag when nothing is set.</p>
-        </div>
-      </div>
+      <figure class="screenshot">
+        <img src="assets/engine-picker.png" alt="The engine picker when engaging Number One: Copilot and Claude stacked one above the other, each marked installed because both are on this machine." />
+        <figcaption>The engine picker: both CLIs, each marked with whether it is actually on this machine.</figcaption>
+      </figure>
 
       <div class="lcars-panel">
-        <div class="lcars-panel-header">Stage isolation — the cold handoff</div>
+        <div class="lcars-panel-header">Claude Code vs GitHub Copilot CLI</div>
         <div class="lcars-panel-body">
-          <p>Every headless Stage runs as a fresh subprocess that sees
-          <strong>only</strong> what the previous Stage wrote to disk — never its
-          conversation. The worker's prompt is assembled by <code>run.sh</code>
-          from artifact <em>paths</em> alone, so there is no channel for one
-          Stage's reasoning to leak into the next, even when the whole pipeline
-          runs in one sitting. Each Stage records <strong>decisions and their
-          rationale</strong> — the <em>why</em>, not just the <em>what</em> —
-          because the artifact is the entire contract. What may cross the boundary
-          is always a <strong>declarative fact</strong> — the PRD, the engineering
-          ADRs, a ticket's context manifest, the repo pack — never another worker's
-          generated reasoning, and never anything at all to a Research Agent:
-          sharing facts lets a worker read instead of re-derive (cutting cost)
-          without the conversational carryover cold isolation exists to prevent.</p>
-          <p><strong>Your checkout is sacred (root-tree sovereignty).</strong> A
-          Mission never checks out, detaches, or dirties the working tree you sit
-          in: builds run in per-ticket worktrees, commits land through an
-          ephemeral <strong>landing worktree</strong> under a repo-global mutex,
-          the reconcile works in its own worktree, and the PR opens by ref.
-          Switch branches mid-drive with three Missions running — neither side
-          notices; if <em>you</em> hold a Mission's branch, it says so plainly
-          instead of moving your HEAD, and a failed worktree cut is
-          <strong>loud</strong>, never a silent fallback into the shared tree.</p>
-          <div class="lcars-readout">STAGE MARKER: ⊘ isolated  (printed on every stage line)
-IF A STAGE CANNOT ISOLATE → the driver refuses LOUDLY, changes nothing.
-An inline run must never masquerade as isolated.</div>
+          <ul>
+            <li><strong>The whole pipeline, idea → PR</strong> — both.</li>
+            <li><strong>Every LCARS command</strong> — both.</li>
+            <li><strong>Autopilot and Number One</strong> — both.</li>
+            <li><strong>Cost shown before you spend</strong> — in dollars on
+            Claude; in GitHub AI Credits on Copilot, with your plan's included
+            allowance netted off.</li>
+            <li><strong>Maturity</strong> — Claude is the original path and is
+            heavily used; Copilot is newer, proven idea → PR but with fewer
+            miles.</li>
+          </ul>
         </div>
       </div>
 
-      <div class="lcars-panel peach">
-        <div class="lcars-panel-header">Observable, not silent</div>
-        <div class="lcars-panel-body">
-          <p>The driver keeps a per-Mission append-only <strong>event log</strong>
-          (<code>events.jsonl</code>) as it goes — every Stage start and finish,
-          every gate, and fine-grained Implement progress: each wave, each ticket,
-          each worker session, and every green or flag. It prints each Stage line the
-          moment it happens instead of only summarizing at halt. When you launch
-          a run from <code>lcars</code> / <code>lcars run</code>, that same
-          session relays a compact progress digest every ~60s (configurable via
-          <code>LCARS_WATCH_INTERVAL</code> or <code>--interval</code>) until it
-          halts — so you watch the run where you started it, without a second
-          window. <code>lcars status --watch</code> tails the same log into a
-          live view with a pace/position line on that same interval; the bounce counter
-          is absent when nothing has bounced. The events are emitted by the bash harness
-          <em>around</em> the worker calls — never by the worker — so the stream
-          and the live view behave identically whatever CLI runs underneath. The
-          <strong>same shared renderer</strong> also publishes progress to each
-          Mission's <strong>GitHub issue</strong> as a small set of
-          <strong>living, per-Stage comments</strong> — one per Stage, created
-          once then <em>edited in place</em> as it advances — so a run is
-          observable off the laptop too: collapsed research Q&amp;A, per-ticket
-          rationale, <code>#</code>-links to the sub-issues, and an Implement
-          <strong>wave dashboard</strong> (the pace line plus a done / flagged /
-          in-progress / pending ticket checklist) refreshed on the same ~60s
-          heartbeat. Idempotent (a stored comment-id map → a re-run edits, never
-          double-posts) and best-effort — a missing or failing <code>gh</code>
-          never breaks the run.</p>
-          <div class="lcars-readout">Wave 3/6 · ticket t-004 (5/14) · hire 2 · 1 bounce · ~12s avg/ticket · elapsed 4m12s</div>
-        </div>
+      <div class="lcars-alert red">
+        <div><strong>Two things to know on Copilot.</strong> Start it as
+        <code>copilot --allow-all-tools</code>, <strong>not</strong>
+        <code>--autopilot</code>: the first auto-approves tool calls while leaving
+        LCARS's human gates intact, the second answers LCARS's questions
+        <em>for</em> you and blows straight through them. And LCARS's workers run
+        on Copilot's <strong>Claude tiers</strong> — the models that reliably
+        perform the file operations the pipeline depends on — so a run draws on
+        billable usage rather than Copilot's included tier.</div>
       </div>
+    </section>
+
+
+    <!-- ═══════════════════════════════════════════════════
+         HOW IT WORKS
+         ═══════════════════════════════════════════════════ -->
+    <section id="internals">
+      <h2>How it works</h2>
+
+      <p><strong>The loop that drives everything is plain shell, and it spends no
+      tokens.</strong> It reads a Mission's state, picks the next Stage, starts a
+      worker, records the result, and repeats. Every token LCARS spends is spent
+      inside a worker doing a piece of thinking, on a model tier chosen for that
+      Stage.</p>
+
+      <p><strong>Every Stage runs cold.</strong> A worker is a fresh subprocess
+      that sees only what the previous Stage <em>wrote to disk</em> — never its
+      conversation. The prompt is assembled from file paths alone, so one Stage's
+      reasoning cannot leak into the next, and each Stage has to record its
+      decisions and its reasons, because the written artifact is the entire
+      handover. If a Stage ever cannot isolate itself, the driver refuses loudly
+      instead of quietly running inline.</p>
+
+      <p><strong>Your checkout is never touched.</strong> Missions build in their
+      own worktrees and commit through an ephemeral landing worktree. Switch
+      branches with three Missions running and neither side notices.</p>
     </section>
 
 
@@ -1770,314 +498,102 @@ An inline run must never masquerade as isolated.</div>
          ═══════════════════════════════════════════════════ -->
     <section id="state">
       <h2>Where state lives</h2>
-      <p>All per-repo mission state lives under <code>.git/lcars/</code> — inside
-      <code>.git/</code>, so git never tracks it and the target repo's working
-      tree stays clean. Don't add it to <code>.gitignore</code> and don't commit
-      it.</p>
+      <p>All of it is under <strong><code>.git/lcars/</code></strong> — inside
+      <code>.git/</code>, so git never tracks it and your working tree stays
+      clean. One directory per Mission holds its spec, its research, its plan,
+      its tickets' results, the questions it asked you and your answers, and an
+      append-only event log:</p>
 
       <pre>.git/lcars/
-  config.json                     repo config (model, context file, test command, notify)
-  context-pack.md                 durable repo pack (run-tests, conventions, architecture)
-  missions/
-    lcars-20260604-001/
-      state.json                  id, type, stage, githubIssue, flags
-      prd.md                      Align output — the canonical spec
-      adr.md                      engineering ADRs (complex Missions; refined at Validate)
-      estimate.json               criticality scores + per-stage model tiers + cost range
-      research/&lt;n&gt;.json           per-question findings
-      validated-plan.md           Validate synthesis (+ rationale)
-      plan.json                   Plan tickets (each with rationale)
-      approved-plan.json          Plan Review's approved copy
-      plan-review-&lt;round&gt;.json    objections per round
-      manifests/&lt;ticket&gt;.md       per-ticket context manifest (files + signatures + ADRs)
-      waves.json                  dependency graph → waves + sub-issue numbers
-      tickets/&lt;ticket&gt;/result.json  pass/attempts/summary + newTests + declared testEdits (v2)
-      tickets/&lt;ticket&gt;/flip-flop.json   flip-flop verdict (green-on-tip / red-on-parent legs)
-      tickets/&lt;ticket&gt;/test-edits.json  declared edits to existing tests ({path, reason})
-      tickets/&lt;ticket&gt;/gate-signal.txt  why a rejected gate bounced (grounds the fresh worker)
-      pending.json / answers.json   escalated questions + your answers
-      feedback.md                 accumulating Verify feedback history</pre>
+  config.json                  engines, model tiers, test command, notifications
+  missions/&lt;mission-id&gt;/
+    state.json  prd.md  estimate.json  research/  validated-plan.md
+    plan.json  waves.json  tickets/  pending.json  answers.json  events.jsonl</pre>
 
-      <h2>GitHub labels — the board's data model</h2>
-      <p><code>lcars init</code> creates the LCARS label set on the repo (and
-      <code>lcars update</code> backfills any that a later LCARS version adds). The
-      harness applies them as Missions move; a future kanban reads them directly
-      via the Issues API.</p>
+      <div class="lcars-alert blue">
+        <div><strong>Everything configurable is in one page</strong> —
+        <a href="https://github.com/roferg/lcars/blob/main/docs/configuration.md">docs/configuration.md</a>: model tiers
+        per Stage, the concurrency cap, the Copilot billing keys, the price data.
+        You rarely need it.</div>
+      </div>
 
+      <h3>The board's data model is GitHub labels</h3>
       <div class="lcars-panel">
-        <div class="lcars-panel-header">LCARS Labels</div>
+        <div class="lcars-panel-header">LCARS labels</div>
         <div class="lcars-panel-body">
           <ul>
-            <li><code>lcars:align</code> … <code>lcars:done</code> —
-            <strong>Stage</strong> (exclusive): the Mission's current column.</li>
-            <li><code>lcars:feature</code> / <code>lcars:bug</code> —
-            <strong>Type</strong>: the Mission kind.</li>
-            <li><code>lcars:paused</code> — <strong>Status</strong> (additive):
-            overlaid when a Mission is paused.</li>
-            <li><code>lcars:awaiting-human</code> — <strong>Status</strong>
-            (additive): overlaid when blocked on your answer.</li>
-            <li><code>lcars:linked</code> — <strong>Relationship</strong>: a bug
-            Mission linked to a parent via <code>lcars log</code>.</li>
-            <li><code>lcars:mission</code> / <code>lcars:ticket</code> —
-            <strong>Role</strong> (additive, permanent): a Mission's own issue
-            (<code>lcars:mission</code>) vs an implementation sub-issue Schedule
-            opens (<code>lcars:ticket</code>) — disjoint, never swapped by a
-            stage transition.</li>
+            <li><code>lcars:align</code> … <code>lcars:done</code> — which column
+            a card is in.</li>
+            <li><code>lcars:awaiting-human</code> — it is waiting on you.</li>
+            <li><code>lcars:mission</code> / <code>lcars:ticket</code> — the
+            thing that tracks the work, versus the work.</li>
           </ul>
         </div>
       </div>
       <div class="lcars-alert blue">
-        <div>Filtering issues to <code>lcars:awaiting-human</code> shows every
-        pending decision at a glance — before the kanban UI even exists. Filter
-        to <code>lcars:mission</code> for the command-and-control list,
-        <code>lcars:ticket</code> for the work.</div>
-      </div>
-      <div class="lcars-alert teal">
-        <div><strong>Issue lifecycle.</strong> A ticket's sub-issue is closed
-        (and labelled <code>lcars:done</code>) the moment it goes green, so the
-        board tracks real per-ticket progress. The Mission's own issue closes
-        only when the PR is <strong>merged</strong> — <code>lcars approve</code>
-        opens the PR with a <code>Closes #&lt;mission&gt;</code> directive, tying
-        the close to the merge rather than to approval.</div>
+        <div>Filtering issues by those labels gives you the same picture without
+        the board.</div>
       </div>
     </section>
 
 
     <!-- ═══════════════════════════════════════════════════
-         CONFIG
+         WHERE IT STANDS
          ═══════════════════════════════════════════════════ -->
-    <section id="config">
-      <h2>Configuration &amp; environment</h2>
-      <p><code>lcars init</code> writes <code>.git/lcars/config.json</code>
-      (default model, detected <code>CONTEXT.md</code>, test command for the red
-      gate, optional notify target). The harness <strong>never</strong> modifies
-      <code>CLAUDE.md</code>, <code>.gitignore</code>, <code>CONTEXT.md</code>,
-      <code>.claude/settings.json</code>, or any source files.</p>
-
-      <p>Writing config is <strong>merge-preserving</strong>: re-running
-      <code>lcars init</code> keeps every value already in <code>config.json</code>
-      (your customized <code>testCommand</code> / <code>model</code> /
-      <code>comprehensionBudget</code>) and only fills in keys that are missing — so
-      re-init is fully idempotent and never resets a customization. When LCARS
-      itself gains new labels or config keys, <code>lcars update</code> absorbs them
-      into an already-initialized repo the same way: missing labels and keys are
-      added at their defaults, existing values and <code>missions/</code> are left
-      untouched, and it reports what it added (or says there's nothing to
-      update). It also refreshes the repo's stamped <code>lcarsVersion</code> so the
-      staleness checker reads the repo as current.</p>
-
-      <p>External dependencies are injected via env vars so they're swappable (and
-      stubbable in tests):</p>
-
-      <div class="control-grid">
-        <div class="control-card">
-          <div class="control-cmd">LCARS_WORKER_BIN</div>
-          <div class="control-desc">The cold-worker CLI every headless Stage
-          spawns. Default: auto-detected from the host CLI (<code>claude</code> or
-          <code>copilot</code>).</div>
-        </div>
-        <div class="control-card">
-          <div class="control-cmd">LCARS_WORKER_MODEL</div>
-          <div class="control-desc"><strong>Global model pin</strong> — overrides
-          per-Stage selection for <em>every</em> Stage (config key:
-          <code>workerModel</code>, the legacy global). Default: unset — the estimate's
-          per-Stage tiers apply.</div>
-        </div>
-        <div class="control-card">
-          <div class="control-cmd">LCARS_MODEL_OVERRIDE</div>
-          <div class="control-desc">Pin a tier for an axis on a re-run without
-          re-filing — <code>all:opus</code>, <code>implementation:opus</code>,
-          <code>reasoning:sonnet</code>. Default: unset.</div>
-        </div>
-        <div class="control-card">
-          <div class="control-cmd">LCARS_GH_BIN</div>
-          <div class="control-desc">The GitHub CLI. Default: <code>gh</code>.</div>
-        </div>
-        <div class="control-card">
-          <div class="control-cmd">LCARS_MAX_PARALLEL</div>
-          <div class="control-desc">Concurrency cap for a Wave's tickets and the
-          Research fan-out. Default: <code>4</code>.</div>
-        </div>
-        <div class="control-card">
-          <div class="control-cmd">LCARS_NOTIFY</div>
-          <div class="control-desc">The walk-away notification hook fired at human
-          gates. Default: local desktop banner + bell.</div>
-        </div>
-        <div class="control-card">
-          <div class="control-cmd">LCARS_VERSION_CHECK</div>
-          <div class="control-desc">Set <code>0</code> to disable the throttled
-          staleness check on interactive entry points. Default: enabled.</div>
-        </div>
-      </div>
-
-      <p><strong>Per-Stage model selection (config keys).</strong> The Align
-      estimator writes the per-Stage tiers into the Mission's
-      <code>estimate.json</code>; you rarely touch the model config by hand. When you
-      want to, these <code>config.json</code> keys participate (all optional):
-      <code>stages.&lt;key&gt;.model</code> pins one Stage to a tier
-      (<code>sonnet</code>/<code>opus</code>);
-      <code>modelAliases.&lt;cli&gt;.&lt;tier&gt;</code> overrides how a logical tier
-      maps to a CLI flag (the defaults are claude <code>sonnet</code>/<code>opus</code>
-      and copilot <code>claude-sonnet-4.6</code> / <code>claude-opus-4.8</code>);
-      <code>estimatorModel</code> sets the tier the estimator itself runs on (default
-      <code>opus</code>). For the Copilot cost figure, <code>copilotBilling</code>
-      (<code>usage</code> <em>(default)</em> / <code>legacy</code>) selects usage-based
-      AI-Credit billing vs. the legacy premium-request model, and
-      <code>copilotPlan</code> (<code>pro</code> / <code>proPlus</code> /
-      <code>business</code> / <code>enterprise</code>) sets the included-credit
-      allotment netted against the estimate. The price/rate/allotment data the cost
-      figure is computed from lives in <code>skills/lcars-run/pricing.json</code> — the
-      single source of truth, so a billing change is a data edit, not a code change.</p>
-
-      <div class="lcars-alert teal">
-        <div>Notifications fire <strong>only</strong> at genuine gates (an
-        escalation or Verify), batched per Stage — never one-per-question, never
-        on a clean transition. A phone push (ntfy / Pushover) is opt-in via
-        config.</div>
-      </div>
-    </section>
-
-
-    <!-- ═══════════════════════════════════════════════════
-         DEVELOP
-         ═══════════════════════════════════════════════════ -->
-    <section id="develop">
-      <h2>Develop / contribute</h2>
-      <p>Skill source lives in <code>skills/&lt;name&gt;/</code> (one dir per
-      <code>lcars</code> command); tests in <code>tests/</code>.
-      <a href="../CLAUDE.md">CLAUDE.md</a> is the contributor contract — read it
-      first.</p>
-
-      <pre>skills/&lt;name&gt;/SKILL.md     frontmatter + instructions
-skills/&lt;name&gt;/&lt;name&gt;.sh    the executable logic (kept testable; deps via env vars)
-tests/&lt;name&gt;.test.sh       one suite per skill
-tests/run.sh               runs every *.test.sh
-install.sh                 symlinks skills/* into ~/.claude/skills/</pre>
-
-      <div class="lcars-alert red">
-        <div><strong>The golden rule:</strong> skills are authored in this repo,
-        <strong>never</strong> directly under <code>~/.claude/skills/</code>.
-        <code>./install.sh</code> symlinks them so <code>git pull</code> delivers
-        updates.</div>
-      </div>
-
-      <p>The workflow for any change:</p>
-      <ol>
-        <li><strong>Author</strong> in <code>skills/&lt;name&gt;/</code>.</li>
-        <li><strong>TDD it</strong> — write the failing test in
-        <code>tests/&lt;name&gt;.test.sh</code> first, then make it pass. Keep
-        logic in a bundled shell script; take external deps via env vars so tests
-        can stub them.</li>
-        <li><strong>Install</strong> — <code>./install.sh</code>.</li>
-        <li><strong>Verify</strong> — <code>bash tests/run.sh</code> (all suites
-        green).</li>
-        <li><strong>Commit</strong> — source, test, and any doc updates are all
-        tracked.</li>
-      </ol>
-
-      <pre>bash tests/run.sh         # run the whole suite</pre>
-      <p>Open bugs against the harness are tracked in
-      <a href="../bugs.md">bugs.md</a> with stable <code>BUG-NNN</code> ids.</p>
-    </section>
-
-
-    <!-- ═══════════════════════════════════════════════════
-         STATUS
-         ═══════════════════════════════════════════════════ -->
-    <section id="status">
-      <h2>Status</h2>
-      <p>The full pipeline is built and runs unattended (idea → PR). Sessions 1–16
-      of the build order are complete.</p>
-
-      <div class="lcars-panel">
-        <div class="lcars-panel-header">Build status</div>
-        <div class="lcars-panel-body">
-          <div class="lcars-status-row">
-            <div class="lcars-status active">init · file · status</div>
-            <div class="lcars-status active">Research → Plan Review</div>
-            <div class="lcars-status active">Schedule · Implement · Verify</div>
-          </div>
-          <div class="lcars-status-row">
-            <div class="lcars-status active">lcars respond</div>
-            <div class="lcars-status active">Per-stage isolation</div>
-            <div class="lcars-status active">Implement guardrails</div>
-          </div>
-          <div class="lcars-status-row">
-            <div class="lcars-status active">Auto-advance + notify</div>
-            <div class="lcars-status active">Human surface</div>
-            <div class="lcars-status active">Mission Log</div>
-            <div class="lcars-status active">Batch resolve-logs</div>
-            <div class="lcars-status active">Copilot enablement · new</div>
-          </div>
-          <div class="lcars-status-row">
-            <div class="lcars-status active">Cost estimator + per-stage model selection</div>
-          </div>
-          <div class="lcars-status-row">
-            <div class="lcars-status active">A shared board · (host, login) identity · owner on every card</div>
-            <div class="lcars-status active">The per-person write lock · remote cards · lcars adopt</div>
-            <div class="lcars-status warning">Simultaneous action by two people · next round</div>
-          </div>
-          <div class="lcars-status-row">
-            <div class="lcars-status active">Tests ride along into the PR</div>
-            <div class="lcars-status active">Under-slice pressure signal</div>
-            <div class="lcars-status active">Actionable proof-gate classification</div>
-            <div class="lcars-status active">Unified TDD worker · bounce-3-then-park</div>
-            <div class="lcars-status active">Empty-output worker detection</div>
-            <div class="lcars-status active">Reconcile env-parity</div>
-          </div>
-          <div class="lcars-status-row">
-            <div class="lcars-status active">Seams + entrypoints declared · audited at Plan Review</div>
-            <div class="lcars-status active">Live checks per product type · CLI · web · workflow</div>
-            <div class="lcars-status active">Autopilot · lcars buddy runs the factory</div>
-          </div>
-        </div>
-      </div>
-
-      <div class="scope-bar">
-        <div class="scope-active">v1 · idea → merged PR · a shared board</div>
-        <div class="scope-future">Next · the full multi-person build-out · production monitoring</div>
-      </div>
+    <section id="stands">
+      <h2>Where it stands</h2>
+      <p>This is a real tool that is used daily, not a finished product. The
+      pipeline works, end to end, and has shipped a great deal of its own code.
+      It also ships imperfect on purpose: the point is to keep using it, find
+      where it falls down, and fix that — rather than to wait until it is
+      polished.</p>
 
       <div class="lcars-alert amber">
-        <div><strong>Autopilot, on one full run.</strong> It took a goal and built a
-        working product — a command-line tool, a page that renders its state, and a CI
-        workflow that republishes that page — needing its operator <strong>exactly
-        once</strong>, at the opening alignment round, across the whole night. It
-        raised two questions of its own afterwards and resolved both itself; it
-        <strong>found two real bugs a fully green suite had passed</strong> by using
-        what it built, filed them with reproductions, fixed them and re-proved them on
-        different data; and it reported a clean check as clean. One step remains the
-        operator's: on the final milestone a <strong>human ran the landing</strong>, so
-        an unattended end-to-end round is <strong>not</strong> claimed.</div>
+        <div><strong>What is honestly rough today.</strong> The Copilot path
+        works but has far fewer miles on it than the Claude one, so you may hit
+        edges there first. Number One grades what he can reach and tells you what
+        he could not — useful, but not a code review. Multi-person support is real
+        — identity, ownership, the per-person lock, taking a Mission over — but
+        has only run against one GitHub account, and two people acting in the same
+        instant is not handled yet. The suite is slow enough to be a gate rather
+        than an inner loop. And <strong>DEPLOY MAIN</strong> — the board control that
+        starts whatever is already merged — has been seen to take the viewscreen
+        down on the Claude path and not bring it back; the work it was doing
+        still finishes, but you have to restart the board with
+        <code>lcars-viewscreen</code> to see it. Expect all of this to keep
+        changing.</div>
       </div>
+    </section>
 
-      <div class="future-banner">
-        <h3>Roadmap</h3>
-        <p><strong>LCARS is now set up to support multiple people.</strong>
-        Identity is the <code>(host, login)</code> pair, every mission carries an
-        owner, the write lock is enforced per-person on both the daemon and the
-        CLI, missions running on machines you don't have show on the board, and
-        <code>lcars adopt</code> takes one over. That foundation is working — and
-        its <strong>build-out continues in the next round</strong>, which owns the
-        two things this one deliberately left: it has so far only been run against
-        one GitHub account, and simultaneous action by two people (the race
-        tiebreak and contention handling) is not handled yet.</p>
 
-        <p><strong>Copilot enablement is in:</strong> <code>$LCARS_WORKER_BIN</code>
-        auto-resolves to <code>copilot</code> when you launch from Copilot, so the
-        harness runs on whichever CLI you launch from (see
-        <a href="#copilot">Running under GitHub Copilot</a>). The Claude path is stable;
-        the Copilot path is <strong>new</strong> — it works idea→PR but needs two
-        documented setup caveats (premium <strong>Claude</strong> tiers, assigned per
-        Stage and alias-mapped + <code>--allow-all-tools</code>) and does not yet run on
-        Copilot's <em>included</em> tokens. The Copilot cost figure tracks GitHub's
-        usage-based AI-Credit billing by default (with the legacy premium-request model
-        available for grandfathered annual plans). Further out: a custom
-        <strong>kanban interface</strong>
-        (cards, stages, pending-question badges, start/stop control) and
-        <strong>production monitoring</strong> to close the loop from live signal
-        back to new Missions.</p>
-      </div>
+    <!-- ═══════════════════════════════════════════════════
+         CONTRIBUTING
+         ═══════════════════════════════════════════════════ -->
+    <section id="contribute">
+      <h2>Contributing</h2>
+      <p>Issues and pull requests are welcome.
+      <a href="https://github.com/roferg/lcars/blob/main/CONTRIBUTING.md">CONTRIBUTING.md</a> has the short version:
+      command source lives in <code>skills/&lt;name&gt;/</code>, every command has
+      a test in <code>tests/</code>, write the failing test first, and run
+      <code>./install.sh</code> before you try your change.</p>
+
+      <pre>skills/&lt;name&gt;/SKILL.md     one directory per command: what it does
+skills/&lt;name&gt;/&lt;name&gt;.sh    its logic, kept in a script so it can be tested
+tests/&lt;name&gt;.test.sh       one suite per command
+tests/run.sh               runs every suite — the gate before a merge
+install.sh                 links the commands into the AI CLIs you have</pre>
+
+      <p><a href="https://github.com/roferg/lcars/blob/main/CLAUDE.md">CLAUDE.md</a> is the same contract written for an
+      AI agent working in this repo.</p>
+    </section>
+
+
+    <!-- ═══════════════════════════════════════════════════
+         LICENSE
+         ═══════════════════════════════════════════════════ -->
+    <section id="license">
+      <h2>License</h2>
+      <p>MIT — see <a href="https://github.com/roferg/lcars/blob/main/LICENSE">LICENSE</a>.</p>
     </section>
 
   </main>
