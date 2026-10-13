@@ -362,9 +362,14 @@ interactive shell blocks on its own first assertion.
 **A caged run that does not come back is NOT proof of safety** — it is the hang,
 reported.
 
-**Never key a decision on the cage's own `$?`.** It exits 0 whether the probe
-passed, failed or was killed; the verdict is in the text it prints (`EXIT <n>`,
-`*** TIMED OUT — exceeded the <d>s deadline ***`, `ELAPSED`). Parse the output, not the status.
+**The cage's `$?` is now the probe's own (S289).** It exits the child's status,
+128+N for a child killed by signal N, and **124** when the child outran the
+deadline — so `cage … && <next step>` can be trusted and a caller can tell a
+FAILING probe from one that outran its budget. It used to exit 0 whether the
+probe passed, failed or was killed, which is why older rigs parse the text; a
+chain keyed on that status could not see a red suite at all. The text is still
+the record of WHICH case it was (`EXIT <n>`, `*** TIMED OUT — exceeded the <d>s deadline ***`,
+`ELAPSED`), and still the only place to look for how far the probe got.
 
 ### Two mechanisms hang a suite, not one
 

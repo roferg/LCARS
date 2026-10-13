@@ -10,6 +10,30 @@ or
     ELAPSED <n>s *** TIMED OUT — exceeded the <d>s deadline (group killed). ...
 and the caged process's own output follows it.
 
+EXIT-STATUS CONTRACT (S289). The cage exits WHAT THE CAGED PROCESS DID, so
+`cage … && <next step>` can be trusted:
+    the child exited N          -> the cage exits N          (N == 0 on a pass)
+    the child was killed by sig -> the cage exits 128+sig, the shell's own
+                                   convention (the line still prints EXIT -sig)
+    the child outran the deadline -> the cage exits 124, timeout(1)'s
+                                   convention, so "the suite FAILED" and "the
+                                   suite outran its budget" are distinguishable
+                                   by a caller and not only by a reader. A child
+                                   that exits 124 on its own is still told apart
+                                   by the first line (EXIT 124, no TIMED OUT).
+    the cage itself was signalled -> 128+sig, unchanged (see _on_signal)
+    a usage error               -> unchanged (python's own traceback, exit 1)
+Only the PROCESS STATUS changes: the first line above remains the contract,
+byte for byte, and several readers parse it with `sed -n 1p`.
+
+IT USED TO EXIT 0 ON EVERY PATH, and said nothing about it. It printed `EXIT 7`
+and then told its caller 0, so a red suite read as a pass to anything keyed on
+the status. Unattended is exactly where nobody reads the printed line, so an
+overnight chain structurally could not see a red suite; it nearly fooled the
+2026-10-11 orchestrator, which took a background job's exit 0 for the verdict.
+The silence of this docstring on the point is what made the defect invisible,
+which is why the contract above is now stated and pinned (harness.test.sh 6f).
+
 AN INSTRUMENT MUST NOT STATE A CONCLUSION IT CANNOT SUPPORT (S244). The timeout
 line used to read `*** TIMED OUT -> HUNG ***`. It said HUNG; it only ever knew
 TIMED OUT. From where the cage stands, "hung", "slow", "waiting on a lock" and
@@ -113,6 +137,10 @@ for _sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
 try:
     rc = p.wait(timeout=to)
     _report("ELAPSED %.1fs EXIT %d" % (time.time() - t0, rc))
+    # THE STATUS IS THE CHILD'S (S289) — see the EXIT-STATUS CONTRACT above.
+    # Popen.wait() returns -N for a child killed by signal N; raising that to
+    # the shell's 128+N keeps a kill readable instead of truncating to garbage.
+    sys.exit(rc if rc >= 0 else 128 - rc)
 except subprocess.TimeoutExpired:
     _reap()
     p.wait()
@@ -122,3 +150,7 @@ except subprocess.TimeoutExpired:
             "from STUCK. If the deadline was the wrong budget, raise it; "
             "otherwise read the caged output below for where it stopped. ***"
             % (time.time() - t0, to))
+    # 124 IS timeout(1)'s CONVENTION, and deliberately not the child's status:
+    # a deadline is a different event from a failing suite, and a caller has to
+    # be able to tell them apart. The line says which one it was.
+    sys.exit(124)

@@ -64,6 +64,17 @@ distinguishable from a kill.
 python3 tests/lib/cage.py 420 bash tests/<name>.test.sh
 ```
 
-**It always exits 0.** Pass, fail and hang all come back as status 0 — the
-verdict is in the text it prints (`EXIT <n>`, `*** TIMED OUT — exceeded the <d>s deadline ***`).
-Never key a decision on `$?` from a caged run; parse the output.
+**It exits what the caged process did (S289).** A child that exits N makes the
+cage exit N; a child killed by signal N gives 128+N; a child that outran the
+deadline gives **124** (`timeout(1)`'s convention), so a FAILING suite and a
+suite that outran its budget are distinguishable by a caller. So
+`cage … && <next step>` can be trusted, which is the point: unattended is
+exactly where nobody reads the printed line.
+
+**It used to exit 0 on every path** — pass, fail and hang alike — so a red suite
+read as a pass to anything keyed on the status, and the docs here told you to
+parse the text instead. That is no longer necessary; the text is still there and
+still authoritative about WHICH case it was (`EXIT <n>` vs
+`*** TIMED OUT — exceeded the <d>s deadline ***`), because 124 as a status
+cannot tell a deadline from a child that exits 124 on its own. Read the status
+for pass/fail; read the first line for which.
