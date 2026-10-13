@@ -77,7 +77,15 @@ EOF
 # Echoes the env dir.
 new_env() {
   local e; e="$(mktemp -d "$TMPROOT/env.XXXX")"
-  mkdir -p "$e/claude-skills" "$e/copilot/_direct"
+  # S290: `bin` and `fakehome` are NOT decoration. This suite used to set only
+  # the claude + copilot destinations, leaving LCARS_BIN_DEST to default to
+  # $HOME/.local/bin — so EVERY RUN of this suite rewrote the real on-PATH
+  # launchers to exec whatever checkout the suite ran from. That is the
+  # mechanism behind "the dangling launchers regenerate and nobody notices":
+  # measured 2026-10-12, when a scoped run from a worktree repointed all five
+  # of the captain's live commands at that worktree. Redirecting HOME as well
+  # makes the omission impossible to repeat for the two remaining destinations.
+  mkdir -p "$e/claude-skills" "$e/copilot/_direct" "$e/bin" "$e/fakehome"
   # seed config.json with a JSONC header + an UNRELATED plugin entry to prove
   # preservation. (Auto-managed file — header lines start with //.)
   cat >"$e/copilot/config.json" <<'JSON'
@@ -105,7 +113,9 @@ JSON
 # Run install.sh against an env dir.
 run_install() {
   local e="$1"
+  HOME="$e/fakehome" \
   LCARS_SKILLS_DEST="$e/claude-skills" \
+  LCARS_BIN_DEST="$e/bin" \
   LCARS_COPILOT_PLUGINS_DIR="$e/copilot/_direct" \
   LCARS_COPILOT_CONFIG="$e/copilot/config.json" \
   LCARS_COPILOT_BIN="$e/copilot-bin" \
@@ -265,7 +275,9 @@ check "4. claude layout reaches the same repo init.sh" \
 # ==========================================================================
 e5="$(new_env)"
 rc5=0
+HOME="$e5/fakehome" \
 LCARS_SKILLS_DEST="$e5/claude-skills" \
+LCARS_BIN_DEST="$e5/bin" \
 LCARS_COPILOT_PLUGINS_DIR="$e5/copilot/_direct" \
 LCARS_COPILOT_CONFIG="$e5/copilot/config.json" \
 LCARS_COPILOT_BIN="$e5/definitely-no-copilot" \
