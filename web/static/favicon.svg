@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" role="img"
+     aria-label="LCARS">
+  <!-- S288 (D5): the board's OWN frame, at 32px — the solid LCARS elbow (top
+       band + left rail as one continuous yellow L, big convex outer round) over
+       the black content, with the three stage columns of the board inside it.
+       Colours are the frame's own: #f2cf33 (board.css --frame-color), the
+       black ground, and the teal/amber the cards are painted in. -->
+  <rect width="32" height="32" rx="6" fill="#030608"/>
+  <path d="M4 10a6 6 0 0 1 6-6h18v5H11a1 1 0 0 0-1 1v18H4z" fill="#f2cf33"/>
+  <rect x="13" y="12" width="4" height="15" rx="1.5" fill="#00ccaa"/>
+  <rect x="19" y="12" width="4" height="10" rx="1.5" fill="#ffaa33"/>
+  <rect x="25" y="12" width="4" height="6" rx="1.5" fill="#ff66aa"/>
+</svg>

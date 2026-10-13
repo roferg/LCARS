@@ -7321,6 +7321,23 @@ function engineOptions(host, ref, opts) {
 }
 
 /* ════════════════ SCREEN: FILE A MISSION (#file) ════════════════ */
+/* S288 — the copy for the File console's in-flight Align turn. Said ONCE, here,
+   because the band, the pressed control and its tooltip all have to agree about
+   the same turn (the lesson S162 wrote down next door: never let one surface
+   describe this state in its own words).
+   WHAT THESE SENTENCES DO NOT DO IS PROMISE A DURATION. The honest range we
+   have is two samples off one engine on one repo; printing it would put a
+   number on screen that goes stale and becomes the NEXT false positive. The
+   moving counter is the proof of life; these say why the wait exists and what
+   ends it. */
+var FILE_SCAN_ENDS_WHEN =
+  "this console is replaced by the alignment interview the moment its "
+  + "first question lands.";
+var FILE_SCAN_SLOW_AFTER = 20; // seconds before the reassurance is revealed
+var FILE_SCAN_SLOW_NOTE =
+  "Still running. The opening turn reads this repo before it can ask its first "
+  + "question, so it is normal for this to take a while — the counter above is "
+  + "live, and " + FILE_SCAN_ENDS_WHEN;
 function openFile() {
   /* S183 — the FOUNDATION LOCK, said rather than implied. `paintFoundationLock`
      disables ▦ FILE MISSION, but a hotkey (`f`) and the empty-board prompt both
@@ -7429,15 +7446,66 @@ function openFile() {
   // it clears on success (console replaces the modal) and on error.
   var fileBusy = workingNode("Scanning the codebase…"); fileBusy.hidden = true;
   m.body.appendChild(fileBusy);
+  /* S288 — AND IT SAYS HOW LONG IT HAS BEEN WORKING.
+     This is the product's primary entry point and its longest silent wait: the
+     opening Align turn reads the repo before it can ask anything, which takes
+     tens of seconds on a real engine. Until now neither surface moved — a
+     static band, a static "Scanning…" — so for that whole window a watcher had
+     NO WAY to tell "working" from "hung". A coverage sweep did exactly what a
+     stranger evaluating LCARS would do: shot it mid-flight, twice, and reported
+     the front door completely broken. The road was fine. The silence was the
+     defect.
+     NOT A NEW WORDING, and not a new timer style: the elapsed time rides the
+     SAME `scanningLabel`/`fmtDuration` the card road already uses for this very
+     turn (startAlignmentControl, scanningPulse), and the tick is the
+     self-cancelling 1s interval the mission detail's "Active" clock uses. The
+     card road puts the time on the label AND the title; so does this.
+     The console road ticks every SECOND rather than riding the 4s board poll,
+     because here there is no repaint to ride — the modal is built once. */
+  var fileBusyNote = el("div", "note", FILE_SCAN_SLOW_NOTE);
+  fileBusyNote.hidden = true;
+  m.body.appendChild(fileBusyNote);
+  var scanTimer = null;
+  function stopFileScan() {
+    if (scanTimer) { clearInterval(scanTimer); scanTimer = null; }
+  }
+  function startFileScan() {
+    var since = Date.now();
+    function tick() {
+      var secs = Math.max(0, Math.floor((Date.now() - since) / 1000));
+      if (fileBusy._label) {
+        fileBusy._label.textContent =
+          scanningLabel(secs, "Scanning the codebase…");
+      }
+      go.textContent = scanningLabel(secs, "Scanning…");
+      go.title = scanningLabel(secs, "The alignment turn has been running")
+        + " — " + FILE_SCAN_ENDS_WHEN;
+      // Revealed only once the wait is long enough to READ as a hang. A line
+      // that was there from second zero is furniture; one that arrives when
+      // the captain starts to doubt is an answer.
+      if (secs >= FILE_SCAN_SLOW_AFTER) fileBusyNote.hidden = false;
+    }
+    stopFileScan();
+    tick();
+    scanTimer = setInterval(function () {
+      // Self-cancelling on leaving the stage — the mission detail's "Active"
+      // tick does exactly this, and for the same reason: a console that closed
+      // must not leave a timer running behind it.
+      if (!document.body.contains(fileBusy)) { stopFileScan(); return; }
+      tick();
+    }, 1000);
+  }
 
   var go = applyWriteState(btn("File & Begin Alignment", null, function () {
     var text = idea.value.trim();
     if (!text) { showErr(err, "Describe the idea first."); return; }
-    go.disabled = true; go.textContent = "Scanning…";
+    go.disabled = true;
     err.hidden = true; fileBusy.hidden = false;
+    startFileScan(); // paints "Scanning… 0s" now, then once a second.
     openAlignConsole(text, chosen.engine, ideaImgs.payload(), function (msg) {
-      go.disabled = false; go.textContent = "File & Begin Alignment";
-      fileBusy.hidden = true;
+      stopFileScan();
+      go.disabled = false; go.textContent = "File & Begin Alignment"; go.title = "";
+      fileBusy.hidden = true; fileBusyNote.hidden = true;
       showErr(err, msg);
     });
   }));
@@ -12941,7 +13009,14 @@ function workingNode(labelText) {
   var bars = el("div", "lcars-bars");
   for (var i = 0; i < 5; i++) bars.appendChild(el("i"));
   w.appendChild(bars);
-  w.appendChild(el("span", "lcars-working-label", labelText || "Working…"));
+  var lab = el("span", "lcars-working-label", labelText || "Working…");
+  w.appendChild(lab);
+  /* S288 — the label node, handed back on the band itself. A caller whose wait
+     TICKS (the File console's opening Align turn) has to rewrite this one span
+     once a second; reaching for it with a DOM query would work in Chrome and
+     return null in every node-vm harness that stubs querySelector, so the band
+     names its own label instead. */
+  w._label = lab;
   return w;
 }
 

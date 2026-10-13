@@ -1698,7 +1698,27 @@ body.on-front-door #ownerFilter{display:none !important}
    unusably and never hidden. ── */
 @media (max-width:640px){
   .lcars-frame{--frame-rail-w:22px;--frame-top-h:52px;--frame-outer-r:30px;--frame-inner-r:18px}
-  .topbar{padding:0 12px 0 10px;gap:8px}
+  /* S288 (D4) — THE BAND MUST NOT SET THE WIDTH OF THE DOCUMENT.
+     MEASURED at a true 400x900 viewport: the band rendered 608 CSS px wide and
+     the whole page scrolled 230 px sideways, so every screen the captain read
+     on his phone sat on a canvas wider than his phone.
+
+     THE MECHANISM is the one S213 fix round 1 (D5) wrote down for the ◈ Number
+     One report, applied to the frame: the band is a grid item in a `1fr`
+     track, so the track's automatic minimum is the band's own MIN-CONTENT
+     width — and a row of nine controls that will not wrap has a big one. The
+     sibling `.frame-content` already carries `min-width:0` for exactly this
+     reason, which is why the nine board columns (a deliberate sideways swipe)
+     never widened the page while the band always did.
+
+     So: the floor comes off, and the thing that can be wide scrolls INSIDE ITS
+     OWN BOX — the third of S213's three options, chosen over wrapping because
+     the band's height is a frame constant (`--frame-top-h`) that the elbow and
+     the rail are both pinned to. Every control stays reachable: the band
+     swipes exactly as the columns do. PHONE ONLY — outside this breakpoint
+     the frame is byte-identical. */
+  .frame-top{min-width:0}
+  .topbar{padding:0 12px 0 10px;gap:8px;overflow-x:auto;overflow-y:hidden}
   .topbar .brand{font-size:16px;letter-spacing:.14em}
   .topbar .band-block.band-grow{min-width:8px}
   .board-wrap{padding:12px 14px}

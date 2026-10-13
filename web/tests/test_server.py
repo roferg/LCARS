@@ -10,6 +10,7 @@ stdlib only; the daemon runs on an ephemeral localhost port inside the test.
 """
 import json
 import os
+import re
 import sys
 import tempfile
 import threading
@@ -96,6 +97,27 @@ class ServerTest(unittest.TestCase):
         self.assertTrue(
             "no-store" in cc or "no-cache" in cc,
             "static Cache-Control must prevent stale caching, got %r" % cc)
+
+    def test_board_declares_a_favicon_that_is_actually_served(self):
+        """S288 (D5): EVERY board load logged `GET /favicon.ico 404` — one
+        console error on every page view, for ever, in the round that makes the
+        repo public. A browser asks for /favicon.ico only when the page does not
+        say where its icon is, so the cure is both halves: the page DECLARES one
+        and the daemon SERVES it. Asserting only the <link> would leave a
+        declared icon that 404s, which is the same console error with extra
+        steps."""
+        status, ctype, html = self._get("/")
+        self.assertEqual(status, 200)
+        m = re.search(rb'<link[^>]+rel="icon"[^>]*>', html)
+        self.assertIsNotNone(m, "index.html must declare rel=\"icon\"")
+        href = re.search(rb'href="([^"]+)"', m.group(0))
+        self.assertIsNotNone(href, "the icon link must carry an href")
+        path = href.group(1).decode()
+        self.assertTrue(path.startswith("/"), "the icon href must be site-absolute")
+        istatus, ictype, ibody = self._get(path)
+        self.assertEqual(istatus, 200, "%s must be served, not 404" % path)
+        self.assertIn("image/", ictype)
+        self.assertTrue(len(ibody) > 0)
 
     def test_board_css_hides_drawer_when_hidden(self):
         """Regression (S67 fix-loop r2, DEFECT 1): the served board.css MUST

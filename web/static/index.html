@@ -4,6 +4,11 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>LCARS — Kanban Board</title>
+<!-- S288 (D5): the board's own icon. Without this line a browser asks for
+     /favicon.ico on EVERY page view and logs a 404 in the console every
+     time; declared, it asks for this instead and the console stays clean.
+     Served by the daemon's static handler like board.css/board.js. -->
+<link rel="icon" type="image/svg+xml" href="/favicon.svg">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Antonio:wght@400;500;600;700&family=Oxanium:wght@400;600;700&display=swap" rel="stylesheet">
