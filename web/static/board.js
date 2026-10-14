@@ -160,7 +160,7 @@ function ownerLockLine(login) {
 var LOCK_GLYPH = "⊘";
 /* The leading glyphs a control wears to say what it will DO. A locked control
    must wear none of them. */
-var LOCK_ACTION_GLYPHS = "▶▸▹✓⏸◐◷↻◆⊹";
+var LOCK_ACTION_GLYPHS = "▶▸▹✓⏸◐◷↻◆⊹◇";
 
 function markLocked(n) {
   if (!n) return;
@@ -1151,6 +1151,7 @@ function openXoPicker(meta) {
   if (noEngine) {
     engage.disabled = true;
     engage.title = ENGINE_NONE_NOTE;
+    markLocked(engage);
   }
   m.foot.appendChild(engage);
   showOverlay(m.wrap);
@@ -5416,6 +5417,7 @@ function renderFrontDoor(fd) {
     if (frontDoorNoEngine()) {
       go.disabled = true;
       go.title = ENGINE_NONE_NOTE;
+      markLocked(go);
     }
     actions.appendChild(go);
     var ghost = el("button", "btn ghost", copy.ghost);
@@ -7516,8 +7518,10 @@ function openFile() {
   if (!filePicker.live) {
     park.disabled = true;
     park.title = ENGINE_NONE_NOTE;
+    markLocked(park);
     go.disabled = true;
     go.title = ENGINE_NONE_NOTE;
+    markLocked(go);
   }
   // Footer order (primary rightmost, per the modal convention):
   // [Cancel] [File & Begin Alignment (secondary)] [◇ File to Backlog ▸ (primary)].
@@ -17370,6 +17374,7 @@ function openNewProgram() {
   if (!holoPicker.live) {
     go.disabled = true;
     go.title = ENGINE_NONE_NOTE;
+    markLocked(go);
   }
   m.foot.appendChild(footHint);
   m.foot.appendChild(el("span", "grow"));
