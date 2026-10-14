@@ -513,14 +513,18 @@ check "5e. no model anywhere ⇒ model unset (printed as -)" \
   "printf '%s' \"\$out5u\" | qgrep -q 'model=- '"
 
 # Adapter regression lock: with NO model env, claude argv is byte-for-byte the
-# session-18 five lines (no --model).
+# session-18 eight lines (no --model).
+# S168 added the --disallowedTools pair and the headless --dangerously-skip-permissions flag.
 A_NOMODEL="$(env -u LCARS_WORKER_MODEL bash "$ADAPTER" argv claude repo-read "$TMPROOT")"
 EXPECT_NOMODEL='-p
 --allowedTools
 Read,Grep,Glob,Write
+--disallowedTools
+Edit,Bash,NotebookEdit,WebSearch,WebFetch
 --output-format
-text'
-check "5f. adapter: unset model ⇒ exactly the session-18 5 lines (no --model)" \
+text
+--dangerously-skip-permissions'
+check "5f. adapter: unset model ⇒ exactly the session-18 8 lines (no --model)" \
   "[ \"\$A_NOMODEL\" = \"\$EXPECT_NOMODEL\" ]"
 
 # With a model env set, the adapter appends --model <m> for claude.
@@ -530,7 +534,7 @@ check "5g. adapter: set model ⇒ argv appends '--model'" \
 check "5h. adapter: set model ⇒ argv appends the model value" \
   "printf '%s' \"\$A_MODEL\" | qgrep -qx 'opus-x'"
 check "5i. adapter: --model is the LAST flag pair (appended, not reordered)" \
-  "[ \"\$(printf '%s' \"\$A_MODEL\" | sed -n '6p')\" = '--model' ] && [ \"\$(printf '%s' \"\$A_MODEL\" | sed -n '7p')\" = 'opus-x' ]"
+  "[ \"\$(printf '%s\n' \"\$A_MODEL\" | tail -2)\" = \"\$(printf '%s\n' '--model' 'opus-x')\" ]"
 
 # --- 6. the resolution log line names the winning SOURCE for a human ----------
 check "6a. log line names env source" \
