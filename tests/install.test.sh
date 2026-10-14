@@ -212,8 +212,16 @@ check "6. the hint mentions the bin dest path" \
 
 e6b="$(new_env)"
 run_install "$e6b" "$e6b/bin"   # bin dest IS on PATH (passed as extra_path)
+# The pattern here must name the BIN-DEST hint SPECIFICALLY. It used to be
+# `not on .*PATH`, which also matched install.sh's entirely correct and
+# unrelated "Claude CLI not on PATH — install it before running lcars
+# commands." So this check passed only on a machine that HAS an AI CLI
+# installed, and went red on a clean runner — the exact property the CI gate
+# exists to protect (found by S283's first real Actions run). "ACTION NEEDED"
+# occurs once in install.sh, in the bin-dest block, and the dest path pins it
+# to THIS install.
 check "6. prints NO add-to-PATH hint when bin dest IS already on PATH" \
-  "! qgrep -qi 'add .* to your PATH\|not on .*PATH\|export PATH' < '$e6b/out.txt'"
+  "! qgrep -q 'ACTION NEEDED' < '$e6b/out.txt'"
 
 # ==========================================================================
 # Behaviour 7: the EXISTING claude symlink install + copilot-absent graceful
