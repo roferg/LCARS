@@ -1,6 +1,6 @@
 # Design basis — Give the tile editor a more modern UI look and add a light/dark mode. I don't want to touch the tile canvas at all
 
-What the holodeck found by reading /Users/roganferguson/Projects/groutwork, read-only. Correct anything wrong here: it is what the mockup is built from.
+What the holodeck found by reading <fixture-project>, read-only. Correct anything wrong here: it is what the mockup is built from.
 
 I'll explore the repository to understand its existing design language.
 
@@ -20,7 +20,7 @@ I have a complete picture. Here is the basis.
 
 ---
 
-# basis.md — Groutwork Tile Editor: Existing Design Language
+# basis.md — Tile Editor: Existing Design Language
 
 Grounding for the "modern UI + light/dark mode" program. Everything below is read from real files in `packages/editor/`. The tile canvas (`components/MapCanvas/`, `components/canvas/`) is out of scope and was not treated as a source of design tokens.
 

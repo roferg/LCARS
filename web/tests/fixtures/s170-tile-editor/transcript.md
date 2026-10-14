@@ -26,7 +26,7 @@ I have a complete picture. Here is the basis.
 
 ---
 
-# basis.md — Groutwork Tile Editor: Existing Design Language
+# basis.md — Tile Editor: Existing Design Language
 
 Grounding for the "modern UI + light/dark mode" program. Everything below is read from real files in `packages/editor/`. The tile canvas (`components/MapCanvas/`, `components/canvas/`) is out of scope and was not treated as a source of design tokens.
 
@@ -157,10 +157,10 @@ Other feedback:
 
 **Holodeck:** This is a clear direction. Let me look at the reference images, then rebuild the sidebar, add the Objects tab, map context menus, and change the theme control.
 
-  [Image: Image file at path /Users/roganferguson/Projects/groutwork-holodeck/give-the-tile-editor-a
+  [Image: Image file at path <fixture-holodeck>/give-the-tile-editor-a
   -more-modern-ui-look-and/attachments/image.png [image/png] 85x78]
 
-  [Image: Image file at path /Users/roganferguson/Projects/groutwork-holodeck/give-the-tile-editor-a
+  [Image: Image file at path <fixture-holodeck>/give-the-tile-editor-a
   -more-modern-ui-look-and/attachments/image-2.png [image/png] 273x307]
 
 Now I'll make the changes. First, CSS additions for the new theme button, grouped layer list, map menu, and Objects mode.
@@ -225,7 +225,7 @@ _Attached this turn: image-3.png_
 
 **Holodeck:** Let me look at the current editor's toolbar icons.
 
-  [Image: Image file at path /Users/roganferguson/Projects/groutwork-holodeck/give-the-tile-editor-a
+  [Image: Image file at path <fixture-holodeck>/give-the-tile-editor-a
   -more-modern-ui-look-and/attachments/image-3.png [image/png] 330x49]
 
 The real toolbar has eight controls: pencil, curve, triangle/shape, marquee-select, grid-toggle, contrast, undo, redo. I'll remap the mock's toolbar to modern versions of each in that order. Let me view the current markup.
@@ -270,7 +270,7 @@ _Attached this turn: image-4.png_
 
 **Captain:** Remove these two artifacts.
 
-**Holodeck:**   [Image: Image file at path /Users/roganferguson/Projects/groutwork-holodeck/give-the-tile-editor-a
+**Holodeck:**   [Image: Image file at path <fixture-holodeck>/give-the-tile-editor-a
   -more-modern-ui-look-and/attachments/image-4.png [image/png] 90x53]
 
 The two odd icons are the **Curve** and **Contrast** buttons. Removing both.
@@ -291,7 +291,7 @@ _Attached this turn: image-5.png_
 
 **Holodeck:** The far-right icons are Undo/Redo. I'll restore Curve and Contrast, then remove Undo/Redo instead.
 
-  [Image: Image file at path /Users/roganferguson/Projects/groutwork-holodeck/give-the-tile-editor-a
+  [Image: Image file at path <fixture-holodeck>/give-the-tile-editor-a
   -more-modern-ui-look-and/attachments/image-5.png [image/png] 102x47]
 
 Confirmed — those are the Undo/Redo curved arrows. Restoring Curve and Contrast, removing Undo/Redo.
@@ -320,7 +320,7 @@ _Attached this turn: image-6.png_
 
 **Captain:** The x you put for close needs to be a button called close to close the currently open project. That already exists in the editor, you just don't have it mocked correctly. Make undo and redo look more like image 1 but on your new modern style
 
-**Holodeck:**   [Image: Image file at path /Users/roganferguson/Projects/groutwork-holodeck/give-the-tile-editor-a
+**Holodeck:**   [Image: Image file at path <fixture-holodeck>/give-the-tile-editor-a
   -more-modern-ui-look-and/attachments/image-6.png [image/png] 80x33]
 
 Two changes: the close X → a labeled "Close" button, and undo/redo to the simpler curved-arrow style from the image.

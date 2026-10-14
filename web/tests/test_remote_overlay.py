@@ -88,7 +88,7 @@ def issue(number, stage="implement", title=None, labels=(), assignee=None,
                                    "percentCompleted": 0}),
     }
     # S278 — the field the Done column orders by. gh emits it on every CLOSED
-    # issue (verified read-only against github/pagesai, 2026-10-11: present on
+    # issue (verified read-only against acme/widget, 2026-10-11: present on
     # all 51 done rows) and as `null` on an open one, which is exactly how a row
     # built without it reads here.
     if closed_at is not None:
@@ -2091,7 +2091,7 @@ class TheGateBuysNoForgeRoundTrip(_ShippedBase):
 #
 # THE ONE DISTINCTION THAT MATTERS. `lcars:done` is applied by `lcars approve`
 # at the ship and nowhere else, so a CLOSED issue carrying it SHIPPED, and a
-# CLOSED issue without it was ABANDONED. Measured read-only on github/pagesai
+# CLOSED issue without it was ABANDONED. Measured read-only on acme/widget
 # (2026-10-11): 54 mission issues, all closed, 51 with the label and 3 without.
 # Those 3 are not history to be proud of and they are not drawn.
 # ==========================================================================
@@ -2099,7 +2099,7 @@ def fresh_clone(tmp):
     """A clone with NO `.git/lcars/missions` at all — the condition every
     single one of these tests is about, and the one the local board has no
     answer for. `.git/lcars/` carries a config and nothing else, exactly as
-    `~/Projects/pagesai` does today (it holds only `cache/`)."""
+    `~/Projects/widget` does today (it holds only `cache/`)."""
     os.makedirs(os.path.join(tmp, ".git", "lcars"), exist_ok=True)
     with open(os.path.join(tmp, ".git", "lcars", "config.json"), "w") as fh:
         fh.write('{"projectName": "repo", "testCommand": "true"}\n')
@@ -2193,7 +2193,7 @@ class TheDoneColumnIsFilledFromTheForge(unittest.TestCase):
     # -- behaviour 2: the half of the old pin that is KEPT -----------------
     def test_a_closed_issue_with_no_done_label_is_NOT_drawn(self):
         """It was ABANDONED, not shipped. There are three of them in
-        github/pagesai and the Done column must not claim them."""
+        acme/widget and the Done column must not claim them."""
         b = self._board([issue(77, stage="implement", state="CLOSED",
                                closed_at="2026-09-01T09:00:00Z")])
         self.assertEqual([], b["columns"]["done"])
@@ -2341,7 +2341,7 @@ DONE_REMOTE = {
     "dispatched": False, "queued": False, "linked": False, "tickets": [],
     "pills": {}, "progress": {}, "remote": True, "readOnly": True,
     "adoptable": False, "closedAt": "2026-09-20T09:00:00Z",
-    "url": "https://github.ghe.com/github/pagesai/issues/31",
+    "url": "https://enterprise.example.com/acme/widget/issues/31",
 }
 DONE_LOCAL = {
     "id": "m-mine", "issue": 12, "title": "A mission I shipped here",
@@ -2355,8 +2355,8 @@ DONE_LOCAL = {
 class TheDoneColumnAsRenderBuildsIt(unittest.TestCase):
 
     def _render(self, done_cards, meta=None, click=None, open_detail=None):
-        m = {"repo": "github/pagesai", "adapter": "local",
-             "mode": "read-write", "ghHost": "github.ghe.com"}
+        m = {"repo": "acme/widget", "adapter": "local",
+             "mode": "read-write", "ghHost": "enterprise.example.com"}
         m.update(meta or {})
         spec = {
             "mission": DONE_REMOTE,
@@ -2439,7 +2439,7 @@ class TheDoneColumnAsRenderBuildsIt(unittest.TestCase):
     def test_the_click_opens_the_issue_in_a_new_tab(self):
         data = self._render([DONE_REMOTE], click="31")
         self.assertEqual(
-            [{"url": "https://github.ghe.com/github/pagesai/issues/31",
+            [{"url": "https://enterprise.example.com/acme/widget/issues/31",
               "target": "_blank", "features": "noopener"}],
             data["opened"])
 
@@ -2449,7 +2449,7 @@ class TheDoneColumnAsRenderBuildsIt(unittest.TestCase):
         in cardNode would have left Enter opening onto "no such mission"."""
         data = self._render([DONE_REMOTE], open_detail="31")
         self.assertEqual(
-            ["https://github.ghe.com/github/pagesai/issues/31"],
+            ["https://enterprise.example.com/acme/widget/issues/31"],
             [o["url"] for o in data["opened"]])
 
     def test_a_done_card_with_no_resolvable_link_opens_nothing(self):
@@ -2474,7 +2474,7 @@ class TheDoneColumnAsRenderBuildsIt(unittest.TestCase):
                         "nothing told the captain the column is capped")
         hrefs = [h["href"] for h in data["hrefs"]]
         self.assertIn(
-            "https://github.ghe.com/github/pagesai/issues?q="
+            "https://enterprise.example.com/acme/widget/issues?q="
             "is%3Aclosed+label%3Alcars%3Adone+label%3Alcars%3Amission",
             hrefs)
 
@@ -2527,7 +2527,7 @@ class TheDoneColumnAsRenderBuildsIt(unittest.TestCase):
 # --------------------------------------------------------------------------
 DONE_REMOTE_SCORED = dict(
     DONE_REMOTE, id="41", issue=41, title="A mission Number One graded",
-    url="https://github.ghe.com/github/pagesai/issues/41",
+    url="https://enterprise.example.com/acme/widget/issues/41",
     numberOne={"status": "finished", "score": "low",
                "meaning": "the primary flow was never exercised"},
 )

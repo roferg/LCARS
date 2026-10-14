@@ -173,8 +173,8 @@ The logic lives in `adopt.sh` next to this file; the forge calls go through
 `issue-closing-prs`), the envelope parsing through
 `skills/lcars-run/issue-body.sh`, and ownership through
 `skills/lcars-run/ownership.sh`. The PR-resolution strategy is the recorded
-outcome of the S189 spike — see `skills/lcars-run/ADOPT-RESOLUTION-SPIKE.md`
-before changing it. Behaviour is covered by `tests/lcars-adopt.test.sh`.
+outcome of the S189 spike, documented beside `github_issue_closing_prs` in
+`host-adapter.sh`. Behaviour is covered by `tests/lcars-adopt.test.sh`.
 The engine probe and the config seeding both go through
 `skills/lcars-init/lcars-common.sh` (`lcars_engine_available`,
 `lcars_available_engines`, `detect_stack`, `detect_test_cmd`,

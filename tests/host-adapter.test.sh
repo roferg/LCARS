@@ -437,7 +437,7 @@ check "C1. the multiline body reached gh over stdin" \
   "qgrep -q 'multiline body' <'$GH_BODY'"
 # The defect guard: the body that reached gh must be the REAL markdown, not the
 # literal sentinel "@-". If the adapter used `-f body=@-`, gh stores "@-" and
-# this fails — reproducing roferg/lcars-sandbox#188.
+# this fails — reproducing acme/widget#188.
 check "C1. the body that reached gh is NOT the literal sentinel @-" \
   "[ \"\$(cat '$GH_BODY')\" != '@-' ]"
 

@@ -10,7 +10,7 @@
 # the DEFAULT host (github.com) and only substitutes `{owner}/{repo}` from the cwd
 # repo. Verified against a real enterprise repo:
 #
-#   $ cd <repo on github.ghe.com>
+#   $ cd <repo on enterprise.example.com>
 #   $ gh api "repos/{owner}/{repo}"
 #   {"message":"Not Found","documentation_url":"https://docs.github.com/..."}
 #
@@ -82,25 +82,25 @@ run_op() {
 
 echo "GitHub Enterprise host resolution"
 
-GHE="https://github.ghe.com/acme/widgets"
+GHE="https://enterprise.example.com/acme/widgets"
 
 # --- 1. the api ops must pin the enterprise host --------------------------
 R1="$(new_repo_with_remote "$GHE")"
 printf 'hello\n' | run_op "$R1" issue-comment-create 42
-check "1a. issue-comment-create pins --hostname github.ghe.com" \
-  'grep -q -- "--hostname github.ghe.com" "$R1/gh.log"'
+check "1a. issue-comment-create pins --hostname enterprise.example.com" \
+  'grep -q -- "--hostname enterprise.example.com" "$R1/gh.log"'
 check "1b. it still POSTs to the right path" \
   'grep -q "issues/42/comments" "$R1/gh.log"'
 
 R2="$(new_repo_with_remote "$GHE")"
 printf 'hello\n' | run_op "$R2" issue-comment-edit 555
 check "2. issue-comment-edit pins --hostname" \
-  'grep -q -- "--hostname github.ghe.com" "$R2/gh.log"'
+  'grep -q -- "--hostname enterprise.example.com" "$R2/gh.log"'
 
 R3="$(new_repo_with_remote "$GHE")"
 run_op "$R3" link-subissue 42 314
 check "3a. link-subissue pins --hostname on BOTH api calls" \
-  '[ "$(grep -c -- "--hostname github.ghe.com" "$R3/gh.log")" -ge 2 ]'
+  '[ "$(grep -c -- "--hostname enterprise.example.com" "$R3/gh.log")" -ge 2 ]'
 check "3b. the typed -F sub_issue_id survives the change" \
   'grep -q -- "-F sub_issue_id=" "$R3/gh.log"'
 
@@ -125,10 +125,10 @@ check "6. a repo with no origin adds no --hostname" \
   '! grep -q -- "--hostname" "$R6/gh.log"'
 
 # --- 4. ssh + self-hosted enterprise --------------------------------------
-R7="$(new_repo_with_remote "git@github.ghe.com:acme/widgets.git")"
+R7="$(new_repo_with_remote "git@enterprise.example.com:acme/widgets.git")"
 printf 'hello\n' | run_op "$R7" issue-comment-create 42
 check "7. an SSH enterprise remote is parsed to its host" \
-  'grep -q -- "--hostname github.ghe.com" "$R7/gh.log"'
+  'grep -q -- "--hostname enterprise.example.com" "$R7/gh.log"'
 
 R8="$(new_repo_with_remote "https://git.internal.corp:8443/acme/widgets.git")"
 printf 'hello\n' | run_op "$R8" issue-comment-create 42
@@ -151,7 +151,7 @@ check "9. LCARS_GH_HOST overrides the derived host" \
 if type lcars_gh_web_host >/dev/null 2>&1; then
   RH="$(cd "$R1" && lcars_gh_web_host)"
   check "10a. the shared web-host helper reports the enterprise host" \
-    '[ "$RH" = "github.ghe.com" ]'
+    '[ "$RH" = "enterprise.example.com" ]'
   RH2="$(cd "$R4" && lcars_gh_web_host)"
   check "10b. it reports github.com for a github.com repo" \
     '[ "$RH2" = "github.com" ]'
@@ -179,13 +179,13 @@ gh_host_of() {  # $1 = repo dir; echoes the op's stdout verbatim
   ( cd "$1" && bash "$ADAPTER" gh-host ) 2>/dev/null
 }
 check "11a. gh-host echoes the enterprise host" \
-  '[ "$(gh_host_of "$R1")" = "github.ghe.com" ]'
+  '[ "$(gh_host_of "$R1")" = "enterprise.example.com" ]'
 check "11b. gh-host echoes NOTHING for github.com (the byte-identity contract)" \
   '[ -z "$(gh_host_of "$R4")" ]'
 check "11c. gh-host echoes nothing for a repo with no origin" \
   '[ -z "$(gh_host_of "$R6")" ]'
 check "11d. gh-host parses an scp-style enterprise remote" \
-  '[ "$(gh_host_of "$R7")" = "github.ghe.com" ]'
+  '[ "$(gh_host_of "$R7")" = "enterprise.example.com" ]'
 check "11e. gh-host drops a :port" \
   '[ "$(gh_host_of "$R8")" = "git.internal.corp" ]'
 check "11f. gh-host exits 0 even where there is no forge host" \
@@ -194,7 +194,7 @@ R10="$(new_repo_with_remote "$GHE")"
 check "11g. LCARS_GH_HOST overrides gh-host too" \
   '[ "$( ( cd "$R10" && LCARS_GH_HOST=other.example.com bash "$ADAPTER" gh-host ) )" = "other.example.com" ]'
 check "11h. gh-host does not need gh installed (it is a git question)" \
-  '[ "$( ( cd "$R1" && PATH=/usr/bin:/bin LCARS_GH_BIN=/nonexistent/gh bash "$ADAPTER" gh-host ) )" = "github.ghe.com" ]'
+  '[ "$( ( cd "$R1" && PATH=/usr/bin:/bin LCARS_GH_BIN=/nonexistent/gh bash "$ADAPTER" gh-host ) )" = "enterprise.example.com" ]'
 
 # --- 8. DRIFT LOCK: the two host derivations must agree --------------------
 # gh_hostname (host-adapter.sh, for `gh api --hostname`) and lcars_gh_web_host
@@ -205,8 +205,8 @@ check "11h. gh-host does not need gh installed (it is a git question)" \
 # produce the SAME string, or the CLI readout and the board link will one day
 # name different hosts. A comment cannot enforce that; this table can.
 drift=0
-for u in "https://github.ghe.com/acme/widgets" \
-         "git@github.ghe.com:acme/widgets.git" \
+for u in "https://enterprise.example.com/acme/widgets" \
+         "git@enterprise.example.com:acme/widgets.git" \
          "ssh://git@git.internal.corp:8443/acme/widgets.git" \
          "https://github.com/acme/widgets" \
          "git@github.com:acme/widgets.git" \

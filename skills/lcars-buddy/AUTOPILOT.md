@@ -110,7 +110,7 @@ answer is what unblocks it.
 Write with the driver, not by hand:
 
 ```bash
-lcars-autopilot record liveTargets.host github.ghe.com
+lcars-autopilot record liveTargets.host enterprise.example.com
 lcars-autopilot record missions.M0.id lcars-20260930-001
 lcars-autopilot record missions.M0.verified true
 lcars-autopilot record preauthorised.liveTestWrites true

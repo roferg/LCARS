@@ -72,7 +72,7 @@ MID="lcars-20260615-001"
 #   gh api --method PATCH  /repos/{owner}/{repo}/issues/comments/<id> -F body=@-
 #
 # This stub models REAL `gh api` field semantics so the literal-`@-` defect
-# (roferg/lcars-sandbox#188) CANNOT pass: only `-F/--field body=@-` reads stdin;
+# (acme/widget#188) CANNOT pass: only `-F/--field body=@-` reads stdin;
 # `-f/--raw-field body=@-` stores the LITERAL string "@-" (gh never reads stdin
 # there). So if the adapter regresses to `-f body=@-`, the captured body is the
 # 2-char sentinel "@-" and the rich-body assertions fail.
@@ -232,7 +232,7 @@ check "T2. the edit targets the SAME comment id" "[ -f '$GH_BODYDIR/$CID1' ]"
 
 # --- T4: the Implement dashboard body ---------------------------------------
 BODY1="$(cat "$GH_BODYDIR/$CID1")"
-# Defect guard (roferg/lcars-sandbox#188): the CREATEd and EDITed bodies that
+# Defect guard (acme/widget#188): the CREATEd and EDITed bodies that
 # reached gh must be the rendered markdown, NEVER the literal 2-char sentinel
 # "@-". With `-f body=@-` the stub captures "@-" and this fails.
 check "T4. the CREATEd body is NOT the literal sentinel @-" \

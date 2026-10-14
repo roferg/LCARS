@@ -106,7 +106,7 @@ FETCH_TIMEOUT = 25
 # used to ask for. It is the date the mission SHIPPED (the merge closes the issue
 # via the PR body's `Closes #n`), which is the order a history reads in; the
 # issue NUMBER is the order it was FILED in, and those are different orders.
-# Verified read-only against github/pagesai on 2026-10-11: gh emits it on all 51
+# Verified read-only against an enterprise repo on 2026-10-11: gh emits it on all 51
 # closed `lcars:done` rows. Still ONE call per cycle — a field, not a request.
 _JSON_FIELDS = ("number,title,state,labels,body,updatedAt,assignees,"
                 "subIssuesSummary,closedAt")
@@ -342,7 +342,7 @@ class RemoteMissions(object):
                 #   closed + lcars:done  → it SHIPPED. Draw it, read-only.
                 #   closed, no label     → it was ABANDONED (or closed by hand).
                 #                          Not drawn. There are three of them in
-                #                          github/pagesai and the Done column is
+                #                          the measured repo and the Done column is
                 #                          not the place to list them.
                 if _DONE_LABEL not in _labels(row):
                     continue

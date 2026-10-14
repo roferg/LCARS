@@ -4,6 +4,15 @@ All notable changes to LCARS are recorded here, newest first. The version
 scheme is `YYYY.M.N` (calendar year, month with no leading zero, per-month
 counter). Every PR into `main` bumps `VERSION` and adds its entry here.
 
+## 2026.10.3 — public-project contribution and safety contracts
+
+Completed the human contribution guide alongside the AI-agent build contract.
+Added a security policy describing private reporting and the command-execution
+and directory-trust risks, a Contributor Covenant-based conduct policy, default
+code ownership, bug and idea templates, and a PR checklist for scoped proof and
+release metadata. Private contact placeholders still require owner configuration.
+A fast public-project guard now checks that these files remain substantive.
+
 ## 2026.10.2 — the stand-in gets its reach back
 
 **Your buddy can now do what you'd do, instead of stopping to ask you to do it.**

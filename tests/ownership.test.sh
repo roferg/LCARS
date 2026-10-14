@@ -18,8 +18,8 @@
 #   (run / respond / approve / feedback / log) refuse a mission owned by
 #   someone else; the READ verbs never do.
 #
-# THE TWO LOAD-BEARING CASES (recorded against real gh 2.96.0 in
-# skills/lcars-run/ADOPT-RESOLUTION-SPIKE.md, LEG A):
+# THE TWO LOAD-BEARING CASES (recorded against real gh 2.96.0;
+# documented beside github_whoami and github_issue_assign in host-adapter.sh):
 #
 #   * THE SILENT DROP (spike A.3 case 6 / failure modes 1+2). Assigning a real
 #     user who lacks access to the repo returns rc=0 WITH a success-shaped issue
@@ -195,10 +195,10 @@ check "A1. whoami reads the \`user\` endpoint" \
 #     (byte-compat with today's argv).
 # --------------------------------------------------------------------------
 : >"$GH_LOG"
-GH_WHOAMI=roferg LCARS_GH_HOST=github.ghe.com LCARS_GH_BIN="$GH" \
+GH_WHOAMI=roferg LCARS_GH_HOST=enterprise.example.com LCARS_GH_BIN="$GH" \
   bash "$ADAPTER" whoami >/dev/null 2>&1
 check "A2. whoami on a GHE host PINS the host (gh api --hostname …), not a bare \`gh api\`" \
-  "grep -q 'gh api --hostname github.ghe.com user' '$GH_LOG'"
+  "grep -q 'gh api --hostname enterprise.example.com user' '$GH_LOG'"
 
 repoA="$(new_repo)"
 : >"$GH_LOG"
@@ -328,7 +328,7 @@ check "B2. the on-disk cache returns the right login" "printf '%s' \"\$out\" | g
 # The cache is HOST-SCOPED — identity is the (host, login) PAIR, never the
 # numeric id, which differs per host for the same login (spike A.5 / mode 8).
 : >"$GH_LOG"
-out="$( cd "$repoC" && LCARS_GH_HOST=github.ghe.com LCARS_GH_BIN="$GH" GH_WHOAMI=ghe-me \
+out="$( cd "$repoC" && LCARS_GH_HOST=enterprise.example.com LCARS_GH_BIN="$GH" GH_WHOAMI=ghe-me \
         bash "$PROBE" whoami 2>/dev/null )"
 check "B2. the whoami cache is HOST-SCOPED (a different host does not reuse it)" \
   "printf '%s' \"\$out\" | grep -qx 'OUT=ghe-me'"

@@ -1,6 +1,6 @@
 # Design basis — Trip board — dark theme with a left stop list
 
-What the holodeck found by reading /private/tmp/claude-501/-Users-roganferguson-Projects-LCARS/bb41f80a-24d6-4638-a50d-4eeb3626f1e2/scratchpad/target, read-only. Correct anything wrong here: it is what the mockup is built from.
+What the holodeck found by reading the temporary scratchpad target, read-only. Correct anything wrong here: it is what the mockup is built from.
 
 I'll explore the repository to report its existing design language.
 

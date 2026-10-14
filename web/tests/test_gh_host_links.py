@@ -158,12 +158,12 @@ class GhHostMetaTest(unittest.TestCase):
 
     # -- the fix ------------------------------------------------------------
     def test_enterprise_https_remote_puts_its_host_on_meta(self):
-        meta = self._board("https://github.ghe.com/acme/widget.git")["meta"]
-        self.assertEqual(meta.get("ghHost"), "github.ghe.com")
+        meta = self._board("https://enterprise.example.com/acme/widget.git")["meta"]
+        self.assertEqual(meta.get("ghHost"), "enterprise.example.com")
 
     def test_enterprise_scp_remote_puts_its_host_on_meta(self):
-        meta = self._board("git@github.ghe.com:acme/widget.git")["meta"]
-        self.assertEqual(meta.get("ghHost"), "github.ghe.com")
+        meta = self._board("git@enterprise.example.com:acme/widget.git")["meta"]
+        self.assertEqual(meta.get("ghHost"), "enterprise.example.com")
 
     def test_a_self_hosted_forge_with_a_port_drops_the_port(self):
         # A host:port would be a perfectly plausible thing to forward, and it
@@ -174,7 +174,7 @@ class GhHostMetaTest(unittest.TestCase):
     def test_the_value_is_a_bare_host_not_a_url(self):
         # The front end pins the scheme; a daemon-supplied string must never be
         # able to become one.
-        h = self._board("https://github.ghe.com/acme/widget.git")["meta"]["ghHost"]
+        h = self._board("https://enterprise.example.com/acme/widget.git")["meta"]["ghHost"]
         self.assertNotIn("/", h)
         self.assertNotIn(":", h)
 
@@ -231,7 +231,7 @@ class GhHostMetaTest(unittest.TestCase):
 
     # -- degradation: never a broken link, never a crash --------------------
     def test_a_missing_host_adapter_degrades_to_todays_behaviour(self):
-        meta = self._board("https://github.ghe.com/acme/widget.git",
+        meta = self._board("https://enterprise.example.com/acme/widget.git",
                            host_adapter_script=os.path.join(self.tmp, "nope.sh"))["meta"]
         self.assertNotIn("ghHost", meta)
 
@@ -240,7 +240,7 @@ class GhHostMetaTest(unittest.TestCase):
         with open(script, "w") as fh:
             fh.write("#!/usr/bin/env bash\necho nonsense\nexit 3\n")
         os.chmod(script, 0o755)
-        meta = self._board("https://github.ghe.com/acme/widget.git",
+        meta = self._board("https://enterprise.example.com/acme/widget.git",
                            host_adapter_script=script)["meta"]
         self.assertNotIn("ghHost", meta)
 
@@ -254,7 +254,7 @@ class GhHostMetaTest(unittest.TestCase):
                 fh.write("#!/usr/bin/env bash\nprintf '%s' %s\n"
                          % ("%s", json.dumps(junk)))
             os.chmod(script, 0o755)
-            meta = self._board("https://github.ghe.com/acme/widget.git",
+            meta = self._board("https://enterprise.example.com/acme/widget.git",
                                host_adapter_script=script)["meta"]
             self.assertNotIn("ghHost", meta, "accepted %r as a host" % junk)
 
@@ -264,12 +264,12 @@ class GhHostMetaTest(unittest.TestCase):
         script = os.path.join(self.tmp, "counting.sh")
         with open(script, "w") as fh:
             fh.write("#!/usr/bin/env bash\necho call >>%s\n"
-                     "printf 'github.ghe.com'\n" % json.dumps(log))
+                     "printf 'enterprise.example.com'\n" % json.dumps(log))
         os.chmod(script, 0o755)
-        ad = LocalAdapter(self._repo("https://github.ghe.com/acme/widget.git"),
+        ad = LocalAdapter(self._repo("https://enterprise.example.com/acme/widget.git"),
                           host_adapter_script=script)
         for _ in range(25):   # ~25 seconds of the server's poll loop
-            self.assertEqual(ad.board()["meta"]["ghHost"], "github.ghe.com")
+            self.assertEqual(ad.board()["meta"]["ghHost"], "enterprise.example.com")
         with open(log) as fh:
             calls = [ln for ln in fh.read().splitlines() if ln]
         self.assertEqual(len(calls), 1, "shelled %d times, not once" % len(calls))
@@ -300,8 +300,8 @@ class ShellIsTheOneImplementationTest(unittest.TestCase):
         self.tmp = tempfile.mkdtemp()
 
     def test_the_daemon_agrees_with_the_shell_on_every_remote_shape(self):
-        shapes = ["https://github.ghe.com/acme/widget",
-                  "git@github.ghe.com:acme/widget.git",
+        shapes = ["https://enterprise.example.com/acme/widget",
+                  "git@enterprise.example.com:acme/widget.git",
                   "ssh://git@git.internal.corp:8443/acme/widget.git",
                   "https://github.com/acme/widget",
                   "git@github.com:acme/widget.git",
@@ -320,8 +320,8 @@ class ShellIsTheOneImplementationTest(unittest.TestCase):
 # S278 — THE DONE COLUMN'S LINKS ARE ON THE SAME HOST.
 #
 # The remote overlay now draws a read-only Done card per CLOSED `lcars:done`
-# mission issue, and each one carries the URL of its issue. The captain works in
-# `github.ghe.com` repos — this is the exact class of bug S168 was opened for,
+# mission issue, and each one carries the URL of its issue. Enterprise users work in
+# repos like `enterprise.example.com` — this is the exact class of bug S168 was opened for,
 # on a surface that did not exist when S168 was written, so it is pinned HERE,
 # beside the thing it must agree with, rather than in a new file.
 #
@@ -376,14 +376,14 @@ class DoneCardIssueUrlTest(unittest.TestCase):
         return done[0], b["meta"]
 
     def test_the_enterprise_host_reaches_the_done_card(self):
-        card, meta = self._done_card("https://github.ghe.com/github/pagesai.git")
-        self.assertEqual("github.ghe.com", meta.get("ghHost"))
-        self.assertEqual("https://github.ghe.com/github/pagesai/issues/31",
+        card, meta = self._done_card("https://enterprise.example.com/acme/widget.git")
+        self.assertEqual("enterprise.example.com", meta.get("ghHost"))
+        self.assertEqual("https://enterprise.example.com/acme/widget/issues/31",
                          card["url"])
 
     def test_the_scp_enterprise_remote_reaches_it_too(self):
-        card, _ = self._done_card("git@github.ghe.com:github/pagesai.git")
-        self.assertEqual("https://github.ghe.com/github/pagesai/issues/31",
+        card, _ = self._done_card("git@enterprise.example.com:acme/widget.git")
+        self.assertEqual("https://enterprise.example.com/acme/widget/issues/31",
                          card["url"])
 
     def test_github_com_is_the_fallback_and_is_not_guessed_at(self):

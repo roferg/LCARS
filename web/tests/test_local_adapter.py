@@ -982,8 +982,8 @@ class LocalAdapterTest(unittest.TestCase):
         os.makedirs(gitdir, exist_ok=True)
         with open(os.path.join(gitdir, "config"), "w") as fh:
             fh.write('[remote "origin"]\n'
-                     '\turl = git@github.com:roferg/lcars-sandbox.git\n')
-        self.assertEqual(self._board()["meta"]["repo"], "roferg/lcars-sandbox")
+                     '\turl = git@github.com:acme/widget.git\n')
+        self.assertEqual(self._board()["meta"]["repo"], "acme/widget")
 
     def test_board_meta_repo_worktree_safe_when_git_is_a_file(self):
         # Simulate a git WORKTREE: <root>/.git is a FILE (a gitdir: pointer),

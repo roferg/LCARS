@@ -15,9 +15,9 @@
 # issue: on GitHub.
 #
 # --- IDENTITY IS THE (host, login) PAIR — NEVER THE NUMERIC ID ----------------
-# Measured against real gh 2.96.0 (skills/lcars-run/ADOPT-RESOLUTION-SPIKE.md,
-# A.5): the SAME login `roferg` has `.id` 40493721 on github.com and 97261 on
-# the enterprise host. An id is meaningless across forges, `.name` is nullable,
+# Measured against real gh 2.96.0; covered by tests/ownership.test.sh:
+# the SAME login can have different numeric ids on github.com and an
+# enterprise host. An id is meaningless across forges, `.name` is nullable,
 # and the same user's `.avatar_url` differs in its query string between the
 # `user` payload and an issue payload. `.login` is the ONLY thing that is both
 # stable and the string the assignee API takes. Everything here therefore keys
