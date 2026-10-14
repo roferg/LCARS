@@ -361,9 +361,9 @@ subprocess.run(["git", "init", "-q", str(repo)], check=True)
 mission = repo / ".git/lcars/missions/cost-corpus"
 mission.mkdir(parents=True)
 (repo / ".git/lcars/config.json").write_text('{"copilotBilling":"usage"}\n')
-results = {key: [] for key in "abc"}
+results = {key: [] for key in "abcde"}
 
-def predict(estimate):
+def predict(estimate, *, details=False):
     (mission / "estimate.json").write_text(json.dumps(estimate))
     import os
     env = dict(os.environ, LCARS_WORKER_CLI="copilot", LCARS_GH_BIN="true")
@@ -371,7 +371,7 @@ def predict(estimate):
                          cwd=repo, env=env, text=True, capture_output=True, check=True)
     cost = json.loads(run.stdout[run.stdout.index("{"):])
     assert cost["cli"] == "copilot" and cost["unit"] == "usd"
-    return cost["usd"]["low"], cost["usd"]["high"]
+    return cost if details else (cost["usd"]["low"], cost["usd"]["high"])
 
 def sane(bounds):
     low, high = bounds
@@ -387,22 +387,72 @@ for case in corpus:
     label = f"{case['mission']}: ${bounds[0]:.6f}–${bounds[1]:.6f}, actual ${actual:.6f}"
     record("a", label, bounds[0] <= actual <= bounds[1])
     record("b", case["mission"] + " positive finite ordered range", sane(bounds))
+    record("d", case["mission"] + " tight band containing actual",
+           bounds[1] / bounds[0] <= 2.5 and bounds[0] <= actual <= bounds[1])
 
 trivial = copy.deepcopy(corpus[0]["estimate"])
 for stage in trivial["models"]:
     trivial["tokenEstimates"][stage] = {"low": 1000, "high": 2000}
     trivial["requestEstimates"][stage] = {"low": 1, "high": 2}
 record("b", "trivial mission returns a positive finite ordered numeric range", sane(predict(trivial)))
+# The classified base and its unfitted double are different regimes, not one
+# continuous function; compare double vs quadruple (both unfitted) to preserve
+# monotonicity, and additionally require the double to keep its wide range.
 unseen = copy.deepcopy(corpus[5]["estimate"])
 for field in ("tokenEstimates", "requestEstimates"):
     for band in unseen[field].values():
         for bound in band:
             band[bound] *= 2
 unseen_bounds = predict(unseen)
-largest_bounds = predict(corpus[5]["estimate"])
+quadruple = copy.deepcopy(unseen)
+for field in ("tokenEstimates", "requestEstimates"):
+    for band in quadruple[field].values():
+        for bound in band:
+            band[bound] *= 2
+quadruple_bounds = predict(quadruple)
 record("c", f"unfitted double-largest: {unseen_bounds}, finite ordered and monotonic",
        sane(unseen_bounds) and all(b <= a <= 2 * b
-                                  for a, b in zip(unseen_bounds, largest_bounds)))
+                                  for a, b in zip(quadruple_bounds, unseen_bounds)))
+record("c", "unfitted quadruple-largest stays positive finite ordered", sane(quadruple_bounds))
+unseen_cost = predict(unseen, details=True)
+record("c", "double-largest remains wide and unclassified",
+       unseen_bounds[1] / unseen_bounds[0] > 5 and "band" not in unseen_cost)
+
+gap = copy.deepcopy(corpus[5]["estimate"])
+factor = 600000 / 3275000
+for band in gap["tokenEstimates"].values():
+    for bound in band:
+        band[bound] *= factor
+gap_cost = predict(gap, details=True)
+record("e", "token gap near 600,000 remains wide and unclassified",
+       gap_cost["usd"]["high"] / gap_cost["usd"]["low"] > 5 and "band" not in gap_cost)
+
+def shape(tokens, requests):
+    estimate = copy.deepcopy(corpus[5]["estimate"])
+    for field, total in (("tokenEstimates", tokens), ("requestEstimates", requests)):
+        for index, band in enumerate(estimate[field].values()):
+            band.update(low=0, high=total if index == 0 else 0)
+    return estimate
+
+for tokens, requests, expected in (
+        (155000, 9, "small"), (254000, 24, "small"),
+        (1075000, 34, "large"), (3275000, 42, "large"),
+        (154999, 9, None), (254001, 24, None),
+        (155000, 8, None), (254000, 25, None),
+        (1074999, 34, None), (3275001, 42, None),
+        (1075000, 33, None), (3275000, 43, None),
+        (155000, 34, None), (1075000, 9, None)):
+    cost = predict(shape(tokens, requests), details=True)
+    expected_usd = {"small": {"low": 4, "high": 9},
+                    "large": {"low": 71, "high": 155}}
+    record("e", f"closed independent envelopes T={tokens}, R={requests}: {expected}",
+           (cost.get("band") == expected and cost["usd"] == expected_usd[expected])
+           if expected else "band" not in cost)
+for missing in ("tokenEstimates", "requestEstimates"):
+    estimate = shape(155000, 9)
+    del estimate[missing]
+    record("e", f"missing {missing} remains unclassified",
+           "band" not in predict(estimate, details=True))
 for group, checks in results.items():
     print(f"({group}) {sum(checks)} passed, {len(checks) - sum(checks)} failed", flush=True)
 sys.exit(0 if all(all(checks) for checks in results.values()) else 1)

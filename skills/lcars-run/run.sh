@@ -18714,6 +18714,21 @@ cost_token_usd() { # estimate-json pricing-scope → "low high" | ""
   printf '%s %s' "$usd_low" "$usd_high"
 }
 
+cost_cluster_band() { # estimate-json → "low high band" | "" for unfitted missions
+  python3 - "$1" <<'PY'
+import json, sys
+
+with open(sys.argv[1]) as source:
+    estimate = json.load(source)
+tokens = sum(stage.get("high", 0) or 0 for stage in estimate.get("tokenEstimates", {}).values())
+requests = sum(stage.get("high", 0) or 0 for stage in estimate.get("requestEstimates", {}).values())
+if 155000 <= tokens <= 254000 and 9 <= requests <= 24:
+    print("4.00 9.00 small")
+elif 1075000 <= tokens <= 3275000 and 34 <= requests <= 42:
+    print("71.00 155.00 large")
+PY
+}
+
 # Compute and print the canonical "cost" JSON block (the value of the estimate's
 # `cost` key, indented two spaces, no trailing comma) for one estimate.json under
 # the active CLI. $1 = estimate.json path; $2 = active cli (claude|copilot).
@@ -18741,6 +18756,15 @@ cost_compute() { # estimate-json cli → prints the cost JSON block to stdout
       return 0
     }
     local usd_low="${pair%% *}" usd_high="${pair##* }"
+    # n=7, ONE project, three small and four large; the clusters may be an artifact
+    # of that project; which is exactly why an unfitted mission keeps the wide range
+    # instead of being forced into a band.
+    # Copilot usage dollars are not evidence about Claude pricing; leave Claude unchanged.
+    local fit band=""
+    fit="$(cost_cluster_band "$est")"
+    if [ -n "$fit" ]; then
+      read -r usd_low usd_high band <<<"$fit"
+    fi
     local plan; plan="$(copilot_plan)"
     local credits; credits="$(json_scoped_num "$pricing" "copilot.usage.creditAllotmentByPlan.$plan")"
     [ -n "$credits" ] || credits=0
@@ -18757,6 +18781,7 @@ cost_compute() { # estimate-json cli → prints the cost JSON block to stdout
     printf '    "unit": "usd",\n'
     printf '    "billing": "usage",\n'
     printf '    "usd": { "low": %s, "high": %s },\n' "$usd_low" "$usd_high"
+    [ -z "$band" ] || printf '    "band": "%s",\n' "$band"
     printf '    "includedCreditsUsd": %s,\n' "$included"
     printf '    "netUsd": { "low": %s, "high": %s }\n' "$net_low" "$net_high"
     printf '  }'
