@@ -22,7 +22,7 @@ if any(arg in ('--apply', '--run', '--owner-opt-in') for arg in sys.argv[2:]):
 
 parser = argparse.ArgumentParser(description='Validate and preview a ruleset; never apply it.')
 parser.add_argument('--ruleset', default=sys.argv[1], help='JSON body to validate')
-parser.add_argument('--repo', default='roferg/lcars', help='OWNER/REPO (default: roferg/lcars)')
+parser.add_argument('--repo', default='roferg/LCARS', help='OWNER/REPO (default: roferg/LCARS)')
 parser.add_argument('--dry-run', action='store_true', help='explicitly select the default preview-only mode')
 parser.add_argument('--check-availability', action='store_true', help='optional read-only GET using LCARS_GH_BIN (default: gh)')
 args = parser.parse_args(sys.argv[2:])

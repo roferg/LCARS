@@ -1,4 +1,4 @@
-# Default reviewer: the existing GitHub owner of roferg/lcars.
+# Default reviewer: the existing GitHub owner of roferg/LCARS.
 # Ownership requests review; it does not enable branch protection or rulesets.
 # Keep this entry current if repository maintainership changes.
 * @roferg

@@ -70,7 +70,7 @@ You need **one** AI coding CLI, plus the GitHub CLI:
   labels and pull requests.
 
 ```bash
-git clone https://github.com/roferg/lcars.git
+git clone https://github.com/roferg/LCARS.git
 cd lcars
 ./install.sh
 ```

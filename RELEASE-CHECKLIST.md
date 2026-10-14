@@ -6,7 +6,7 @@ rules, security settings, or Pages. No such settings have been changed here.
 
 **Current limitation:** the repository is private on a plan without branch
 protection. The read-only command
-`gh api --method GET repos/roferg/lcars/branches/main/protection` returned the
+`gh api --method GET repos/roferg/LCARS/branches/main/protection` returned the
 expected response:
 
 ```text
@@ -45,7 +45,7 @@ are not GitHub enforcement evidence.
    publishes the repository and makes protection available on the current plan;
    it does not automatically apply this prepared ruleset. **Verify:** a signed-out
    browser can read the intended repository and its published history, and a
-   read-only `gh api --method GET repos/roferg/lcars` reports `private: false`
+   read-only `gh api --method GET repos/roferg/LCARS` reports `private: false`
    with the intended `default_branch`. Minimize the gap before step 4 and avoid
    merges or direct pushes during that unprotected interval.
 
@@ -61,10 +61,10 @@ are not GitHub enforcement evidence.
    acceptance. Do not add an admin bypass just to get it working.
 
 5. **Verify effective protection after the flip, not merely a saved file.** Use
-   read-only `gh api --method GET repos/roferg/lcars/rulesets` and
-   `gh api --method GET repos/roferg/lcars/rulesets/RULESET_ID` (substitute the saved
+   read-only `gh api --method GET repos/roferg/LCARS/rulesets` and
+   `gh api --method GET repos/roferg/LCARS/rulesets/RULESET_ID` (substitute the saved
    numeric ID). Resolve the current default branch from step 3 and read
-   `gh api --method GET repos/roferg/lcars/rules/branches/DEFAULT_BRANCH` (substitute
+   `gh api --method GET repos/roferg/LCARS/rules/branches/DEFAULT_BRANCH` (substitute
    and URL-encode the branch name). **Verify:** the ruleset is `active`, targets
    `~DEFAULT_BRANCH`, has no bypasses, and effective rules include `pull_request`
    and the real `required_status_checks` context. The legacy

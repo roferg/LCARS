@@ -22,7 +22,7 @@ Preview from the repository root (Python 3 and Bash required):
 
 ```sh
 bash .github/ruleset-dry-run.sh
-bash .github/ruleset-dry-run.sh --dry-run --repo roferg/lcars
+bash .github/ruleset-dry-run.sh --dry-run --repo roferg/LCARS
 bash tests/ruleset.test.sh
 ```
 

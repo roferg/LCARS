@@ -5,7 +5,7 @@
 Do not put vulnerabilities, exploit details, credentials, or sensitive logs in
 public issues or pull requests. If GitHub private vulnerability reporting is
 enabled, use **Security > Advisories > Report a vulnerability** at
-https://github.com/roferg/lcars/security/advisories/new. This creates a private
+https://github.com/roferg/LCARS/security/advisories/new. This creates a private
 report for repository maintainers, not a public issue.
 
 If that option is unavailable, the alternative private channel is

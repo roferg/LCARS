@@ -93,7 +93,7 @@ print('[]')
         result = self.run_applier()
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn('DRY RUN', result.stdout)
-        self.assertIn('Method: POST\nEndpoint: repos/roferg/lcars/rulesets\nBody:\n', result.stdout)
+        self.assertIn('Method: POST\nEndpoint: repos/roferg/LCARS/rulesets\nBody:\n', result.stdout)
         self.assertEqual(json.loads(result.stdout.split('Body:\n', 1)[1]), self.ruleset())
         self.assertEqual(self.calls(), [])
 
@@ -165,7 +165,7 @@ print('[]')
         result = self.run_applier('--check-availability')
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.calls(), [['api', '--method', 'GET',
-                                        'repos/roferg/lcars/rulesets']])
+                                        'repos/roferg/LCARS/rulesets']])
 
     def test_private_plan_403_is_expected_not_a_failure(self):
         self.env['GH_RESPONSE'] = '403'
