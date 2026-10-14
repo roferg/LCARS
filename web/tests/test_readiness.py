@@ -449,6 +449,33 @@ class TestConfigEndpointFailure(ConfigEndpointBase):
         self.assertNotIn("exited", body["error"])
 
 
+class TestProbeOutcomeStatus(ConfigEndpointBase):
+    def test_a_real_failing_suite_is_a_409_not_a_server_fault(self):
+        subprocess.run(["git", "init", "-q", self.tmp], check=True)
+        cfg = os.path.join(self.tmp, ".git", "lcars", "config.json")
+        with open(cfg, "w") as fh:
+            json.dump({"testCommand": "printf 'suite failed\\n'; exit 1"}, fh)
+        self.actions.scripts["update"] = _UPDATE_SH
+        status, body = self._post("/api/config/probe-tests")
+        self.assertEqual(status, 409, body)
+        self.assertFalse(body["ok"])
+        self.assertIn("PROBE FAILED", body["error"])
+        self.assertIn("suite failed", body["error"])
+
+    def test_only_the_refusal_envelope_is_a_409(self):
+        for code, output, expected in (
+                (1, "lcars update: arbitrary refusal wording", 409),
+                (1, "a traceback that never went through die", 502),
+                (127, "lcars update: missing binary", 502),
+                (2, "lcars update: syntax error", 502)):
+            with self.subTest(code=code, output=output):
+                self.actions.scripts["update"] = _record_stub(
+                    self.record, code, output)
+                status, body = self._post("/api/config/probe-tests")
+                self.assertEqual(status, expected, body)
+                self.assertFalse(body["ok"])
+
+
 class TestConfigEndpointsReadOnly(unittest.TestCase):
     """A read-only build 403s every new write endpoint."""
 

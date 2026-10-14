@@ -8541,7 +8541,9 @@ function openVerify(id) {
         ? "Awaiting your design call — PR · "
         : isReconcileHealing(mi)
           ? "Merge heal in progress — PR · "
-          : "In review — PR open · ";
+          : !inReview
+            ? "No open PR to merge — PR · "
+            : "In review — PR open · ";
       var link = el("a"); link.href = mi.prUrl; link.target = "_blank";
       // BUG-036: never render a bare "PR #". The adapter populates prNumber
       // (deriving from prUrl when absent); fall back to deriving it here too.
@@ -8647,6 +8649,8 @@ function openVerify(id) {
     if (!isBugChild && !inReview) {
       merge.disabled = true;
       merge.title = "No open PR to merge yet — re-run the mission so Verify opens one.";
+      markLocked(merge);
+      m.body.appendChild(noteEl(merge.title, "amber"));
     }
     m.foot.appendChild(sendBack);
     m.foot.appendChild(merge);

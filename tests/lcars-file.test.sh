@@ -524,15 +524,15 @@ prdP="$repoP/prd.md"; write_prd "$prdP"
     LCARS_GH_BIN="$repoP/gh" LCARS_DATE="20260530" bash "$SCRIPT" --prd "$prdP" >outP.txt 2>&1
 )
 # S147 DEFECT-3: copilot pins every stage to opus (alias_for_tier), so the band
-# is now costed at opus rates — 4.23/8.46 where it used to under-report 3.6/7.2.
-check "10d. copilot DEFAULT issue body shows usage \$ band (4.2/8.4)" \
-  "grep -q '4.2' '$GH_BODY' && grep -q '8.4' '$GH_BODY'"
+# uses opus rates and invocation workload floors — gross 9.43/244.41.
+check "10d. copilot DEFAULT issue body shows usage \$ band (9.43/244.41)" \
+  "grep -q '9.43' '$GH_BODY' && grep -q '244.41' '$GH_BODY'"
 check "10d. copilot DEFAULT issue body mentions GitHub AI Credits" \
   "grep -qi 'AI Credits' '$GH_BODY'"
 check "10d. copilot DEFAULT issue body is NOT premium requests" \
   "! grep -qi 'premium' '$GH_BODY'"
 check "10d. copilot DEFAULT CLI readout shows usage \$ band" \
-  "grep -q '4.2' '$repoP/outP.txt'"
+  "grep -q '9.43' '$repoP/outP.txt'"
 unset GH_BODY
 
 # 10f. Copilot active, LEGACY billing (config copilotBilling=legacy): the old

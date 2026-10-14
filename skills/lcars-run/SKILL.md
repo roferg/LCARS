@@ -56,6 +56,16 @@ Each headless Stage is therefore a single driver subcommand you run and report:
 | Plan Review | `run.sh plan-review --mission <id>` | one fresh reviewer worker (fed only `plan.json`) |
 | Implement | `run.sh implement-ticket --mission <id> --ticket <id>` | one unified TDD worker, proven post-hoc by the harness gates |
 
+Live operator controls (`pause`, `resume`, and `xo on`/`xo off`, including
+repo-wide switches and linked-child pauses) record each successful `state.json`
+write in the mission's append-only `operator-writes.tsv`; pause/resume also record
+their `events.jsonl` append. Each row names the file, exact input/output content
+fingerprints, and control. The post-turn worker fence accepts only new records
+that form an unbroken chain from its pre-turn fingerprint to its post-turn
+fingerprint. Unrecorded worker writes, extra watched-file changes, and code
+checkout changes still stop the Stage with `worker_fence_breach`. A failed write
+records nothing; a failed recording is a loud failure, never an exemption.
+
 Each driver prints a **`⊘ isolated`** marker naming the worker it ran in. If no
 worker binary is available the driver refuses **loudly** (`⚠ NOT ISOLATED`) and
 changes nothing — an inline/uncovered run must never masquerade as isolated. A

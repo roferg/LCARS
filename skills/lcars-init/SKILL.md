@@ -38,10 +38,29 @@ already exist:
 | Type | `#4499FF` | `lcars:feature` `lcars:bug` |
 | Status | `#FF3344` | `lcars:paused` `lcars:awaiting-human` |
 | Relationship | `#9977FF` | `lcars:linked` |
+| Role | `#00B894` | `lcars:mission` `lcars:ticket` |
+| Number One | `#FF9966` | `lcars:xo:high` `lcars:xo:medium` `lcars:xo:low` `lcars:xo:engaged` |
 
-That is **14 labels** total.
+That is **20 labels** total.
 
 ## How to run it
+
+```text
+usage: lcars init [--help|-h] [--dry-run]
+```
+
+`--help` (or `-h`) prints this usage and exits successfully. Unknown options
+exit non-zero with a usage error on stderr. Neither path creates local state
+or calls `gh`.
+
+`--dry-run` prints the config JSON a real init would merge and the canonical
+label names and colors it would create if missing. It preserves existing
+config values in the preview, but writes nothing, seeds no commit, runs no
+worker or test probe, and makes no `gh` calls. Because existing GitHub labels
+are not queried, all 20 candidate labels are listed. A new clone identity and
+creation timestamp in the preview are provisional until a real init.
+
+With no arguments, initialization runs as before.
 
 Run the bundled script from the repo you want to initialize:
 
@@ -56,7 +75,7 @@ output to the user. It looks like:
   ✓ .git/lcars/ created
   ✓ config.json written  (model: claude-sonnet, context: CONTEXT.md)
   ✓ Claude CLI verified  (2.0.44 (Claude Code))
-  ✓ 14 labels created on github.com/owner/repo
+  ✓ 20 labels created on github.com/owner/repo
   LCARS ready — run `lcars file` to start your first Mission.
 ```
 
@@ -75,6 +94,6 @@ output to the user. It looks like:
 
 The logic lives in `init.sh` next to this file so it can be exercised directly.
 Its behaviour is covered by `tests/lcars-init.test.sh` in the LCARS repo (run
-with `bash tests/run.sh`). The skill source lives in `skills/lcars-init/` in the
+with `bash tests/lcars-init.test.sh`). The skill source lives in `skills/lcars-init/` in the
 repo and is symlinked into `~/.claude/skills/` by `./install.sh`; edit the repo
 copy, not `~/.claude`. If you change `init.sh`, keep those tests green.

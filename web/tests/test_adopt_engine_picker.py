@@ -664,6 +664,22 @@ class TheAnswerReachesAdoptSh(_Serve):
         self.assertEqual("nope", payload.get("error"))
 
 
+    def test_adopt_crashes_keep_their_502(self):
+        for code, output in ((127, "lcars adopt: missing binary"),
+                             (1, "traceback without a die banner")):
+            with self.subTest(code=code):
+                stub = _adopt_stub(self.tmp, "crash.sh",
+                                   'printf "%s\\n" ' + json.dumps(output) +
+                                   '\nexit %d\n' % code)
+                actions = Actions(repo_root=self.tmp, scripts={"adopt": stub})
+                adapter = board_of(self.tmp, [issue(34, stage="align")],
+                                   self.record, ("claude",))
+                self.serve(adapter, actions)
+                status, payload = self.post("/api/mission/34/adopt",
+                                            {"engine": "claude"})
+                self.assertEqual(502, status, payload)
+
+
 # ==========================================================================
 # 4. PROVENANCE — "A HUMAN CHOSE THIS", and the one thing this session could
 #    not finish inside its own fence.

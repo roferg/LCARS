@@ -362,7 +362,7 @@ if [ -n "$VERB" ]; then
       run_probe "$TC"
       report_probe
       [ "$PROBE_OUTCOME" = "pass" ] && exit 0
-      exit 1
+      die "test probe reported $PROBE_OUTCOME; test systems are not verified."
       ;;
 
     fix)

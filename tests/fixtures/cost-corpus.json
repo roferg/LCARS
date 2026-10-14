@@ -1,0 +1,796 @@
+[
+  {
+    "mission": "lcars-20261013-001-c637",
+    "estimate": {
+      "models": {
+        "research": "sonnet",
+        "validate": "sonnet",
+        "plan": "sonnet",
+        "planReview": "sonnet",
+        "implement": "opus",
+        "verify": "sonnet"
+      },
+      "tokenEstimates": {
+        "research": {
+          "low": 3000,
+          "high": 25000
+        },
+        "validate": {
+          "low": 4000,
+          "high": 15000
+        },
+        "plan": {
+          "low": 5000,
+          "high": 20000
+        },
+        "planReview": {
+          "low": 4000,
+          "high": 22000
+        },
+        "implement": {
+          "low": 30000,
+          "high": 160000
+        },
+        "verify": {
+          "low": 3000,
+          "high": 12000
+        }
+      },
+      "requestEstimates": {
+        "research": {
+          "low": 1,
+          "high": 4
+        },
+        "validate": {
+          "low": 1,
+          "high": 2
+        },
+        "plan": {
+          "low": 1,
+          "high": 2
+        },
+        "planReview": {
+          "low": 1,
+          "high": 3
+        },
+        "implement": {
+          "low": 3,
+          "high": 12
+        },
+        "verify": {
+          "low": 1,
+          "high": 1
+        }
+      }
+    },
+    "actualUsd": 7.140085,
+    "usageTotals": {
+      "inputTokens": 1168648,
+      "outputTokens": 51874,
+      "cacheReadTokens": 1014703,
+      "cacheWriteTokens": 153845
+    },
+    "usageByStage": {
+      "": {
+        "invocations": 1,
+        "inputTokens": 46789,
+        "outputTokens": 2571,
+        "costUsd": 0.29822
+      },
+      "implement": {
+        "invocations": 2,
+        "inputTokens": 863334,
+        "outputTokens": 25227,
+        "costUsd": 4.9473400000000005
+      },
+      "plan": {
+        "invocations": 1,
+        "inputTokens": 99928,
+        "outputTokens": 13998,
+        "costUsd": 0.84959
+      },
+      "planReview": {
+        "invocations": 1,
+        "inputTokens": 45411,
+        "outputTokens": 1490,
+        "costUsd": 0.264305
+      },
+      "research": {
+        "invocations": 1,
+        "inputTokens": 66286,
+        "outputTokens": 4679,
+        "costUsd": 0.448405
+      },
+      "validate": {
+        "invocations": 1,
+        "inputTokens": 46900,
+        "outputTokens": 3909,
+        "costUsd": 0.332225
+      }
+    }
+  },
+  {
+    "mission": "lcars-20261013-002-c637",
+    "estimate": {
+      "models": {
+        "research": "sonnet",
+        "validate": "sonnet",
+        "plan": "sonnet",
+        "planReview": "sonnet",
+        "implement": "opus",
+        "verify": "sonnet"
+      },
+      "tokenEstimates": {
+        "research": {
+          "low": 5000,
+          "high": 30000
+        },
+        "validate": {
+          "low": 8000,
+          "high": 25000
+        },
+        "plan": {
+          "low": 10000,
+          "high": 30000
+        },
+        "planReview": {
+          "low": 8000,
+          "high": 32000
+        },
+        "implement": {
+          "low": 15000,
+          "high": 60000
+        },
+        "verify": {
+          "low": 5000,
+          "high": 15000
+        }
+      },
+      "requestEstimates": {
+        "research": {
+          "low": 0,
+          "high": 3
+        },
+        "validate": {
+          "low": 1,
+          "high": 1
+        },
+        "plan": {
+          "low": 1,
+          "high": 1
+        },
+        "planReview": {
+          "low": 1,
+          "high": 3
+        },
+        "implement": {
+          "low": 1,
+          "high": 3
+        },
+        "verify": {
+          "low": 1,
+          "high": 1
+        }
+      }
+    },
+    "actualUsd": 5.039435,
+    "usageTotals": {
+      "inputTokens": 880746,
+      "outputTokens": 25428,
+      "cacheReadTokens": 735984,
+      "cacheWriteTokens": 144668
+    },
+    "usageByStage": {
+      "": {
+        "invocations": 1,
+        "inputTokens": 77565,
+        "outputTokens": 2500,
+        "costUsd": 0.450325
+      },
+      "implement": {
+        "invocations": 1,
+        "inputTokens": 311617,
+        "outputTokens": 6766,
+        "costUsd": 1.72724
+      },
+      "numberOne": {
+        "invocations": 1,
+        "inputTokens": 59435,
+        "outputTokens": 2660,
+        "costUsd": 0.363675
+      },
+      "plan": {
+        "invocations": 1,
+        "inputTokens": 146210,
+        "outputTokens": 5076,
+        "costUsd": 0.85795
+      },
+      "planReview": {
+        "invocations": 1,
+        "inputTokens": 80855,
+        "outputTokens": 1967,
+        "costUsd": 0.45345
+      },
+      "research": {
+        "invocations": 1,
+        "inputTokens": 77629,
+        "outputTokens": 1462,
+        "costUsd": 0.424695
+      },
+      "validate": {
+        "invocations": 1,
+        "inputTokens": 127435,
+        "outputTokens": 4997,
+        "costUsd": 0.7621
+      }
+    }
+  },
+  {
+    "mission": "lcars-20261013-003-c637",
+    "estimate": {
+      "models": {
+        "research": "opus",
+        "validate": "opus",
+        "plan": "sonnet",
+        "planReview": "sonnet",
+        "implement": "opus",
+        "verify": "sonnet"
+      },
+      "tokenEstimates": {
+        "research": {
+          "low": 30000,
+          "high": 170000
+        },
+        "validate": {
+          "low": 20000,
+          "high": 65000
+        },
+        "plan": {
+          "low": 30000,
+          "high": 95000
+        },
+        "planReview": {
+          "low": 20000,
+          "high": 120000
+        },
+        "implement": {
+          "low": 200000,
+          "high": 900000
+        },
+        "verify": {
+          "low": 15000,
+          "high": 40000
+        }
+      },
+      "requestEstimates": {
+        "research": {
+          "low": 2,
+          "high": 8
+        },
+        "validate": {
+          "low": 1,
+          "high": 2
+        },
+        "plan": {
+          "low": 1,
+          "high": 2
+        },
+        "planReview": {
+          "low": 1,
+          "high": 3
+        },
+        "implement": {
+          "low": 6,
+          "high": 20
+        },
+        "verify": {
+          "low": 1,
+          "high": 1
+        }
+      }
+    },
+    "actualUsd": 89.11817,
+    "usageTotals": {
+      "inputTokens": 16038640,
+      "outputTokens": 357000,
+      "cacheReadTokens": 15015468,
+      "cacheWriteTokens": 1022592
+    },
+    "usageByStage": {
+      "": {
+        "invocations": 1,
+        "inputTokens": 73684,
+        "outputTokens": 2876,
+        "costUsd": 0.44032
+      },
+      "implement": {
+        "invocations": 8,
+        "inputTokens": 7053514,
+        "outputTokens": 160981,
+        "costUsd": 39.29211
+      },
+      "numberOne": {
+        "invocations": 3,
+        "inputTokens": 7465752,
+        "outputTokens": 117425,
+        "costUsd": 40.264340000000004
+      },
+      "plan": {
+        "invocations": 1,
+        "inputTokens": 577571,
+        "outputTokens": 31043,
+        "costUsd": 3.66393
+      },
+      "planReview": {
+        "invocations": 1,
+        "inputTokens": 250888,
+        "outputTokens": 8398,
+        "costUsd": 1.46439
+      },
+      "research": {
+        "invocations": 1,
+        "inputTokens": 206068,
+        "outputTokens": 10786,
+        "costUsd": 1.29999
+      },
+      "validate": {
+        "invocations": 2,
+        "inputTokens": 411163,
+        "outputTokens": 25491,
+        "costUsd": 2.6930899999999998
+      }
+    }
+  },
+  {
+    "mission": "lcars-20261013-004-c637",
+    "estimate": {
+      "models": {
+        "research": "opus",
+        "validate": "opus",
+        "plan": "opus",
+        "planReview": "opus",
+        "implement": "opus",
+        "verify": "sonnet"
+      },
+      "tokenEstimates": {
+        "research": {
+          "low": 40000,
+          "high": 160000
+        },
+        "validate": {
+          "low": 25000,
+          "high": 70000
+        },
+        "plan": {
+          "low": 30000,
+          "high": 90000
+        },
+        "planReview": {
+          "low": 25000,
+          "high": 100000
+        },
+        "implement": {
+          "low": 160000,
+          "high": 620000
+        },
+        "verify": {
+          "low": 12000,
+          "high": 35000
+        }
+      },
+      "requestEstimates": {
+        "research": {
+          "low": 2,
+          "high": 8
+        },
+        "validate": {
+          "low": 1,
+          "high": 2
+        },
+        "plan": {
+          "low": 1,
+          "high": 2
+        },
+        "planReview": {
+          "low": 1,
+          "high": 3
+        },
+        "implement": {
+          "low": 6,
+          "high": 18
+        },
+        "verify": {
+          "low": 1,
+          "high": 1
+        }
+      }
+    },
+    "actualUsd": 115.681885,
+    "usageTotals": {
+      "inputTokens": 21026456,
+      "outputTokens": 421986,
+      "cacheReadTokens": 19731433,
+      "cacheWriteTokens": 1294375
+    },
+    "usageByStage": {
+      "": {
+        "invocations": 1,
+        "inputTokens": 73325,
+        "outputTokens": 3074,
+        "costUsd": 0.443475
+      },
+      "implement": {
+        "invocations": 4,
+        "inputTokens": 9923659,
+        "outputTokens": 149498,
+        "costUsd": 53.355689999999996
+      },
+      "numberOne": {
+        "invocations": 5,
+        "inputTokens": 9322826,
+        "outputTokens": 201419,
+        "costUsd": 51.64961
+      },
+      "plan": {
+        "invocations": 1,
+        "inputTokens": 850654,
+        "outputTokens": 32208,
+        "costUsd": 5.05847
+      },
+      "planReview": {
+        "invocations": 1,
+        "inputTokens": 347880,
+        "outputTokens": 14302,
+        "costUsd": 2.09695
+      },
+      "research": {
+        "invocations": 1,
+        "inputTokens": 281012,
+        "outputTokens": 10290,
+        "costUsd": 1.66231
+      },
+      "validate": {
+        "invocations": 1,
+        "inputTokens": 227100,
+        "outputTokens": 11195,
+        "costUsd": 1.41538
+      }
+    }
+  },
+  {
+    "mission": "lcars-20261013-005-c637",
+    "estimate": {
+      "models": {
+        "research": "opus",
+        "validate": "opus",
+        "plan": "sonnet",
+        "planReview": "sonnet",
+        "implement": "opus",
+        "verify": "sonnet"
+      },
+      "tokenEstimates": {
+        "research": {
+          "low": 25000,
+          "high": 160000
+        },
+        "validate": {
+          "low": 15000,
+          "high": 55000
+        },
+        "plan": {
+          "low": 25000,
+          "high": 80000
+        },
+        "planReview": {
+          "low": 15000,
+          "high": 95000
+        },
+        "implement": {
+          "low": 160000,
+          "high": 750000
+        },
+        "verify": {
+          "low": 12000,
+          "high": 45000
+        }
+      },
+      "requestEstimates": {
+        "research": {
+          "low": 2,
+          "high": 9
+        },
+        "validate": {
+          "low": 1,
+          "high": 2
+        },
+        "plan": {
+          "low": 1,
+          "high": 2
+        },
+        "planReview": {
+          "low": 1,
+          "high": 3
+        },
+        "implement": {
+          "low": 5,
+          "high": 18
+        },
+        "verify": {
+          "low": 1,
+          "high": 2
+        }
+      }
+    },
+    "actualUsd": 123.77636,
+    "usageTotals": {
+      "inputTokens": 22996022,
+      "outputTokens": 351849,
+      "cacheReadTokens": 21842683,
+      "cacheWriteTokens": 1152605
+    },
+    "usageByStage": {
+      "": {
+        "invocations": 1,
+        "inputTokens": 94134,
+        "outputTokens": 2988,
+        "costUsd": 0.54537
+      },
+      "implement": {
+        "invocations": 5,
+        "inputTokens": 10425151,
+        "outputTokens": 164536,
+        "costUsd": 56.23912
+      },
+      "numberOne": {
+        "invocations": 4,
+        "inputTokens": 10081563,
+        "outputTokens": 108598,
+        "costUsd": 53.12284
+      },
+      "plan": {
+        "invocations": 1,
+        "inputTokens": 1242013,
+        "outputTokens": 27052,
+        "costUsd": 6.88636
+      },
+      "planReview": {
+        "invocations": 1,
+        "inputTokens": 234483,
+        "outputTokens": 9326,
+        "costUsd": 1.40556
+      },
+      "research": {
+        "invocations": 1,
+        "inputTokens": 298075,
+        "outputTokens": 9895,
+        "costUsd": 1.73775
+      },
+      "validate": {
+        "invocations": 2,
+        "inputTokens": 620603,
+        "outputTokens": 29454,
+        "costUsd": 3.83936
+      }
+    }
+  },
+  {
+    "mission": "lcars-20261013-006-c637",
+    "estimate": {
+      "models": {
+        "research": "opus",
+        "validate": "opus",
+        "plan": "opus",
+        "planReview": "opus",
+        "implement": "opus",
+        "verify": "sonnet"
+      },
+      "tokenEstimates": {
+        "research": {
+          "low": 50000,
+          "high": 220000
+        },
+        "validate": {
+          "low": 25000,
+          "high": 90000
+        },
+        "plan": {
+          "low": 50000,
+          "high": 170000
+        },
+        "planReview": {
+          "low": 35000,
+          "high": 140000
+        },
+        "implement": {
+          "low": 450000,
+          "high": 2600000
+        },
+        "verify": {
+          "low": 15000,
+          "high": 55000
+        }
+      },
+      "requestEstimates": {
+        "research": {
+          "low": 3,
+          "high": 9
+        },
+        "validate": {
+          "low": 1,
+          "high": 2
+        },
+        "plan": {
+          "low": 1,
+          "high": 2
+        },
+        "planReview": {
+          "low": 1,
+          "high": 3
+        },
+        "implement": {
+          "low": 6,
+          "high": 24
+        },
+        "verify": {
+          "low": 1,
+          "high": 2
+        }
+      }
+    },
+    "actualUsd": 94.57284,
+    "usageTotals": {
+      "inputTokens": 17548376,
+      "outputTokens": 273239,
+      "cacheReadTokens": 16686856,
+      "cacheWriteTokens": 860940
+    },
+    "usageByStage": {
+      "": {
+        "invocations": 1,
+        "inputTokens": 99236,
+        "outputTokens": 3277,
+        "costUsd": 0.578105
+      },
+      "implement": {
+        "invocations": 6,
+        "inputTokens": 15332834,
+        "outputTokens": 167451,
+        "costUsd": 80.85043
+      },
+      "plan": {
+        "invocations": 1,
+        "inputTokens": 456197,
+        "outputTokens": 26901,
+        "costUsd": 2.95351
+      },
+      "planReview": {
+        "invocations": 1,
+        "inputTokens": 153202,
+        "outputTokens": 5855,
+        "costUsd": 0.912385
+      },
+      "research": {
+        "invocations": 1,
+        "inputTokens": 266827,
+        "outputTokens": 9660,
+        "costUsd": 1.57563
+      },
+      "validate": {
+        "invocations": 5,
+        "inputTokens": 1240080,
+        "outputTokens": 60095,
+        "costUsd": 7.70278
+      }
+    }
+  },
+  {
+    "mission": "lcars-20261013-007-c637",
+    "estimate": {
+      "models": {
+        "research": "sonnet",
+        "validate": "sonnet",
+        "plan": "sonnet",
+        "planReview": "sonnet",
+        "implement": "sonnet",
+        "verify": "sonnet"
+      },
+      "tokenEstimates": {
+        "research": {
+          "low": 0,
+          "high": 15000
+        },
+        "validate": {
+          "low": 6000,
+          "high": 20000
+        },
+        "plan": {
+          "low": 8000,
+          "high": 25000
+        },
+        "planReview": {
+          "low": 6000,
+          "high": 20000
+        },
+        "implement": {
+          "low": 15000,
+          "high": 60000
+        },
+        "verify": {
+          "low": 5000,
+          "high": 15000
+        }
+      },
+      "requestEstimates": {
+        "research": {
+          "low": 0,
+          "high": 2
+        },
+        "validate": {
+          "low": 1,
+          "high": 1
+        },
+        "plan": {
+          "low": 1,
+          "high": 1
+        },
+        "planReview": {
+          "low": 1,
+          "high": 2
+        },
+        "implement": {
+          "low": 1,
+          "high": 2
+        },
+        "verify": {
+          "low": 1,
+          "high": 1
+        }
+      }
+    },
+    "actualUsd": 6.69928,
+    "usageTotals": {
+      "inputTokens": 1175897,
+      "outputTokens": 32792,
+      "cacheReadTokens": 996214,
+      "cacheWriteTokens": 179583
+    },
+    "usageByStage": {
+      "": {
+        "invocations": 1,
+        "inputTokens": 78731,
+        "outputTokens": 2013,
+        "costUsd": 0.44398
+      },
+      "implement": {
+        "invocations": 1,
+        "inputTokens": 412797,
+        "outputTokens": 6523,
+        "costUsd": 2.22706
+      },
+      "plan": {
+        "invocations": 1,
+        "inputTokens": 190512,
+        "outputTokens": 7335,
+        "costUsd": 1.13593
+      },
+      "planReview": {
+        "invocations": 1,
+        "inputTokens": 154019,
+        "outputTokens": 7106,
+        "costUsd": 0.947745
+      },
+      "research": {
+        "invocations": 1,
+        "inputTokens": 122133,
+        "outputTokens": 2432,
+        "costUsd": 0.671465
+      },
+      "validate": {
+        "invocations": 1,
+        "inputTokens": 217705,
+        "outputTokens": 7383,
+        "costUsd": 1.2731
+      }
+    }
+  }
+]

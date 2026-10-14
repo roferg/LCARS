@@ -1044,6 +1044,17 @@ xo_logs_children() { # <mission-dir> — one linked child mission id per line
     | sed 's/.*"\([^"]*\)"$/\1/' | sed '/^$/d' | sort -u
 }
 
+xo_pause_event() { # <mission-dir> <paused|resumed>
+  local dir="$1" type="$2" ts stage event
+  ts="${LCARS_NOW:-$(date +%s)}"
+  stage="$(mission_stage "$dir/state.json")"; stage="${stage:-unknown}"
+  printf -v event '{"ts":%s,"mission":%s,"stage":%s,"type":%s,"detail":%s}' \
+    "$ts" "$(jstr "${dir##*/}")" "$(jstr "$stage")" "$(jstr "$type")" \
+    "$(jstr "Number One $type the Mission at the $stage boundary")"
+  lcars_operator_write "$dir/events.jsonl" lcars_operator_append "$event" \
+    || die "could not record the $type event for ${dir##*/}."
+}
+
 # ── MARKER ALWAYS; FLAGS ONLY FOR THE MISSION THE CAPTAIN NAMED (S254) ──────
 #
 # THE MEASURED DEFECT. Repo-wide `lcars xo off` — no Mission named, the captain
@@ -1111,6 +1122,9 @@ EOF
     lcars_state_set "$st" paused true 2>/dev/null || true
     [ "$(lcars_state_get_raw "$st" paused 2>/dev/null)" = "true" ] \
       && XO_PAUSED=$((XO_PAUSED + 1))
+    if [ "$(lcars_state_get_raw "$st" paused 2>/dev/null)" = "true" ]; then
+      xo_pause_event "$dir" paused
+    fi
   fi
   # A CHILD'S WRITE NEVER REFUSES THE STOP. `lcars_state_set` latches a refusal in
   # $LCARS_STATE_REFUSED and every verb exits non-zero on it — correct for the
@@ -1130,6 +1144,9 @@ EOF
     # under-claiming.
     [ "$(lcars_state_get_raw "$cst" paused 2>/dev/null)" = "true" ] \
       && XO_PAUSED=$((XO_PAUSED + 1))
+    if [ "$(lcars_state_get_raw "$cst" paused 2>/dev/null)" = "true" ]; then
+      xo_pause_event "$MISSIONS_DIR/$c" paused
+    fi
   done <<EOF
 $(xo_logs_children "$dir")
 EOF
@@ -1146,17 +1163,26 @@ xo_unquiesce() { # <mission-dir>
   # kills the verb. Measured here as "dir: unbound variable" on `lcars xo on`.
   local dir="$1"
   local m="$dir/xo-stop" line who how
+  local was
   [ -f "$m" ] || return 0
   while IFS= read -r line; do
     case "$line" in
       "self paused-by-us")
-        lcars_state_unset "$dir/state.json" paused 2>/dev/null || true ;;
+        was="$(lcars_state_get_raw "$dir/state.json" paused)"
+        lcars_state_unset "$dir/state.json" paused 2>/dev/null || true
+        if [ "$was" = "true" ] && [ "$(lcars_state_get_raw "$dir/state.json" paused)" != "true" ]; then
+          xo_pause_event "$dir" resumed
+        fi ;;
       "child "*)
         who="$(printf '%s' "$line" | awk '{print $2}')"
         how="$(printf '%s' "$line" | awk '{print $3}')"
         [ "$how" = "paused-by-us" ] || continue
         [ -f "$MISSIONS_DIR/$who/state.json" ] || continue
-        lcars_state_unset "$MISSIONS_DIR/$who/state.json" paused 2>/dev/null || true ;;
+        was="$(lcars_state_get_raw "$MISSIONS_DIR/$who/state.json" paused)"
+        lcars_state_unset "$MISSIONS_DIR/$who/state.json" paused 2>/dev/null || true
+        if [ "$was" = "true" ] && [ "$(lcars_state_get_raw "$MISSIONS_DIR/$who/state.json" paused)" != "true" ]; then
+          xo_pause_event "$MISSIONS_DIR/$who" resumed
+        fi ;;
     esac
   done <"$m"
   rm -f "$m"
@@ -1510,6 +1536,7 @@ write_config_block() { # <enabled true|false> [engine] [model]
 }
 
 cmd_on() {
+  local _LCARS_OPERATOR_CONTROL=xo-on
   # DEFAULT 0 — SWITCHING NUMBER ONE ON STARTS NOTHING (S241, the captain's
   # ruling). The catch-up is KEPT, in full, but it is now its own word. See the
   # note at the sweep call below for the whole reasoning.
@@ -1801,6 +1828,7 @@ xo_sweep_verify() {
 }
 
 cmd_off() {
+  local _LCARS_OPERATOR_CONTROL=xo-off
   local target="${1:-}" id
   if [ -n "$target" ]; then
     id="$(resolve_mission "$target")"
@@ -5703,11 +5731,13 @@ except Exception: print(0)' "$obsfile" 2>/dev/null)"
   # --- 8. THE FIX ROUND (S204) ---------------------------------------------
   # A gap that CONTRADICTS something the captain wrote down is a bug, and a bug
   # gets an ordinary mission log — the same verb he would use. A HIGH has none
-  # by construction, so nothing is filed; an interpretation is never filed at
+  # by construction; MERGE findings are retained as operator follow-ups, not filed.
+  # An interpretation is never filed at
   # all (it is a call the build made, reported on the report). `file_logs_for`
   # is the one implementation, shared with the hand-run `lcars xo file-logs`,
   # and it enforces the one-round marker itself.
-  if [ "$status" != "finished" ]; then
+  if [ "$status" != "finished" ] || [ "$recommendation" = "merge" ] \
+     || [ "$recommendation" = "merge-with-follow-ups" ]; then
     file_logs_for "$id" "$dir"
   fi
   return 0
@@ -5743,6 +5773,7 @@ except Exception: print(0)' "$obsfile" 2>/dev/null)"
 # ===========================================================================
 
 XO_LOG_SCRIPT="${LCARS_LOG_SCRIPT:-$SKILL_DIR/../lcars-log/log.sh}"
+XO_FILE_SCRIPT="${LCARS_FILE_SCRIPT:-$SKILL_DIR/../lcars-file/file.sh}"
 XO_RESOLVE_SCRIPT="${LCARS_RESOLVE_LOGS_SCRIPT:-$SKILL_DIR/../lcars-resolve-logs/resolve-logs.sh}"
 XO_LOG_CAP="${LCARS_XO_LOG_CAP:-10}"
 
@@ -5835,11 +5866,26 @@ file_logs_for() { # <id> <dir>
     return 0
   }
 
+  # Shipping advice cannot create blocking work, even through the hand-run verb.
+  # Keep the finding on the verdict before any filing switch or round marker.
+  local merge_note=""
+  merge_note="$("$XO_PY" "$SKILL_DIR/xo-logs.py" --merge-follow-ups "$xodir/verdict.json")" \
+    || die "could not retain reviewer follow-ups in $xodir/verdict.json — no logs filed and no resolver started."
+  if [ -n "$merge_note" ]; then
+    printf '◈ NUMBER ONE: %s\n' "$merge_note"
+    journal "$dir" follow-ups "$(printf '"detail": %s' "$(jstr "$merge_note")")"
+    xo_mirror "$id"
+    return 0
+  fi
+
+  local done_parent=0
+  [ "$(json_field "$st" stage)" != done ] || done_parent=1
+
   # ONE ROUND ONLY (captain ruling). The marker is READ, never inferred from the
   # presence of children or of a logs.json a half-finished run might have left.
   local round
   round="$(obj_get "$(state_xo_block "$st")" round)"
-  if [ -n "$round" ]; then
+  if [ -n "$round" ] && [ "$done_parent" = 0 ]; then
     printf '◈ NUMBER ONE: %s has already had its fix round (round %s) — one round only.\n' \
       "$id" "$round"
     printf '  Anything still short of the mark is on the report, and it is yours.\n'
@@ -5851,11 +5897,12 @@ file_logs_for() { # <id> <dir>
   if ! cfg_files_bugs; then
     printf '◈ NUMBER ONE: filing is off for this repo (numberOne.filesBugs: false) — nothing filed.\n'
     printf '  What I found is on the report either way. Turn it back on in .git/lcars/config.json.\n'
+    [ "$done_parent" = 0 ] || printf '  Findings retained in %s.\n' "$xodir/verdict.json"
     journal "$dir" filed-logs '"filed": 0, "detail": "filing is off (numberOne.filesBugs: false)"'
     return 0
   fi
 
-  mkdir -p "$xodir/logs"
+  mkdir -p "$xodir/logs" || die "cannot create $xodir/logs — findings retained in $xodir/verdict.json."
   local plan overflow=0 n=0
   # THE SIXTH ARGUMENT IS THE RECORD OF WHAT IS ALREADY FILED (S240). A criterion
   # already in `logs.json` is skipped and said out loud, so a second look can
@@ -5883,6 +5930,7 @@ file_logs_for() { # <id> <dir>
       "$id" "$prc"
     printf '  Nothing was filed, and that is NOT a clean bill of health: anything the look\n'
     printf '  found is still on the report, and it has not been checked against the record.\n'
+    [ "$done_parent" = 0 ] || printf '  Findings retained in %s.\n' "$xodir/verdict.json"
     journal "$dir" filed-logs \
       "$(printf '"filed": 0, "exit": %s, "detail": %s' "$prc" \
            "$(jstr "the filer failed (exit $prc) — nothing was filed and nothing is proven clean")")"
@@ -5988,6 +6036,89 @@ file_logs_for() { # <id> <dir>
     return 0
   fi
 
+  # A merged parent has no PR for a child fix to ride. File independently;
+  # the generated PRDs remain the durable fallback even if filing fails.
+  if [ "$done_parent" = 1 ]; then
+    local ai=2 fi=0 filed=0 fprd fid fout frc fwhy fissue fengine=""
+    local -a fileargs=()
+    [ -n "${LCARS_WORKER_BIN:-}" ] || fengine="$(xo_engine_for "$st")"
+    while [ "$ai" -lt "${#args[@]}" ]; do
+      fprd="${args[$((ai + 1))]}"
+      fileargs=(--prd "$fprd")
+      ai=$((ai + 2))
+      while [ "$ai" -lt "${#args[@]}" ] && [ "${args[$ai]}" != --prd ]; do
+        fileargs+=("${args[$ai]}")
+        ai=$((ai + 1))
+      done
+      frc=0; fid=""; fissue=""; fwhy=""
+      fout="$(
+        if [ -n "$fengine" ]; then
+          export LCARS_WORKER_BIN="$fengine" LCARS_WORKER_BIN_INTERNAL=1
+        fi
+        LCARS_XO_INTERNAL="$id" bash "$XO_FILE_SCRIPT" "${fileargs[@]}" 2>&1
+      )" || frc=$?
+      if [ "$frc" = 0 ]; then
+        fid="$(printf '%s\n' "$fout" | sed -n 's/^  Mission filed: \(lcars-[a-zA-Z0-9-]*\)$/\1/p' | tail -1)"
+        if [ -z "$fid" ] || [ ! -s "$MISSIONS_DIR/$fid/prd.md" ] ||
+           [ "$(json_field "$MISSIONS_DIR/$fid/state.json" id)" != "$fid" ] ||
+           [ -n "$(json_field "$MISSIONS_DIR/$fid/state.json" parentMission)" ]; then
+          frc=1; fid=""
+          fwhy="lcars file returned success without a persisted standalone Mission ID."
+        else
+          fissue="$(lcars_state_get_raw "$MISSIONS_DIR/$fid/state.json" githubIssue)"
+          [ "$fissue" != null ] || fissue=""
+          filed=$((filed + 1))
+        fi
+      fi
+      if [ "$frc" != 0 ]; then
+        [ -n "$fwhy" ] || fwhy="$(xo_log_refusal_why "$fout" "$frc")"
+        printf '  Not filed through `lcars file`: %s Finding retained in %s (record: %s).\n' \
+          "$fwhy" "$fprd" "$xodir/verdict.json"
+        journal "$dir" finding-retained \
+          "$(printf '"exit": %s, "detail": %s' "$frc" \
+               "$(jstr "lcars file did not finish: $fwhy Finding retained in $fprd (record: $xodir/verdict.json).")")"
+      else
+        printf '  Standalone Mission filed: %s — %s\n' "$fid" "${gap_title[$fi]}"
+        journal "$dir" filed-mission \
+          "$(printf '"mission": %s, "detail": %s' "$(jstr "$fid")" \
+               "$(jstr "standalone Mission $fid filed for Done parent $id")")"
+      fi
+      # Record each result before the next call, preserving earlier successes.
+      "$XO_PY" -c 'import json, os, pathlib, sys
+p = pathlib.Path(sys.argv[1])
+d = json.loads(p.read_text()) if p.exists() else {"filed": []}
+f = {"n": int(sys.argv[2]), "mission": sys.argv[3], "issue": sys.argv[4],
+     "criterion": sys.argv[5], "title": sys.argv[6],
+     "shots": [pathlib.Path(s).stem for s in sys.argv[7].split(",") if s],
+     "prd": sys.argv[8]}
+d["standalone"] = True
+d["overflow"] = int(sys.argv[10])
+d["filedAt"] = sys.argv[11]
+d["unfiled"] = [old for old in d.get("unfiled", [])
+                if old.get("criterion") != f["criterion"]]
+if f["mission"]:
+    d["filed"].append(f)
+else:
+    f["why"] = sys.argv[9]
+    d["unfiled"].append(f)
+tmp = p.with_suffix(".json.tmp")
+tmp.write_text(json.dumps(d, ensure_ascii=False) + "\n")
+os.replace(tmp, p)' "$xodir/logs.json" "$((fi + 1))" "$fid" "$fissue" \
+        "${gap_crit[$fi]}" "${gap_title[$fi]}" "${gap_shots[$fi]}" "$fprd" "$fwhy" \
+        "$overflow" "$NOW" \
+        || die "cannot record filing result — findings retained in $xodir/logs and $xodir/verdict.json."
+      fi=$((fi + 1))
+    done
+    printf '◈ NUMBER ONE: filed %d standalone mission(s); no parent resolver started.\n' "$filed"
+    if [ "${overflow:-0}" -gt 0 ]; then
+      printf '  %s more finding(s) retained in %s — cap %s.\n' "$overflow" "$xodir/verdict.json" "$XO_LOG_CAP"
+      journal "$dir" overflow \
+        "$(printf '"detail": %s' "$(jstr "$overflow more findings retained in $xodir/verdict.json — cap $XO_LOG_CAP")")"
+    fi
+    xo_mirror "$id"
+    return 0
+  fi
+
   # --- ONE call to the ordinary verb ---------------------------------------
   # Exactly the invocation run.sh already makes (`LCARS_WORKER_BIN=<engine> bash
   # log.sh --parent … --prd …`), with the engine pinned the way every other
@@ -6015,9 +6146,9 @@ file_logs_for() { # <id> <dir>
     local lwhy
     lwhy="$(xo_log_refusal_why "$lout" "$lrc")"
     escalate "$dir" verify \
-      "Number One had $n gaps to file but \`lcars log\` did not finish: $lwhy" \
+      "Number One had $n gaps to file but \`lcars log\` did not finish: $lwhy Findings retained in $xodir/logs (record: $xodir/verdict.json)." \
       "$(printf '"stage": "verify", "reason": "log-refused", "exit": %s, "detail": %s' \
-           "$lrc" "$(jstr "$lwhy")")"
+           "$lrc" "$(jstr "$lwhy Findings retained in $xodir/logs (record: $xodir/verdict.json).")")"
   fi
 
   # --- the child ids, read off the verb's own summary ----------------------

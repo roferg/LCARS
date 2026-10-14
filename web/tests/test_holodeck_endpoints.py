@@ -3006,6 +3006,18 @@ class DeleteNeverDestroysWhatItCallsRecoverableTest(DurableBase):
         self.assertTrue(os.path.isdir(self._room()))
         self.assertIn("Nav rail", self._transcript())
 
+    def test_safety_refusal_is_409_when_git_cannot_record_the_room(self):
+        self._dead_first_turn()
+        # A healthy git repo with an ignored room: add refuses, and ls-tree
+        # correctly reports that deletion would be unrecoverable.
+        with open(os.path.join(self._sidecar(), ".gitignore"), "w") as fh:
+            fh.write("nav-rail/\n")
+        st, body = self._post_raw("/api/holodeck/delete", {"room": "nav-rail"})
+        self.assertEqual(st, 409, body)
+        self.assertIn("NOTHING HAS BEEN REMOVED", body["error"])
+        self.assertTrue(os.path.isdir(self._room()))
+        self.assertIn("Nav rail", self._transcript())
+
     def test_the_delete_stages_only_this_programs_room(self):
         """"Leave my files alone." A delete is not an occasion to commit the
         captain's own archive for him — and leaning on his files is how the

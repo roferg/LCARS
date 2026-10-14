@@ -35,6 +35,35 @@ It works from anywhere because `install.sh` installs it globally into the instal
 
 The orchestrator half spawns sub-agents and is run from Claude Code today; the ride-along brief and the autopilot run from either CLI.
 
+## Unattended Copilot setup: trust the working directory before launch
+
+For an unattended Copilot buddy or autopilot run, set **`COPILOT_ALLOW_ALL=true`
+in the launching environment, with exactly the string `true`**:
+
+```bash
+export COPILOT_ALLOW_ALL=true
+# Launch Copilot from the repository whose provenance you control.
+```
+
+`--allow-all-tools` only auto-approves tools; it does **not** trust the working
+directory. `COPILOT_ALLOW_ALL=true` additionally trusts that directory. Other
+truthy spellings (`1`, `yes`, `on`, `y`) only auto-approve tools, like the flag,
+and are not enough for an unattended run.
+
+**Trust is executable configuration, not just permission to read files.**
+Trusting a directory also loads its skills, plugins, MCP servers and hooks,
+**including hooks that run shell commands**. This is acceptable in a repository
+whose provenance you control. It is **not acceptable in a repository of unknown
+provenance**; do not use this blanket trust there.
+
+**Measured 2026-10-13:** with `--allow-all-tools` already set, a buddy round was
+refused on every command, including read-only commands, with
+`Permission denied because no interactive user response was available.` Four
+rounds had worked before the fifth failed without warning. From outside, a
+blocked run and a healthy idle run look identical; nothing inside the blocked
+run can detect or recover from it. Set the exact environment value **before
+launch**, rather than relying on a flag or on earlier rounds having worked.
+
 ## When to use
 
 The sentences below were part of this skill's frontmatter `description:` until

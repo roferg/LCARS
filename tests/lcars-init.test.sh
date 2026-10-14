@@ -104,6 +104,116 @@ echo "lcars init"
 
 [ -f "$SCRIPT" ] || { echo "script under test not found at $SCRIPT"; exit 1; }
 
+# --- Argument handling: informational commands never initialize -----------
+USAGE='usage: lcars init [--help|-h] [--dry-run]'
+for flag in --help -h --nope -x --dry-run; do
+  repo="$(new_repo)"
+  make_claude_stub "$repo/claude"
+  make_gh_stub "$repo/gh"
+  export GH_LOG="$repo/gh.log"; : >"$GH_LOG"
+  export GH_EXISTING="$repo/existing"; : >"$GH_EXISTING"
+  cp "$repo/.git/info/exclude" "$repo/exclude.before"
+  ( cd "$repo" && find .git -type f | sort ) >"$repo/git.before"
+  rc=0
+  (
+    cd "$repo"
+    LCARS_CLAUDE_BIN="$repo/claude" LCARS_GH_BIN="$repo/gh" \
+      bash "$SCRIPT" "$flag" >out.txt 2>err.txt
+  ) || rc=$?
+  check "args $flag: creates no .git/lcars" "[ ! -e '$repo/.git/lcars' ]"
+  check "args $flag: makes ZERO gh calls" "[ ! -s '$GH_LOG' ]"
+  check "args $flag: does not seed a commit" \
+    "! git -C '$repo' rev-parse --verify -q HEAD >/dev/null 2>&1"
+  check "args $flag: leaves git excludes unchanged" \
+    "cmp -s '$repo/exclude.before' '$repo/.git/info/exclude'"
+  ( cd "$repo" && find .git -type f | sort ) >"$repo/git.after"
+  check "args $flag: creates no git files" "cmp -s '$repo/git.before' '$repo/git.after'"
+  case "$flag" in
+    --help|-h)
+      check "args $flag: exits zero" "[ '$rc' -eq 0 ]"
+      check "args $flag: prints exact usage on stdout" \
+        "[ \"\$(cat '$repo/out.txt')\" = '$USAGE' ]"
+      check "args $flag: stderr is empty" "[ ! -s '$repo/err.txt' ]"
+      ;;
+    --nope|-x)
+      check "args $flag: exits non-zero" "[ '$rc' -ne 0 ]"
+      check "args $flag: prints exact unknown-option error on stderr" \
+        "[ \"\$(cat '$repo/err.txt')\" = 'lcars init: unknown option \"$flag\" — $USAGE' ]"
+      check "args $flag: stdout is empty" "[ ! -s '$repo/out.txt' ]"
+      ;;
+    --dry-run)
+      check "args $flag: exits zero" "[ '$rc' -eq 0 ]"
+      check "args $flag: stderr is empty" "[ ! -s '$repo/err.txt' ]"
+      check "args $flag: clearly announces no changes" \
+        "qgrep -qxF 'lcars init: dry run — no changes made.' '$repo/out.txt'"
+      check "args $flag: names the config destination" \
+        "qgrep -qxF 'Would write config: $repo/.git/lcars/config.json' '$repo/out.txt'"
+      sed -n '/^{$/,/^}$/p' "$repo/out.txt" >"$repo/preview.json"
+      check "args $flag: previews valid JSON with the real config defaults" \
+        "python3 -c 'import json,sys; c=json.load(open(sys.argv[1])); assert c[\"model\"] == \"claude-sonnet\" and c[\"projectName\"] == sys.argv[2] and c[\"contextFile\"] is None and c[\"stack\"] == \"unknown\" and c[\"testCommand\"] is None and c[\"worktreeSetupCommand\"] is None and c[\"comprehensionBudget\"] == 1200 and c[\"numberOne\"] == {\"enabled\": False} and len(c[\"cloneId\"]) == 32 and c[\"created\"]' '$repo/preview.json' '$(basename "$repo")'"
+      ( . "$REPO_ROOT/skills/lcars-init/lcars-common.sh"; lcars_all_labels ) >"$repo/labels.expected"
+      sed -n '/^lcars:.*|/p' "$repo/out.txt" >"$repo/labels.actual"
+      check "args $flag: previews every canonical label and color" \
+        "cmp -s '$repo/labels.expected' '$repo/labels.actual'"
+      check "args $flag: previews all 20 labels" \
+        "[ \"\$(wc -l <'$repo/labels.actual' | tr -d ' ')\" = 20 ]"
+      ;;
+  esac
+done
+
+# A preview must preserve an existing config and bridge identity, not mint one
+# on disk or clobber the captain's settings while showing detected defaults.
+repo="$(new_repo)"
+make_claude_stub "$repo/claude"; make_gh_stub "$repo/gh"
+export GH_LOG="$repo/gh.log"; : >"$GH_LOG"
+export GH_EXISTING="$repo/existing"; : >"$GH_EXISTING"
+mkdir -p "$repo/.git/lcars"
+printf '{\n  "model": "custom-model",\n  "testCommand": null\n}\n' >"$repo/.git/lcars/config.json"
+printf '0123456789abcdef0123456789abcdef\n' >"$repo/.git/lcars/clone-id"
+cp "$repo/.git/lcars/config.json" "$repo/config.before"
+cp "$repo/.git/lcars/clone-id" "$repo/clone.before"
+rc=0
+( cd "$repo" && LCARS_CLAUDE_BIN="$repo/claude" LCARS_GH_BIN="$repo/gh" \
+    bash "$SCRIPT" --dry-run >out.txt 2>err.txt ) || rc=$?
+check "args dry-run re-init: exits zero" "[ '$rc' -eq 0 ]"
+check "args dry-run re-init: makes ZERO gh calls" "[ ! -s '$GH_LOG' ]"
+check "args dry-run re-init: leaves existing config byte-identical" \
+  "cmp -s '$repo/config.before' '$repo/.git/lcars/config.json'"
+check "args dry-run re-init: leaves bridge identity byte-identical" \
+  "cmp -s '$repo/clone.before' '$repo/.git/lcars/clone-id'"
+check "args dry-run re-init: creates no missions directory" "[ ! -e '$repo/.git/lcars/missions' ]"
+sed -n '/^{$/,/^}$/p' "$repo/out.txt" >"$repo/preview.json"
+check "args dry-run re-init: previews preserved model and bridge identity" \
+  "python3 -c 'import json,sys; c=json.load(open(sys.argv[1])); assert c[\"model\"] == \"custom-model\" and c[\"cloneId\"] == \"0123456789abcdef0123456789abcdef\"' '$repo/preview.json'"
+
+# Help and preview do not require a worker installation. Invalid options
+# after --dry-run must still be rejected before any initialization occurs.
+for mode in help dry-run invalid; do
+  repo="$(new_repo)"
+  make_gh_stub "$repo/gh"
+  export GH_LOG="$repo/gh.log"; : >"$GH_LOG"
+  export GH_EXISTING="$repo/existing"; : >"$GH_EXISTING"
+  case "$mode" in
+    help) set -- --help ;;
+    dry-run) set -- --dry-run ;;
+    invalid) set -- --dry-run --nope ;;
+  esac
+  rc=0
+  ( cd "$repo" && LCARS_CLAUDE_BIN="$repo/missing-claude" \
+      LCARS_COPILOT_BIN="$repo/missing-copilot" LCARS_GH_BIN="$repo/gh" \
+      bash "$SCRIPT" "$@" >out.txt 2>err.txt ) || rc=$?
+  check "args $mode without engines: creates no .git/lcars" "[ ! -e '$repo/.git/lcars' ]"
+  check "args $mode without engines: makes ZERO gh calls" "[ ! -s '$GH_LOG' ]"
+  case "$mode" in
+    invalid)
+      check "args dry-run then unknown: exits non-zero" "[ '$rc' -ne 0 ]"
+      check "args dry-run then unknown: reports the option, not a worker error" \
+        "[ \"\$(cat '$repo/err.txt')\" = 'lcars init: unknown option \"--nope\" — $USAGE' ]"
+      ;;
+    *) check "args $mode without engines: exits zero" "[ '$rc' -eq 0 ]" ;;
+  esac
+done
+
 # --- Behaviour 1 & 2: creates .git/lcars/ and config.json -----------------
 repo="$(new_repo)"
 make_claude_stub "$repo/claude"
@@ -265,7 +375,7 @@ printf 'lcars:align\nlcars:bug\n' >"$GH_EXISTING"
   LCARS_CLAUDE_BIN="$repo/claude" LCARS_GH_BIN="$repo/gh" bash "$SCRIPT" >out.txt 2>&1
 )
 created_count="$(grep -c 'label create' "$GH_LOG")"
-check "5. creates the 14 missing labels"        "[ '$created_count' -eq 14 ]"
+check "5. creates the 18 missing labels"        "[ '$created_count' -eq 18 ]"
 check "5. skips pre-existing lcars:align"        "! grep -q 'label create lcars:align' '$GH_LOG'"
 check "5. skips pre-existing lcars:bug"          "! grep -q 'label create lcars:bug' '$GH_LOG'"
 check "5. creates lcars:done with stage colour"  "grep -q 'label create lcars:done .*FF9900' '$GH_LOG'"
@@ -275,7 +385,7 @@ check "5. creates lcars:linked with rel colour"  "grep -q 'label create lcars:li
 check "5. creates lcars:mission role label"      "grep -q 'label create lcars:mission .*[0-9A-Fa-f]' '$GH_LOG'"
 check "5. creates lcars:ticket role label"       "grep -q 'label create lcars:ticket .*[0-9A-Fa-f]' '$GH_LOG'"
 
-# all-missing repo creates all 16
+# all-missing repo creates all 20
 repo3="$(new_repo)"
 make_claude_stub "$repo3/claude"
 make_gh_stub "$repo3/gh"
@@ -286,13 +396,13 @@ export GH_EXISTING="$repo3/existing"; : >"$GH_EXISTING"
   LCARS_CLAUDE_BIN="$repo3/claude" LCARS_GH_BIN="$repo3/gh" bash "$SCRIPT" >out.txt 2>&1
 )
 all_count="$(grep -c 'label create' "$repo3/gh.log")"
-check "5. creates all 16 labels when none exist" "[ '$all_count' -eq 16 ]"
+check "5. creates all 20 labels when none exist" "[ '$all_count' -eq 20 ]"
 
 # --- Behaviour 6: readiness summary ---------------------------------------
 check "6. summary: .git/lcars created"   "grep -q '.git/lcars/ created' '$repo3/out.txt'"
 check "6. summary: config.json written"  "grep -q 'config.json written' '$repo3/out.txt'"
 check "6. summary: Claude CLI verified"   "grep -qi 'Claude CLI verified' '$repo3/out.txt'"
-check "6. summary: labels created line"    "grep -q '16 labels' '$repo3/out.txt'"
+check "6. summary: labels created line"    "grep -q '20 labels' '$repo3/out.txt'"
 check "6. summary: LCARS ready line"       "grep -q 'LCARS ready' '$repo3/out.txt'"
 check "6. summary: points to lcars file"   "grep -q 'lcars file' '$repo3/out.txt'"
 

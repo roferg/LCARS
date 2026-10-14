@@ -41,6 +41,13 @@ note); `lcars xo on <mission>` puts that Mission back in scope — it clears the
 per-mission opt-out AND the `stood-down` status, so the next drive can engage
 it again.
 
+A named stop records a `paused` event for each Mission whose pause flag it sets,
+including linked children; `xo on <mission>` (or repo-wide `xo on`) records
+`resumed` only when it actually clears a pause owned by the stop. These events use
+the operator-write journal, so the viewscreen excludes the paused interval from
+active time without weakening the worker fence. Already-paused children stay
+paused, and repo-wide `xo off` remains marker-only, with no pause events.
+
 `lcars xo answer --mission <id>` is the driver's call at a park: Number One
 reads the Mission's record in a read-only copy, then either ANSWERS the gate
 through `lcars respond` (attributed `answeredBy: number-one`, exit 0) or
@@ -770,6 +777,24 @@ so each shot binds to its OWN bug by argument order. The parent's drawing is
 The child ids come back off the verb's own summary and land in
 **`xo/logs.json`**, which is the only thing `recheck` reads to know what it
 filed. Then `resolve-logs` is started detached, its pid in **`xo-resolve.pid`**.
+
+**MERGE never starts a resolver.** For `merge` or `merge-with-follow-ups`, both
+`evaluate` and the hand-run `file-logs` retain any remaining findings in
+`xo/verdict.json` under `followUps`, with their recorded details. The operator is
+told where they are kept and decides what to file. This check precedes the
+filing switch and the round marker; no issue, child Mission, or resolver is
+created by a MERGE verdict. Active-parent send-back filing and driving remain
+unchanged.
+
+**Done parents use `lcars file`, not `lcars log`.** For a non-MERGE verdict
+against a Mission already at `done`, each finding becomes a new standalone
+Mission at Align, with its own attachments and delivery path. No parent resolver
+is started and the Done parent's state is unchanged. Successful filings are
+recorded in `xo/logs.json` so another filing pass skips them. If filing fails,
+the finding stays in `xo/logs/<n>.md` and `xo/verdict.json`; Number One names
+those locations in its output and journal, and records the failure under
+`unfiled` in `xo/logs.json`. Unfiled findings can be retried. The MERGE gate
+above still takes precedence, including for Done parents.
 
 **ONE ROUND ONLY** (captain's ruling). `numberOne.round` is set to `1` and never
 incremented. A fix that does not hold goes to the captain, not to round two.

@@ -122,6 +122,26 @@ re-plans, and implementation retries. The harness multiplies these by the
 per-stage tier price/multiplier from `pricing.json`, so your job is the *workload*,
 not the dollars.
 
+### Copilot usage workload calibration
+
+Count tokens across **every model turn in a cold invocation**, including replayed
+context; do not estimate only the files read once or the final response. Copilot
+input tokens already include cache reads/writes and bill at the input rate, so do
+not discount cached context or add cache counters a second time. The seven-mission
+2026-10-13 corpus consumed 82.35M total tokens against a 7.526M high estimate
+(10.94x), with only 1.84% output tokens; the old 80/20 price split was conservative,
+not the cause of the underestimate.
+
+For Copilot usage billing, the harness takes the larger of your token-priced band
+and a per-invocation input/output workload envelope times `requestEstimates`, for
+each bound. The envelopes in `cost_token_usd()` are rounded observed stage-average
+min/max budgets, not mission-size multipliers. Implementation includes controller
+(`numberOne`) work allocated per implementation invocation; the estimator's own
+invocation is added once. Verify has no observations and retains your token band.
+Claude and legacy premium-request billing are unchanged. This deliberately wide
+range is fitted to one project's seven missions, not calibrated beyond it; do not
+claim general accuracy. Continue estimating both workload bands from the mission.
+
 ## The rationale
 
 Emit a `rationale` string explaining, in plain engineering terms, WHY you scored

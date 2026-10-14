@@ -193,6 +193,16 @@ def _deploy_failure(exc, what="Main was not deployed"):
     return out
 
 
+def _skill_refusal(exc, banner):
+    """Re-cast only the skill's deliberate exit-1 + die-banner envelope."""
+    if (exc.status == 502 and getattr(exc, "skill_exit", None) == 1
+            and banner in (exc.message or "")):
+        out = ActionError(409, exc.message, exc.data)
+        out.skill_exit = exc.skill_exit
+        return out
+    return exc
+
+
 # The env seam names the daemon resolves each skill path from (mirrors how
 # serve.sh env-injects). Used by the launcher/__main__ to build the script map.
 SCRIPT_ENV = {
@@ -8243,16 +8253,21 @@ class Actions(LogFacts):
                                    "--name-only", "HEAD", "--", room_name],
                                   stdout=subprocess.PIPE,
                                   stderr=subprocess.DEVNULL)
-            if proc.returncode != 0 or not (proc.stdout or b"").strip():
+            if proc.returncode != 0:
+                raise ActionError(502, "could not inspect the program's git history: "
+                                  "git exited %d" % proc.returncode)
+            if not (proc.stdout or b"").strip():
                 return ""
             head = subprocess.run([self.git_bin, "-C", sidecar, "rev-parse",
                                    "HEAD"], stdout=subprocess.PIPE,
                                   stderr=subprocess.DEVNULL)
             if head.returncode != 0:
-                return ""
+                raise ActionError(502, "could not read the archive's HEAD: "
+                                  "git exited %d" % head.returncode)
             return (head.stdout or b"").decode("utf-8", "replace").strip()
-        except OSError:
-            return ""
+        except OSError as exc:
+            raise ActionError(502, "could not inspect the program's git history: %s"
+                              % exc)
 
     def holodeck_delete(self, room=None):
         """POST /api/holodeck/delete — remove a program, KEEPING its history.
@@ -8330,7 +8345,12 @@ class Actions(LogFacts):
                           "record the program before removing it")
             except ActionError:
                 pass
-            base = self._room_in_history(sidecar, room_name)
+            history_fault = None
+            try:
+                base = self._room_in_history(sidecar, room_name)
+            except ActionError as exc:
+                history_fault = exc
+                base = ""
         if not base:
             # NOT DESTROYED. The room is untouched and the program is still
             # openable; the captain decides what to do with something LCARS
@@ -8338,7 +8358,8 @@ class Actions(LogFacts):
             if sess is not None:
                 sess.busy = False
             raise ActionError(
-                502, "LCARS could not record %s in the holodeck archive's git "
+                history_fault.status if history_fault else 409,
+                "LCARS could not record %s in the holodeck archive's git "
                 "history, so removing it now would destroy it for good — and it "
                 "will not do that while telling you it is recoverable. NOTHING "
                 "HAS BEEN REMOVED: the program is still in its room at %s. Copy "
@@ -11443,7 +11464,14 @@ class Actions(LogFacts):
     def resume(self, mid):
         """POST /api/mission/<id>/resume."""
         self._require_mission(mid)
-        self._run("pause", ["resume", mid])
+        # Finish the short action before spawning the driver, as respond does.
+        # A later stage exit is not the result of clearing the paused flag.
+        self._run("pause", ["resume", mid],
+                  env_extra={"LCARS_PAUSE_RESUME": "0"})
+        if not self._is_running(mid):
+            engine = self._persisted_worker_bin(mid)
+            env_extra = {"LCARS_WORKER_BIN": engine} if engine else None
+            self._spawn("run", ["drive", "--mission", mid], env_extra=env_extra)
         return self._mission_state(mid)
 
     def respond(self, mid, answer):
@@ -11704,8 +11732,12 @@ class Actions(LogFacts):
         if proc.returncode != 0:
             # The verbs print ship-status lines (⚠ SET BUT UNVERIFIED, ✗ REPAIR
             # INCOMPLETE, …) — surface THOSE, verbatim, as the board message.
-            raise ActionError(502, out or "the test-systems repair failed with "
+            err = ActionError(502, out or "the test-systems repair failed with "
                               "no report — check the daemon log.")
+            err.skill_exit = proc.returncode
+            if args == ["--probe-tests"]:
+                raise _skill_refusal(err, "lcars update: ")
+            raise err
         # the fresh board carries the re-verdicted meta.testReadiness (or its
         # absence, when the repair brought the systems online).
         return {"output": out, "board": self._reader.board()}

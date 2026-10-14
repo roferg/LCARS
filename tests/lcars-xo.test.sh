@@ -157,6 +157,224 @@ cfg_line() { # <repo> -> the raw numberOne line out of config.json
 echo "lcars xo (Number One — the verb)"
 [ -f "$SCRIPT" ] || { echo "script under test not found at $SCRIPT"; exit 1; }
 
+if [ "${1:-}" = --only-reviewer-filing ]; then
+  LOG_STUB="$TMPROOT/log.sh"; RESOLVE_STUB="$TMPROOT/resolve.sh"
+  FILE_STUB="$TMPROOT/file.sh"
+  cat >"$LOG_STUB" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"$FILING_CALLS"
+[ "${DONE_PARENT:-0}" = 0 ] && [ "${LOG_FAILURE:-0}" = 0 ] || { echo 'lcars log: no active Mission matches the Done parent.' >&2; exit 1; }
+printf '  lcars-20261013-002  #43  Reviewer finding\n'
+SH
+  cat >"$FILE_STUB" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"$FILE_CALLS"
+case "${FILE_OUTCOME:-success}" in
+  failure) echo 'lcars file: test filing failure' >&2; exit 7 ;;
+  empty) exit 0 ;;
+  partial) [ "$(wc -l <"$FILE_CALLS" | tr -d ' ')" != 2 ] || { echo 'lcars file: second filing failed' >&2; exit 7; } ;;
+esac
+bash "$REAL_FILE_SCRIPT" "$@"
+SH
+  cat >"$RESOLVE_STUB" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"$RESOLVER_CALLS"
+SH
+  for scenario in merge merge-with-follow-ups send-back done done-failure done-empty done-partial done-round done-filing-off done-plan-failure active-failure done-merge; do
+    rec="$scenario"; stage=verify; expected_calls=1
+    export DONE_PARENT=0 FILE_OUTCOME=success LOG_FAILURE=0
+    case "$scenario" in done*) stage=done; rec=send-back; DONE_PARENT=1 ;; esac
+    case "$scenario" in
+      done-failure) FILE_OUTCOME=failure ;;
+      done-empty) FILE_OUTCOME=empty ;;
+      done-partial) FILE_OUTCOME=partial; expected_calls=2 ;;
+      done-merge) rec=merge ;;
+      active-failure) rec=send-back; LOG_FAILURE=1 ;;
+    esac
+    repo="$(new_repo '"numberOne": {"enabled": true, "engine": "copilot"}')"
+    if [ "$scenario" = done-filing-off ]; then
+      sed 's/"enabled": true/"enabled": true, "filesBugs": false/' "$repo/.git/lcars/config.json" >"$repo/config.tmp"
+      mv "$repo/config.tmp" "$repo/.git/lcars/config.json"
+    fi
+    ( cd "$repo" && git commit -q --allow-empty -m fixture )
+    m="$(plant_mission "$repo" "$MID" "$stage" '{"status":"engaged"}')"
+    if [ "$scenario" = done-round ]; then
+      python3 - "$m/state.json" <<'PYFIX'
+import json, pathlib, sys
+p = pathlib.Path(sys.argv[1]); d = json.loads(p.read_text())
+d["numberOne"]["round"] = 1
+p.write_text(json.dumps(d))
+PYFIX
+    fi
+    cp "$m/state.json" "$repo/parent-before.json"
+    mkdir -p "$m/xo/shots"
+    printf 'observed faulty footer\n' >"$m/xo/shots/footer.txt"
+    export FILING_CALLS="$repo/filing.calls" RESOLVER_CALLS="$repo/resolver.calls"
+    export FILE_CALLS="$repo/file.calls" REAL_FILE_SCRIPT="$REPO_ROOT/skills/lcars-file/file.sh"
+    : >"$FILING_CALLS"; : >"$RESOLVER_CALLS"; : >"$FILE_CALLS"
+    python3 - "$m/xo" "$rec" "$scenario" <<'PY'
+import json, pathlib, sys
+p, rec = pathlib.Path(sys.argv[1]), sys.argv[2]
+find = {"title": "Reviewer finding", "expected": "footer keeps its host",
+        "saw": "footer switches host", "shots": ["footer.txt"],
+        "evidence": "transcript", "checkedBy": "cli"}
+gap = dict(find, criterion="prd-1", kind="contradiction")
+json.dump({"score": "high" if rec.startswith("merge") else "low",
+           "recommendation": rec, "gaps": [] if rec.startswith("merge") else [gap],
+           "followUps": ["Existing operator follow-up"] if rec == "merge-with-follow-ups" else [],
+           "volunteered": [find] if rec.startswith("merge") else [],
+           "criteria": [], "blockers": []}, open(p / "verdict.json", "w"))
+json.dump({"criteria": [{"id": "prd-1", "text": "footer keeps its host"}]},
+          open(p / "criteria.json", "w"))
+if sys.argv[3] == "done-partial":
+    (p / "shots" / "second.txt").write_text("second finding evidence\n")
+    v = json.load(open(p / "verdict.json"))
+    v["gaps"].append(dict(gap, criterion="prd-2", title="Second reviewer finding",
+                          saw="second footer switches host", shots=["second.txt"]))
+    json.dump(v, open(p / "verdict.json", "w"))
+    c = json.load(open(p / "criteria.json"))
+    c["criteria"].append({"id": "prd-2", "text": "second footer keeps its host"})
+    json.dump(c, open(p / "criteria.json", "w"))
+if sys.argv[3] == "done-plan-failure":
+    v = json.load(open(p / "verdict.json")); v["gaps"][0]["shots"] = 5
+    json.dump(v, open(p / "verdict.json", "w"))
+PY
+    rc=0
+    ( cd "$repo" && LCARS_LOG_SCRIPT="$LOG_STUB" LCARS_RESOLVE_LOGS_SCRIPT="$RESOLVE_STUB" \
+        LCARS_FILE_SCRIPT="$FILE_STUB" LCARS_VERSION_CHECK=0 LCARS_RUN_BIN=/usr/bin/true LCARS_OWNER_ENFORCE=0 \
+        LCARS_GH_BIN=true LCARS_HOST_ADAPTER=/usr/bin/true LCARS_RUN_SCRIPT=/usr/bin/true \
+        bash "$SCRIPT" file-logs --mission "$MID" >out.txt 2>&1 ) || rc=$?
+    if [ "$scenario" = done-filing-off ] || [ "$scenario" = done-plan-failure ]; then
+      check "a. $scenario: findings retained in the named verdict when filing cannot begin" \
+        "[ '$rc' = 0 ] && [ ! -s '$FILING_CALLS' ] && [ ! -s '$FILE_CALLS' ] && [ ! -s '$RESOLVER_CALLS' ] &&
+         grep -q 'footer switches host' '$m/xo/verdict.json' && grep -Fq '$m/xo/verdict.json' '$repo/out.txt' &&
+         cmp -s '$m/state.json' '$repo/parent-before.json'"
+    elif [ "$scenario" = active-failure ]; then
+      check "a. ACTIVE filing failure also names its durable finding location" \
+        "[ '$rc' = 1 ] && [ ! -s '$FILE_CALLS' ] && [ ! -s '$RESOLVER_CALLS' ] &&
+         grep -q 'footer switches host' '$m/xo/logs/1.md' && grep -Fq '$m/xo/logs' '$repo/out.txt' &&
+         grep -Fq '$m/xo/verdict.json' '$m/number-one.jsonl'"
+    elif [ "$stage" = done ] && [ "$rec" = send-back ]; then
+      check "a. $scenario: uses lcars file $expected_calls time(s), never log or the parent resolver" \
+        "[ '$rc' = 0 ] && [ ! -s '$FILING_CALLS' ] && [ ! -s '$RESOLVER_CALLS' ] &&
+         [ \"\$(wc -l <'$FILE_CALLS' | tr -d ' ')\" = $expected_calls ] && [ ! -e '$m/xo-resolve.pid' ] &&
+         cmp -s '$m/state.json' '$repo/parent-before.json'"
+      if [ "$scenario" = done ] || [ "$scenario" = done-round ]; then
+        check "a. Done finding becomes a real standalone Mission with its evidence" \
+          "python3 -c 'import json,pathlib,sys; p=pathlib.Path(sys.argv[1]); rows=json.load(open(p/\"$MID/xo/logs.json\"))[\"filed\"]; assert len(rows)==1; kid=p/rows[0][\"mission\"]; d=json.load(open(kid/\"state.json\")); assert d[\"stage\"]==\"align\"; assert not d.get(\"parentMission\"); assert \"footer switches host\" in (kid/\"prd.md\").read_text(); assert any(f.read_text()==\"observed faulty footer\\n\" for f in (kid/\"attachments\").iterdir())' '$repo/.git/lcars/missions' &&
+           grep -q 'standalone' '$repo/out.txt'"
+      else
+        retained=1; [ "$scenario" != done-partial ] || retained=2
+        check "a. $scenario: unfiled finding is durable and its exact location is reported" \
+          "grep -q 'footer switches host' '$m/xo/logs/$retained.md' &&
+           grep -Fq '$m/xo/logs/$retained.md' '$repo/out.txt' &&
+           grep -Fq '$m/xo/logs/$retained.md' '$m/number-one.jsonl' &&
+           ! grep -q 'filed 1 mission' '$repo/out.txt'"
+      fi
+      export FILE_OUTCOME=success
+      repeat_rc=0
+      ( cd "$repo" && LCARS_LOG_SCRIPT="$LOG_STUB" LCARS_RESOLVE_LOGS_SCRIPT="$RESOLVE_STUB" \
+          LCARS_FILE_SCRIPT="$FILE_STUB" LCARS_VERSION_CHECK=0 LCARS_RUN_BIN=/usr/bin/true LCARS_OWNER_ENFORCE=0 \
+          LCARS_GH_BIN=true LCARS_HOST_ADAPTER=/usr/bin/true LCARS_RUN_SCRIPT=/usr/bin/true \
+          bash "$SCRIPT" file-logs --mission "$MID" >repeat.txt 2>&1 ) || repeat_rc=$?
+      total_calls="$expected_calls"; expected_filed=1
+      case "$scenario" in
+        done-failure|done-empty) total_calls=2 ;;
+        done-partial) total_calls=3; expected_filed=2 ;;
+      esac
+      check "a. $scenario: repeat skips successes, retries failures, preserves the complete record" \
+        "[ '$repeat_rc' = 0 ] && [ \"\$(wc -l <'$FILE_CALLS' | tr -d ' ')\" = '$total_calls' ] &&
+         [ ! -s '$FILING_CALLS' ] && [ ! -s '$RESOLVER_CALLS' ] &&
+         cmp -s '$m/state.json' '$repo/parent-before.json' &&
+         python3 -c 'import json,pathlib,sys; p=pathlib.Path(sys.argv[1]); d=json.load(open(p/\"$MID/xo/logs.json\")); assert len(d[\"filed\"])==int(sys.argv[2]); assert not d.get(\"unfiled\"); assert len({f[\"mission\"] for f in d[\"filed\"]})==int(sys.argv[2]); assert all((p/f[\"mission\"]/\"prd.md\").is_file() for f in d[\"filed\"])' '$repo/.git/lcars/missions' '$expected_filed'"
+      if [ "$scenario" = done-partial ]; then
+        check "a. partial batch keeps each attachment bound to its own standalone finding" \
+          "python3 -c 'import json,pathlib,sys; p=pathlib.Path(sys.argv[1]); rows=json.load(open(p/\"$MID/xo/logs.json\"))[\"filed\"]; assert rows[0][\"criterion\"]==\"prd-1\"; assert rows[1][\"criterion\"]==\"prd-2\"; assert [[f.read_text() for f in (p/r[\"mission\"]/\"attachments\").iterdir()] for r in rows]==[[\"observed faulty footer\\n\"],[\"second finding evidence\\n\"]]' '$repo/.git/lcars/missions'"
+      fi
+      [ "$fail" = 0 ] || { cat "$repo/out.txt"; cat "$repo/repeat.txt"; }
+    elif [ "$rec" = send-back ]; then
+      check "c. NON-merge control: still files once and starts resolver once" \
+        "[ '$rc' = 0 ] && [ \"\$(wc -l <'$FILING_CALLS' | tr -d ' ')\" = 1 ] &&
+         [ \"\$(wc -l <'$RESOLVER_CALLS' | tr -d ' ')\" = 1 ] &&
+         [ ! -s '$FILE_CALLS' ] && grep -q -- '--parent $MID --prd' '$FILING_CALLS' &&
+         grep -q -- '--parent $MID' '$RESOLVER_CALLS' && [ -s '$m/xo-resolve.pid' ]"
+    else
+      check "b. $rec: no filing or resolver starts" \
+        "[ '$rc' = 0 ] && [ ! -s '$FILING_CALLS' ] && [ ! -s '$FILE_CALLS' ] && [ ! -s '$RESOLVER_CALLS' ] && [ ! -e '$m/xo-resolve.pid' ]"
+      check "b. $rec: finding retained in followUps for the operator" \
+        "python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); assert d[\"recommendation\"]==sys.argv[2]; assert any(\"Reviewer finding\" in str(f) and \"footer switches host\" in str(f) for f in d[\"followUps\"])' '$m/xo/verdict.json' '$rec' &&
+         grep -qi 'operator' '$repo/out.txt'"
+      cp "$m/xo/verdict.json" "$repo/verdict-before-repeat.json"
+      ( cd "$repo" && LCARS_LOG_SCRIPT="$LOG_STUB" LCARS_RESOLVE_LOGS_SCRIPT="$RESOLVE_STUB" \
+          LCARS_GH_BIN=true LCARS_RUN_SCRIPT=/usr/bin/true \
+          bash "$SCRIPT" file-logs --mission "$MID" >repeat.txt 2>&1 )
+      check "b. $rec: repeat keeps followUps unchanged, no fix round or resolver" \
+        "cmp -s '$m/xo/verdict.json' '$repo/verdict-before-repeat.json' &&
+         [ ! -s '$FILING_CALLS' ] && [ ! -s '$RESOLVER_CALLS' ] &&
+         python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); assert \"round\" not in d[\"numberOne\"]' '$m/state.json'"
+      if [ "$rec" = merge-with-follow-ups ]; then
+        check "b. existing operator follow-up is preserved" \
+          "python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); assert \"Existing operator follow-up\" in d[\"followUps\"]' '$m/xo/verdict.json'"
+      fi
+    fi
+  done
+  export DONE_PARENT=0 LOG_FAILURE=0
+  # Exercise the automatic HIGH/MERGE caller, not only the hand-run filing verb.
+  repo="$(new_repo '"numberOne": {"enabled": true, "engine": "copilot"}')"
+  ( cd "$repo" && git commit -q --allow-empty -m fixture )
+  m="$(plant_mission "$repo" "$MID" verify '{"status":"engaged","engine":"copilot"}')"
+  export FILING_CALLS="$repo/filing.calls" RESOLVER_CALLS="$repo/resolver.calls"
+  : >"$FILING_CALLS"; : >"$RESOLVER_CALLS"
+  cat >"$m/prd.md" <<'PRD'
+# The task board
+
+## 2. Acceptance criteria
+- The board shows every open task in one list.
+- A task can be added from the board itself.
+PRD
+  printf '%s\n' '{"tickets":[{"id":"t-1","changesScreenAppearance":true,"acceptanceCriteria":[{"text":"The ADD button sits under the list.","drawnAt":"#add-button"}]}]}' >"$m/plan.json"
+  LAUNCH_STUB="$TMPROOT/launch.sh"; DRIVE_STUB="$TMPROOT/drive.sh"; WORKER_STUB="$TMPROOT/worker.sh"
+  cat >"$LAUNCH_STUB" <<'SH'
+#!/usr/bin/env bash
+printf '{"status":"running","url":"http://127.0.0.1:4310/"}\n' >".git/lcars/missions/$1/launch.json"
+SH
+  cat >"$DRIVE_STUB" <<'SH'
+#!/usr/bin/env bash
+while [ $# -gt 0 ]; do
+  case "$1" in --out) out="$2"; shift 2 ;; *) shift ;; esac
+done
+mkdir -p "$out"
+printf 'PNG\n' >"$out/shot-01.png"
+printf '{"shot":"shot-01"}\n' >"$out/shot-01.json"
+printf '{"allPainted":true}\n'
+SH
+  cat >"$WORKER_STUB" <<'SH'
+#!/usr/bin/env bash
+cat >"$LCARS_WORK_OUT/xo-verdict.json" <<'JSON'
+{"score":"high","summary":"Looked at the board.","criteria":[
+{"id":"prd-1","impact":"high","status":"met","shot":"shot-01","note":"saw the list"},
+{"id":"prd-2","impact":"high","status":"met","shot":"shot-01","note":"saw the button"},
+{"id":"t-1-ac1","impact":"medium","status":"met","shot":"shot-01","note":"under it"},
+{"id":"journey-j1","impact":"high","status":"met","shot":"shot-01","note":"opened it"}],
+"gaps":[],"followUps":[],"volunteered":[{"title":"Automatic reviewer finding","saw":"footer switches host","shots":["shot-01"]}],"escalations":[]}
+JSON
+SH
+  chmod +x "$WORKER_STUB"
+  rc=0
+  ( cd "$repo" && LCARS_LAUNCH_SCRIPT="$LAUNCH_STUB" LCARS_XO_DRIVER="$DRIVE_STUB" LCARS_NODE_BIN=bash \
+      LCARS_WORKER_BIN="$WORKER_STUB" LCARS_WORKER_CLI=copilot LCARS_RUN_SCRIPT="$REPO_ROOT/skills/lcars-run/run.sh" \
+      LCARS_LOG_SCRIPT="$LOG_STUB" LCARS_RESOLVE_LOGS_SCRIPT="$RESOLVE_STUB" \
+      LCARS_HOST_ADAPTER=/usr/bin/true LCARS_GH_BIN=true LCARS_NOTIFY=/usr/bin/true LCARS_OWNER_ENFORCE=0 \
+      bash "$SCRIPT" evaluate --mission "$MID" >out.txt 2>&1 ) || rc=$?
+  check "b. automatic HIGH/MERGE retains followUps without filing or starting resolver" \
+    "[ '$rc' = 0 ] && [ ! -s '$FILING_CALLS' ] && [ ! -s '$RESOLVER_CALLS' ] &&
+     python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); assert d[\"score\"]==\"high\"; assert d[\"recommendation\"]==\"merge\"; assert any(\"Automatic reviewer finding\" in str(f) for f in d[\"followUps\"])' '$m/xo/verdict.json'"
+  if [ "$fail" -gt 0 ]; then cat "$repo/out.txt"; fi
+  check "no real workers hired" "[ ! -s '$XO_SHIM_LOG' ]"
+  printf '\n%d passed, %d failed\n' "$pass" "$fail"
+  [ "$fail" -eq 0 ]; exit $?
+fi
+
 # ==========================================================================
 # B1. `lcars xo on --engine copilot` writes the ONE-LINE block, and `lcars xo`
 #     reads it back off RECORDED state — it never re-derives it from prose.

@@ -357,10 +357,91 @@ except ValueError:
 PY
 }
 
+# Live operator controls opt in locally; the flag is never exported to workers.
+# Record the actual input/output bytes, not fields, times, or a later diff.
+lcars_operator_hash() {
+  if command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "$1" | awk '{print $1}'
+  else
+    cksum "$1" | awk '{print $1 "-" $2}'
+  fi
+}
+
+lcars_operator_lock() { # mission-dir
+  local n
+  for ((n=0; n<100; n++)); do
+    mkdir "$1/.operator-write-lock" 2>/dev/null && return 0
+    sleep 0.05
+  done
+  printf 'LCARS: cannot lock operator write record in %s; refusing an unauditable write/read. Inspect .operator-write-lock before retrying.\n' "$1" >&2
+  return 1
+}
+
+lcars_operator_append() { printf '%s\n' "$2" >> "$1"; }
+
+lcars_operator_write() { # file command [args]; command receives a private file first
+  local file="$1" control="${_LCARS_OPERATOR_CONTROL:-}" dir tmp before after rc=0
+  shift
+  dir="$(dirname "$file")"
+  lcars_operator_lock "$dir" || exit 1
+  if ! tmp="$(mktemp "$dir/.operator-write.XXXXXX")"; then
+    rmdir "$dir/.operator-write-lock"
+    printf 'LCARS: cannot stage operator write to %s.\n' "$file" >&2
+    exit 1
+  fi
+  if [ -f "$file" ]; then
+    if ! cp -p "$file" "$tmp"; then
+      rm -f "$tmp"; rmdir "$dir/.operator-write-lock"
+      printf 'LCARS: cannot copy operator write input %s.\n' "$file" >&2
+      exit 1
+    fi
+    if ! before="$(lcars_operator_hash "$tmp")"; then
+      rm -f "$tmp"; rmdir "$dir/.operator-write-lock"
+      printf 'LCARS: cannot fingerprint operator write input %s.\n' "$file" >&2
+      exit 1
+    fi
+  else
+    before=ABSENT
+  fi
+  # The existing writer edits the captured input, never a second read of state.
+  local _LCARS_OPERATOR_CONTROL=""
+  local command="$1"; shift
+  if [ "$rc" -eq 0 ]; then "$command" "$tmp" "$@"; rc=$?; fi
+  if [ "$rc" -eq 0 ]; then
+    if ! after="$(lcars_operator_hash "$tmp")"; then
+      rm -f "$tmp"; rmdir "$dir/.operator-write-lock"
+      printf 'LCARS: cannot fingerprint operator write output %s.\n' "$file" >&2
+      exit 1
+    fi
+  fi
+  if [ "$rc" -eq 0 ]; then
+    if ! mv -f "$tmp" "$file"; then
+      rm -f "$tmp"; rmdir "$dir/.operator-write-lock"
+      printf 'LCARS: cannot publish operator write to %s.\n' "$file" >&2
+      exit 1
+    elif ! printf '%s\t%s\t%s\t%s\n' "${file##*/}" "$before" "$after" "$control" \
+        >> "$dir/operator-writes.tsv"; then
+      rmdir "$dir/.operator-write-lock"
+      printf 'LCARS: wrote %s but could not record the operator write; the fence will NOT excuse it.\n' "$file" >&2
+      exit 1
+    fi
+  fi
+  rm -f "$tmp"
+  rmdir "$dir/.operator-write-lock" || exit 1
+  # Keep the existing refusal latch naming the real state, not the private copy.
+  LCARS_STATE_REFUSED="${LCARS_STATE_REFUSED//$tmp/$file}"
+  return "$rc"
+}
+
 # _lcars_state_put <file> <key> <mode:str|raw|del> [value]
 _lcars_state_put() {
   local file="$1" tmp rc=0
   [ -n "$file" ] && [ -f "$file" ] || return 0
+  if [ -n "${_LCARS_OPERATOR_CONTROL:-}" ] && [ "${file##*/}" = state.json ]; then
+    shift
+    lcars_operator_write "$file" _lcars_state_put "$@"
+    return $?
+  fi
   _lcars_state_put_json "$@" && return 0
   if ! _lcars_state_input_ok "$file"; then
     LCARS_STATE_REFUSED="$file (field \"$2\") — it is not valid JSON, and the writer could not repair it"

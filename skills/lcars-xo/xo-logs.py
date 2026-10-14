@@ -3,6 +3,9 @@
 
     python3 xo-logs.py <verdict.json> <criteria.json> <out-dir> <shots-dir>
                         [cap] [logs.json]
+    python3 xo-logs.py --merge-follow-ups <verdict.json>
+
+The merge mode retains findings as operator followUps and never emits filing records.
 
 S203's verdict carries two kinds of gap. A **contradiction** is the build
 disagreeing with something the captain wrote down, and it always has evidence:
@@ -89,6 +92,7 @@ import json
 import os
 import re
 import sys
+import tempfile
 
 CAP = 10
 
@@ -857,7 +861,45 @@ def write_prd(path, **k):
                 w("%s\n\n" % t)
 
 
+def merge_follow_ups(vpath):
+    with open(vpath, encoding="utf-8") as fh:
+        doc = json.load(fh)
+    if doc.get("recommendation") not in ("merge", "merge-with-follow-ups"):
+        return 0
+
+    follow_ups = list(doc.get("followUps") or [])
+    findings = list(doc.get("gaps") or []) + list(doc.get("volunteered") or [])
+    findings += [row for row in doc.get("criteria") or []
+                 if row.get("status") == "gap" or
+                 (row.get("status") == "untested" and row.get("cause") == "product")]
+    for finding in findings:
+        note = "%s: %s" % (clean(finding.get("title") or finding.get("text") or
+                                  finding.get("id") or "Reviewer finding"),
+                           json.dumps(finding, ensure_ascii=True, sort_keys=True))
+        if note not in follow_ups:
+            follow_ups.append(note)
+    if follow_ups != (doc.get("followUps") or []):
+        doc["followUps"] = follow_ups
+        tmp = ""
+        try:
+            with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", delete=False,
+                                             dir=os.path.dirname(vpath), prefix=".follow-ups-") as fh:
+                tmp = fh.name
+                json.dump(doc, fh, ensure_ascii=True, indent=2)
+                fh.write("\n")
+            os.replace(tmp, vpath)
+        finally:
+            if tmp and os.path.exists(tmp):
+                os.unlink(tmp)
+    print("MERGE verdict: %d follow-up(s) kept in %s (followUps). "
+          "The operator decides what to file; no logs filed and no resolver started." %
+          (len(follow_ups), vpath))
+    return 0
+
+
 def main():
+    if len(sys.argv) == 3 and sys.argv[1] == "--merge-follow-ups":
+        return merge_follow_ups(sys.argv[2])
     if len(sys.argv) < 5:
         print("usage: xo-logs.py <verdict.json> <criteria.json> <out-dir> <shots-dir> "
               "[cap] [logs.json]", file=sys.stderr)

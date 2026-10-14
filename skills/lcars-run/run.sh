@@ -8709,6 +8709,16 @@ red_gate_env_failure() { # runner-output → 0 if the runner could not execute
   return 1
 }
 
+# LCARS's own missing-initialization diagnostic, captured from `lcars update
+# --probe-tests` in a git repo without .git/lcars. `lcars xo` emits the same
+# diagnostic. Anchor to the CLI prefix so quoted assertion messages do not match.
+red_gate_configuration_failure() { # runner-output → 0 if LCARS configuration is absent
+  local out="$1"
+  printf '%s' "$out" | grep -Eq '^lcars (update|xo): this repo is not initialized for LCARS' \
+    && return 0
+  return 1
+}
+
 # --- S96: actionable failure classification --------------------------------
 # When an Implement (or retest) attempt STOPS, name ONE root-cause CATEGORY so the
 # failure event + awaiting-human gate say WHY, instead of the generic "no usable
@@ -11485,8 +11495,8 @@ proof_missing_python_modules() { # runner-output → distinct module names, one 
 
 # The parent-leg RED's KIND, for legibility — the same S96 detector arms
 # classify_impl_failure routes through, in the same precedence. A red caused by
-# the change's NEW SYMBOLS (compile / resolution) COUNTS as proof; only an env
-# failure (the runner could not start in the scratch) is not proof at all.
+# the change's NEW SYMBOLS (compile / resolution) COUNTS as proof; an env failure
+# or absent LCARS configuration in the scratch is not proof at all.
 proof_parent_red_kind() { # runner-out files-written [parent-sha tip-worktree] → kind token
   local out="$1" files="$2" parent="${3:-}" wt="${4:-}"
   if red_gate_env_failure "$out"; then
@@ -11508,6 +11518,11 @@ proof_parent_red_kind() { # runner-out files-written [parent-sha tip-worktree] �
     return 0
   fi
   if red_gate_compile_failure "$out"; then printf 'compile-failure'; return 0; fi
+  # Keep the more specific env/compile/resolution kinds above this guard.
+  # Missing LCARS setup is not evidence that the ticket's behavior was absent.
+  if red_gate_configuration_failure "$out"; then
+    printf 'configuration-red'; return 0
+  fi
   # S157 (live-drive fidelity nit): a parent leg that died at IMPORT/collection —
   # the file threw before registering a test — was recorded as `assertion-red`,
   # because a runner reporting "1 failed" for the FILE matches the assertion
@@ -11515,8 +11530,8 @@ proof_parent_red_kind() { # runner-out files-written [parent-sha tip-worktree] �
   # already collected: a red leg that EXECUTED ZERO tests is a collection
   # failure. Placed AFTER compile/resolution so those keep precedence (they are
   # more specific about the same zero-execution situation), and it changes only
-  # the recorded KIND — the verdict is unaffected, since only `env-failure`
-  # changes a verdict.
+  # the recorded KIND — the verdict is unaffected here; `env-failure` and
+  # `configuration-red` above change a verdict.
   local _ec; _ec="$(proof_executed_count "$out")"
   if [ -n "$_ec" ] && [ "${_ec##* }" = 0 ]; then
     printf 'collection-red'; return 0
@@ -12098,9 +12113,13 @@ $FF_PAR_REFUSED"
   # GIT question — is the module python could not import a file this ticket ADDS?
   # — instead of deciding on the phrase. See proof_fail_first_missing_module.
   FF_PAR_KIND="$(proof_parent_red_kind "$par_out" "$changed_src" "$parent" "$wt")"
-  if [ "$FF_PAR_KIND" = env-failure ]; then
+  if [ "$FF_PAR_KIND" = env-failure ] || [ "$FF_PAR_KIND" = configuration-red ]; then
+    local redreason="the PARENT leg's runner could not start in the scratch worktree (env failure, exit $FF_PAR_RC) — a dead runner is not a red"
+    if [ "$FF_PAR_KIND" = configuration-red ]; then
+      redreason="the PARENT leg failed because LCARS configuration was absent in the scratch worktree (configuration-red, exit $FF_PAR_RC) — missing LCARS setup is not proof of missing behavior"
+    fi
     _ff_finish "$t" "$parent" "$ffj" inconclusive \
-      "the PARENT leg's runner could not start in the scratch worktree (env failure, exit $FF_PAR_RC) — a dead runner is not a red" "$rels"
+      "$redreason" "$rels"
     return $?
   fi
   # S157: THE ONE ANTI-GUTTING CHECK. Both legs have now run, so ask the two
@@ -16377,7 +16396,9 @@ EOF
 # One `name<TAB>fingerprint` line per watched file; ABSENT for one not there, so
 # a worker CREATING a judge-critical artifact is caught as surely as a rewrite.
 # Then, when the Stage is standing in one, the front-half worktree's porcelain.
+# Producer records travel with the snapshot under the same short-lived lock.
 worker_fence_snapshot() {
+  lcars_operator_lock "$MISSION_DIR" || return 1
   local f
   while IFS= read -r f; do
     [ -n "$f" ] || continue
@@ -16390,6 +16411,25 @@ worker_fence_snapshot() {
 $WORKER_FENCE_WATCH
 EOF
   worker_fence_wt_snapshot
+  if [ -f "$MISSION_DIR/operator-writes.tsv" ]; then
+    awk '{printf "operator-write:%d\t%s\n", NR, $0}' "$MISSION_DIR/operator-writes.tsv"
+  fi
+  rmdir "$MISSION_DIR/.operator-write-lock"
+}
+
+# Reconcile only NEW producer records, with an unbroken chain from the turn's
+# input fingerprint to its output. An extra worker write breaks that chain.
+worker_fence_operator_covers() { # name before-hash after-hash before-snapshot after-snapshot
+  local name="$1" b="$2" a="$3" before="$4" after="$5" cursor
+  cursor="$(printf '%s\n' "$before" | awk -F'\t' '/^operator-write:/{n++} END{print n+0}')"
+  printf '%s\n' "$after" | awk -F'\t' -v name="$name" -v b="$b" -v a="$a" -v cursor="$cursor" '
+    /^operator-write:/ {
+      n=substr($1,16)+0
+      if (n<=cursor || $2!=name) next
+      if (NF!=5 || $3!=b || $5!~/^(pause|resume|xo-on|xo-off)$/) bad=1
+      b=$4; seen=1
+    }
+    END {exit !(seen && !bad && b==a)}'
 }
 
 # Compare a pre-turn snapshot with the tree now. Clean → 0 and NOT ONE BYTE
@@ -16402,7 +16442,7 @@ EOF
 # carried. That is a write too, and the reverse pass catches it.
 worker_fence_check() { # role  before-snapshot  stage-key
   local role="$1" before="$2" stage="${3:-}" after
-  after="$(worker_fence_snapshot)"
+  after="$(worker_fence_snapshot)" || die "could not snapshot the worker fence — the Stage is stopped."
   [ "$after" = "$before" ] && return 0
   # Bucketed as newline lists while accumulating — never split on spaces later,
   # because a git-quoted path ("a b.txt") would be torn in half by that.
@@ -16411,9 +16451,14 @@ worker_fence_check() { # role  before-snapshot  stage-key
   while IFS= read -r line; do
     [ -n "$line" ] || continue
     name="${line%%	*}"
+    case "$name" in operator-write:*) continue ;; esac
     b="$(printf '%s\n' "$before" | awk -F'\t' -v n="$name" '$1==n{print $2; exit}')"
     a="${line#*	}"
     [ "$a" = "$b" ] && continue
+    case "$name" in
+      state.json|events.jsonl)
+        worker_fence_operator_covers "$name" "$b" "$a" "$before" "$after" && continue ;;
+    esac
     case "$name" in
       wt:*) hit_code="${hit_code}${hit_code:+
 }${name#wt:}" ;;
@@ -16547,7 +16592,10 @@ worker_spawn() { # role outdir prompt
   # turn (see the block above for why the window has to be exactly this tight).
   local fence_before=""
   local fence_on=0
-  if worker_fence_active "$role"; then fence_on=1; fence_before="$(worker_fence_snapshot)"; fi
+  if worker_fence_active "$role"; then
+    fence_on=1
+    fence_before="$(worker_fence_snapshot)" || die "could not snapshot the worker fence — no worker was started."
+  fi
   LCARS_WORKER_BIN="$WORKER_BIN" LCARS_WORKER_MODEL="$stage_model" \
     LCARS_WORKER_SESSION_ID="$usage_sid" \
     LCARS_LIVENESS_STAGE="$stage_key" \
@@ -18545,6 +18593,8 @@ estimatorModel = \"$est_tier\" — echo this verbatim into the estimate.json fie
 # is input-heavy). Per stage, per bound b∈{low,high}:
 #   stage_usd(b) = tokens(b) * (0.8*inputPerMTok[tier] + 0.2*outputPerMTok[tier]) / 1e6
 # cost.usd.{low,high} = Σ over the six stages.
+# Copilot usage additionally applies measured per-invocation workload floors
+# (including controller work) and adds the estimator invocation; see below.
 #
 # COPILOT billing model (unit "premiumRequests"): each stage invocation is a
 # premium request weighted by its tier multiplier (pricing.json). Per bound:
@@ -18599,6 +18649,14 @@ estimate_active_stages() { # estimate-json → space-separated stage keys (in or
   printf '%s' "${out# }"
 }
 
+# Copilot workload floors use measured input/output tokens per cold invocation,
+# not a multiplier on dollars or mission size. Input includes cache reads/writes
+# at full input price (usage.json already includes them; NEVER add them again).
+# The envelope is the outward-rounded min/max of mission stage averages; implement
+# pools numberOne tokens with implement tokens per implementation invocation.
+# These numbers are fitted to one project's seven missions and are not calibrated beyond it.
+# The worker's token band remains a floor too, so a larger explicit workload wins.
+# Verify had no measured worker records: retain its worker-provided token band.
 cost_token_usd() { # estimate-json pricing-scope → "low high" | ""
   local est="$1" scope="$2"
   local stages; stages="$(estimate_active_stages "$est")"
@@ -18622,7 +18680,37 @@ cost_token_usd() { # estimate-json pricing-scope → "low high" | ""
     usd_high="$(awk -v a="$usd_high" -v t="$thi" -v ir="$inr" -v or="$outr" \
       -v si="$COST_INPUT_SPLIT" -v so="$COST_OUTPUT_SPLIT" \
       'BEGIN{printf "%.6f", a + t*(si*ir + so*or)/1000000}')"
+    if [ "$scope" = "copilot.usage" ]; then
+      local ilo=0 ihi=0 olo=0 ohi=0 rlo rhi
+      case "$k" in
+        research)   ilo=65000;  ihi=300000;  olo=1400; ohi=11000 ;;
+        validate)   ilo=45000;  ihi=320000;  olo=3500; ohi=15000 ;;
+        plan)       ilo=90000;  ihi=1250000; olo=5000; ohi=33000 ;;
+        planReview) ilo=45000;  ihi=350000;  olo=1400; ohi=15000 ;;
+        implement)  ilo=300000; ihi=4900000; olo=6000; ohi=90000 ;;
+      esac
+      rlo="$(json_scoped_num "$est" "requestEstimates.$k.low")";  [ -n "$rlo" ] || rlo=0
+      rhi="$(json_scoped_num "$est" "requestEstimates.$k.high")"; [ -n "$rhi" ] || rhi=0
+      # Add only the workload shortfall above the token-priced baseline.
+      usd_low="$(awk -v a="$usd_low" -v t="$tlo" -v r="$rlo" -v i="$ilo" -v o="$olo" \
+        -v ir="$inr" -v or="$outr" -v si="$COST_INPUT_SPLIT" -v so="$COST_OUTPUT_SPLIT" \
+        'BEGIN{d=(r*(i*ir+o*or)-t*(si*ir+so*or))/1000000; printf "%.6f", a+(d>0?d:0)}')"
+      usd_high="$(awk -v a="$usd_high" -v t="$thi" -v r="$rhi" -v i="$ihi" -v o="$ohi" \
+        -v ir="$inr" -v or="$outr" -v si="$COST_INPUT_SPLIT" -v so="$COST_OUTPUT_SPLIT" \
+        'BEGIN{d=(r*(i*ir+o*or)-t*(si*ir+so*or))/1000000; printf "%.6f", a+(d>0?d:0)}')"
+    fi
   done
+  if [ "$scope" = "copilot.usage" ] && [ -n "$stages" ]; then
+    # One estimator invocation (the corpus's empty-stage usage record), billed
+    # at its actual Copilot tier, outside the six downstream stages.
+    inr="$(json_scoped_num "$PRICING_FILE" "$scope.opus.inputPerMTok")"
+    outr="$(json_scoped_num "$PRICING_FILE" "$scope.opus.outputPerMTok")"
+    [ -n "$inr" ] && [ -n "$outr" ] || return 1
+    usd_low="$(awk -v a="$usd_low" -v ir="$inr" -v or="$outr" \
+      'BEGIN{printf "%.6f", a+(45000*ir+2000*or)/1000000}')"
+    usd_high="$(awk -v a="$usd_high" -v ir="$inr" -v or="$outr" \
+      'BEGIN{printf "%.6f", a+(100000*ir+4000*or)/1000000}')"
+  fi
   printf '%s %s' "$usd_low" "$usd_high"
 }
 
@@ -18641,6 +18729,8 @@ cost_compute() { # estimate-json cli → prints the cost JSON block to stdout
     # Bill tokens EXACTLY like the Claude branch against copilot.usage rates,
     # then net the plan's monthly included AI-credit allotment (credits ×
     # creditUsd = USD). Unset rates ⇒ unavailable (never a wrong number).
+    # Copilot-only invocation floors and estimator overhead are applied by
+    # cost_token_usd before this gross-to-net conversion.
     local pair; pair="$(cost_token_usd "$est" "copilot.usage")" || {
       printf '{\n'
       printf '    "cli": "copilot",\n'

@@ -24,6 +24,11 @@ re-running either is safe.
 | `numberOne` | Whether Number One is engaged here, and on which engine. |
 | `lcarsVersion` | The LCARS version this repo was last stamped at. |
 
+The Implement flip-flop gate records a parent failure caused by absent LCARS
+initialization as `configuration-red` and returns **INCONCLUSIVE**, never PASS.
+Like a runner environment failure, missing LCARS setup is not proof that product
+behavior was missing on the parent commit.
+
 ## Choosing models per Stage
 
 The estimator writes the per-Stage tiers into the Mission's `estimate.json`, so

@@ -22,6 +22,7 @@ import threading
 import unittest
 import urllib.error
 import urllib.request
+from unittest import mock
 
 
 def _img(data=b"\x89PNG\r\n\x1a\n_S92_", ctype="image/png", name="shot.png"):
@@ -513,6 +514,47 @@ class PauseResumeTest(WriteEndpointBase):
         rec = self._record("pause")  # resume is the pause.sh script too
         self.assertIn("resume", rec)
         self.assertIn("m-001", rec)
+
+
+    def test_successful_resume_is_not_the_later_drivers_failure(self):
+        subprocess.run(["git", "init", "-q", self.tmp], check=True)
+        state = os.path.join(self.tmp, ".git", "lcars", "missions",
+                             "m-001", "state.json")
+        with open(state) as fh:
+            data = json.load(fh)
+        data["paused"] = True
+        data["workerBin"] = "/bin/echo"
+        with open(state, "w") as fh:
+            json.dump(data, fh, indent=2)
+        self.actions.gh_bin = "/usr/bin/false"
+        # The short resume succeeds; the next stage genuinely crashes.
+        with open(self.scripts["run"], "w") as fh:
+            fh.write('printf "ARGV: %s\\n" "$*" >> "' +
+                     self.records["run"] + '"\nexit 127\n')
+        self.actions.scripts["pause"] = os.path.abspath(
+            "../skills/lcars-pause/pause.sh")
+        with mock.patch.dict(os.environ,
+                             {"LCARS_RUN_SCRIPT": self.scripts["run"],
+                              "LCARS_OWNER_ENFORCE": "0",
+                              "LCARS_XO_ENFORCE": "0"}):
+            try:
+                status, body = self._post("/api/mission/m-001/resume")
+            except urllib.error.HTTPError as exc:
+                status, body = exc.code, json.loads(exc.read())
+        self.assertEqual(status, 200, body)
+        self.assertTrue(body["ok"])
+        with open(state) as fh:
+            self.assertFalse(json.load(fh).get("paused", False))
+        self.assertIn("drive --mission m-001", self._record_when("run"))
+
+    def test_resume_script_crash_still_returns_502(self):
+        with open(self.scripts["pause"], "w") as fh:
+            fh.write('echo "lcars resume: a banner cannot excuse exit 127"\n'
+                     'exit 127\n')
+        with self.assertRaises(urllib.error.HTTPError) as cm:
+            self._post("/api/mission/m-001/resume")
+        self.assertEqual(cm.exception.code, 502)
+        self.assertTrue(self._not_invoked("run"))
 
 
 class RespondTest(WriteEndpointBase):

@@ -2423,8 +2423,9 @@ _lcars_config_insert_head_key() {
   mv "$tmp" "$config"
 }
 
-# lcars_clone_id <config-path> — this clone's durable 32-hex identity.
+# lcars_clone_id <config-path> [--dry-run] — this clone's durable 32-hex identity.
 #
+# With --dry-run, resolve the same identity without persisting it.
 # Read it, or mint and PERSIST it. The canonical home is `cloneId` in the
 # clone's config.json (a NEW key, inserted at the TOP of the object per the
 # house rule). When there is no config.json yet — a repo mid-setup, or a clone
@@ -2447,6 +2448,10 @@ lcars_clone_id() {
     _lcars_valid_clone_id "$fromside" && cid="$fromside"
   fi
   [ -n "$cid" ] || cid="$(_lcars_new_clone_id)"
+  if [ "${2:-}" = "--dry-run" ]; then
+    printf '%s' "$cid"
+    return 0
+  fi
 
   if [ ! -f "$config" ]; then
     [ -d "$dir" ] && { printf '%s\n' "$cid" >"$side" 2>/dev/null || true; }
@@ -2510,6 +2515,7 @@ lcars_mint_mission_id() {
 #   $2  newline-separated "key=jsonvalue" desired pairs, in the canonical key
 #       order. Each jsonvalue is already JSON-formatted (quoted string, number,
 #       null) by the caller.
+#   $3  optional --dry-run: emit the merged JSON to stdout without writing.
 #
 # For each desired key: if the existing config already has it, the EXISTING raw
 # JSON value is preserved; otherwise the supplied default jsonvalue is written.
@@ -2548,7 +2554,11 @@ lcars_config_merge() {
 $desired
 EOF
 
-  printf '{\n%s\n}\n' "$body" >"$config"
+  if [ "${3:-}" = "--dry-run" ]; then
+    printf '{\n%s\n}\n' "$body"
+  else
+    printf '{\n%s\n}\n' "$body" >"$config"
+  fi
 }
 
 # ---------------------------------------------------------------------------
