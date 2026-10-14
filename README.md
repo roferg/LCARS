@@ -71,7 +71,7 @@ You need **one** AI coding CLI, plus the GitHub CLI:
 
 ```bash
 git clone https://github.com/roferg/LCARS.git
-cd lcars
+cd LCARS
 ./install.sh
 ```
 
