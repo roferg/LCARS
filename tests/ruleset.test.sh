@@ -86,8 +86,43 @@ print('[]')
             'required_review_thread_resolution': False})
         checks = rules['required_status_checks']
         self.assertIs(checks['strict_required_status_checks_policy'], False)
+        # S283 filled the placeholder in. S282 shipped the ruleset with
+        # `PLACEHOLDER-lcars-ci-required` precisely BECAUSE no CI job existed
+        # yet to name; the context is now the real job id in
+        # .github/workflows/ci.yml, and these two must not drift apart — a
+        # required check naming a job that does not exist blocks every PR
+        # forever.
         self.assertEqual(checks['required_status_checks'], [
-            {'context': 'PLACEHOLDER-lcars-ci-required'}])
+            {'context': 'fast-suites'}])
+
+    def test_required_check_names_a_job_that_actually_exists(self):
+        """The required context must name a REAL job in ci.yml.
+
+        A required status check naming a job that does not exist blocks every
+        pull request forever, and nothing else in this repo couples the two
+        files. Parsed without PyYAML (not in the runner's stdlib): find the
+        `jobs:` block and collect its two-space-indented keys.
+        """
+        import pathlib, re as _re
+        ruleset = json.loads(pathlib.Path(".github/ruleset.json").read_text())
+        contexts = [c["context"] for r in ruleset["rules"]
+                    if r["type"] == "required_status_checks"
+                    for c in r["parameters"]["required_status_checks"]]
+        wf = pathlib.Path(".github/workflows/ci.yml")
+        self.assertTrue(wf.exists(), ".github/workflows/ci.yml is missing")
+        lines = wf.read_text().splitlines()
+        start = next(i for i, l in enumerate(lines) if l.rstrip() == "jobs:")
+        jobs = []
+        for l in lines[start + 1:]:
+            if l.strip() and not l.startswith(" "):
+                break
+            m = _re.match(r"^  ([A-Za-z0-9_-]+):\s*$", l)
+            if m:
+                jobs.append(m.group(1))
+        self.assertTrue(jobs, "no jobs parsed out of ci.yml")
+        for ctx in contexts:
+            self.assertIn(ctx, jobs,
+                          f"required check {ctx!r} names no job in ci.yml (jobs: {jobs})")
 
     def test_default_is_dry_run_and_sends_nothing(self):
         result = self.run_applier()

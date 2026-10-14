@@ -24,7 +24,7 @@
       "type": "required_status_checks",
       "parameters": {
         "required_status_checks": [
-          {"context": "PLACEHOLDER-lcars-ci-required"}
+          {"context": "fast-suites"}
         ],
         "strict_required_status_checks_policy": false
       }

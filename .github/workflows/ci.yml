@@ -1,0 +1,60 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  fast-suites:
+    name: fast-suites
+    runs-on: ubuntu-latest
+    # The kept list took ~72s locally; the slowest single suite took 50s.
+    # 10 minutes gives a cold runner ample head-room and remains a HARD stop.
+    timeout-minutes: 10
+    # Exclude python3 -m unittest discover web/tests: ~1191s (19.9 min) BY
+    # DESIGN, with two sequential internal 900s cages and 30 inherited problems
+    # (9 failures + 21 errors) at pristine parent 3ae95d0. A fast gate would be
+    # born red AND slow. See bugs.md S293 L1.
+    # Exclude tests/harness.test.sh: 45 passed 3 failed, IDENTICAL BY NAME at
+    # the pristine parent (4a unguarded-cat, 5a qgrep canonical-body drift,
+    # 5c vacuity guard) -- inherited, not this round's, and out of scope here.
+    steps:
+      - name: Assert neither AI CLI is on PATH
+        shell: bash
+        run: |
+          found=0
+          for cli in claude copilot; do
+            if command -v "$cli"; then
+              echo "::error::$cli is on PATH; fast-suites requires NEITHER AI CLI."
+              found=1
+            fi
+          done
+          exit "$found"
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: tests/skill-frontmatter.test.sh
+        run: python3 tests/lib/cage.py 300 bash tests/skill-frontmatter.test.sh < /dev/null
+      - name: tests/hygiene.test.sh
+        run: python3 tests/lib/cage.py 300 bash tests/hygiene.test.sh < /dev/null
+      - name: tests/docs-links.test.sh
+        run: python3 tests/lib/cage.py 300 bash tests/docs-links.test.sh < /dev/null
+      - name: tests/docs-sync.test.sh
+        run: python3 tests/lib/cage.py 300 bash tests/docs-sync.test.sh < /dev/null
+      - name: tests/lcars-init.test.sh
+        run: python3 tests/lib/cage.py 300 bash tests/lcars-init.test.sh < /dev/null
+      - name: tests/worker-resolve.test.sh
+        run: python3 tests/lib/cage.py 300 bash tests/worker-resolve.test.sh < /dev/null
+      - name: tests/worker-adapter.test.sh
+        run: python3 tests/lib/cage.py 300 bash tests/worker-adapter.test.sh < /dev/null
+      - name: tests/no-rigs.test.sh
+        run: python3 tests/lib/cage.py 300 bash tests/no-rigs.test.sh < /dev/null
+      - name: tests/install.test.sh
+        run: python3 tests/lib/cage.py 300 bash tests/install.test.sh < /dev/null
+      - name: tests/install-copilot.test.sh
+        run: python3 tests/lib/cage.py 300 bash tests/install-copilot.test.sh < /dev/null
