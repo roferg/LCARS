@@ -66,6 +66,9 @@ launch**, rather than relying on a flag or on earlier rounds having worked.
 
 ## When to use
 
+The Mission snapshot hides `⏸ paused` for a recorded `done` Stage, without
+changing recorded state or awaiting-human indicators.
+
 The sentences below were part of this skill's frontmatter `description:` until
 S276 moved them here. GitHub Copilot's CLI caps a skill description at 1024
 characters and refused to load this skill over it; the description now keeps

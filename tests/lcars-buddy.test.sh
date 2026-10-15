@@ -42,7 +42,8 @@ SCRIPT="${LCARS_BUDDY_SCRIPT:-$REPO_ROOT/skills/lcars-buddy/buddy.sh}"
 
 pass=0
 fail=0
-TMPROOT="$(mktemp -d)"
+TMPROOT="$(mktemp -d "${TMPDIR:-.}/lcars-buddy.XXXXXX")"
+TMPROOT="$(cd "$TMPROOT" && pwd)"
 trap 'rm -rf "$TMPROOT"' EXIT
 # S277 — FENCE THE SECOND FARM FOR THE WHOLE FILE. buddy.sh now reports Copilot's
 # plugin mount as well as Claude's skill farm, and its default is
@@ -209,6 +210,31 @@ LCARS_REPO="$LCARS" GIT_BIN="$GIT_STUB" LCARS_BUDDY_CWD="$work4" \
   LCARS_SKILLS_DEST="$(new_plain_dir)" bash "$SCRIPT" >"$out4" 2>&1
 check "4. flags an awaiting-human mission" \
   "qgrep -qi 'awaiting' '$out4'"
+
+# Paired public CLI proof using real git, not the diagnostic git stub.
+for paused_stage in done implement; do
+  pause_work="$(new_plain_dir)"
+  git -C "$pause_work" init -q
+  pause_dir="$pause_work/.git/lcars/missions/pause-$paused_stage"
+  mkdir -p "$pause_dir"
+  printf '{"id":"pause-%s","stage":"%s","paused":true,"awaitingHuman":true}\n' \
+    "$paused_stage" "$paused_stage" >"$pause_dir/state.json"
+  cp "$pause_dir/state.json" "$pause_dir/state.before"
+  pause_out="$TMPROOT/pause-$paused_stage.txt"
+  LCARS_REPO="$REPO_ROOT" GIT_BIN=git LCARS_BUDDY_CWD="$pause_work" \
+    LCARS_SKILLS_DEST="$(new_plain_dir)" bash "$SCRIPT" >"$pause_out" 2>&1
+  check "4-terminal $paused_stage. mission stage and awaiting input stay visible" \
+    "grep -q 'MISSION pause-$paused_stage .*stage: $paused_stage.*⚠ awaiting-human' '$pause_out'"
+  if [ "$paused_stage" = done ]; then
+    check "4-terminal done. finished mission has no live pause marker" \
+      "! grep -q 'MISSION pause-done .*⏸ paused' '$pause_out'"
+  else
+    check "4-terminal implement. nonterminal mission retains live pause marker" \
+      "grep -q 'MISSION pause-implement .*⏸ paused' '$pause_out'"
+  fi
+  check "4-terminal $paused_stage. recorded pause state is unchanged" \
+    "cmp -s '$pause_dir/state.before' '$pause_dir/state.json'"
+done
 
 # --- 5. graceful when the current repo is not LCARS-initialized ------------
 out5="$TMPROOT/out5.txt"

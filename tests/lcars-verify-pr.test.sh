@@ -328,6 +328,40 @@ GH_PR_STATE=MERGED run_in "$r2" drive --mission "$MID" >"$r2/paused-merged.txt" 
 check "3. captain-paused merged PR reaches done without releasing its own pause" \
   "python3 -c 'import json,sys; s=json.load(open(sys.argv[1])); assert s[\"stage\"]==\"done\"; assert s[\"review\"]==\"merged\"; assert s[\"paused\"] is True' '$s2'"
 
+# A retained pause is historical on Done, but still live before that boundary.
+for pause_stage in done implement; do
+  pause_repo="$(new_repo_verify)"
+  make_gh_stub "$pause_repo/gh"; make_notify_stub "$pause_repo/notify"
+  : >"$pause_repo/gh.log"; : >"$pause_repo/notify.log"
+  pause_state="$(state_of "$pause_repo")"
+  (
+    . "$REPO_ROOT/skills/lcars-init/lcars-state.sh"
+    lcars_state_set "$pause_state" stage "\"$pause_stage\""
+    lcars_state_set "$pause_state" paused true
+    lcars_state_set "$pause_state" base '""'
+  )
+  cp "$pause_state" "$pause_repo/state.before.json"
+  printf 'self already-paused\n' >"${pause_state%/state.json}/xo-stop"
+  cp "${pause_state%/state.json}/xo-stop" "$pause_repo/xo-stop.before"
+  pause_rc=0
+  run_in "$pause_repo" drive --mission "$MID" >"$pause_repo/paused.txt" 2>&1 || pause_rc=$?
+  check "3. retained pause at $pause_stage exits cleanly without changing state or ownership" \
+    "[ '$pause_rc' -eq 0 ] &&
+     cmp -s '$pause_state' '$pause_repo/state.before.json' &&
+     cmp -s '${pause_state%/state.json}/xo-stop' '$pause_repo/xo-stop.before'"
+  if [ "$pause_stage" = done ]; then
+    check "3. done with retained pause prints shipped halt, not a live pause or resume advice" \
+      "grep -Fxq '⏹ stopped at: done  (Mission shipped — the PR is merged)' '$pause_repo/paused.txt' &&
+       ! grep -Eq '⏸|The Mission is paused|Resume with' '$pause_repo/paused.txt' ||
+       { cat '$pause_repo/paused.txt'; false; }"
+  else
+    check "3. nonterminal retained pause still prints live pause and resume advice" \
+      "grep -Fxq '⏸ paused at: implement  (paused by the captain — halted at a safe boundary)' '$pause_repo/paused.txt' &&
+       grep -Fxq 'The Mission is paused; no Stage will advance until you resume it.' '$pause_repo/paused.txt' &&
+       grep -Fxq 'Resume with \`lcars resume $MID\`.' '$pause_repo/paused.txt'"
+  fi
+done
+
 # --- Behaviour 4 (S111 root-tree sovereignty): open-pr NEVER moves HEAD -------
 # The old open_pr checked the mission branch out in the shared checkout before
 # pushing — the last site that yanked the captain's working tree onto a mission

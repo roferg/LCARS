@@ -410,7 +410,7 @@ else
     awaiting="$(json_raw "$s" awaitingHuman)"
     worker="$(json_str "$s" workerBin)"
     status=""
-    [ "$paused" = "true" ] && status="$status ⏸ paused"
+    [ "$paused" = "true" ] && [ "$stage" != "done" ] && status="$status ⏸ paused"
     [ "$awaiting" = "true" ] && status="$status ⚠ awaiting-human"
     echo
     echo "  MISSION $id  [stage: $stage]$status"

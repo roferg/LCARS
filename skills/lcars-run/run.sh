@@ -21283,6 +21283,10 @@ drive_halt_awaiting() { # stage
 }
 
 drive_halt_paused() { # stage
+  if [ "$1" = done ]; then
+    printf '⏹ stopped at: done  (Mission shipped — the PR is merged)\n'
+    return 0
+  fi
   printf '⏸ paused at: %s  (paused by the captain — halted at a safe boundary)\n' "$1"
   printf 'The Mission is paused; no Stage will advance until you resume it.\n'
   printf 'Resume with `lcars resume %s`.\n' "$MISSION_ID"
