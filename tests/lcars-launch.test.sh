@@ -333,8 +333,21 @@ check "1c. the captain's own checkout is untouched (still on trunk)" \
   "[ \"$BEFORE_HEAD\" = trunk ] && [ \"$AFTER_HEAD\" = trunk ]"
 check "1d. the worktree checkout is at the mission branch TIP (has app.txt)" \
   "[ -f \"$WT1/app.txt\" ]"
+( cd "$R1" && LCARS_WORKER_BIN="$W1" bash "$LAUNCH_SH" m1 --stop --keep-worktree >/dev/null 2>&1 )
+check "1e. stop for declared tests kills the app but retains its checkout" \
+  "! kill -0 '$PID1' 2>/dev/null && wt_registered '$R1' '$WT1' && [ -f '$WT1/app.txt' ]"
+check "1f. retained stop records a stopped app and its test worktree" \
+  "[ \"\$(json_field '$R1/.git/lcars/missions/m1/launch.json' status)\" = stopped ] &&
+   [ \"\$(json_field '$R1/.git/lcars/missions/m1/launch.json' worktree)\" = '$WT1' ]"
+( cd "$R1" && LCARS_WORKER_BIN="$W1" LCARS_LAUNCH_SETTLE=0.6 bash "$LAUNCH_SH" m1 >/dev/null 2>&1 )
+PID1="$(json_num "$R1/.git/lcars/missions/m1/launch.json" pid)"
+[ -n "$PID1" ] && LAUNCHED_PIDS+=("$PID1")
+check "1g. relaunch after declared tests reuses the retained checkout" \
+  "[ \"\$(wt_rows '$R1' '$WT1')\" -eq 1 ] && kill -0 '$PID1' 2>/dev/null"
 # stop to release
 ( cd "$R1" && LCARS_WORKER_BIN="$W1" bash "$LAUNCH_SH" m1 --stop >/dev/null 2>&1 )
+check "1h. ordinary stop still prunes a previously retained checkout" \
+  "[ ! -d '$WT1' ] && ! wt_registered '$R1' '$WT1'"
 
 # =====================================================================
 # 2. worker argv carries the `launch` role toolset + the captain's hint,

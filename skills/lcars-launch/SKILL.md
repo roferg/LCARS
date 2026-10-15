@@ -101,6 +101,10 @@ directory (a repo can host more than one), pass that as the free-form **hint**.
 `--stop` kills the whole **process group** (so a dev server's child processes die
 too), flips `status` to `stopped`, and prunes the launch worktree. It is
 idempotent, and a fresh `lcars launch` after a stop works again.
+`--stop --keep-worktree` stops the same process group but retains the checkout
+and records its path. Number One uses this to run declared tests with the app's
+default port free, then relaunches before its browser walk. A later ordinary
+`--stop` still prunes the checkout. `--keep-worktree` requires `--stop`.
 
 ## The hint matters
 

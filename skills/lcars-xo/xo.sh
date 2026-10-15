@@ -4542,8 +4542,8 @@ with open(obs_path, "w") as fh:
 # worktree the launch did not record, a runner that will not start — each is
 # recorded plainly by xo-tests.py and the look carries on. A missing suite must
 # never be why the captain does not get his Verify look.
-xo_run_tests() { # <launch.json> <out tests.json> — writes the record, nothing else
-  local launch="$1" out="$2" cmd="" wt=""
+xo_run_tests() { # <launch.json> <out tests.json> [launch engine]
+  local launch="$1" out="$2" engine="${3:-}" cmd="" wt="" restart=0
   cmd="$(lcars_config_get "$CONFIG" testCommand 2>/dev/null)" || cmd=""
   wt="$(json_field "$launch" worktree)"
   # NO LAUNCHED WORKTREE IS NOT "NO TESTS" (S246). A CLI-only milestone has no
@@ -4554,6 +4554,17 @@ xo_run_tests() { # <launch.json> <out tests.json> — writes the record, nothing
   # tests" exactly as it always has.
   if [ -z "$wt" ] || [ ! -d "$wt" ]; then
     [ -n "$XO_REACH_WT" ] && [ -d "$XO_REACH_WT" ] && wt="$XO_REACH_WT"
+  fi
+  # The suite may prove its documented default port. Stop our app, keeping the
+  # checkout (ordinary --stop prunes it), before running any declared command.
+  # Do this before the browser, so its walk and every worker see the same fresh
+  # launch afterwards, including a newly discovered URL.
+  if [ -n "$cmd" ] && [ "$(json_field "$launch" status)" = running ]; then
+    xo_tree_mark "$wt" "${out%/*}/test-tree-mark"
+    bash "$XO_LAUNCH_SCRIPT" "${XO_LAUNCH_ID}" --stop --keep-worktree \
+      >>"${out%/*}/launch.log" 2>&1 \
+      || die "could not stop the launched app; declared tests were not run."
+    restart=1
   fi
   # BACKGROUNDED AND WAITED ON, exactly as the driver is (S204 fix round 1, D2).
   # A foreground child holds the trap's first opportunity to run until it
@@ -4567,6 +4578,10 @@ xo_run_tests() { # <launch.json> <out tests.json> — writes the record, nothing
   XO_TESTS_PID=$!
   wait "$XO_TESTS_PID" 2>/dev/null || true
   XO_TESTS_PID=""
+  if [ "$restart" -eq 1 ]; then
+    xo_tree_restore "${launch%/*}"
+    xo_do_launch "${launch%/*}" "$XO_LAUNCH_ID" "${out%/*}" "$engine"
+  fi
   return 0
 }
 
@@ -5073,6 +5088,8 @@ cmd_evaluate() {
   printf '◈ NUMBER ONE: launching the build…\n'
   : >"$xodir/launch.log"
   xo_do_launch "$dir" "$id" "$xodir" "$xo_engine"
+  local testsfile="$xodir/tests.json" test_outcome=""
+  xo_run_tests "$dir/launch.json" "$testsfile" "$xo_engine"
   local lstatus lurl lmsg nopage=0 nolook_why=""
   local lwork=""
   lstatus="$(json_field "$dir/launch.json" status)"
@@ -5155,11 +5172,11 @@ cmd_evaluate() {
   # the path that newly needs it.
   XO_LAUNCH_STOPPED=0
 
-  # EVERYTHING FROM HERE TO THE PROJECT'S OWN TESTS NEEDS A PAGE (S246). A seed
+  # THE SCREEN MEASUREMENTS BELOW NEED A PAGE (S246). A seed
   # runs in the launched worktree; a walk, a shot, the layout pass, the drawing
   # pairs and the moment-by-moment readings are all readings OF a screen. With no
   # address to open there is no screen, so these are skipped — and nothing else
-  # is. The reach transcripts are already on disk, the tests still run below, and
+  # is. The reach transcripts and test run are already on disk, and
   # the worker rounds and the scorer run over both.
   if [ "$nopage" = 0 ]; then
     # --- 2b. THE SAMPLE DATA (S220 part E) ------------------------------------
@@ -5313,13 +5330,8 @@ except Exception: print(0)' "$obsfile" 2>/dev/null)"
       >/dev/null 2>&1 || true
   fi
 
-  # --- 3c. THE PROJECT'S OWN TESTS (S211) — run by the SKILL, between the
-  # capture and the worker round. A screenshot cannot answer "batches survive a
-  # restart"; the captain's own suite can. Run ONCE, here, in the launched
-  # build's worktree, so however many rounds of looking follow, they are all
-  # reasoning from the same one run.
-  local testsfile="$xodir/tests.json" test_outcome=""
-  xo_run_tests "$dir/launch.json" "$testsfile"
+  # --- 3c. THE PROJECT'S OWN TESTS (S211) — recorded before the browser,
+  # with our app stopped. Every worker round reasons from that same one run.
   test_outcome="$(json_field "$testsfile" outcome)"
   case "${test_outcome:-}" in
     passed)          printf '◈ NUMBER ONE: your tests pass — I can use them as evidence.\n' ;;
@@ -6494,6 +6506,8 @@ cmd_recheck() {
     fi
     exec bash "$XO_LAUNCH_SCRIPT" "$id"
   ) >>"$xodir/launch.log" 2>&1 || true
+  local testsfile="$xodir/tests.json" test_outcome2=""
+  xo_run_tests "$dir/launch.json" "$testsfile" "$xo_engine"
   local lstatus lurl lmsg
   lstatus="$(json_field "$dir/launch.json" status)"
   lurl="$(json_field "$dir/launch.json" url)"
@@ -6513,7 +6527,7 @@ cmd_recheck() {
     "$(printf '"url": %s, "commit": %s, "branchNote": %s' \
          "$(jstr "$lurl")" "$(jstr "${XO_RECHECK_SHA:-}")" "$(jstr "${XO_RECHECK_NOTE:-}")")"
   # THE RELAUNCHED TREE IS REMEMBERED TOO (S221). A recheck drives the build the
-  # same way a look does, and it runs the project's suite afterwards — so it
+  # same way a look does, after running the project's suite — so it
   # gets the same guarantee: whatever the browser leaves behind is put back.
   xo_tree_mark "$(json_field "$dir/launch.json" worktree)" "$xodir/tree-mark"
 
@@ -6623,15 +6637,13 @@ except Exception: pass' "$xodir/pairs.json" 2>/dev/null)"
   # re-check too the second look had no measurement of them at all.
   xo_measure_walk "$dir" "$xodir" "$obsfile" "$rwalk"
 
-  # --- 2c. AND THE PROJECT'S OWN TESTS, AGAIN (S211). A recheck relaunches the
+  # --- 2c. READ THE PROJECT'S OWN TESTS, AGAIN (S211). A recheck relaunches the
   # build from the FIXED branch, so the first look's test run is about code that
   # no longer exists. Re-running it here is the same reason the observations
   # pass re-runs: this is a look, and a look reasons from what is in front of it
   # today. Handing the recheck stale evidence is the S204 stale-shots defect in
   # another costume — it reached the right verdict once by luck and the wrong
   # one the time after.
-  local testsfile="$xodir/tests.json" test_outcome2=""
-  xo_run_tests "$dir/launch.json" "$testsfile"
   test_outcome2="$(json_field "$testsfile" outcome)"
   journal "$dir" tested "$(printf '"outcome": %s, "round": "recheck"' "$(jstr "${test_outcome2:-unknown}")")"
 

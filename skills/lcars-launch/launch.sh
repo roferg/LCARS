@@ -120,6 +120,7 @@ nap() { perl -e 'select(undef,undef,undef,'"${1:-0.3}"')' 2>/dev/null || true; }
 MISSION=""
 HINT=""
 STOP=0
+KEEP_WORKTREE=0
 MAIN=0
 # S215 — a hint is the captain's PROSE, and prose contains words like
 # `--config`. `--` is therefore a REAL end-of-options marker here: after it,
@@ -146,11 +147,14 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --main) MAIN=1; shift ;;
     --stop) STOP=1; shift ;;
+    --keep-worktree) KEEP_WORKTREE=1; shift ;;
     --) ENDOPTS=1; shift ;;
     --*) die "unknown option \"$1\" — usage: lcars launch <mission> [hint] [--stop], or lcars launch --main [hint] [--stop]." ;;
     *) add_positional "$1"; shift ;;
   esac
 done
+[ "$KEEP_WORKTREE" -eq 0 ] || [ "$STOP" -eq 1 ] \
+  || die "--keep-worktree requires --stop."
 
 # --- locate the repo + the mission dir ------------------------------------
 GIT_DIR="$("$GIT_BIN" rev-parse --git-dir 2>/dev/null)" \
@@ -554,7 +558,7 @@ kill_recorded_launch() {
 # =====================================================================
 if [ "$STOP" -eq 1 ]; then
   kill_recorded_launch          # group-kill the recorded process (TERM→grace→KILL)
-  remove_worktree
+  [ "$KEEP_WORKTREE" -eq 1 ] || remove_worktree
   # A captain who STOPS (rather than re-launches) right after upgrading past S167
   # must not be left with the legacy in-`.git/` checkout and its registration.
   migrate_legacy_worktree
@@ -570,6 +574,9 @@ if [ "$STOP" -eq 1 ]; then
       printf '  "target": "%s",\n'    "$(json_esc "$st_target")"
       printf '  "url": "%s",\n'       "$(json_esc "$st_url")"
       printf '  "howToStop": "%s",\n' "$(json_esc "$st_stop")"
+      if [ "$KEEP_WORKTREE" -eq 1 ]; then
+        printf '  "worktree": "%s",\n' "$(json_esc "$WT")"
+      fi
       printf '  "message": "the app has been stopped."\n'
       printf '}\n'
     } | commit_launch_json

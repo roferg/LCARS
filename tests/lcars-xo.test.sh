@@ -3746,7 +3746,8 @@ check "B23c. the launch and the browser both ran normally (no attachments is not
 # `tests/lcars-xo-evidence.test.sh` proves the runner's own arithmetic and the
 # scorer's guards directly. THESE rows prove the WIRING — that `xo.sh evaluate`
 # really runs the repo's own suite, in the LAUNCHED BUILD'S worktree, between
-# the capture and the worker round, and really hands the result to the worker.
+# stopping the app and relaunching for the capture, and really hands the
+# result to the worker.
 # A guard nobody calls is not a guard.
 # ==========================================================================
 echo
@@ -3762,11 +3763,40 @@ mid="$1"; shift
 m="$PWD/.git/lcars/missions/$mid"
 printf 'launch %s %s\n' "$mid" "$*" >>"$XO_LAUNCH_LOG"
 case "${1:-}" in
-  --stop) printf '{\n  "status": "stopped"\n}\n' >"$m/launch.json"; exit 0 ;;
+  --stop)
+    if [ -n "${XO_PORT_PROBE:-}" ] && [ -s "$m/port-server.pid" ]; then
+      kill -TERM "$(cat "$m/port-server.pid")" 2>/dev/null || true
+      python3 - "$XO_PORT_PROBE" <<'PY'
+import socket, sys, time
+for _ in range(100):
+    with socket.socket() as s:
+        if s.connect_ex(("127.0.0.1", int(sys.argv[1]))) != 0:
+            break
+    time.sleep(.02)
+else:
+    raise SystemExit("stub app did not stop")
+PY
+    fi
+    printf '{\n  "status": "stopped"\n}\n' >"$m/launch.json"; exit 0 ;;
 esac
 wt="${XO_FAKE_WORKTREE:-$PWD/.fake-worktree}"
 mkdir -p "$wt"
-printf '{\n  "status": "running",\n  "url": "http://127.0.0.1:4310/",\n  "worktree": "%s",\n  "pid": 1\n}\n' "$wt" >"$m/launch.json"
+if [ -n "${XO_PORT_PROBE:-}" ]; then
+  python3 -m http.server "$XO_PORT_PROBE" --bind 127.0.0.1 >"$m/port-server.log" 2>&1 &
+  echo "$!" >"$m/port-server.pid"
+  python3 - "$XO_PORT_PROBE" <<'PY'
+import socket, sys, time
+for _ in range(100):
+    with socket.socket() as s:
+        if s.connect_ex(("127.0.0.1", int(sys.argv[1]))) == 0:
+            break
+    time.sleep(.02)
+else:
+    raise SystemExit("stub app did not bind")
+PY
+  printf 'bound %s\n' "$XO_PORT_PROBE" >>"$m/port-events"
+fi
+printf '{\n  "status": "running",\n  "url": "http://127.0.0.1:%s/",\n  "worktree": "%s",\n  "pid": 1\n}\n' "${XO_PORT_PROBE:-4310}" "$wt" >"$m/launch.json"
 LWT
 chmod +x "$LAUNCH_STUB_WT"
 
@@ -3781,6 +3811,9 @@ printf 'worker %s\n' "$*" >>"$XO_WORKER_LOG"
 printf 'worker %s\n' "$*" >>"$XO_WORKER_LOG.all"
 if [ -s "${LCARS_XO_INPUT_DIR:-/nonexistent}/tests.json" ]; then
   printf 'saw tests.json\n' >>"$XO_TESTS_SEEN_LOG"
+  if [ -n "${XO_PORT_TEST_INPUT:-}" ]; then
+    cp "$LCARS_XO_INPUT_DIR/tests.json" "$XO_PORT_TEST_INPUT"
+  fi
 else
   printf 'NO tests.json\n' >>"$XO_TESTS_SEEN_LOG"
 fi
@@ -3843,6 +3876,70 @@ check "B24a. the look JOURNALLED the test run, with its outcome" \
   "grep -q '\"action\": \"tested\"' '$m24a/number-one.jsonl' && grep -q 'passed' '$m24a/number-one.jsonl'"
 check "B24a. …and the captain's report says it ran them" \
   "grep -q 'I ran your tests' '$m24a/xo/report.md'"
+
+# An unknown app default port must be available to the declared suite, not
+# occupied by the very launch Number One is reviewing.
+repo24p="$(new_repo '"numberOne": {"enabled": true, "engine": "copilot"}')"
+m24p="$(plant_verify "$repo24p" "lcars-20261014-295")"
+WT24P="$TMPROOT/wt-24p"; mkdir -p "$WT24P"
+port24p="$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()')"
+cat >"$WT24P/assert-port-free.py" <<PY
+import socket
+with socket.socket() as s:
+    assert s.connect_ex(("127.0.0.1", $port24p)) != 0, "LCARS holds the app default port"
+with socket.socket() as s:
+    s.bind(("127.0.0.1", $port24p))
+print("PASS app default port is free")
+PY
+set_test_command "$repo24p" "python3 assert-port-free.py"
+: >"$XO_LAUNCH_LOG"
+out24p="$(XO_FAKE_WORKTREE="$WT24P" XO_PORT_PROBE="$port24p" \
+  XO_PORT_TEST_INPUT="$TMPROOT/port-tests-input.json" \
+  XO_EV_BODY="$(ev_verdict met met met high '')" \
+  xo_evaluate_tests "$repo24p" "lcars-20261014-295" "$EV_SHIM_TESTS")"
+python3 - "$m24p/xo/tests.json" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+print("  B24p test record: outcome=%s exit=%s" % (d["outcome"], d["exitCode"]))
+if d["outcome"] != "passed":
+    print(d["outputTail"])
+PY
+check "B24p. the launch really bound a dynamically selected app port" \
+  "grep -q 'bound $port24p' '$m24p/port-events'"
+check "B24p. declared tests run with the app default port free" \
+  "grep -q '\"outcome\": \"passed\"' '$m24p/xo/tests.json' && grep -q 'PASS app default port is free' '$m24p/xo/tests.json'"
+check "B24p. the worker receives the actual passing test record" \
+  "grep -q '\"outcome\": \"passed\"' '$TMPROOT/port-tests-input.json'"
+check "B24p. the grade still comes from the worker's evidence" \
+  "grep -q '\"score\": \"high\"' '$m24p/xo/verdict.json'"
+check "B24p. the app is relaunched for the browser after the tests" \
+  "[ \"\$(grep -c 'launch lcars-20261014-295 $' '$XO_LAUNCH_LOG')\" -eq 2 ]"
+
+# Start the recheck fixture engaged, rather than rechecking the HIGH look
+# above after it has already been handed back.
+plant_verify "$repo24p" "lcars-20261014-295" >/dev/null
+plant_verdict "$m24p" "$(gap_json 1 contradiction prd-1 shot-01),$(gap_json 2 contradiction prd-2 shot-02)"
+cp "$m24p/xo/verdict.json" "$m24p/xo/verdict-1.json"
+plant_logs_json "$m24p" 2
+plant_child "$repo24p" "lcars-20261014-295" 1 verify
+plant_child "$repo24p" "lcars-20261014-295" 2 verify
+plant_reverify_gate "$m24p"
+: >"$XO_LAUNCH_LOG"
+rm -f "$TMPROOT/port-tests-input.json" "$m24p/xo/tests.json"
+out24r="$(cd "$repo24p" && XO_FAKE_WORKTREE="$WT24P" XO_PORT_PROBE="$port24p" \
+  XO_PORT_TEST_INPUT="$TMPROOT/port-tests-input.json" \
+  XO_EV_FILE=xo-recheck.json XO_EV_BODY="$(rc_body true true)" \
+  LCARS_LAUNCH_SCRIPT="$LAUNCH_STUB_WT" LCARS_XO_DRIVER="$DRIVE_STUB" LCARS_NODE_BIN=bash \
+  LCARS_HOST_ADAPTER="$HOST_STUB" LCARS_RESPOND_SCRIPT="$RESPOND_STUB" \
+  LCARS_WORKER_BIN="$EV_SHIM_TESTS" LCARS_WORKER_CLI=copilot \
+  LCARS_GH_BIN=/usr/bin/true LCARS_NOTIFY=/usr/bin/true LCARS_OWNER_ENFORCE=0 \
+  bash "$SCRIPT" recheck --mission lcars-20261014-295 2>&1)"
+check "B24p. recheck also runs declared tests with the app default port free" \
+  "grep -q '\"outcome\": \"passed\"' '$m24p/xo/tests.json' &&
+   grep -q '\"outcome\": \"passed\"' '$TMPROOT/port-tests-input.json'"
+check "B24p. recheck relaunches before looking and delivers a second grade" \
+  "[ \"\$(grep -c 'launch lcars-20261014-295 $' '$XO_LAUNCH_LOG')\" -eq 2 ] &&
+   [ -s '$m24p/xo/verdict-2.json' ]"
 
 # --------------------------------------------------------------------------
 # B24b. NO testCommand — THE COMMON CASE. The look runs exactly as it always

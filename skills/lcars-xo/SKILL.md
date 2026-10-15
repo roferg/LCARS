@@ -164,6 +164,9 @@ The order is the contract:
    happened to notice.
 2. **`launch.sh <id>`.** If the build does not come up, the score is **LOW**
    quoting the launch message — and **no browser is started at all**.
+   When `testCommand` is declared and the app started, stop it while retaining
+   its worktree, run the tests there, restore test writes, and relaunch before
+   reading the browser URL. The test record is reviewed at step 3c below.
 
    **2b. THE DECLARED SEED (S220 part E).** Screens that only exist once there
    is data in them cannot be photographed into existence, so a repo may declare
@@ -345,12 +348,16 @@ The order is the contract:
    something solid, the report's own observations section tells him so —
    *"Three things on this page were behind something solid, so I could not
    look at them."* Nothing hidden, nothing said.
-3c. **`xo/tests.json` — the project's OWN tests, run by the SKILL** (S211,
+3c. **Read `xo/tests.json` — the project's OWN tests, run at step 2 by the SKILL** (S211,
    `xo-tests.py`). Number One acts only through a browser, so a change with no
    screen surface was simply invisible to it: *"batches survive a restart"*
    came back "I could not check this" on both engines in S203 — correct, and
-   useless. So between the capture and the worker round, `evaluate` runs the
-   repo's own `testCommand` **in the launched build's worktree**, bounded
+   useless. After discovering the launch and before the browser capture,
+   `evaluate` stops its app with `--stop --keep-worktree`, runs the repo's own
+   `testCommand` **in that retained build worktree**, then restores test writes
+   and relaunches before reading the URL for the browser. This leaves the app's
+   default port available to the suite without guessing the port or changing
+   the declared command. The run is bounded
    (`LCARS_XO_TEST_TIMEOUT`, 300s) with the output tail capped
    (`LCARS_XO_TEST_TAIL_CAP`, 8000 bytes) and the cut STATED. It records the
    command, the exit code, the duration, the tail and a plain verdict, and
@@ -407,7 +414,9 @@ The order is the contract:
    **`recheck` re-runs it too**, for the reason its observations pass re-runs:
    a recheck relaunches the build from the FIXED branch, so the first look's
    test run is about code that no longer exists. Carrying it forward would be
-   the S204 stale-shots defect in another costume.
+   the S204 stale-shots defect in another costume. It uses the same
+   stop → tests → relaunch → browser ordering. With no declared test command,
+   neither look stops and relaunches solely for tests.
 4. **Up to `$LCARS_XO_MAX_ROUNDS` worker rounds — TWO by default** (the ceiling
    came down from three on 2026-09-20: over five real-arm runs the third round
    changed nothing). Each round Number One writes EITHER `xo-actions.json` (it
