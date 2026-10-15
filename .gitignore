@@ -37,3 +37,6 @@ __pycache__/
 # different thing and is NOT ignored: it lives in tests/lib/ so a clone of
 # LCARS stays testable (CLAUDE.md's golden rule).
 tests/drives/
+
+# S295 session working notes — never shipped
+.s295-*
