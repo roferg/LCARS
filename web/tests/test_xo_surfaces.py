@@ -337,6 +337,20 @@ class TabBase(unittest.TestCase):
         return _run(TAB_HARNESS, mi)
 
 
+class DoneMissionsKeepTheirReport(TabBase):
+
+    def test_done_with_stale_engaged_status_keeps_the_historical_report(self):
+        result = self.mi(stage="done")
+        self.assertIn({"text": "◈ Number One", "key": "xo"}, result["tabs"])
+        text = _all_text(result["pane"])
+        self.assertIn("MEDIUM", text)
+        self.assertIn(HEADLINE, text)
+        self.assertIn("worldToScreen converts correctly", text)
+        self.assertNotIn("NUMBER ONE · ENGAGED", text)
+        self.assertNotIn("has the conn", text)
+        self.assertNotIn("Stand down", text)
+
+
 class C2_TheVerdictLeadsAndReassuranceGoesLast(TabBase):
 
     def test_the_score_is_the_first_thing_on_the_pane(self):

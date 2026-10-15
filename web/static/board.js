@@ -479,7 +479,8 @@ function ownerNode(m) {
    holds THIS mission (`m.numberOne`, read off its own state.json); the band
    says whether it is on for THIS REPO (`meta.numberOne`, read off config.json);
    and `lcars xo` says both at a terminal. Nothing here infers, derives or
-   guesses: a mission is engaged because the record says `engaged`.
+   guesses: a mission is engaged because the record says `engaged`, unless
+   its Stage is already Done.
 
    IT NEVER SAYS "FIXING" (captain, 2026-09-11). Number One files ordinary
    mission logs and LCARS drives them, so fixes already show through the
@@ -510,7 +511,7 @@ function xoStatus(m) {
    back, and locking a mission it no longer holds would be a false lock — the
    error this board treats as strictly worse than the one it prevents. */
 function xoEngaged(m) {
-  return xoStatus(m) === "engaged";
+  return !!m && m.stage !== "done" && xoStatus(m) === "engaged";
 }
 
 /* The refusal, in one sentence. It is byte-identical to the line
@@ -538,6 +539,7 @@ var XO_PILL = {
 
 function xoPill(m) {
   var status = xoStatus(m);
+  if (status === "engaged" && !xoEngaged(m)) return null;
   var label = XO_PILL[status];
   if (!label) return null;
   return el("span", "pill xo" + (status === "engaged" ? "" : " done"), label);
@@ -563,7 +565,7 @@ function xoLine(m) {
   if (!x) return null;
   var status = String(x.status || "");
   var engine = x.engine ? " · " + engineLabel(x.engine) : "";
-  if (status === "engaged") return "Number One has the conn" + engine;
+  if (status === "engaged") return xoEngaged(m) ? "Number One has the conn" + engine : null;
   if (status === "finished") {
     return "Number One handed the conn back"
       + (x.score ? " · scored " + String(x.score) : "");
@@ -746,7 +748,7 @@ function xoNode(m) {
     srow.appendChild(score);
     wrap.appendChild(srow);
     // The note, unless this is the ENGAGED status whose note is the transcript.
-    if (!xoEngaged(m)) {
+    if (xoStatus(m) !== "engaged") {
       var scoredNote = xoNote(m);
       if (scoredNote) wrap.appendChild(scoredNote);
     }

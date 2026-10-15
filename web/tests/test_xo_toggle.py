@@ -534,6 +534,66 @@ class TheEngagedCard(unittest.TestCase):
 
 
 @unittest.skipUnless(NODE, "node is required for the board.js vm harness")
+class DoneMissionsDoNotHaveTheConn(unittest.TestCase):
+
+    def test_done_cards_offer_no_first_officer_write_controls(self):
+        for score in (None, "high"):
+            with self.subTest(score=score):
+                xo = {"status": "engaged", "engine": "copilot"}
+                if score:
+                    xo["score"] = score
+                tree = _render_card(card(stage="done", numberOne=xo))
+                buttons = _find(tree, lambda n: n.get("tag") == "button")
+                self.assertTrue(all(n.get("attrs", {}).get("data-act")
+                                    == "xo-report" for n in buttons),
+                                "a done card offers a write control: %r" %
+                                [n["text"] for n in buttons])
+
+    def test_done_unscored_cards_make_no_live_engagement_claim(self):
+        tree = _render_card(card(stage="done", numberOne={
+            "status": "engaged", "engine": "copilot"}))
+        self.assertNotIn("◈ NUMBER ONE · ENGAGED", _texts(tree))
+        self.assertFalse(any("has the conn" in t for t in _texts(tree)))
+        self.assertFalse(_cls(tree, "xo-engaged"))
+
+    def test_done_scored_cards_keep_the_grade_and_report_not_a_live_lock(self):
+        tree = _render_card(card(stage="done", numberOne={
+            "status": "engaged", "score": "high",
+            "meaning": "Every stated criterion is met."}))
+        self.assertEqual(["◈ NUMBER ONE · HIGH"], [
+            n["text"] for n in _find(tree, lambda n: _cls(n, "xo-score"))])
+        self.assertTrue(_find(tree, lambda n:
+                             n.get("attrs", {}).get("data-act") == "xo-report"
+                             and not n.get("disabled")))
+        self.assertFalse(any("stand it down" in (n.get("title") or "")
+                             for n in _nodes(tree)))
+        self.assertFalse(_cls(tree, "xo-engaged"))
+
+    def test_done_scored_cards_do_not_resurface_the_engaged_transcript(self):
+        tree = _render_card(card(stage="done", numberOne={
+            "status": "engaged", "score": "high",
+            "note": "Historical worker transcript, not a current activity."}))
+        self.assertFalse(_find(tree, lambda n: _cls(n, "xo-note")))
+
+    def test_nonterminal_stages_keep_engaged_controls_even_when_paused(self):
+        for stage in ("research", "implement", "verify"):
+            with self.subTest(stage=stage):
+                tree = _render_card(card(stage=stage, paused=True,
+                                         numberOne={"status": "engaged"}))
+                self.assertTrue(_cls(tree, "xo-engaged"))
+                self.assertTrue(any("has the conn" in t for t in _texts(tree)))
+                self.assertTrue(_find(tree, lambda n:
+                                     _cls(n, "xo-stand-down")
+                                     and not n.get("disabled")))
+
+    def test_done_cards_keep_recorded_finished_history(self):
+        tree = _render_card(card(stage="done", numberOne={
+            "status": "finished", "note": "Number One completed the review."}))
+        self.assertIn("◈ NUMBER ONE · FINISHED", _texts(tree))
+        self.assertIn("Number One completed the review.", _texts(tree))
+
+
+@unittest.skipUnless(NODE, "node is required for the board.js vm harness")
 class TheIntentMatchPill(unittest.TestCase):
     """S203 — the SCORE on the card, and the one thing that makes it readable.
 
