@@ -21235,12 +21235,22 @@ drive_verify() { # accumulated-summary
        drive_print_summary "$summary"
        printf '⏹ stopped at: verify  (could not open the PR)\n'
        printf '%s\n' "$out"
-       printf 'Fix the cause (push/auth/gh), then retry the open with:\n  %s\n' "$(drive_hint)"
+       local pr_lib="${LCARS_PR_LIB:-$SKILL_DIR/../lcars-approve/pr-lib.sh}" origin_guidance=""
+       if [ -f "$pr_lib" ]; then
+         # shellcheck source=skills/lcars-approve/pr-lib.sh
+         . "$pr_lib"
+         origin_guidance="$(pr_origin_guidance)" || origin_guidance=""
+       fi
+       if [ -n "$origin_guidance" ]; then
+         printf '%s\n' "$origin_guidance"
+       else
+         printf 'Fix the cause (push/auth/gh), then retry the open with:\n  %s\n' "$(drive_hint)"
+       fi
        if [ "$(json_str "$STATE" verifyDegradedNotified)" != "1" ]; then
          notify_gate verify "Mission parked at verify — review needed (PR could not be opened automatically)"
          lcars_state_set_string "$STATE" verifyDegradedNotified "1"
        fi
-       return 0 ;;
+       return 1 ;;
   esac
 
   # PR opened — fire the ONE notification and halt "in review".
@@ -22288,7 +22298,7 @@ cmd_drive() {
           # Stepping INTO verify auto-opens the PR (same path as auto mode), then
           # parks in review. drive_verify prints its own summary + banner.
           DRIVE_VERIFY_DONE=""
-          drive_verify "$summary"
+          drive_verify "$summary" || return 1
         else
           drive_print_summary "$summary"
           printf '⏹ stepped one Stage → now at: %s\n' "$new_stage"

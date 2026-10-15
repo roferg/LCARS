@@ -736,7 +736,11 @@ PR_URL="$(json_str "$STATE" prUrl)"
 PR_NUM="$(json_raw "$STATE" prNumber)"
 case "$PR_URL" in
   http*|*/pull/*) : ;;
-  *) die "no open PR recorded for this mission — run \`lcars run $MISSION_ID\` so Verify opens the PR, then approve to merge it. Mission stays at verify." ;;
+  *)
+    if origin_guidance="$(pr_origin_guidance)"; then
+      die "no open PR recorded for this mission — $origin_guidance"
+    fi
+    die "no open PR recorded for this mission — run \`lcars run $MISSION_ID\` so Verify opens the PR, then approve to merge it. Mission stays at verify." ;;
 esac
 
 # --- the merge step (shared by the normal flow + the reapprove flow) ---------

@@ -758,6 +758,15 @@ every ticket is green across every wave. **This Stage is a human gate** — the
 captain reads the diff, runs the app, and decides whether to ship. You print the
 summary and stop; you do **not** advance the Mission yourself.
 
+The driver's automatic PR-open step (`open-pr`, also used by `drive`) exits
+non-zero if it cannot open a PR, keeping the Mission at `verify` with no new
+review/Done state. A degraded-open notification fires only once across retries.
+When this repo has no `origin` remote, connect an **existing hosted repo** first:
+`git remote add origin <repository-url>` (a manual remedy, never run automatically).
+Then retry. The current Git configuration decides this, not an old
+`baseFreshness.reason`; with an origin configured, the normal push/auth/gh
+failure advice still applies.
+
 ### STEP 1 — Print the pre-ship summary
 
 ```bash

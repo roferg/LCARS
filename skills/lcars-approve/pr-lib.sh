@@ -18,6 +18,19 @@
 # the exact Goal/ADR/wave/Closes layout) while letting Verify auto-open the same
 # PR. No behaviour changed when it moved out of approve.sh.
 
+# Check current Git configuration, not a possibly stale baseFreshness reason.
+# Only exit 1 proves absence; configured values and read errors keep existing advice.
+pr_origin_guidance() {
+  command -v "$GIT_BIN" >/dev/null 2>&1 || return 1
+  if "$GIT_BIN" config --get remote.origin.url >/dev/null 2>&1; then
+    return 1
+  else
+    local rc=$?
+    [ "$rc" -eq 1 ] || return 1
+  fi
+  printf '%s\n' "this repo has no 'origin' remote — connect an existing hosted repo before retrying. Add its URL manually with: git remote add origin <repository-url>. Mission stays at verify."
+}
+
 # --- PR title: the PRD's `# Mission:` line, falling back to state.json title --
 pr_title() {
   local t=""
@@ -280,6 +293,10 @@ open_pr() {
 
   command -v "$GIT_BIN" >/dev/null 2>&1 \
     || die "git not found — cannot push '$BRANCH'. Mission stays at verify."
+  local origin_guidance
+  if origin_guidance="$(pr_origin_guidance)"; then
+    die "$origin_guidance"
+  fi
   "$GIT_BIN" push -u origin "$BRANCH" >/dev/null 2>&1 \
     || die "could not push '$BRANCH' to origin — push it and re-run. Mission stays at verify."
 

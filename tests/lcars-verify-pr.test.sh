@@ -13,7 +13,8 @@
 #   3. The driver detects a merge (here or on GitHub via gh pr view) → marks Done;
 #      an UNMERGED/open PR never → Done (stays in review, no repeat notification).
 #
-# Everything is stubbed — NO real gh/git/network. The driver lock makes `drive`
+# Git repos and bare remotes are real; gh/notifications are stubbed (no network).
+# The driver lock makes `drive`
 # single-instance; each case uses a fresh repo so locks never collide.
 #
 # Usage: bash tests/lcars-verify-pr.test.sh
@@ -44,7 +45,8 @@ PR_LIB="$REPO_ROOT/skills/lcars-approve/pr-lib.sh"
 HOST_ADAPTER="$REPO_ROOT/skills/lcars-run/host-adapter.sh"
 
 pass=0; fail=0
-TMPROOT="$(mktemp -d)"; trap 'rm -rf "$TMPROOT"' EXIT
+TMPROOT="$(mktemp -d "${TMPDIR:-.}/lcars-verify-pr.XXXXXX")"; trap 'rm -rf "$TMPROOT"' EXIT
+TMPROOT="$(cd "$TMPROOT" && pwd)"
 ok()   { printf '  \033[32mPASS\033[0m %s\n' "$1"; pass=$((pass + 1)); }
 bad()  { printf '  \033[31mFAIL\033[0m %s\n' "$1"; fail=$((fail + 1)); }
 check(){ if eval "$2"; then ok "$1"; else bad "$1 ($2)"; fi; }
@@ -69,6 +71,7 @@ make_gh_stub() {
 #!/usr/bin/env bash
 echo "gh $*" | tr '\n' ' ' >>"$GH_LOG"; echo >>"$GH_LOG"
 if [ "${1:-}" = "pr" ] && [ "${2:-}" = "create" ]; then
+  [ "${GH_CREATE_FAIL:-0}" != "1" ] || exit 1
   echo "https://github.com/acme/repo/pull/77"
 fi
 if [ "${1:-}" = "pr" ] && [ "${2:-}" = "view" ]; then
@@ -127,7 +130,7 @@ EOF
 run_in() { # repo  subcommand-and-args…
   local repo="$1"; shift
   ( cd "$repo" \
-      && LCARS_GH_BIN="$repo/gh" LCARS_GIT_BIN="git" \
+      && LCARS_GH_BIN="$repo/gh" LCARS_GIT_BIN="${VERIFY_GIT_BIN:-git}" \
          LCARS_HOST_ADAPTER="$HOST_ADAPTER" LCARS_PR_LIB="$PR_LIB" \
          LCARS_NOTIFY="$repo/notify" NOTIFY_LOG="$repo/notify.log" \
          GH_LOG="$repo/gh.log" GH_PR_STATE="${GH_PR_STATE:-OPEN}" \
@@ -232,6 +235,142 @@ new_repo_verify_subs() {
 WAVES
   echo "$repo"
 }
+
+# --- No hosted origin: explain the prerequisite, not a push/auth retry -------
+missing="$(new_repo_verify)"
+make_gh_stub "$missing/gh"; make_notify_stub "$missing/notify"
+: >"$missing/gh.log"; : >"$missing/notify.log"
+( cd "$missing" && git remote remove origin )
+missing_rc=0
+run_in "$missing" open-pr --mission "$MID" >"$missing/out.txt" 2>&1 || missing_rc=$?
+check "10. missing origin open-pr fails with concrete hosted-repo guidance (no stored reason)" \
+  "[ '$missing_rc' -ne 0 ] &&
+   grep -q \"no 'origin' remote\" '$missing/out.txt' &&
+   grep -Fq 'git remote add origin <repository-url>' '$missing/out.txt' &&
+   grep -q 'existing hosted repo' '$missing/out.txt'"
+check "10. missing origin never creates a PR or review state" \
+  "! grep -q 'pr create' '$missing/gh.log' &&
+   python3 -c 'import json,sys; s=json.load(open(sys.argv[1])); assert s[\"stage\"]==\"verify\"; assert not s.get(\"prUrl\"); assert not s.get(\"review\")' '$(state_of "$missing")'"
+check "10. missing origin remedy is not executed" \
+  "[ -z \"$(cd "$missing" && git remote)\" ]"
+
+# A real remote that rejects a push is NOT the same as no remote. A historical
+# baseFreshness reason must not override today's configured origin.
+for failure in no-origin rejected-push config-error empty-origin gh-create; do
+  broken="$(new_repo_verify)"
+  make_gh_stub "$broken/gh"; make_notify_stub "$broken/notify"
+  : >"$broken/gh.log"; : >"$broken/notify.log"
+  create_fail=0
+  VERIFY_GIT_BIN=git
+  case "$failure" in
+    no-origin) ( cd "$broken" && git remote remove origin ) ;;
+    rejected-push|config-error)
+      printf '#!/bin/sh\nexit 1\n' >"$broken.remote.git/hooks/pre-receive"
+      chmod +x "$broken.remote.git/hooks/pre-receive"
+      if [ "$failure" = config-error ]; then
+        cat >"$broken/git-wrapper" <<'EOF'
+#!/usr/bin/env bash
+if [ "$#" -eq 3 ] && [ "$1" = config ] && [ "$2" = --get ] && [ "$3" = remote.origin.url ]; then
+  exit 128
+fi
+exec git "$@"
+EOF
+        chmod +x "$broken/git-wrapper"
+        VERIFY_GIT_BIN="$broken/git-wrapper"
+      fi
+      (
+        . "$REPO_ROOT/skills/lcars-init/lcars-state.sh"
+        lcars_state_set "$(state_of "$broken")" baseFreshness \
+          '{"status":"unknown","reason":"this repo has no '\''origin'\'' remote — there is nothing to be stale against."}'
+      ) ;;
+    empty-origin) ( cd "$broken" && git config remote.origin.url "" ) ;;
+    gh-create) create_fail=1 ;;
+  esac
+  open_rc=0
+  GH_CREATE_FAIL="$create_fail" run_in "$broken" open-pr --mission "$MID" >"$broken/open.txt" 2>&1 || open_rc=$?
+  if [ "$failure" = rejected-push ] || [ "$failure" = config-error ] || [ "$failure" = empty-origin ]; then
+    check "11. $failure does not prove missing origin: push failure retains historical guidance" \
+      "[ '$open_rc' -ne 0 ] &&
+       grep -Fq \"could not push 'lcars/$MID' to origin — push it and re-run\" '$broken/open.txt' &&
+       ! grep -Fq 'git remote add origin' '$broken/open.txt' &&
+       ! grep -Fq \"no 'origin' remote\" '$broken/open.txt' &&
+       ! grep -q 'pr create' '$broken/gh.log'"
+  elif [ "$failure" = gh-create ]; then
+    check "11. existing origin gh failure retains historical create guidance" \
+      "[ '$open_rc' -ne 0 ] &&
+       grep -q 'gh pr create did not return a PR URL' '$broken/open.txt' &&
+       ! grep -Fq 'git remote add origin' '$broken/open.txt'"
+  fi
+  drive_rc=0
+  GH_CREATE_FAIL="$create_fail" run_in "$broken" drive --mission "$MID" >"$broken/drive.txt" 2>&1 || drive_rc=$?
+  check "11. $failure drive exits nonzero, parked at verify, with no PR/review/Done" \
+    "[ '$drive_rc' -ne 0 ] &&
+     python3 -c 'import json,sys; s=json.load(open(sys.argv[1])); assert s[\"stage\"]==\"verify\"; assert not s.get(\"prUrl\"); assert not s.get(\"review\")' '$(state_of "$broken")' &&
+     ! grep -q 'add-label lcars:done' '$broken/gh.log'"
+  if [ "$failure" = no-origin ]; then
+    check "11. missing-origin drive explains prerequisite before retry, not push/auth/gh" \
+      "grep -Fq 'git remote add origin <repository-url>' '$broken/drive.txt' &&
+       grep -q 'existing hosted repo' '$broken/drive.txt' &&
+       ! grep -Fq 'Fix the cause (push/auth/gh)' '$broken/drive.txt'"
+  else
+    check "11. $failure drive retains push/auth/gh advice, not missing-origin advice" \
+      "grep -Fq 'Fix the cause (push/auth/gh)' '$broken/drive.txt' &&
+       ! grep -Fq 'git remote add origin' '$broken/drive.txt' &&
+       ! grep -Fq \"no 'origin' remote\" '$broken/drive.txt'"
+  fi
+  check "11. $failure drive fires one degraded notification" \
+    "[ \"$(wc -l <"$broken/notify.log" | tr -d ' ')\" -eq 1 ]"
+  retry_rc=0
+  GH_CREATE_FAIL="$create_fail" run_in "$broken" drive --mission "$MID" >"$broken/retry.txt" 2>&1 || retry_rc=$?
+  check "11. $failure retry stays failed and does not repeat the notification" \
+    "[ '$retry_rc' -ne 0 ] &&
+     [ \"$(wc -l <"$broken/notify.log" | tr -d ' ')\" -eq 1 ]"
+done
+unset VERIFY_GIT_BIN
+
+# Both approval entrypoints must explain why no PR can be opened locally,
+# without changing the existing refusal when a hosted origin is configured.
+for approval in approve answer; do
+  for origin in missing present; do
+    unreviewed="$(new_repo_verify)"
+    make_gh_stub "$unreviewed/gh"; : >"$unreviewed/gh.log"
+    if [ "$origin" = missing ]; then
+      ( cd "$unreviewed" && git remote remove origin )
+    else
+      (
+        . "$REPO_ROOT/skills/lcars-init/lcars-state.sh"
+        lcars_state_set "$(state_of "$unreviewed")" baseFreshness \
+          '{"reason":"this repo has no '\''origin'\'' remote — there is nothing to be stale against."}'
+      )
+    fi
+    cp "$(state_of "$unreviewed")" "$unreviewed/state.before"
+    approval_rc=0
+    (
+      cd "$unreviewed" || exit 1
+      export LCARS_GH_BIN="$unreviewed/gh" GH_LOG="$unreviewed/gh.log"
+      if [ "$approval" = answer ]; then
+        bash "$REPO_ROOT/skills/lcars-answer/answer.sh" approve --mission "$MID"
+      else
+        bash "$REPO_ROOT/skills/lcars-approve/approve.sh" --mission "$MID"
+      fi
+    ) >"$unreviewed/approval.txt" 2>&1 || approval_rc=$?
+    check "12. $approval with $origin origin refuses missing PR without any state change or forge write" \
+      "[ '$approval_rc' -ne 0 ] &&
+       cmp -s '$(state_of "$unreviewed")' '$unreviewed/state.before' &&
+       ! grep -Eq 'pr (create|merge)|add-label lcars:done' '$unreviewed/gh.log'"
+    if [ "$origin" = missing ]; then
+      check "12. $approval missing-origin refusal gives concrete causal guidance" \
+        "grep -q \"no 'origin' remote\" '$unreviewed/approval.txt' &&
+         grep -Fq 'git remote add origin <repository-url>' '$unreviewed/approval.txt' &&
+         grep -q 'existing hosted repo' '$unreviewed/approval.txt'"
+    else
+      check "12. $approval ignores stale no-origin reason and retains ordinary missing-PR guidance" \
+        "grep -q 'no open PR recorded for this mission' '$unreviewed/approval.txt' &&
+         grep -Fq 'lcars run $MID' '$unreviewed/approval.txt' &&
+         ! grep -Fq 'git remote add origin' '$unreviewed/approval.txt'"
+    fi
+  done
+done
 
 # ==========================================================================
 echo "lcars verify-pr (S75)"

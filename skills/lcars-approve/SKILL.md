@@ -32,8 +32,10 @@ bash ~/.claude/skills/lcars-approve/approve.sh --mission <id>
 ```
 
 1. **Requires an open PR.** It reads `prUrl` / `prNumber` from `state.json` —
-   the PR **Verify** opened. With no recorded PR it refuses (re-run the mission
-   so Verify opens one), staying at `verify`.
+   the PR **Verify** opened. With no recorded PR it refuses, staying at `verify`.
+   If this repo has no `origin` remote, first connect an existing hosted repo
+   manually with `git remote add origin <repository-url>`, then retry the mission
+   so Verify opens a PR. Otherwise, re-run the mission so Verify opens one.
 2. **Merges the PR** with `gh pr merge` (via the host adapter), identifying it by
    the recorded PR number (or the branch).
 3. **Only on a successful merge:** clears the stage labels (removes
