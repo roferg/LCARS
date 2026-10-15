@@ -4543,8 +4543,9 @@ with open(obs_path, "w") as fh:
 # recorded plainly by xo-tests.py and the look carries on. A missing suite must
 # never be why the captain does not get his Verify look.
 xo_run_tests() { # <launch.json> <out tests.json> [launch engine]
-  local launch="$1" out="$2" engine="${3:-}" cmd="" wt="" restart=0
+  local launch="$1" out="$2" engine="${3:-}" cmd="" wt="" restart=0 command_source=""
   cmd="$(lcars_config_get "$CONFIG" testCommand 2>/dev/null)" || cmd=""
+  [ -n "$cmd" ] && command_source=config
   wt="$(json_field "$launch" worktree)"
   # NO LAUNCHED WORKTREE IS NOT "NO TESTS" (S246). A CLI-only milestone has no
   # page, so no launch worktree — but the LOOK already has a detached copy of the
@@ -4554,6 +4555,13 @@ xo_run_tests() { # <launch.json> <out tests.json> [launch engine]
   # tests" exactly as it always has.
   if [ -z "$wt" ] || [ ! -d "$wt" ]; then
     [ -n "$XO_REACH_WT" ] && [ -d "$XO_REACH_WT" ] && wt="$XO_REACH_WT"
+  fi
+  # A foundation build may establish its runner before approval promotes it.
+  # Scope the shared detector to that build without changing the repo config.
+  if [ -z "$cmd" ] && [ -d "$wt" ]; then
+    local TOPLEVEL="$wt"
+    cmd="$(detect_test_cmd 2>/dev/null)" || cmd=""
+    [ -n "$cmd" ] && command_source=detected-from-build
   fi
   # The suite may prove its documented default port. Stop our app, keeping the
   # checkout (ordinary --stop prunes it), before running any declared command.
@@ -4574,7 +4582,7 @@ xo_run_tests() { # <launch.json> <out tests.json> [launch engine]
   # the test runner and its children included.
   "$XO_PY" "$XO_TESTS_PY" --out "$out" --cwd "$wt" \
     --timeout "$(xo_test_timeout)" --cap "$XO_TEST_TAIL_CAP" \
-    --command "$cmd" >/dev/null 2>&1 &
+    --command "$cmd" --command-source "$command_source" >/dev/null 2>&1 &
   XO_TESTS_PID=$!
   wait "$XO_TESTS_PID" 2>/dev/null || true
   XO_TESTS_PID=""

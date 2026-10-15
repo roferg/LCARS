@@ -3858,7 +3858,10 @@ xo_evaluate_tests() { # <repo> <id> <worker-bin>
 repo24a="$(new_repo '"numberOne": {"enabled": true, "engine": "copilot"}')"
 m24a="$(plant_verify "$repo24a" "lcars-20260915-301")"
 WT24A="$TMPROOT/wt-24a"; mkdir -p "$WT24A"
+printf '[project]\nname = "conflicting-runner"\nversion = "0.0.1"\n' >"$WT24A/pyproject.toml"
+printf 'raise RuntimeError("configured command must win")\n' >"$WT24A/test_conflict.py"
 set_test_command "$repo24a" "pwd > ran-here.txt; echo 'PASS batches survive a restart'; exit 0"
+cp "$repo24a/.git/lcars/config.json" "$TMPROOT/config24a-before.json"
 : >"$XO_WORKER_LOG"; : >"$XO_TESTS_SEEN_LOG"
 out24a="$(XO_FAKE_WORKTREE="$WT24A" XO_EV_BODY="$(ev_verdict met met met high '')" \
   xo_evaluate_tests "$repo24a" "lcars-20260915-301" "$EV_SHIM_TESTS")"
@@ -3867,6 +3870,8 @@ check "B24a. …recording the command it actually ran" \
   "grep -q 'PASS batches survive a restart' '$m24a/xo/tests.json'"
 check "B24a. …and the outcome, derived where it was known" \
   "grep -q '\"outcome\": \"passed\"' '$m24a/xo/tests.json'"
+check "B24a. a configured command wins over a conflicting detectable runner" \
+  "grep -q '\"commandSource\": \"config\"' '$m24a/xo/tests.json' && cmp -s '$repo24a/.git/lcars/config.json' '$TMPROOT/config24a-before.json'"
 check "B24a. the suite really ran — it left its mark" "[ -s '$WT24A/ran-here.txt' ]"
 check "B24a. …IN THE LAUNCHED BUILD'S worktree, not the captain's checkout" \
   "grep -q \"\$(cd '$WT24A' && pwd -P)\" '$WT24A/ran-here.txt'"
@@ -3876,6 +3881,66 @@ check "B24a. the look JOURNALLED the test run, with its outcome" \
   "grep -q '\"action\": \"tested\"' '$m24a/number-one.jsonl' && grep -q 'passed' '$m24a/number-one.jsonl'"
 check "B24a. …and the captain's report says it ran them" \
   "grep -q 'I ran your tests' '$m24a/xo/report.md'"
+
+# A foundation mission can establish its runner only in the launched build,
+# before approval promotes testCommand into the captain's config.
+repo24e="$(new_repo '"numberOne": {"enabled": true, "engine": "copilot"}')"
+m24e="$(plant_verify "$repo24e" "lcars-20261014-296")"
+python3 - "$repo24e/.git/lcars/config.json" <<'PY'
+import json, sys
+path = sys.argv[1]
+with open(path) as fh:
+    config = json.load(fh)
+config.pop("testCommand", None)
+with open(path, "w") as fh:
+    json.dump(config, fh, indent=2)
+PY
+WT24E="$TMPROOT/wt-24e"; mkdir -p "$WT24E/tests"
+printf '[project]\nname = "build-only-suite"\nversion = "0.0.1"\n' >"$WT24E/pyproject.toml"
+cat >"$WT24E/tests/test_build.py" <<'PY'
+import unittest
+
+class BuildTests(unittest.TestCase):
+    def test_build_only_runner(self):
+        print("BUILD_ONLY_SUITE_RAN")
+        self.assertTrue(True)
+PY
+cp "$repo24e/.git/lcars/config.json" "$TMPROOT/config24e-before.json"
+out24e="$(XO_FAKE_WORKTREE="$WT24E" XO_EV_BODY="$(ev_verdict met met met high '')" \
+  xo_evaluate_tests "$repo24e" "lcars-20261014-296" "$EV_SHIM_TESTS")"
+python3 - "$m24e/xo/tests.json" <<'PY'
+import json, sys
+print("  B24e test record:", json.dumps(json.load(open(sys.argv[1])), sort_keys=True))
+PY
+check "B24e. an unconfigured suite in only the launched build really runs" \
+  "python3 -c 'import json; d=json.load(open(\"'$m24e'/xo/tests.json\")); assert d[\"ran\"] is True and d[\"command\"] == \"python3 -m unittest discover -s \" + chr(34) + chr(36) + \"{LCARS_TESTS_DIR:-tests}\" + chr(34) and d[\"outcome\"] == \"passed\" and d[\"exitCode\"] == 0 and \"BUILD_ONLY_SUITE_RAN\" in d[\"outputTail\"]'"
+check "B24e. the evidence names detection from the build as its source" \
+  "grep -q '\"commandSource\": \"detected-from-build\"' '$m24e/xo/tests.json'"
+check "B24e. detection leaves the captain's config byte-for-byte unchanged" \
+  "cmp -s '$repo24e/.git/lcars/config.json' '$TMPROOT/config24e-before.json'"
+check "B24e. the captain's checkout still has no runner" \
+  "[ ! -e '$repo24e/pyproject.toml' ] && [ ! -e '$repo24e/tests/test_build.py' ]"
+
+# Detection supplies evidence, not an assumed pass: a failing build suite must
+# retain its real exit status while the full look continues.
+repo24f="$(new_repo '"numberOne": {"enabled": true, "engine": "copilot"}')"
+m24f="$(plant_verify "$repo24f" "lcars-20261014-297")"
+set_test_command "$repo24f" __null__
+WT24F="$TMPROOT/wt-24f"; mkdir -p "$WT24F/tests"
+cp "$WT24E/pyproject.toml" "$WT24F/pyproject.toml"
+sed 's/self.assertTrue(True)/self.assertTrue(False)/' "$WT24E/tests/test_build.py" \
+  >"$WT24F/tests/test_build.py"
+cp "$repo24f/.git/lcars/config.json" "$TMPROOT/config24f-before.json"
+out24f="$(XO_FAKE_WORKTREE="$WT24F" XO_EV_BODY="$(ev_verdict met met met high '')" \
+  xo_evaluate_tests "$repo24f" "lcars-20261014-297" "$EV_SHIM_TESTS")"
+python3 - "$m24f/xo/tests.json" <<'PY'
+import json, sys
+print("  B24f test record:", json.dumps(json.load(open(sys.argv[1])), sort_keys=True))
+PY
+check "B24f. a detected failing suite records its actual failure and provenance" \
+  "python3 -c 'import json; d=json.load(open(\"'$m24f'/xo/tests.json\")); assert d[\"ran\"] is True and d[\"outcome\"] == \"failed\" and d[\"exitCode\"] == 1 and d[\"commandSource\"] == \"detected-from-build\" and \"FAILED (failures=1)\" in d[\"outputTail\"]'"
+check "B24f. detected failure leaves config unchanged and still gets a full look" \
+  "cmp -s '$repo24f/.git/lcars/config.json' '$TMPROOT/config24f-before.json' && [ -s '$m24f/xo/verdict.json' ] && [ -s '$m24f/xo/report.md' ]"
 
 # An unknown app default port must be available to the declared suite, not
 # occupied by the very launch Number One is reviewing.

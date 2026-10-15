@@ -360,13 +360,16 @@ The order is the contract:
    the declared command. The run is bounded
    (`LCARS_XO_TEST_TIMEOUT`, 300s) with the output tail capped
    (`LCARS_XO_TEST_TAIL_CAP`, 8000 bytes) and the cut STATED. It records the
-   command, the exit code, the duration, the tail and a plain verdict, and
+   command, its `commandSource` (`config` or `detected-from-build`), the exit code,
+   the duration, the tail and a plain verdict, and
    derives ONE `outcome` where it knew it: `passed` · `failed` · `hung` ·
    `no-test-command` · `no-worktree`. **A hang is infrastructure, never a
    product failure** — a suite that did not finish says nothing about the
-   build, and the whole process group is killed. **A repo with no
-   `testCommand` is the common case**: the file records that plainly and the
-   look proceeds exactly as it always did.
+   build, and the whole process group is killed. Without a configured
+   `testCommand`, the skill uses init's shared detector in the launched build
+   (or the existing reach worktree fallback), without writing config. Configured
+   commands always win; approval's post-merge promotion is unchanged. If no
+   runner is detected, the file records that plainly and the look still proceeds.
 
    **The skill runs the project's suite; the worker is handed the result.** The
    worker gets `tests.json` through the same read-only door as the shots and the

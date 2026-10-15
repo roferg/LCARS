@@ -428,6 +428,7 @@ def main():
     ap.add_argument("--out", required=True)
     ap.add_argument("--cwd", default="")
     ap.add_argument("--command", default="")
+    ap.add_argument("--command-source", default="")
     ap.add_argument("--timeout", type=float, default=300.0)
     ap.add_argument("--cap", type=int, default=8000)
     args = ap.parse_args()
@@ -444,6 +445,7 @@ def main():
     doc = {
         "ran": False,
         "command": command,
+        "commandSource": args.command_source or None,
         "cwd": "",
         "exitCode": None,
         "timedOut": False,
