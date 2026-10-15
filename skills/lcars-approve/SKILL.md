@@ -39,7 +39,11 @@ bash ~/.claude/skills/lcars-approve/approve.sh --mission <id>
 3. **Only on a successful merge:** clears the stage labels (removes
    `lcars:verify` + any `lcars:awaiting-human`, adds `lcars:done`), advances the
    stage to `done` in `state.json` (label and stage in lockstep), records
-   `review: "merged"`, and prints the merged PR URL.
+   `review: "merged"`, and prints the merged PR URL. If Number One was stood
+   down, releases only the mission and child pauses recorded as `paused-by-us`
+   in its `xo-stop` record, then removes that record. Existing captain-owned
+   pauses (`already-paused`), marker-only stops (`left-running`), and pauses
+   without a stop record are not cleared. This does not re-engage Number One.
 
 On success it prints:
 
@@ -69,7 +73,9 @@ one place.
 - **GitHub-side merge.** If the captain merges the PR directly on GitHub, the
   `lcars run` driver's Verify heartbeat detects it (`gh pr view --json
   state,mergedAt`) and marks the Mission Done the same way — `lcars approve` is
-  not the only path to Done, just the in-CLI one.
+  not the only path to Done, just the in-CLI one. A paused Verify mission with
+  a recorded PR can still detect that merge and release its recorded
+  Number One stop; an open PR remains paused and starts no work.
 
 ## Report
 

@@ -21116,6 +21116,11 @@ drive_mark_done() {
   gh_relabel "lcars:done" "lcars:verify lcars:awaiting-human"
   set_stage "done"
   lcars_state_set_string "$STATE" review "merged"
+  . "$SKILL_DIR/../lcars-xo/release-stop.sh" \
+    && lcars_xo_release_completed_stop "$MISSION_DIR" || {
+      printf 'LCARS: PR merged, but Number One'\''s stop could not be released; check %s/xo-stop.\n' "$MISSION_DIR" >&2
+      return 1
+    }
   emit_event stage_done verify "PR merged — Mission shipped"
 }
 
@@ -21196,7 +21201,7 @@ drive_verify() { # accumulated-summary
     http*|*/pull/*)
       # A PR exists — has it merged (here or on GitHub)?
       if drive_pr_merged; then
-        drive_mark_done
+        drive_mark_done || return 1
         drive_line_done_inline="$(printf 'verify       ✓  PR merged — Mission shipped')"
         printf '%s\n' "$drive_line_done_inline"
         DRIVE_VERIFY_DONE=1
@@ -22077,6 +22082,14 @@ cmd_drive() {
     # is spawned, no worker is killed mid-step (none is running). It stays put
     # until `lcars resume` clears the flag.
     if [ "$paused" = "true" ]; then
+      # A pause prevents new work, not recording a merge that already happened.
+      if [ "$stage" = verify ] && [ -n "$(json_str "$STATE" prUrl)" ] \
+         && drive_pr_merged; then
+        drive_mark_done || return 1
+        drive_print_summary "$summary"
+        printf 'verify       ✓  PR merged — Mission shipped\n'
+        return 0
+      fi
       emit_event paused "$stage" "paused by the captain — halted at the $stage boundary"
       mirror_comments || true
       drive_print_summary "$summary"; drive_halt_paused "$stage"; return 0
@@ -22114,7 +22127,7 @@ cmd_drive() {
               # review or a hard open failure) or non-empty $DRIVE_VERIFY_DONE to
               # signal "merged → continue the loop" (the next pass sees stage=done).
               DRIVE_VERIFY_DONE=""
-              drive_verify "$summary"
+              drive_verify "$summary" || return 1
               [ -n "$DRIVE_VERIFY_DONE" ] && continue
               return 0 ;;
       done)   emit_event gate done "Mission shipped — the PR is merged"

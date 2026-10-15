@@ -284,6 +284,7 @@ check "2. the heartbeat still reports in review (no false done)" \
   "grep -q '\"stage\": *\"verify\"' '$s2'"
 
 # --- Behaviour 3: a merged PR (on GitHub) → Done; unmerged never → Done -------
+savedMID="$MID"; MID="lcars-20261015-298"
 r3="$(new_repo_verify)"; make_gh_stub "$r3/gh"; make_notify_stub "$r3/notify"
 : >"$r3/gh.log"; : >"$r3/notify.log"
 # First pass: open the PR (state OPEN), in review.
@@ -291,6 +292,15 @@ GH_PR_STATE=OPEN run_in "$r3" drive --mission "$MID" >"$r3/o1.txt" 2>&1
 s3="$(state_of "$r3")"
 check "3. opened + in review on first pass" \
   "grep -q 'pull/77' '$s3' && grep -q '\"stage\": *\"verify\"' '$s3'"
+(
+  . "$REPO_ROOT/skills/lcars-init/lcars-state.sh"
+  lcars_state_set "$s3" numberOne '{"status":"engaged","engine":"copilot"}'
+)
+( cd "$r3" && LCARS_OWNER_ENFORCE=0 LCARS_GH_BIN=true \
+    bash "$REPO_ROOT/skills/lcars-xo/xo.sh" off "$MID" >off.txt 2>&1 )
+check "3. xo stand-down pauses the open-PR mission before a GitHub merge" \
+  "grep -q '\"paused\": *true' '$s3' &&
+   grep -q '^self paused-by-us$' '${s3%/state.json}/xo-stop'"
 # Now the PR is merged on GitHub: the next heartbeat detects it → Done.
 GH_PR_STATE=MERGED run_in "$r3" drive --mission "$MID" >"$r3/o2.txt" 2>&1
 check "3. a merged-on-GitHub PR is detected → stage done" \
@@ -299,10 +309,24 @@ check "3. records review=merged on a detected merge" \
   "grep -q '\"review\": *\"merged\"' '$s3'"
 check "3. relabels to lcars:done on a detected merge" \
   "grep -q 'add-label lcars:done' '$r3/gh.log'"
+check "3. detected merge releases only the xo-owned pause and marker" \
+  "python3 -c 'import json,sys; assert not json.load(open(sys.argv[1])).get(\"paused\",False)' '$s3' &&
+   [ ! -e '${s3%/state.json}/xo-stop' ]"
+MID="$savedMID"
 
 # Contrast: an UNMERGED PR never flips to done (re-uses r2 from above).
 check "3. an unmerged/open PR never reaches done" \
   "! grep -q '\"stage\": *\"done\"' '$(state_of "$r2")'"
+(
+  . "$REPO_ROOT/skills/lcars-init/lcars-state.sh"
+  lcars_state_set "$s2" paused true
+)
+GH_PR_STATE=OPEN run_in "$r2" drive --mission "$MID" >"$r2/paused-open.txt" 2>&1
+check "3. captain-paused open PR stays paused at verify" \
+  "python3 -c 'import json,sys; s=json.load(open(sys.argv[1])); assert s[\"stage\"]==\"verify\"; assert s[\"paused\"] is True' '$s2'"
+GH_PR_STATE=MERGED run_in "$r2" drive --mission "$MID" >"$r2/paused-merged.txt" 2>&1
+check "3. captain-paused merged PR reaches done without releasing its own pause" \
+  "python3 -c 'import json,sys; s=json.load(open(sys.argv[1])); assert s[\"stage\"]==\"done\"; assert s[\"review\"]==\"merged\"; assert s[\"paused\"] is True' '$s2'"
 
 # --- Behaviour 4 (S111 root-tree sovereignty): open-pr NEVER moves HEAD -------
 # The old open_pr checked the mission branch out in the shared checkout before

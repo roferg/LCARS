@@ -4,6 +4,14 @@ All notable changes to LCARS are recorded here, newest first. The version
 scheme is `YYYY.M.N` (calendar year, month with no leading zero, per-month
 counter). Every PR into `main` bumps `VERSION` and adds its entry here.
 
+## 2026.10.4 — release Number One's stop after merge
+
+Successful approval and GitHub-merge detection now release only the mission
+and child pauses owned by the completing mission's `xo-stop` record, then
+remove that record. Captain-owned pauses remain untouched. A paused Verify
+mission can detect an already-merged PR without starting work; unfinished
+stand-downs and failed merges keep their pause and marker.
+
 ## 2026.10.3 — public-project contribution and safety contracts
 
 Completed the human contribution guide alongside the AI-agent build contract.

@@ -902,6 +902,9 @@ do_merge() {
   gh_relabel "lcars:done" "lcars:verify lcars:awaiting-human"
   set_stage "done"
   lcars_state_set_string "$STATE" review "merged"
+  . "$SELF_DIR/../lcars-xo/release-stop.sh" \
+    && lcars_xo_release_completed_stop "$MISSION_DIR" \
+    || die "PR merged, but Number One's stop could not be released; check $MISSION_DIR/xo-stop."
 
   # BUG-071: record the ship on the mission timeline so the card shows the
   # `merged` milestone (and a terminal `mission_done`), not just stdout.
