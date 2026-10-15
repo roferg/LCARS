@@ -3248,7 +3248,7 @@ def _repo_identity(repo_root, git_url_reader=None):
 
 
 def _git_origin_url(repo_root):
-    """The origin remote URL via `git`, worktree-safe. None on any failure.
+    """The root's origin URL via `git`, without ancestor discovery, worktree-safe.
 
     Injectable: tests stub the reader arg to _repo_identity so they never depend
     on a real git/network. Here we shell `git` but swallow every error class —
@@ -3259,7 +3259,8 @@ def _git_origin_url(repo_root):
         return None
     try:
         out = subprocess.check_output(
-            ["git", "-C", repo_root, "config", "--get", "remote.origin.url"],
+            ["git", "-C", repo_root, "--git-dir=.git",
+             "config", "--get", "remote.origin.url"],
             stderr=subprocess.DEVNULL,
             timeout=5,
         )

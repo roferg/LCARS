@@ -1079,6 +1079,50 @@ class LocalAdapterTest(unittest.TestCase):
         board = LocalAdapter(self.tmp, git_url_reader=reader).board()
         self.assertEqual(board["meta"]["repo"], os.path.basename(self.tmp))
 
+    def test_board_meta_repo_is_scoped_to_root_with_real_git(self):
+        with tempfile.TemporaryDirectory(dir=".") as root:
+            def git(*args):
+                subprocess.run(["git", "-C", root, *args], check=True,
+                               stdout=subprocess.DEVNULL,
+                               stderr=subprocess.PIPE, timeout=10)
+
+            git("init", "-q")
+            git("remote", "add", "origin", "https://github.com/outer/parent.git")
+            for name, remote in (("plain", None), ("incomplete", "acme/widget"),
+                                 ("initialized", None), ("own-remote", "child/own")):
+                with self.subTest(root=name):
+                    child = Path(root) / name
+                    child.mkdir()
+                    if name == "incomplete":
+                        (child / ".git").mkdir()
+                        (child / ".git" / "config").write_text(
+                            '[remote "origin"]\n'
+                            '\turl = git@github.com:acme/widget.git\n')
+                    elif name in ("initialized", "own-remote"):
+                        git("init", "-q", name)
+                        if remote:
+                            git("-C", name, "remote", "add", "origin",
+                                "https://github.com/child/own.git")
+                    self.assertEqual(LocalAdapter(str(child)).board()["meta"]["repo"],
+                                     remote or name)
+
+    def test_board_meta_repo_resolves_real_linked_worktree(self):
+        with tempfile.TemporaryDirectory(dir=".") as root:
+            def git(*args):
+                subprocess.run(["git", "-C", root, *args], check=True,
+                               stdout=subprocess.DEVNULL,
+                               stderr=subprocess.PIPE, timeout=10)
+
+            git("init", "-q")
+            git("remote", "add", "origin", "https://github.com/acme/worktree.git")
+            git("-c", "user.name=Test", "-c", "user.email=test@example.com",
+                "commit", "--allow-empty", "--no-gpg-sign", "-qm", "fixture")
+            git("worktree", "add", "--detach", "linked")
+            linked = Path(root) / "linked"
+            self.assertTrue((linked / ".git").is_file())
+            self.assertEqual(LocalAdapter(str(linked)).board()["meta"]["repo"],
+                             "acme/worktree")
+
     def test_board_meta_mode_read_only_when_flagged(self):
         board = LocalAdapter(self.tmp, read_only=True).board()
         self.assertEqual(board["meta"]["mode"], "read-only")
