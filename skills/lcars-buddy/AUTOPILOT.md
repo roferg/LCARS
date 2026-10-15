@@ -47,6 +47,31 @@ blocked run and a healthy idle run look identical; nothing inside the blocked
 run can detect or recover from it. Set the exact environment value **before
 launch**, rather than relying on a flag or on earlier rounds having worked.
 
+## Unattended Copilot commands: start at the repository root and write downward
+
+**Run commands from the repository root and write DOWNWARD** into its
+descendants. Never redirect through parent path components (`..`), even when
+the resolved destination would remain inside the repository.
+
+This command route is refused even with `COPILOT_ALLOW_ALL=true`: the problem
+is the upward traversal, not the destination, .git, Python, or the test runner.
+In unattended mode no interactive approval is possible, so a permission
+refusal ends the run; do not retry the refused route.
+
+**REFUSED — documentation only; do not execute or copy as a suggested command:**
+
+```text
+cd .git/lcars/tmp/<wt> && python3 -m unittest ... > ../../autopilot/x.txt ;
+```
+
+**Working shape — stay at the repository root and write downward.** Replace
+`<wt>` with the worktree name before running:
+
+```bash
+mkdir -p .git/lcars/autopilot
+python3 -m unittest discover -s .git/lcars/tmp/<wt>/tests -v > .git/lcars/autopilot/x.txt
+```
+
 ## How to read this file
 
 Ask the driver what to do next, then read that section:
@@ -397,6 +422,10 @@ the *other* slot (§ 8) — not for watching.
 ---
 
 ## 6. The Verify gate — Number One, then the live check
+
+For test commands and evidence capture, follow
+[the repository-root/downward rule](#unattended-copilot-commands-start-at-the-repository-root-and-write-downward)
+above; do not redirect upward from the live-check worktree.
 
 When a mission reaches `verify`, read Number One's verdict
 (`lcars-autopilot exec lcars-xo/xo.sh report`, `xo/verdict.json`) — then **do the live check yourself every

@@ -1010,6 +1010,31 @@ check "27. every <skill>/<script> token the block lists exists in this clone" \
 check "27. CONTROL: that sweep found real tokens (not a vacuous zero)" \
   "[ \"\$(printf '%s\n' \"\$d27toks\" | grep -c .)\" -ge 6 ]"
 
+# --- 28. Unattended project-test commands stay rooted and write downward ---
+d28rule="$(sed -n '/^## Unattended Copilot commands:/,/^## How to read this file/p' "$AUTOP277")"
+d28line="$(grep -n '^## Unattended Copilot commands:' "$AUTOP277" | cut -d: -f1)"
+d28trust="$(grep -n '^## Unattended Copilot setup:' "$AUTOP277" | cut -d: -f1)"
+d28read="$(grep -n '^## How to read this file' "$AUTOP277" | cut -d: -f1)"
+d28test="$(grep -n '^## 3\. Foundation' "$AUTOP277" | cut -d: -f1)"
+check "28. command safety follows trust setup and precedes reading/project testing" \
+  "[ -n '$d28line' ] && [ '$d28trust' -lt '$d28line' ] && [ '$d28line' -lt '$d28read' ] && [ '$d28line' -lt '$d28test' ]"
+check "28. run from the repository root and write DOWNWARD" \
+  "printf '%s' \"\$d28rule\" | qgrep -qF 'Run commands from the repository root and write DOWNWARD'"
+check "28. never redirect through parent path components" \
+  "printf '%s' \"\$d28rule\" | qgrep -qF 'Never redirect through parent path components'"
+check "28. the route is refused even with blanket trust" \
+  "printf '%s' \"\$d28rule\" | qgrep -qF 'route is refused even with' && printf '%s' \"\$d28rule\" | qgrep -qF 'COPILOT_ALLOW_ALL=true'"
+check "28. the reason does not blame the destination or test tooling" \
+  "printf '%s' \"\$d28rule\" | qgrep -qF 'not the destination, .git, Python, or the test runner'"
+check "28. unattended refusal ends the run rather than inviting a retry" \
+  "printf '%s' \"\$d28rule\" | qgrep -qF 'no interactive approval is possible' && printf '%s' \"\$d28rule\" | qgrep -qF 'refusal ends the run; do not retry'"
+check "28. refused example is explicitly NOT a suggested command" \
+  "printf '%s' \"\$d28rule\" | qgrep -qF 'REFUSED — documentation only; do not execute or copy as a suggested command'"
+d28refused='cd .git/lcars/tmp/<wt> && python3 -m unittest ... > ../../autopilot/x.txt ;'
+d28working='python3 -m unittest discover -s .git/lcars/tmp/<wt>/tests -v > .git/lcars/autopilot/x.txt'
+check "28. exact refused and working examples appear in the early safety section" \
+  "printf '%s\n' \"\$d28rule\" | qgrep -qFx \"\$d28refused\" && printf '%s\n' \"\$d28rule\" | qgrep -qFx \"\$d28working\""
+
 # --- summary --------------------------------------------------------------
 printf '\nlcars buddy: %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
