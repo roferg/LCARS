@@ -711,7 +711,8 @@ launcher_verdict() {
   echo "    $out"
 }
 
-# final_note — every exit path ends here, so the verdict is never skipped.
+# final_note — every install exit path ends here. NOT READY returns 1 so
+# shell && chains cannot continue with unusable commands; READY/PARTIAL return 0.
 #
 # S290 fix round 1:
 #  D4 (INHERITED from main, cured because it makes THIS session's promise —
@@ -736,6 +737,7 @@ final_note() {
       echo "(Once it reads READY: open a repo in Claude Code or GitHub Copilot CLI"
       echo " and ask for the \`lcars init\` skill there. It is a CLI skill, not a"
       echo " shell command.)"
+      return 1
       ;;
     *"PARTIAL"*)
       echo "Partly done — the shell commands work; see the ⚠ above for what did not."
@@ -826,7 +828,7 @@ if [ "$copilot_present" -eq 0 ]; then
   echo "  ⓘ GitHub Copilot CLI not detected — skipping Copilot plugin registration."
   echo "    (Claude install above is complete. Install copilot, then re-run ./install.sh.)"
   final_note
-  exit 0
+  exit $?
 fi
 
 if ! command -v jq >/dev/null 2>&1; then
@@ -835,7 +837,7 @@ if ! command -v jq >/dev/null 2>&1; then
   # partial install, not a READY one.
   COPILOT_PARTIAL="jq is not on PATH, so $COPILOT_CONFIG could not be edited"
   final_note
-  exit 0
+  exit $?
 fi
 
 mkdir -p "$COPILOT_PLUGINS_DIR"
@@ -866,7 +868,7 @@ if ! printf '%s' "$body" | jq -e . >/dev/null 2>&1; then
   # it was not. LCARS is not registered with Copilot and the verdict must say so.
   COPILOT_PARTIAL="$COPILOT_CONFIG is not valid JSON, so it was left untouched"
   final_note
-  exit 0
+  exit $?
 fi
 
 now="$(date -u +%Y-%m-%dT%H:%M:%S.000Z)"

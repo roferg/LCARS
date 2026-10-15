@@ -84,6 +84,40 @@ also puts five real programs on your `PATH` at `~/.local/bin`:
 `~/.local/bin` is not on your `PATH`, the installer says so loudly and prints the
 exact line to add to your shell profile.
 
+The closing verdict is also the exit contract: **READY exits 0; NOT READY
+exits 1**, so a shell `./install.sh && next-command` does not continue with
+unusable LCARS commands. Fix the reported problem and re-run the installer.
+**PARTIAL still exits 0**: the tested shell commands work, but the output names
+unfinished work such as a refused Copilot registration.
+
+To **try LCARS without touching HOME**, set `LCARS_INSTALL_PREFIX`. It redirects
+all five destinations:
+
+| Destination override | Default | With `LCARS_INSTALL_PREFIX` |
+| --- | --- | --- |
+| `LCARS_SKILLS_DEST` | `~/.claude/skills` | `$LCARS_INSTALL_PREFIX/claude-skills` |
+| `LCARS_BIN_DEST` | `~/.local/bin` | `$LCARS_INSTALL_PREFIX/bin` |
+| `LCARS_COPILOT_PLUGINS_DIR` | `~/.copilot/installed-plugins/_direct` | `$LCARS_INSTALL_PREFIX/copilot-plugins` |
+| `LCARS_COPILOT_CONFIG` | `~/.copilot/config.json` | `$LCARS_INSTALL_PREFIX/copilot-config.json` |
+| `LCARS_VERSION_STAMP` | `~/.claude/lcars-version-check` | `$LCARS_INSTALL_PREFIX/version-check` |
+
+The version-check stamp is written later by the version checker, not by the
+installer. Individual overrides **take precedence over the prefix**; setting
+just one does not isolate the others. Clear them for an entirely isolated trial,
+and add its bin directory to PATH **before** installing so readiness can pass:
+
+```bash
+# From this clone; all trial destinations stay beneath the current directory.
+unset LCARS_SKILLS_DEST LCARS_BIN_DEST LCARS_COPILOT_PLUGINS_DIR \
+      LCARS_COPILOT_CONFIG LCARS_VERSION_STAMP
+export LCARS_INSTALL_PREFIX="./.lcars-try"
+export PATH="$LCARS_INSTALL_PREFIX/bin:$PATH"
+./install.sh
+```
+
+Keep this shell in the same directory while using that relative prefix and PATH.
+The trial does not register skills in the CLIs' default HOME directories.
+
 Then, **inside the project you want to ship work in** (not this repo):
 
 ```bash

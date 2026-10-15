@@ -48,7 +48,8 @@ GEN="$REPO_ROOT/gen-copilot-plugin.sh"
 
 pass=0
 fail=0
-TMPROOT="$(mktemp -d)"
+TMPROOT="$(mktemp -d "${TMPDIR:-.}/lcars-install-copilot.XXXXXX")"
+TMPROOT="$(cd "$TMPROOT" && pwd)"
 trap 'rm -rf "$TMPROOT"' EXIT
 
 ok()   { printf '  \033[32mPASS\033[0m %s\n' "$1"; pass=$((pass + 1)); }
@@ -114,6 +115,7 @@ JSON
 run_install() {
   local e="$1"
   HOME="$e/fakehome" \
+  LCARS_INSTALL_PREFIX="$e/inst" \
   LCARS_SKILLS_DEST="$e/claude-skills" \
   LCARS_BIN_DEST="$e/bin" \
   LCARS_COPILOT_PLUGINS_DIR="$e/copilot/_direct" \
@@ -276,11 +278,13 @@ check "4. claude layout reaches the same repo init.sh" \
 e5="$(new_env)"
 rc5=0
 HOME="$e5/fakehome" \
+LCARS_INSTALL_PREFIX="$e5/inst" \
 LCARS_SKILLS_DEST="$e5/claude-skills" \
 LCARS_BIN_DEST="$e5/bin" \
 LCARS_COPILOT_PLUGINS_DIR="$e5/copilot/_direct" \
 LCARS_COPILOT_CONFIG="$e5/copilot/config.json" \
 LCARS_COPILOT_BIN="$e5/definitely-no-copilot" \
+PATH="$e5/bin:$PATH" \
   bash "$INSTALL" >"$e5/out.txt" 2>&1 || rc5=$?
 check "5. install still succeeds (exit 0) when copilot is absent" \
   "[ '$rc5' -eq 0 ]"

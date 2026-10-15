@@ -49,7 +49,8 @@ MANIFEST_NAME='.lcars-launchers'
 
 pass=0
 fail=0
-TMPROOT="$(mktemp -d)"
+TMPROOT="$(mktemp -d "${TMPDIR:-.}/lcars-install-reconcile.XXXXXX")"
+TMPROOT="$(cd "$TMPROOT" && pwd)"
 trap 'rm -rf "$TMPROOT"' EXIT
 
 ok()   { printf '  \033[32mPASS\033[0m %s\n' "$1"; pass=$((pass + 1)); }
@@ -784,8 +785,8 @@ env -i PATH=/usr/bin:/bin:/usr/sbin:/sbin HOME="$p13/fakehome" \
     python3 "$CAGE" 25 bash "$CK_A/install.sh" >"$p13/out.txt" 2>&1
 rc13=$?
 chmod 755 "$p13/inst/bin"
-check "13. an unwritable launcher dir does NOT abort the installer (rc=$rc13)" \
-  "[ $rc13 -eq 0 ]"
+check "13. an unwritable launcher dir exits 1 after the closing verdict (rc=$rc13)" \
+  "[ $rc13 -eq 1 ]"
 check "13. ...it still reaches a VERDICT" \
   "grep -q 'NOT READY' '$p13/out.txt'"
 check "13. ...and explains it in words, naming the directory" \
@@ -1016,6 +1017,41 @@ STUB
 done
 check "18. every hostile path in the set was actually exercised" \
   "[ $h18 -eq 11 ]"
+
+# The verdict and process status are one public contract, on every closing
+# path. Keep both READY and NOT READY expectations together so they cannot drift.
+nojq="$TMPROOT/no-jq"; mkdir -p "$nojq"
+for tool in bash dirname basename mkdir ln sed cat chmod find sort grep stat head; do
+  ln -s "$(command -v "$tool")" "$nojq/$tool"
+done
+for route in registered absent bad-config no-jq; do
+  for reachable in yes no; do
+    p19="$(new_prefix)"; mkdir -p "$p19/inst/bin" "$p19/fakehome"
+    probe="$(command -v true)"
+    tools="$PATH"
+    case "$route" in
+      absent) probe="$p19/no-copilot" ;;
+      bad-config) printf 'not json\n' >"$p19/inst/copilot-config.json" ;;
+      no-jq) tools="$nojq" ;;
+    esac
+    expected_verdict="NOT READY"; expected_rc=1
+    if [ "$reachable" = yes ]; then
+      tools="$p19/inst/bin:$tools"
+      expected_verdict="READY"; expected_rc=0
+      case "$route" in bad-config|no-jq) expected_verdict="PARTIAL" ;; esac
+    fi
+    rc19=0
+    env -u LCARS_SKILLS_DEST -u LCARS_BIN_DEST -u LCARS_COPILOT_PLUGINS_DIR \
+        -u LCARS_COPILOT_CONFIG \
+        HOME="$p19/fakehome" LCARS_INSTALL_PREFIX="$p19/inst" \
+        LCARS_COPILOT_BIN="$probe" PATH="$tools" \
+        bash "$CK_A/install.sh" >"$p19/out.txt" 2>&1 || rc19=$?
+    check "19. $route / reachable=$reachable: $expected_verdict exits $expected_rc (got $rc19)" \
+      "[ $rc19 -eq $expected_rc ] && grep -q ' $expected_verdict —' '$p19/out.txt'"
+  done
+done
+check "19. README documents the isolated install prefix" \
+  "grep -q 'LCARS_INSTALL_PREFIX' '$REPO_ROOT/README.md'"
 
 # ==========================================================================
 echo

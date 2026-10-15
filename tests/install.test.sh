@@ -47,7 +47,8 @@ WEB_DIR="$REPO_ROOT/web"
 
 pass=0
 fail=0
-TMPROOT="$(mktemp -d)"
+TMPROOT="$(mktemp -d "${TMPDIR:-.}/lcars-install.XXXXXX")"
+TMPROOT="$(cd "$TMPROOT" && pwd)"
 trap 'rm -rf "$TMPROOT"' EXIT
 
 ok()   { printf '  \033[32mPASS\033[0m %s\n' "$1"; pass=$((pass + 1)); }
@@ -66,6 +67,7 @@ new_env() {
 # (so we can control whether LCARS_BIN_DEST is on PATH for the hint test).
 run_install() {
   local e="$1"; local extra_path="${2:-}"
+  LCARS_INSTALL_PREFIX="$e/inst" \
   LCARS_BIN_DEST="$e/bin" \
   LCARS_SKILLS_DEST="$e/claude-skills" \
   LCARS_COPILOT_PLUGINS_DIR="$e/copilot/_direct" \
@@ -229,7 +231,7 @@ check "6. prints NO add-to-PATH hint when bin dest IS already on PATH" \
 # ==========================================================================
 e7="$(new_env)"
 rc7=0
-run_install "$e7" || rc7=$?
+run_install "$e7" "$e7/bin" || rc7=$?
 check "7. install still exits 0 with copilot absent" \
   "[ '$rc7' -eq 0 ]"
 check "7. claude dest still has the lcars skill symlinked" \
@@ -269,7 +271,8 @@ env -u LCARS_SKILLS_DEST -u LCARS_BIN_DEST -u LCARS_COPILOT_PLUGINS_DIR \
     LCARS_COPILOT_BIN=/usr/bin/true \
     bash "$INSTALL" >"$pout" 2>&1 || rc8=$?
 
-check "8. a prefix-only install exits 0" "[ '$rc8' -eq 0 ]"
+check "8. a prefix-only install off PATH exits 1 and says NOT READY" \
+  "[ '$rc8' -eq 1 ] && grep -q 'NOT READY' '$pout'"
 check "8. skills land under the prefix (not ~/.claude/skills)" \
   "[ -L '$pfx/claude-skills/lcars' ]"
 check "8. all skills are linked under the prefix (count matches)" \
