@@ -235,6 +235,9 @@ lcars-autopilot exec lcars-init/establish-vision.sh --file \
      --stack "<the stack>" --slice "<a thin end-to-end slice>" --engine copilot
 ```
 
+Supplying both `--stack` and `--slice` records them as the project idea;
+`--idea <file>` is optional and takes precedence when supplied.
+
 Do **not** write your own scaffold. Drive the initialization mission, do its
 Verify gate and land it before filing the first product milestone; `next`
 finds it by LCARS's existing `missionType: initialization`, not an autopilot flag.
@@ -251,7 +254,8 @@ actually wants.
 
 **`file.sh` requires six sections** and refuses the PRD without any one of them.
 Write all six before you call it — they are, exactly: **Mission title**, **Type**,
-**Goal**, **Acceptance Criteria**, **Out of Scope**, **Constraints**. Either
+**Goal**, **Acceptance Criteria**, **Out of Scope**, **Constraints**. **Mission**
+is also accepted in place of **Mission title**. Either
 shape is accepted per section — a bold inline label (`**Goal:** …`) or the label
 owning its own line as a heading (`## Goal`). (A complex mission filed with
 `--adr` needs each ADR to carry **Context**, **Decision**, **Alternatives

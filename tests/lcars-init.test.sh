@@ -1364,6 +1364,57 @@ check "S274-6: a config pin for an ABSENT engine is skipped, not obeyed" \
 check "S274-6: a config pin cannot conjure an engine out of an empty laptop" \
   "[ -z \"\$(eng_default '$ENG_NONE' '$ENG_NONE' '$ENGCFG')\" ]"
 
+# --- S295: the documented Establish Vision command needs no idea file ------
+repoVision="$(new_repo)"
+( cd "$repoVision" && git commit -q --allow-empty -m init )
+make_gh_stub "$repoVision/gh"
+export GH_LOG="$repoVision/gh.log"; : >"$GH_LOG"
+mkdir -p "$repoVision/.git/lcars"
+printf '{\n  "cloneId": "c10ec10ec10ec10ec10ec10ec10ec10e"\n}\n' >"$repoVision/.git/lcars/config.json"
+rcVision=0
+( cd "$repoVision" && LCARS_GH_BIN="$repoVision/gh" \
+    LCARS_FILE_SCRIPT="$REPO_ROOT/skills/lcars-file/file.sh" \
+    LCARS_RUN_BIN="$repoVision/no-estimator" LCARS_DATE=20260530 \
+    bash "$REPO_ROOT/skills/lcars-init/establish-vision.sh" --file \
+      --stack "python3 stdlib" --slice "a thin slice" --engine copilot \
+      >vision-out.txt 2>&1 ) || rcVision=$?
+visionMission="$repoVision/.git/lcars/missions/lcars-20260530-001-c10e"
+check "S295 vision: the documented command without --idea succeeds" \
+  "[ '$rcVision' -eq 0 ]"
+check "S295 vision: files a real initialization mission pinned to copilot" \
+  "python3 -c 'import json,sys; s=json.load(open(sys.argv[1])); assert s[\"missionType\"] == \"initialization\" and s[\"workerBin\"] == \"copilot\"' '$visionMission/state.json'"
+check "S295 vision: reports the filed mission id" \
+  "grep -qx 'MISSION_ID=lcars-20260530-001-c10e' '$repoVision/vision-out.txt'"
+check "S295 vision: records the supplied stack and slice as the idea" \
+  "grep -q 'Establish the foundation on python3 stdlib with one thin vertical slice: a thin slice' '$repoVision/.git/lcars/vision.md'"
+check "S295 vision: retains the foundation scope fence" \
+  "grep -q 'This mission does NOT build the product' '$visionMission/prd.md'"
+
+for missingVisionArg in stack slice; do
+  case "$missingVisionArg" in
+    stack) visionArgs=(--slice "a thin slice") ;;
+    slice) visionArgs=(--stack "python3 stdlib") ;;
+  esac
+  rcVision=0
+  ( cd "$repoVision" && bash "$REPO_ROOT/skills/lcars-init/establish-vision.sh" \
+      --prd "${visionArgs[@]}" >vision-error.txt 2>&1 ) || rcVision=$?
+  check "S295 vision: missing $missingVisionArg names both ways to supply an idea" \
+    "[ '$rcVision' -eq 1 ] && grep -qF -- '--idea <file>' '$repoVision/vision-error.txt' && grep -qF -- \"both --stack '<stack>' and --slice '<thin slice>'\" '$repoVision/vision-error.txt'"
+done
+printf 'Build a local reading tracker.\n' >"$repoVision/idea.md"
+rcVision=0
+( cd "$repoVision" && bash "$REPO_ROOT/skills/lcars-init/establish-vision.sh" \
+    --write-vision --idea idea.md --stack "python3 stdlib" --slice "a thin slice" \
+    >vision-out.txt 2>&1 ) || rcVision=$?
+check "S295 vision: an explicit idea takes precedence over stack and slice" \
+  "[ '$rcVision' -eq 0 ] && grep -qx 'Build a local reading tracker.' '$repoVision/.git/lcars/vision.md' && ! grep -q 'Establish the foundation on' '$repoVision/.git/lcars/vision.md'"
+rcVision=0
+( cd "$repoVision" && bash "$REPO_ROOT/skills/lcars-init/establish-vision.sh" \
+    --prd --idea missing-idea.md --stack "python3 stdlib" --slice "a thin slice" \
+    >vision-error.txt 2>&1 ) || rcVision=$?
+check "S295 vision: an explicit missing idea file is not silently replaced" \
+  "[ '$rcVision' -eq 1 ] && grep -qF 'idea file not found: missing-idea.md' '$repoVision/vision-error.txt'"
+
 # ==========================================================================
 echo
 printf 'lcars init: %d passed, %d failed\n' "$pass" "$fail"

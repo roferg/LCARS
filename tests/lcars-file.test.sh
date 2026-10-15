@@ -1125,6 +1125,52 @@ check "15i. the BOLD form still derives its title" \
 check "15j. …and its type" \
   "[ -f '$MH3' ] && cat '$MH3' | qgrep -q '\"type\": \"bug\"'"
 
+# S295: the documented "Mission title" spelling must validate AND extract.
+for titleShape in heading inline bold; do
+  repoTitle="$(new_repo)"; make_gh_stub "$repoTitle/gh"
+  export GH_LOG="$repoTitle/gh.log"; : >"$GH_LOG"
+  prdTitle="$repoTitle/prd-title.md"
+  case "$titleShape" in
+    heading) printf '## Mission title\n\nFix the broken /about route\n' >"$prdTitle" ;;
+    inline) printf '# Mission title: Fix the broken /about route\n' >"$prdTitle" ;;
+    bold) printf '**Mission title:** Fix the broken /about route\n' >"$prdTitle" ;;
+  esac
+  write_prd "$repoTitle/original.md"
+  sed '1d' "$repoTitle/original.md" >>"$prdTitle"
+  rcTitle=0
+  ( cd "$repoTitle" && LCARS_GH_BIN="$repoTitle/gh" LCARS_DATE=20260530 \
+      bash "$SCRIPT" --prd "$prdTitle" >out-title.txt 2>&1 ) || rcTitle=$?
+  titleState="$repoTitle/.git/lcars/missions/lcars-20260530-001-c10e/state.json"
+  check "S295 title ($titleShape): the documented spelling files" \
+    "[ '$rcTitle' -eq 0 ]"
+  check "S295 title ($titleShape): extracts the title and preserves Type" \
+    "python3 -c 'import json,sys; s=json.load(open(sys.argv[1])); assert s[\"title\"] == \"Fix the broken /about route\" and s[\"type\"] == \"bug\"' '$titleState'"
+  check "S295 title ($titleShape): uses the extracted title on the issue" \
+    "grep -q -- '--title Fix the broken /about route' '$GH_LOG'"
+done
+
+# Both filing lanes must name the spellings their shared reader accepts.
+for titleLane in new complete; do
+  repoTitle="$(new_repo)"; make_gh_stub "$repoTitle/gh"
+  export GH_LOG="$repoTitle/gh.log"; : >"$GH_LOG"
+  write_prd "$repoTitle/original.md"
+  sed '1d' "$repoTitle/original.md" >"$repoTitle/missing-title.md"
+  titleArgs=(--prd "$repoTitle/missing-title.md")
+  if [ "$titleLane" = complete ]; then
+    ( cd "$repoTitle" && LCARS_GH_BIN="$repoTitle/gh" LCARS_DATE=20260530 \
+        bash "$SCRIPT" --park "Fix the broken /about route" >park-out.txt 2>&1 )
+    titleArgs=(--complete lcars-20260530-001-c10e --prd "$repoTitle/missing-title.md")
+  fi
+  rcTitle=0
+  ( cd "$repoTitle" && LCARS_GH_BIN="$repoTitle/gh" LCARS_DATE=20260530 \
+      bash "$SCRIPT" "${titleArgs[@]}" \
+      >out-title.txt 2>&1 ) || rcTitle=$?
+  check "S295 title ($titleLane): a missing title is still refused as a PRD error" \
+    "[ '$rcTitle' -eq 3 ]"
+  check "S295 title ($titleLane): refusal quotes both accepted spellings" \
+    "grep -qF \"'Mission' or 'Mission title'\" '$repoTitle/out-title.txt'"
+done
+
 # 15k/l. THE GATE IS STILL A GATE. A PRD genuinely missing a section is still
 # refused — accepting both shapes must not become accepting anything.
 repoH4="$(new_repo)"; make_gh_stub "$repoH4/gh"

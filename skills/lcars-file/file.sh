@@ -461,7 +461,7 @@ _validate_prd() { # prd-path [attachment-path…]
   # captain's Align drifted to. lcars_prd_has_field (lcars-init/lcars-common.sh)
   # is the SAME function the title/type extraction below reads through, so
   # validation and extraction can never disagree about what a PRD says.
-  lcars_prd_has_field "$p" 'Mission'             || die_prd "PRD is missing the 'Mission title' section — Align must produce it before filing."
+  lcars_prd_has_field "$p" 'Mission'             || die_prd "PRD is missing the 'Mission' or 'Mission title' section — Align must produce it before filing."
   lcars_prd_has_field "$p" 'Type'                || die_prd "PRD is missing the 'Type' section — Align must produce it before filing."
   lcars_prd_has_field "$p" 'Goal'                || die_prd "PRD is missing the 'Goal' section — Align must produce it before filing."
   lcars_prd_has_field "$p" 'Acceptance Criteria' || die_prd "PRD is missing the 'Acceptance Criteria' section — Align must produce it before filing."
@@ -1181,7 +1181,9 @@ mkdir -p "$MISSIONS_DIR"
 # S176 — accepted in BOTH shapes (bold inline label OR markdown heading), by
 # the SAME reader the extraction below uses. See lcars_prd_has_field.
 require_section() {
-  lcars_prd_has_field "$PRD_SRC" "$2" || die_prd "PRD is missing the '$1' section — Align must produce it before filing."
+  local accepted="'$1'"
+  [ "$2" = Mission ] && accepted="'Mission' or 'Mission title'"
+  lcars_prd_has_field "$PRD_SRC" "$2" || die_prd "PRD is missing the $accepted section — Align must produce it before filing."
 }
 require_section "Mission title"      'Mission'
 require_section "Type"               'Type'

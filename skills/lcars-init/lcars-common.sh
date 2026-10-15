@@ -3990,7 +3990,8 @@ lcars_config_get_raw() {
 # ONE list: the reader below stops a heading-form value scan at any of them, so
 # a labelled-but-EMPTY section can never silently absorb the next section's
 # heading as its value. (SKILL.md's template spells the same six.)
-LCARS_PRD_LABELS='Mission|Type|Goal|Acceptance Criteria|Out of Scope|Constraints'
+# "Mission title" is an alias of "Mission" for both validation and extraction.
+LCARS_PRD_LABELS='Mission|Mission title|Type|Goal|Acceptance Criteria|Out of Scope|Constraints'
 
 # _lcars_prd_read <prd-path> <label> <has|value>
 #   has   -> exit 0 when the PRD declares the label in EITHER shape
@@ -4006,7 +4007,7 @@ try:
 except OSError:
     sys.exit(1)
 lines = text.replace("\r\n", "\n").split("\n")
-lab = re.escape(label)
+lab = r"Mission(?: title)?" if label.lower() in ("mission", "mission title") else re.escape(label)
 
 # SHAPE 1 — the bold inline label, matched where the old greps matched it
 # (anywhere on the line), so every PRD that filed yesterday files today.
