@@ -25,8 +25,13 @@ Two kinds of card show up:
   scope change, a Plan-Review stand-off, or a blocked Implement ticket. Cleared
   by recording a free-form answer (→ `respond.sh`).
 - **Verify gate** (`stage: verify`) — a finished Mission awaiting review. Cleared
-  by **approving** (→ `approve.sh`, opens the PR) or **sending back** with a note
-  (→ `feedback.sh`, returns it to Align).
+  by **approving** (→ `approve.sh`, merges its open PR) or **sending back** with
+  a note (→ `feedback.sh`, returns it to Align). Without a recorded PR, approval
+  is listed as unavailable; for an ordinary Mission, run `lcars run <id>` so
+  Verify opens the PR first. A logged-bug child (`parentMission` set) intentionally
+  has no PR of its own: it ships via its parent. Run `lcars resolve-logs <parent>`
+  for the consolidated parent review instead.
+  Ordinary Verify review does not set the red escalation flag.
 
 ## Show the inbox
 
@@ -48,7 +53,7 @@ resolves; several → it prints a picker (pass `--mission <id>` to choose).
 # Answer an escalation (delegates to respond.sh — records the answer, clears the gate)
 bash ~/.claude/skills/lcars-answer/answer.sh respond  --mission <id> --answer "<text>"
 
-# Ship a Verify card (delegates to approve.sh — opens the PR, marks Done)
+# Ship a Verify card (delegates to approve.sh — merges its open PR, marks Done)
 bash ~/.claude/skills/lcars-answer/answer.sh approve  --mission <id>
 
 # Send a Verify card back (delegates to feedback.sh — back to Align with a note)
@@ -71,7 +76,7 @@ with what you'd do, then approve or send back per the captain's call.
 ## Implementation
 
 The logic lives in `answer.sh` next to this file, covered by
-`tests/lcars-answer.test.sh` (run with `bash tests/run.sh`). Dependencies are
+`tests/lcars-answer.test.sh` (run with `bash tests/lcars-answer.test.sh`). Dependencies are
 env-injectable so tests stub them: `LCARS_RESPOND_SCRIPT`, `LCARS_APPROVE_SCRIPT`,
 `LCARS_FEEDBACK_SCRIPT`, `LCARS_RESOLVE_SCRIPT`. The skill source lives in
 `skills/lcars-answer/` and is symlinked into `~/.claude/skills/` by

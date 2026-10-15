@@ -54,7 +54,7 @@ flowchart LR
 | **Plan Review** | 🤖 auto | A fresh reviewer with no memory of the planning audits every ticket for size, coupling and testability, and sends bad ones back. |
 | **Schedule** | 🤖 auto | Tickets are ordered into waves by their dependencies, and each becomes a sub-issue under the Mission. |
 | **Implement** | 🤖 auto | One test-first worker per ticket, checked afterwards by machine: its new tests must fail before its change and pass after it, any edit to an existing test must be declared with a reason, and the whole suite must stay green. |
-| **Verify** | 🧑 you | You read the diff, run the app, and either approve — which opens the pull request — or send it back with a note. |
+| **Verify** | 🧑 you | You read the diff, run the app, and either approve — which merges the existing open pull request — or send it back with a note. |
 
 ---
 
@@ -163,16 +163,22 @@ now, or park it in the backlog and come back to it.
 Plan Review, Schedule and Implement, the card showing the stage, the cost so far
 and the ticket it is on. Nothing needs you until something does.
 
-**4. Answer what it asks.** When LCARS genuinely needs you, the card turns red
-and says so, and you get a notification. Everything waiting on you is also in
-one list — on the board, or in the terminal with `lcars answer`.
+**4. Answer what it asks.** An escalation turns the card red, says what needs
+your answer, and sends a notification. Ordinary final review stays in the
+Verify column; it does not turn the card red just for reaching Verify.
+Escalations and Verify reviews are listed in the terminal with `lcars answer`.
 
 ![The lcars answer inbox in a terminal: every decision LCARS is waiting on, each written in plain English with the exact command to approve it, send it back, or answer it.](docs/assets/answer-inbox.png)
 
 **5. Approve it.** At Verify you see what you asked for beside what was built,
-the estimate beside the real cost, and the open pull request. **⚡ RUN** starts
-the built app so you can look at it before you decide. Then merge it, or send it
-back with a note.
+the estimate beside the real cost, and the pull request when one is recorded.
+**⚡ RUN** starts the built app so you can look at it before you decide. Then
+merge the open PR, or send it back with a note. If no PR is recorded, the inbox
+marks approval unavailable: for an ordinary Mission, run `lcars run <mission-id>`
+so Verify opens the PR before approving. A logged-bug child intentionally has
+no PR of its own and ships via its parent; run `lcars resolve-logs <parent>`
+for the consolidated parent review instead. Approval never opens and merges
+a PR in one step.
 
 ![The Verify gate: the acceptance criteria, what was built, the estimate beside what the run actually cost, the open pull request, a RUN control that launches the built app, and the send-back and merge buttons.](docs/assets/launch-run.png)
 

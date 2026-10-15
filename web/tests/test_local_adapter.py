@@ -7,6 +7,9 @@ Behaviors covered:
 """
 import json
 import os
+from pathlib import Path
+import shutil
+import subprocess
 import sys
 import tempfile
 import time
@@ -79,6 +82,68 @@ class LocalAdapterTest(unittest.TestCase):
         self.assertTrue(m["awaiting"])
         self.assertEqual(m["stage"], "research")
         self.assertEqual(m["question"], "Global vs per-course leaderboard?")
+
+    def test_verify_inbox_actions_and_board_escalations_stay_distinct(self):
+        """Verify is reviewable without making every Verify card a red gate."""
+        self.addCleanup(shutil.rmtree, self.tmp)
+        subprocess.run(["git", "init", "-q", self.tmp], check=True)
+        for mid, pr in (("verify-null", None), ("verify-missing", None),
+                        ("verify-empty", ""), ("verify-open",
+                         "https://github.com/example/project/pull/77")):
+            d = fx.plant_simple(self.tmp, mid, stage="verify", pr_url=pr)
+            if mid == "verify-null":
+                path = os.path.join(d, "state.json")
+                with open(path) as fh:
+                    state = json.load(fh)
+                state["prUrl"] = None
+                fx.write_json(path, state)
+        fx.plant_simple(self.tmp, "verify-child", stage="verify",
+                        parent_mission="parent-mission", mtype="bug")
+        fx.plant_simple(self.tmp, "quiet", stage="implement")
+        for status in ("merging", "retesting", "healing"):
+            fx.plant_simple(self.tmp, status, stage="verify",
+                            reconcile_status=status)
+        fx.plant_simple(self.tmp, "reviewer", stage="plan-review")
+        self._lock("quiet", os.getpid())
+        self._lock("reviewer", os.getpid())
+        fx.plant_gated(self.tmp, "escalation", resume_stage="align",
+                       inflight_stage="research")
+
+        board = self._board()
+        for mid in ("verify-null", "verify-missing", "verify-empty",
+                    "verify-open", "verify-child", "quiet", "merging", "retesting",
+                    "healing", "reviewer"):
+            with self.subTest(board_card=mid):
+                self.assertFalse(self._by_id(board, mid)["awaiting"])
+        self.assertTrue(self._by_id(board, "escalation")["awaiting"])
+        self.assertTrue(self._by_id(board, "quiet")["running"])
+        self.assertTrue(self._by_id(board, "reviewer")["running"])
+        self.assertEqual(self._by_id(board, "verify-null")["stage"], "verify")
+        self.assertIsNone(self._by_id(board, "verify-null")["prUrl"])
+
+        answer = Path(__file__).resolve().parents[2] / "skills/lcars-answer/answer.sh"
+        result = subprocess.run(["bash", str(answer), "list"], cwd=self.tmp,
+                                capture_output=True, text=True, check=True)
+        self.assertNotIn("quiet (", result.stdout)
+        self.assertNotIn("reviewer (", result.stdout)
+        self.assertIn("escalation (#143) — research, awaiting your answer",
+                      result.stdout)
+        self.assertIn("lcars answer approve --mission verify-open", result.stdout)
+        for mid in ("verify-null", "verify-missing", "verify-empty"):
+            with self.subTest(inbox_card=mid):
+                card = result.stdout.split("  %s (" % mid, 1)[1].split("\n\n", 1)[0]
+                self.assertIn("ready for your review", card)
+                self.assertIn("approve: unavailable — no open PR recorded", card)
+                self.assertNotIn("lcars answer approve", card)
+                self.assertIn("lcars answer send-back --mission %s" % mid, card)
+                self.assertIn("lcars run %s" % mid, card)
+        child = result.stdout.split("  verify-child (", 1)[1].split("\n\n", 1)[0]
+        self.assertIn("approve: unavailable — no open PR recorded", child)
+        self.assertIn("ships via parent", child)
+        self.assertIn("lcars resolve-logs parent-mission", child)
+        self.assertNotIn("lcars run verify-child", child)
+        self.assertNotIn("lcars answer approve", child)
+        self.assertIn("lcars answer send-back --mission verify-child", child)
 
     def test_gate_envelope_fields_passed_through(self):
         # BUG-027: the harness writes a legible, type-aware gate envelope into
