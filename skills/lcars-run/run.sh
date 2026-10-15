@@ -21787,9 +21787,12 @@ drive_xo_repo_engine() {
 # work actually starts — and so a mission the captain opted out of, or stood
 # down, stays his however many times he re-runs it.
 drive_engage_number_one() {
+  # A terminal mission has no new work to delegate, even with the repo switch on.
+  [ "$(json_str "$STATE" stage)" = "done" ] && return 0
   drive_xo_repo_on || return 0
   case "$(drive_xo_block)" in *'"optOut"'*true*) return 0 ;; esac
   local status; status="$(drive_xo_field status)"
+  [ "$status" = "finished" ] && return 0    # completed review evidence survives a re-drive
   [ "$status" = "engaged" ] && return 0     # already holding the conn — leave `since` alone
   [ "$status" = "stood-down" ] && return 0  # the captain took it back; only `lcars xo on <id>` re-offers it
   # ESCALATED IS NOT OVERWRITTEN WHILE THE GATE IS STILL UP (S202 fix round 1,

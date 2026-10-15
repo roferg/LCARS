@@ -691,6 +691,11 @@ matching `off` wrote, leaving the Mission looking exactly like one that was
 never stood down, so the NEXT drive is what engages it. It does not touch
 `escalated`: that gate is still the captain's.
 
+An already `finished` reviewer stays finished on a re-drive, including the
+drive that detects a GitHub merge. A Mission already at `done` never newly
+engages Number One. Neither rule rewrites older records or claims a review
+finished when none did.
+
 Every park in the pipeline lands on ONE line of `cmd_drive` — the awaiting halt
 at the top of the loop — so the hook is there, not at the two dozen raisers:
 
