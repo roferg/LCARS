@@ -1135,6 +1135,698 @@ else
   bad "I4b. the suggested runner's first token ('$first') does not resolve"
 fi
 
+echo "== J. THE FOUNDATION LEAVES A STACK-APPROPRIATE .gitignore =="
+
+# MEASURED, clean room 2026-10-15: a greenfield mission built a working Python
+# CLI from an empty folder and its DELIVERED COMMIT carried two
+# `__pycache__/*.pyc` files. The foundation had written no `.gitignore` at all,
+# and the quality floor — which judges the code, not the tree — passed it. A
+# newcomer's first delivered commit must not contain build litter.
+#
+# The write lives on the SCAFFOLD ARM of the real `apply_declared_setup`: the one
+# place that both KNOWS the repo is greenfield and has ALREADY resolved the stack
+# arm for the install allowlist, so the entries come from a fact the path
+# recorded rather than one re-derived later. Nothing below is stubbed — real
+# `git init`, the real manifest a scaffold ticket declares, the real arm
+# resolution, the real writer. No install, no network, no worker.
+
+# The ONE entry that is unmistakably THAT arm's litter, and appears in no other
+# arm's row — which is what makes "the entries match the detected stack" an
+# assertion rather than a hope.
+gi_token() { # arm → one literal entry
+  case "$1" in
+    js)     printf 'node_modules/' ;;
+    python) printf '__pycache__/' ;;
+    rust)   printf '*.rs.bk' ;;
+    go)     printf 'go.work.sum' ;;
+    dotnet) printf '[Oo]bj/' ;;
+    jvm)    printf '.gradle/' ;;
+    ruby)   printf '.bundle/' ;;
+  esac
+}
+# A declared setup that is PURE test infrastructure (never src/, never a file the
+# parent commit already holds) and leaves a runner LCARS can detect at the root.
+gi_setup_dir() { # → a setup dir declaring tests/test_add.py
+  local sd="$TMPROOT/gi-sd-py"
+  mkdir -p "$sd/tests"
+  printf 'import unittest\n\n\nclass AddTest(unittest.TestCase):\n    def test_add(self):\n        self.assertEqual(1 + 1, 2)\n' \
+    > "$sd/tests/test_add.py"
+  printf '%s' "$sd"
+}
+gi_manifest() { # → a manifest declaring files and NO install (the zero-install shape)
+  printf '{ "package": "", "gap": "this repo has no test system", "installCommand": "" }\n' \
+    > "$TMPROOT/gi-mf.json"
+  printf '%s' "$TMPROOT/gi-mf.json"
+}
+
+# J1. THE MEASURED DEFECT, CURED — and resolved from the TREE, no override: a
+#     python repo (pyproject in the parent commit) whose scaffold declares a
+#     unittest file gets a .gitignore naming python's own litter.
+gi_sd="$(gi_setup_dir)"; gi_mf="$(gi_manifest)"
+repo="$(new_mission_repo python)"
+apply_setup "$repo" "$gi_mf" "$gi_sd" "" LCARS_SETUP_GREENFIELD=1
+if [ "$ASRC" != 0 ]; then
+  bad "J1. the python scaffold was REFUSED before the .gitignore question (note: $ASNOTE)"
+elif [ ! -f "$repo/.gitignore" ]; then
+  bad "J1. the foundation wrote NO .gitignore — the measured defect (pyc files in the first commit)"
+elif grep -Fq '__pycache__/' "$repo/.gitignore" && grep -Fq '*.py[cod]' "$repo/.gitignore"; then
+  ok "J1. a greenfield python foundation writes a .gitignore that ignores __pycache__ and *.pyc"
+else
+  bad "J1. the .gitignore exists but does not ignore python build litter:
+$(sed 's/^/         /' "$repo/.gitignore")"
+fi
+
+# J1b. …and it says WHO wrote it and WHICH stack it was written for, so the next
+#      human (and the next session) can tell a seeded file from the captain's.
+if [ -f "$repo/.gitignore" ] && grep -qi 'LCARS' "$repo/.gitignore" \
+   && grep -q 'python' "$repo/.gitignore"; then
+  ok "J1b. …and the file names LCARS as its author and python as the stack it is for"
+else
+  bad "J1b. the seeded .gitignore carries no provenance header"
+fi
+
+# J1c. …and the file ENDS IN A NEWLINE. A .gitignore is a file humans append to;
+#      one whose last line has no terminator silently glues the next entry onto
+#      it. (`$(…)` strips trailing newlines, which is exactly how this was wrong
+#      once already.)
+if [ -f "$repo/.gitignore" ] && [ "$(tail -c1 "$repo/.gitignore" | od -An -c | tr -d ' ')" = '\n' ]; then
+  ok "J1c. …and it ends in a newline, so a human's next appended entry stands alone"
+else
+  bad "J1c. the seeded .gitignore does not end in a newline"
+fi
+
+# J2. AN EXISTING .gitignore THAT ALREADY COVERS THE STACK'S LITTER IS LEFT
+#     BYTE-IDENTICAL. THE REGRESSION-SENSITIVE ONE.
+#
+#     SPEC REVISION, S298 fix round 1. This assertion used to read "an existing
+#     .gitignore is left BYTE-IDENTICAL" for ANY pre-existing file, and a live
+#     run disproved the premise it rested on: a repo whose only pre-existing file
+#     was a three-line hand-written .gitignore (`.DS_Store`, `secrets.txt`) ran a
+#     real greenfield python foundation and DELIVERED four `__pycache__/*.pyc`
+#     files, silently — the original measured defect, straight back. A zero-byte
+#     `.gitignore` did the same. "A file exists" was being read as "a human has an
+#     opinion about __pycache__", which it is not.
+#
+#     So byte-identity is now asserted where it is still the RIGHT contract — a
+#     repo that already ignores the litter — and the uncovered repo is asserted
+#     to gain a marked block instead (J2c/J2d). The coverage question is put to
+#     `git check-ignore`, never to a grep of the file, because a later
+#     `!pattern` line can un-ignore an earlier one and only git knows.
+#
+#     Paired with a live control on the identical declaration, so neither half
+#     can pass by the writer simply not firing.
+gi_covered_repo() { # → a python repo whose .gitignore already covers every row
+  local r; r="$(new_mission_repo python)"
+  cat > "$r/.gitignore" <<'IGN'
+# the captain's own, hand-written, and thorough
+.DS_Store
+Thumbs.db
+*.swp
+.env
+.env.local
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+dist/
+build/
+IGN
+  ( cd "$r" && git add -A && git commit -qm "the captain's gitignore" )
+  printf '%s' "$r"
+}
+# The captain's own file, verbatim — the prefix every outcome must preserve.
+GI_HAND='# the captain wrote this by hand
+.DS_Store
+secrets.txt
+'
+gi_uncovered_repo() { # → a python repo with the live run's hand-written file
+  local r; r="$(new_mission_repo python)"
+  printf '%s' "$GI_HAND" > "$r/.gitignore"
+  ( cd "$r" && git add -A && git commit -qm "the captain's gitignore" )
+  printf '%s' "$r"
+}
+gi_ignores() { # repo path → 0 if THIS repo's full ignore chain ignores that path
+  ( cd "$1" && git check-ignore --no-index -q -- "$2" )
+}
+
+cov="$(gi_covered_repo)"
+cov_before="$(shasum "$cov/.gitignore" | awk '{print $1}')"
+apply_setup "$cov" "$gi_mf" "$gi_sd" "" LCARS_SETUP_GREENFIELD=1
+cov_rc="$ASRC"; cov_out="$OUT"
+cov_after="$(shasum "$cov/.gitignore" | awk '{print $1}')"
+# THE CONTROL: the identical declaration on a repo whose file does NOT cover the
+# litter. If this one is also untouched the writer is simply dead and J2 proves
+# nothing; if the two came out identical there would be no live variable at all.
+unc="$(gi_uncovered_repo)"
+unc_before="$(shasum "$unc/.gitignore" | awk '{print $1}')"
+apply_setup "$unc" "$gi_mf" "$gi_sd" "" LCARS_SETUP_GREENFIELD=1
+unc_rc="$ASRC"; unc_out="$OUT"
+unc_after="$(shasum "$unc/.gitignore" | awk '{print $1}')"
+
+if [ "$cov_rc" != 0 ]; then
+  bad "J2. the covered-repo scaffold was REFUSED before the .gitignore question (note: $ASNOTE)"
+elif [ "$unc_before" = "$unc_after" ]; then
+  bad "J2. CONTROL FAILED — the uncovered repo was left alone too, so 'byte-identical' proves nothing"
+elif [ "$cov_before" = "$cov_after" ]; then
+  ok "J2. a .gitignore that ALREADY covers the stack's litter is left BYTE-IDENTICAL (while an uncovered one on the same declaration is appended to)"
+else
+  bad "J2. the foundation rewrote a .gitignore that already covered everything:
+$(sed 's/^/         /' "$cov/.gitignore")"
+fi
+# …and that untouched outcome is still RECORDED as kept.
+cov_ev="$cov/.git/lcars/missions/m-001/events.jsonl"
+if [ -f "$cov_ev" ] && grep -q '"type":"gitignore_kept"' "$cov_ev"; then
+  ok "J2b. …and that no-op is recorded as gitignore_kept in the mission log"
+else
+  bad "J2b. a .gitignore left untouched was left SILENTLY — no gitignore_kept event
+$(sed 's/^/         /' "$cov_ev" 2>/dev/null)"
+fi
+
+# J2c. THE LIVE DEFECT, CURED. The tester's exact repo: a short hand-written
+#      .gitignore that says nothing about python. The litter must end up ignored,
+#      and git — not a grep — must be the one that says so.
+if [ "$unc_rc" != 0 ]; then
+  bad "J2c. the uncovered-repo scaffold was REFUSED (note: $unc_rc / $ASNOTE)"
+elif gi_ignores "$unc" '__pycache__/mod.pyc' && gi_ignores "$unc" 'x.pyc'; then
+  if gi_ignores "$cov" '__pycache__/mod.pyc'; then
+    ok "J2c. a hand-written .gitignore that ignored no python litter now ignores __pycache__ and *.pyc (git says so), and the already-covered control still does too"
+  else
+    bad "J2c. CONTROL FAILED — the already-covered repo does not ignore __pycache__ either, so the probe itself is broken"
+  fi
+else
+  bad "J2c. THE LIVE DEFECT IS BACK — the delivered tree still does not ignore python litter:
+$(sed 's/^/         /' "$unc/.gitignore")"
+fi
+
+# J2d. …and the human's lines survive VERBATIM, IN ORDER, AS A PREFIX. Not a
+#      checksum: the file is expected to have grown. Nothing of his may be
+#      reordered, rewritten, de-duplicated or dropped.
+if [ "$(head -c "${#GI_HAND}" "$unc/.gitignore")" = "$(printf '%s' "$GI_HAND")" ]; then
+  ok "J2d. …and the captain's own lines survive verbatim and in order as the prefix of the new file"
+else
+  bad "J2d. the captain's lines did not survive as a prefix:
+$(sed 's/^/         /' "$unc/.gitignore")"
+fi
+
+# J2e. …inside a block that NAMES LCARS and tells him it is his to delete, so the
+#      next human can tell our lines from his own.
+if grep -qi 'LCARS' "$unc/.gitignore" && grep -qi 'delete' "$unc/.gitignore"; then
+  ok "J2e. …and the appended lines sit in a marked block naming LCARS and saying they may be deleted"
+else
+  bad "J2e. the appended lines carry no marked, attributed, deletable header"
+fi
+
+# J2f. A ZERO-BYTE .gitignore IGNORES NOTHING, so it is not an opinion. This is
+#      the other shape the live defect wore (`git init` plus a touched file, or
+#      `gh repo create --gitignore=<wrong template>`).
+zero="$(new_mission_repo python)"
+: > "$zero/.gitignore"
+( cd "$zero" && git add -A && git commit -qm "an empty gitignore" )
+apply_setup "$zero" "$gi_mf" "$gi_sd" "" LCARS_SETUP_GREENFIELD=1
+if [ "$ASRC" != 0 ]; then
+  bad "J2f. the zero-byte-gitignore scaffold was REFUSED (note: $ASNOTE)"
+elif ! gi_ignores "$zero" '__pycache__/mod.pyc'; then
+  bad "J2f. a ZERO-BYTE .gitignore was treated as a human's opinion — the litter is still not ignored ($(wc -c < "$zero/.gitignore" | tr -d ' ') bytes)"
+elif [ "$cov_before" = "$cov_after" ]; then
+  ok "J2f. a zero-byte .gitignore covers nothing, so the whole block is appended (while the thorough one next door is still untouched)"
+else
+  bad "J2f. CONTROL FAILED — the already-covered repo was rewritten too, so 'appended because uncovered' proves nothing"
+fi
+
+# J2g. ONLY THE UNCOVERED PATTERNS ARE APPENDED. His file already ignores
+#      `.DS_Store`; ours must not restate it. This is what makes the append
+#      evidence-gated rather than a blind paste of the whole seed body.
+appended="$(awk '/Added by LCARS/{f=1} f' "$unc/.gitignore")"
+if printf '%s' "$appended" | grep -Fq '__pycache__/' \
+   && ! printf '%s' "$appended" | grep -Fqx '.DS_Store'; then
+  ok "J2g. …and ONLY the uncovered patterns were appended — .DS_Store, which his file already ignored, was not restated"
+elif ! printf '%s' "$appended" | grep -Fq '__pycache__/'; then
+  bad "J2g. the appended block does not carry the uncovered python litter at all"
+else
+  bad "J2g. the append restated a pattern the repo already ignored (.DS_Store):
+$(printf '%s' "$appended" | sed 's/^/         /')"
+fi
+
+# J2h. A `!` NEGATION IS RESPECTED, which is the whole reason this asks git
+#      instead of grepping. A file that ignores `__pycache__/` and then UN-ignores
+#      one path inside it still covers the pattern, and must be left alone — a
+#      text match for the negation line would get this backwards.
+neg="$(gi_covered_repo)"
+printf '!__pycache__/keep.pyc\n' >> "$neg/.gitignore"
+( cd "$neg" && git add -A && git commit -qm "a negation" )
+neg_before="$(shasum "$neg/.gitignore" | awk '{print $1}')"
+apply_setup "$neg" "$gi_mf" "$gi_sd" "" LCARS_SETUP_GREENFIELD=1
+neg_after="$(shasum "$neg/.gitignore" | awk '{print $1}')"
+if [ "$ASRC" != 0 ]; then
+  bad "J2h. the negation-repo scaffold was REFUSED (note: $ASNOTE)"
+elif [ "$unc_before" = "$unc_after" ]; then
+  bad "J2h. CONTROL FAILED — the uncovered repo was untouched too"
+elif [ "$neg_before" = "$neg_after" ]; then
+  ok "J2h. a .gitignore carrying a ! negation is still judged COVERED by git and left byte-identical (while the uncovered one is appended to)"
+else
+  bad "J2h. the negation file was rewritten:
+$(sed 's/^/         /' "$neg/.gitignore")"
+fi
+
+# J2i. THE OUTCOME IS ON SCREEN. The live run's worst half was the SILENCE: the
+#      delivered commit carried litter, the mission advanced, and the only trace
+#      anywhere was one line in events.jsonl. Each of the three outcomes must
+#      show up in the stage's normal output.
+seed_out=""
+seed_repo="$(new_mission_repo python)"
+apply_setup "$seed_repo" "$gi_mf" "$gi_sd" "" LCARS_SETUP_GREENFIELD=1
+seed_out="$OUT"
+n_vis=0
+printf '%s' "$seed_out" | grep -q '\.gitignore' && n_vis=$((n_vis+1))
+printf '%s' "$unc_out"  | grep -q '\.gitignore' && n_vis=$((n_vis+1))
+printf '%s' "$cov_out"  | grep -q '\.gitignore' && n_vis=$((n_vis+1))
+if [ "$n_vis" = 3 ]; then
+  ok "J2i. all three outcomes (seeded / appended / kept) are visible in the stage's own output, not just events.jsonl"
+else
+  bad "J2i. only $n_vis of the 3 .gitignore outcomes reach the screen — the live run's silence is still there
+         seeded:   $(printf '%s' "$seed_out" | grep -c '\.gitignore')
+         appended: $(printf '%s' "$unc_out"  | grep -c '\.gitignore')
+         kept:     $(printf '%s' "$cov_out"  | grep -c '\.gitignore')"
+fi
+
+# J2j. THE PERMANENT COPY IS HONEST TOO (S298 fix round 3). Round 2 fixed the
+#      SCREEN line, which scrolls away; this header lives in the captain's repo
+#      forever. It used to end "your own lines above were not touched" — true of
+#      the bytes, false of the behaviour, because git applies the LAST matching
+#      pattern, so a rule in our block can override one of his above it. The
+#      permanent copy must make the same distinction the screen now makes: his
+#      lines preserved, the override named, the undo stated. It must also be
+#      legible to a passer-by — a DATE, no in-house vocabulary.
+#
+#      CONTROLLED by the already-covered repo, which gains no header at all, so
+#      "the header says the right thing" cannot pass on a file with no header.
+gi_appended_header() { # file → the appended block's leading comment lines
+  awk '/Added by LCARS/{f=1} f { if ($0 !~ /^#/) exit; print }' "$1"
+}
+unc_hdr="$(gi_appended_header "$unc/.gitignore")"
+if [ -z "$unc_hdr" ]; then
+  bad "J2j. the appended block carries no header at all"
+elif grep -q 'Added by LCARS' "$cov/.gitignore"; then
+  bad "J2j. CONTROL FAILED — the already-covered repo gained a header too, so a header's wording proves nothing"
+elif printf '%s\n' "$unc_hdr" | grep -Eqi 'not touched|untouched|unchanged'; then
+  bad "J2j. the permanent header still makes the unqualified 'untouched' claim round 2 removed from the screen:
+$(printf '%s\n' "$unc_hdr" | sed 's/^/         /')"
+elif ! printf '%s\n' "$unc_hdr" | grep -Eqi 'last (matching )?(pattern|match|rule)'; then
+  bad "J2j. the permanent header does not state git's last-match-wins caveat:
+$(printf '%s\n' "$unc_hdr" | sed 's/^/         /')"
+elif ! printf '%s\n' "$unc_hdr" | grep -Eqi 'override|overrides'; then
+  bad "J2j. the permanent header names no consequence of last-match-wins (nothing about overriding his lines):
+$(printf '%s\n' "$unc_hdr" | sed 's/^/         /')"
+elif ! printf '%s\n' "$unc_hdr" | grep -Eq '[0-9]{4}-[0-9]{2}-[0-9]{2}'; then
+  bad "J2j. the permanent header carries no date, so it cannot age legibly for the next reader:
+$(printf '%s\n' "$unc_hdr" | sed 's/^/         /')"
+elif printf '%s\n' "$unc_hdr" | grep -qi 'test foundation was established'; then
+  bad "J2j. the permanent header still dates itself in in-house vocabulary a stranger cannot parse:
+$(printf '%s\n' "$unc_hdr" | sed 's/^/         /')"
+else
+  ok "J2j. the permanent header preserves his lines, NAMES the last-match-wins override and its undo, and carries a plain date (while the covered repo gains no header)"
+fi
+
+# J2k. EVERY PROSE LINE IN THE BLOCK IS A COMMENT. A header line that lost its
+#      '#' would not be an ugly header — it would be a live ignore pattern in the
+#      captain's repo. Prose is identified by carrying a space, which no ignore
+#      pattern in the seed body does, so this cannot pass by finding nothing:
+#      the block is also asserted to hold at least one comment AND at least one
+#      bare pattern.
+gi_block() { # file → the whole appended block, header through end marker
+  awk '/Added by LCARS/{f=1} f {print} /end LCARS block/{if(f) exit}' "$1"
+}
+unc_block="$(gi_block "$unc/.gitignore")"
+blk_cmts="$(printf '%s\n' "$unc_block" | grep -c '^#' || true)"
+blk_pats="$(printf '%s\n' "$unc_block" | grep -cv '^#' || true)"
+blk_bad="$(printf '%s\n' "$unc_block" | grep -v '^#' | grep ' ' || true)"
+if [ "$blk_cmts" -lt 1 ] || [ "$blk_pats" -lt 1 ]; then
+  bad "J2k. the appended block is not header-plus-patterns ($blk_cmts comment line(s), $blk_pats pattern line(s)) — the comment check would prove nothing"
+elif [ -n "$blk_bad" ]; then
+  bad "J2k. a prose line in the appended block is NOT a comment, so it is now a live ignore pattern:
+$(printf '%s\n' "$blk_bad" | sed 's/^/         /')"
+else
+  ok "J2k. every prose line in the appended block is a # comment ($blk_cmts comment, $blk_pats pattern line(s)) — no header line became an ignore rule"
+fi
+
+# J3. THE ENTRIES MATCH THE DETECTED STACK, not a fixed list. One variable moves
+#     across these rows — the arm the product resolves — pinned through
+#     $LCARS_SETUP_STACK, which is `setup_stack_arm`'s own first source. Each
+#     arm's own litter must be there and the other six arms' must NOT be, which
+#     is what a single hardcoded list could never satisfy.
+gi_blank_repo() { # → a greenfield repo with NO stack marker but a detectable runner
+  local r; r="$(new_mission_repo_bare js)"
+  rm -f "$r/package.json"
+  printf 'test:\n\t@echo ok\n' > "$r/Makefile"
+  ( cd "$r" && git add -A && git commit -qm makefile )
+  printf '%s' "$r"
+}
+for a in $ARMS; do
+  repo="$(gi_blank_repo)"
+  apply_setup "$repo" "$gi_mf" "$gi_sd" "" LCARS_SETUP_GREENFIELD=1 LCARS_SETUP_STACK="$a"
+  if [ "$ASRC" != 0 ]; then
+    bad "J3-$a. the $a scaffold was REFUSED (note: $ASNOTE)"; continue
+  fi
+  if [ ! -f "$repo/.gitignore" ]; then
+    bad "J3-$a. no .gitignore written on the $a arm"; continue
+  fi
+  if ! grep -Fq "$(gi_token "$a")" "$repo/.gitignore"; then
+    bad "J3-$a. the $a .gitignore does not ignore $(gi_token "$a")"; continue
+  fi
+  foreign=""
+  for b in $ARMS; do
+    [ "$b" = "$a" ] && continue
+    grep -Fq "$(gi_token "$b")" "$repo/.gitignore" && foreign="$foreign $(gi_token "$b")"
+  done
+  if [ -n "$foreign" ]; then
+    bad "J3-$a. the $a .gitignore carries FOREIGN entries:$foreign (a fixed list, not a stack-appropriate one)"
+  else
+    ok "J3-$a. the $a arm ignores $(gi_token "$a") and no other arm's litter"
+  fi
+done
+
+# J3b. THE APPEND PATH ON EVERY ARM, not just python — the J3 rule, repeated on
+#      the side of the fork a pre-existing .gitignore sends the repo down. The
+#      coverage question is asked PER PATTERN, and the per-arm rows carry exactly
+#      the shapes most likely to derive a nonsense probe path: a rooted
+#      `/target/`, a `**/` prefix, a `[Bb]in/` character class, a trailing `*`.
+#      Each arm's own litter must come out IGNORED (git says so, not a grep), and
+#      the other six arms' must not have been appended — the live control that
+#      stops a blind paste of a fixed list from passing this.
+gi_token_path() { # arm → a real path that arm's litter actually lands at
+  case "$1" in
+    js)     printf 'node_modules/pkg/index.js' ;;
+    python) printf '__pycache__/mod.pyc' ;;
+    rust)   printf 'src/lib.rs.bk' ;;
+    go)     printf 'go.work.sum' ;;
+    dotnet) printf 'obj/Debug/app.dll' ;;
+    jvm)    printf '.gradle/caches/x' ;;
+    ruby)   printf '.bundle/config' ;;
+  esac
+}
+for a in $ARMS; do
+  repo="$(gi_blank_repo)"
+  printf '%s' "$GI_HAND" > "$repo/.gitignore"
+  ( cd "$repo" && git add -A && git commit -qm "the captain's gitignore" )
+  apply_setup "$repo" "$gi_mf" "$gi_sd" "" LCARS_SETUP_GREENFIELD=1 LCARS_SETUP_STACK="$a"
+  if [ "$ASRC" != 0 ]; then
+    bad "J3b-$a. the $a scaffold was REFUSED on the append path (note: $ASNOTE)"; continue
+  fi
+  if ! gi_ignores "$repo" "$(gi_token_path "$a")"; then
+    bad "J3b-$a. after the append, git still does not ignore $(gi_token_path "$a") on the $a arm:
+$(sed 's/^/         /' "$repo/.gitignore")"; continue
+  fi
+  appended="$(awk '/Added by LCARS/{f=1} f' "$repo/.gitignore")"
+  foreign=""
+  for b in $ARMS; do
+    [ "$b" = "$a" ] && continue
+    printf '%s' "$appended" | grep -Fq "$(gi_token "$b")" && foreign="$foreign $(gi_token "$b")"
+  done
+  if [ -n "$foreign" ]; then
+    bad "J3b-$a. the $a append carried FOREIGN entries:$foreign (a fixed list, not an evidence-gated one)"
+  else
+    ok "J3b-$a. the $a arm's append makes git ignore $(gi_token_path "$a") and brings no other arm's litter"
+  fi
+done
+
+# J4. AN UNATTRIBUTABLE REPO INVENTS NOTHING. A repo LCARS cannot land on an arm
+#     (`unknown` — the same verdict the allowlist's union fallback is for) still
+#     gets the stack-agnostic litter, and must NOT be handed a guess at an
+#     ecosystem it has no evidence for.
+repo="$(gi_blank_repo)"
+apply_setup "$repo" "$gi_mf" "$gi_sd" "" LCARS_SETUP_GREENFIELD=1
+if [ "$ASRC" != 0 ]; then
+  bad "J4. the unattributable scaffold was REFUSED (note: $ASNOTE)"
+elif [ ! -f "$repo/.gitignore" ]; then
+  bad "J4. no .gitignore written on an unattributable repo"
+else
+  guessed=""
+  for b in $ARMS; do
+    grep -Fq "$(gi_token "$b")" "$repo/.gitignore" && guessed="$guessed $(gi_token "$b")"
+  done
+  if [ -n "$guessed" ]; then
+    bad "J4. an unattributable repo was GUESSED a stack:$guessed"
+  elif grep -Fq '.DS_Store' "$repo/.gitignore"; then
+    ok "J4. an unattributable repo gets the stack-agnostic litter and no guessed ecosystem"
+  else
+    bad "J4. the unattributable .gitignore is empty of even the stack-agnostic litter"
+  fi
+fi
+
+# J4b. …and the seed is RECORDED, on that arm too. The mission log is where a
+#      human finds out LCARS wrote a file into their repo, so a silent seed is a
+#      seed nobody consented to. Asserted on the UNATTRIBUTABLE arm specifically:
+#      it is the row whose ignore body is EMPTY, i.e. the one where a writer built
+#      out of `&&`-chained steps quietly reports failure and logs nothing.
+ev="$repo/.git/lcars/missions/m-001/events.jsonl"
+if [ -f "$ev" ] && grep -q '"type":"gitignore_seeded"' "$ev"; then
+  ok "J4b. …and the seed is recorded in the mission log on that arm too"
+else
+  bad "J4b. the .gitignore was written with nothing recorded in the mission log"
+fi
+
+# J5. NOT GREENFIELD → NOTHING IS WRITTEN. THE OTHER REGRESSION-SENSITIVE ONE.
+#     The evidence-gated package arm fires inside repos the captain already owns,
+#     where a .gitignore's absence is HIS decision and writing one is LCARS
+#     editing a repo it was not invited to shape. Paired with the greenfield
+#     control on the identical repo + declaration, so it cannot pass vacuously.
+repo="$(new_mission_repo python)"
+apply_setup "$repo" "$gi_mf" "$gi_sd" ""
+nong_rc="$ASRC"; nong_note="$ASNOTE"
+ctl="$(new_mission_repo python)"
+apply_setup "$ctl" "$gi_mf" "$gi_sd" "" LCARS_SETUP_GREENFIELD=1
+if [ "$nong_rc" != 0 ]; then
+  bad "J5. the evidence-gated apply itself failed, so the absence proves nothing (note: $nong_note)"
+elif [ ! -f "$ctl/.gitignore" ]; then
+  bad "J5. CONTROL FAILED — the greenfield arm wrote nothing either, so this is vacuous"
+elif [ ! -e "$repo/.gitignore" ]; then
+  ok "J5. a NON-greenfield declared setup writes no .gitignore (while greenfield on the same repo shape does)"
+else
+  bad "J5. the evidence-gated arm wrote a .gitignore into a repo the captain already owns:
+$(sed 's/^/         /' "$repo/.gitignore")"
+fi
+
+# J6. THE ROOT-LEVEL OUTPUT DIRECTORIES ARE ANCHORED, SO A HAND-WRITTEN SOURCE
+#     FILE AT DEPTH IS STILL TRACKED.
+#
+#     MEASURED, S298 fix round 2: a fresh tester drove the real pipeline, then
+#     asked `git check-ignore` about the delivered tree of a repo LCARS had just
+#     set up. `tools/build/gen.py`, `docs/build/conf.py`, `src/dist/index.js`,
+#     `pkg/dist/README.md` and `scripts/venv/setup.sh` all came back IGNORED —
+#     hand-written files a human plainly wants committed, lost to the nastiest
+#     failure mode there is: a file that silently never commits and whose
+#     absence nothing reports. A bare `build/` in a .gitignore matches at EVERY
+#     depth; LCARS knows this repo is brand new and that its build output is at
+#     the root, so anchoring the root-level output directories costs nothing.
+#
+#     PAIRED BY CONSTRUCTION. The table below is REJECTED unless it carries both
+#     verdicts, so the one mechanism — this repo's real ignore chain — has to say
+#     `tracked` for one row and `ignored` for another. Two arms printing the same
+#     answer is a failed control, never a pass.
+gi_assert_table() { # id  repo  ok-message  <<< "want<space>path" rows
+  local id="$1" r="$2" msg="$3" want path wrong="" n_t=0 n_i=0 got
+  while read -r want path; do
+    [ -n "${want:-}" ] && [ -n "${path:-}" ] || continue
+    mkdir -p "$r/$(dirname "$path")" 2>/dev/null
+    : > "$r/$path" 2>/dev/null
+    if gi_ignores "$r" "$path"; then got=ignored; else got=tracked; fi
+    case "$want" in
+      tracked) n_t=$((n_t + 1)) ;;
+      ignored) n_i=$((n_i + 1)) ;;
+    esac
+    [ "$got" = "$want" ] || wrong="$wrong
+           $path — wanted $want, git says $got"
+  done
+  if [ "$n_t" -eq 0 ] || [ "$n_i" -eq 0 ]; then
+    bad "$id. TABLE NOT PAIRED — $n_t tracked / $n_i ignored row(s); one verdict alone proves nothing"
+  elif [ -n "$wrong" ]; then
+    bad "$id. $msg — but git disagrees on:$wrong
+$(sed 's/^/         /' "$r/.gitignore")"
+  else
+    ok "$id. $msg"
+  fi
+}
+
+# J6a. The python arm: every path the tester measured as wrongly IGNORED, each
+#      paired with the root-level litter the same pattern must still catch.
+repo="$(new_mission_repo python)"
+apply_setup "$repo" "$gi_mf" "$gi_sd" "" LCARS_SETUP_GREENFIELD=1
+if [ "$ASRC" != 0 ]; then
+  bad "J6a. the python scaffold was REFUSED before the anchoring question (note: $ASNOTE)"
+elif [ ! -f "$repo/.gitignore" ]; then
+  bad "J6a. no .gitignore written, so the anchoring question is vacuous"
+else
+  gi_assert_table J6a "$repo" \
+    "a root-anchored build/dist/venv keeps a hand-written file at depth TRACKED while the root litter stays IGNORED" <<'ROWS'
+tracked tools/build/gen.py
+tracked docs/build/conf.py
+tracked src/dist/index.js
+tracked pkg/dist/README.md
+tracked scripts/venv/setup.sh
+ignored build/lib/app/mod.py
+ignored dist/app-1.0.tar.gz
+ignored venv/bin/activate
+ROWS
+fi
+
+# J6b. …and the patterns that GENUINELY NEST are still unanchored, which is the
+#      other half of the judgement: `__pycache__/` and `*.egg-info/` sit beside
+#      source at any depth, and anchoring them would put the original measured
+#      defect straight back. Same repo, same ignore chain, opposite verdict.
+if [ -f "$repo/.gitignore" ]; then
+  gi_assert_table J6b "$repo" \
+    "the genuinely-nesting python patterns are still unanchored — litter at depth is IGNORED while its sibling source is TRACKED" <<'ROWS'
+ignored pkg/__pycache__/mod.pyc
+ignored src/deep/pkg/__pycache__/mod.cpython-311.pyc
+ignored src/app.egg-info/PKG-INFO
+tracked pkg/mod.py
+tracked src/deep/pkg/mod.py
+ROWS
+fi
+
+# J6c. The js arm — `node_modules/` must stay unanchored, because a workspace
+#      repo really does carry `packages/<pkg>/node_modules/`, while `dist/` and
+#      `build/` must not swallow a hand-written file at depth.
+repo="$(gi_blank_repo)"
+apply_setup "$repo" "$gi_mf" "$gi_sd" "" LCARS_SETUP_GREENFIELD=1 LCARS_SETUP_STACK=js
+if [ "$ASRC" != 0 ] || [ ! -f "$repo/.gitignore" ]; then
+  bad "J6c. the js scaffold wrote no .gitignore to judge (rc=$ASRC note: $ASNOTE)"
+else
+  gi_assert_table J6c "$repo" \
+    "the js arm nests node_modules/ (a workspace repo has one per package) but anchors dist/ and build/" <<'ROWS'
+ignored packages/a/node_modules/dep/index.js
+ignored node_modules/dep/index.js
+ignored dist/bundle.js
+ignored build/main.js
+tracked packages/a/src/index.js
+tracked tools/build/codegen.js
+tracked src/dist/index.js
+ROWS
+fi
+
+# J6d. The ruby arm — `log/` and `tmp/` are the most dangerous unanchored
+#      patterns in the whole table: `lib/log/logger.rb` and `app/tmp/sweeper.rb`
+#      are ordinary hand-written Ruby, and a bare `log/` makes both vanish.
+repo="$(gi_blank_repo)"
+apply_setup "$repo" "$gi_mf" "$gi_sd" "" LCARS_SETUP_GREENFIELD=1 LCARS_SETUP_STACK=ruby
+if [ "$ASRC" != 0 ] || [ ! -f "$repo/.gitignore" ]; then
+  bad "J6d. the ruby scaffold wrote no .gitignore to judge (rc=$ASRC note: $ASNOTE)"
+else
+  gi_assert_table J6d "$repo" \
+    "the ruby arm anchors log/, tmp/ and vendor/bundle/ at the root, so hand-written lib/log and app/tmp stay TRACKED" <<'ROWS'
+tracked lib/log/logger.rb
+tracked app/tmp/sweeper.rb
+tracked vendor/assets/app.js
+ignored log/development.log
+ignored tmp/cache/x
+ignored vendor/bundle/ruby/3.2.0/gems/x
+ROWS
+fi
+
+# J6e. The jvm arm — `target/` and `build/` anchored, `.gradle/` not (a
+#      multi-project build writes one per subproject, and nobody hand-writes
+#      source inside a dot-directory a tool owns).
+repo="$(gi_blank_repo)"
+apply_setup "$repo" "$gi_mf" "$gi_sd" "" LCARS_SETUP_GREENFIELD=1 LCARS_SETUP_STACK=jvm
+if [ "$ASRC" != 0 ] || [ ! -f "$repo/.gitignore" ]; then
+  bad "J6e. the jvm scaffold wrote no .gitignore to judge (rc=$ASRC note: $ASNOTE)"
+else
+  gi_assert_table J6e "$repo" \
+    "the jvm arm anchors target/ and build/ while .gradle/ still nests per subproject" <<'ROWS'
+tracked src/target/Main.java
+tracked modules/build/Generator.java
+ignored target/classes/Main.class
+ignored build/libs/app.jar
+ignored sub/project/.gradle/caches/x
+ROWS
+fi
+
+# J6g. THE DOTNET ARM IS DELIBERATELY *NOT* ANCHORED, and this pins that call so
+#      it cannot drift into a silent one. MSBuild writes `bin/` and `obj/` into
+#      EVERY project directory (`src/App/bin/Debug/`), so the nesting is
+#      structural to the ecosystem exactly as it is for `node_modules/`, and the
+#      canonical VisualStudio template leaves `[Bb]in/`/`[Oo]bj/` unanchored for
+#      that reason. Note the ASYMMETRY with the go arm, which anchors `/bin/`:
+#      `bin` is reserved by convention under MSBuild but is an ordinary
+#      hand-written directory in a Go repo, so the two arms differ on evidence,
+#      not by accident. Paired as always — nested output ignored, source tracked.
+repo="$(gi_blank_repo)"
+apply_setup "$repo" "$gi_mf" "$gi_sd" "" LCARS_SETUP_GREENFIELD=1 LCARS_SETUP_STACK=dotnet
+if [ "$ASRC" != 0 ] || [ ! -f "$repo/.gitignore" ]; then
+  bad "J6g. the dotnet scaffold wrote no .gitignore to judge (rc=$ASRC note: $ASNOTE)"
+else
+  gi_assert_table J6g "$repo" \
+    "the dotnet arm leaves [Bb]in/ and [Oo]bj/ unanchored on purpose — MSBuild writes them per project, at depth" <<'ROWS'
+ignored src/App/bin/Debug/App.dll
+ignored src/App/obj/project.assets.json
+ignored bin/Debug/App.dll
+ignored tests/App.Tests/TestResults/r.trx
+tracked src/App/Program.cs
+tracked src/App/Models/User.cs
+ROWS
+fi
+
+# J6h. THE GO ARM KEEPS ITS `/bin/` ANCHORED, which is the other side of that
+#      asymmetry: `scripts/bin/release.sh` is ordinary hand-written shell in a Go
+#      repo and must survive, while the root `bin/` a `go build -o` fills must not.
+repo="$(gi_blank_repo)"
+apply_setup "$repo" "$gi_mf" "$gi_sd" "" LCARS_SETUP_GREENFIELD=1 LCARS_SETUP_STACK=go
+if [ "$ASRC" != 0 ] || [ ! -f "$repo/.gitignore" ]; then
+  bad "J6h. the go scaffold wrote no .gitignore to judge (rc=$ASRC note: $ASNOTE)"
+else
+  gi_assert_table J6h "$repo" \
+    "the go arm's /bin/ is anchored, so scripts/bin stays TRACKED while the root bin/ is IGNORED" <<'ROWS'
+tracked scripts/bin/release.sh
+tracked internal/bin/encode.go
+ignored bin/app
+ROWS
+fi
+
+# J6f. THE APPEND PATH CARRIES THE SAME ANCHORING. The uncovered repo gained its
+#      block through `greenfield_append_gitignore`, whose lines come from the
+#      same body — so the fix must hold on both sides of the fork, judged on the
+#      file the real append actually wrote.
+if [ "$unc_rc" = 0 ]; then
+  gi_assert_table J6f "$unc" \
+    "the APPENDED block anchors the same patterns the seed does (depth tracked, root ignored)" <<'ROWS'
+tracked tools/build/gen.py
+tracked src/dist/index.js
+tracked scripts/venv/setup.sh
+ignored build/lib/app/mod.py
+ignored dist/app-1.0.tar.gz
+ignored pkg/__pycache__/mod.pyc
+ROWS
+else
+  bad "J6f. the uncovered-repo append never ran, so the append-side anchoring is unproven"
+fi
+
+# J7. THE APPENDED BLOCK HAS A VISIBLE END. It had a marked top and no bottom,
+#     so a human who later adds lines underneath leaves nobody — themselves
+#     included — able to tell where LCARS's block stops. The block's own text
+#     promises it is "yours to delete or edit freely"; that promise is only
+#     actionable if its extent is visible. Paired against the KEPT repo, which
+#     must carry no marker at all, so "the marker exists" is our append's doing
+#     and not something incidental to a .gitignore.
+gi_hdr_ln="$(grep -n 'Added by LCARS' "$unc/.gitignore" | head -1 | cut -d: -f1)"
+gi_end_ln="$(grep -n 'end LCARS' "$unc/.gitignore" | head -1 | cut -d: -f1)"
+gi_last_ln="$(grep -c '' "$unc/.gitignore")"
+if grep -q 'end LCARS' "$cov/.gitignore" 2>/dev/null; then
+  bad "J7. CONTROL FAILED — the untouched (kept) .gitignore carries an end marker too, so finding one proves nothing"
+elif [ -z "$gi_end_ln" ]; then
+  bad "J7. the appended block is marked at the top and NOT at the bottom — a human adding lines below cannot tell where LCARS's block ends
+$(sed 's/^/         /' "$unc/.gitignore")"
+elif [ -z "$gi_hdr_ln" ] || [ "$gi_hdr_ln" -ge "$gi_end_ln" ]; then
+  bad "J7. the end marker is not below the block's header (header line $gi_hdr_ln, end line $gi_end_ln)"
+elif [ "$gi_end_ln" != "$gi_last_ln" ]; then
+  bad "J7. the end marker is not the block's last line (end line $gi_end_ln of $gi_last_ln) — lines of ours sit below it:
+$(sed -n "$((gi_end_ln + 1)),\$p" "$unc/.gitignore" | sed 's/^/         /')"
+else
+  ok "J7. the appended block is delimited top AND bottom, so it is one-gesture deletable (while the kept file carries no marker at all)"
+fi
+
 # ===========================================================================
 # G. ZERO SPEND
 # ===========================================================================

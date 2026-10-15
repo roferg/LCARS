@@ -9337,6 +9337,301 @@ greenfield_detect_cmd() { # root → the detected command, or ""
   detect_test_cmd 2>/dev/null | head -1
 }
 
+# ---------------------------------------------------------------------------
+# THE FOUNDATION'S .gitignore (S298)
+# ---------------------------------------------------------------------------
+# MEASURED, clean room 2026-10-15: a greenfield mission built a working Python
+# CLI from an empty folder, and its DELIVERED COMMIT carried two
+# `__pycache__/*.pyc` files — because the foundation had written no `.gitignore`
+# at all. The quality floor judges the CODE, not the tree, so it passed it. A
+# newcomer's first delivered commit should not contain build litter, and a
+# repo's ignore file is foundation work in exactly the way its test runner is.
+#
+# ONE ROW PER ARM, keyed by `detect_stack`'s vocabulary and nothing else — the
+# S147 stamp, the same shape as `setup_install_allow_re` above. A second stack
+# taxonomy is how two detectors start disagreeing about what a repo is.
+#
+# The rows are deliberately SHORT. This is the floor a first commit needs, not a
+# curated github/gitignore mirror: each row names the litter that stack's own
+# build and test commands drop, and nothing a human might legitimately want
+# committed (Cargo.lock and go's vendor/ are a project's own call; `.vscode/`
+# is a team's).
+#
+# EVERY ROOT-LEVEL OUTPUT DIRECTORY IS ANCHORED WITH A LEADING `/` (S298 fix
+# round 2). MEASURED: a fresh tester asked `git check-ignore` about the delivered
+# tree of a repo LCARS had just set up, and `tools/build/gen.py`,
+# `docs/build/conf.py`, `src/dist/index.js`, `pkg/dist/README.md` and
+# `scripts/venv/setup.sh` all came back IGNORED. A bare `build/` in a .gitignore
+# is UNANCHORED and matches at every depth, so hand-written source under any
+# directory that happens to be named `build`, `dist`, `venv`, `log`, `tmp` or
+# `target` silently never commits — and nothing reports its absence. That is the
+# worst failure mode this file has. LCARS knows this repo is BRAND NEW and that
+# its build output lands at the root, so anchoring those rows loses nothing real.
+#
+# THE JUDGEMENT IS PER PATTERN, NOT A BLIND PREFIX. A pattern stays unanchored
+# when the directory it names GENUINELY RECURS at depth, because anchoring it
+# would put the original measured defect (litter in the first commit) straight
+# back:
+#   node_modules/   a workspace repo really does carry packages/<pkg>/node_modules/
+#   __pycache__/    python writes one beside every package, at every depth
+#   *.egg-info/     lands wherever setup runs, including a src/ layout
+#   .pytest_cache/  .mypy_cache/  written into whatever directory the tool ran in
+#   .gradle/        a multi-project gradle build writes one per subproject
+#   .bundle/        bundler's per-directory config
+#   [Bb]in/ [Oo]bj/ MSBuild owns these names and writes one PER PROJECT directory
+#                   (src/App/bin/Debug/), so the nesting is structural to the
+#                   ecosystem, exactly like node_modules — and `bin`/`obj` are
+#                   reserved by convention there, so no human source is at risk
+#   TestResults/    `dotnet test` writes it into the project directory, same shape
+# A file glob (`*.pyc`, `*.class`, `*.swp`, `.DS_Store`) is not a directory and
+# is meant to match at every depth, so none of them are touched either. The
+# dot-directories above are a tool's own state: nobody hand-writes source inside
+# one, so an unanchored match cannot hide a human's file.
+greenfield_gitignore_body() { # stack arm id → the ignore body for that arm, or ""
+  case "${1:-}" in
+    js)     printf 'node_modules/\n/dist/\n/build/\n/coverage/\n*.tsbuildinfo\nnpm-debug.log*\n' ;;
+    python) printf '__pycache__/\n*.py[cod]\n/.venv/\n/venv/\n*.egg-info/\n.pytest_cache/\n.mypy_cache/\n/dist/\n/build/\n' ;;
+    rust)   printf '/target/\n**/*.rs.bk\n' ;;
+    go)     printf '/bin/\n*.test\n*.out\ngo.work.sum\n' ;;
+    dotnet) printf '[Bb]in/\n[Oo]bj/\nTestResults/\n*.user\n' ;;
+    jvm)    printf '/target/\n/build/\n.gradle/\n*.class\n' ;;
+    ruby)   printf '.bundle/\n/vendor/bundle/\n/coverage/\n*.gem\n/log/\n/tmp/\n' ;;
+    # NOTHING RESOLVED. The union is the right answer for the INSTALL allowlist
+    # (refusing there strands the captain); it is the WRONG answer here, because
+    # every line is a claim about what this repo builds. An unattributable repo
+    # gets the stack-agnostic litter below and no guess at an ecosystem.
+    *)      printf '' ;;
+  esac
+}
+
+# Litter that is litter on every stack, so it is not a per-arm claim: OS and
+# editor droppings, and the dotenv file whose whole point is to stay local.
+#
+# NOTHING HERE IS ANCHORED, and the S298-round-2 judgement above is why: every
+# row is a FILE, not a directory, and each one is litter at every depth — a
+# `.DS_Store` three directories down is still a .DS_Store, and a nested `.env`
+# is still a secret that must not be committed. Anchoring any of them would
+# narrow a correct rule for no gain.
+greenfield_gitignore_common() {
+  printf '.DS_Store\nThumbs.db\n*.swp\n.env\n.env.local\n'
+}
+
+# SEED A REPO THAT HAS NONE; APPEND, EVIDENCE-GATED, TO A REPO THAT HAS ONE.
+#
+# S298 FIX ROUND 1 — THE DECISION ABOVE WAS REVERSED BY MEASUREMENT. This path
+# used to leave ANY pre-existing `.gitignore` exactly as it found it, on the
+# reasoning that such a file carries a human's opinion and is read as a whole (a
+# later `!keep.log` can un-ignore an earlier line), so appending is not additive
+# the way adding a new file is. The reasoning is sound and the consequence was a
+# known-broken common path: a live run on a repo whose ONLY pre-existing file was
+# a three-line hand-written `.gitignore` delivered four `__pycache__/*.pyc` files
+# — the original defect, silently, with a `gitignore_kept` line as its only
+# trace. A ZERO-BYTE `.gitignore` did the same. The common real shapes that hit
+# this are `git init` plus a starter file and
+# `gh repo create --gitignore=<wrong template>`. "A file exists" is not "a human
+# has an opinion about __pycache__".
+#
+# So: APPEND A CLEARLY-MARKED BLOCK, AND ONLY THE PATTERNS THIS REPO IS PROVEN
+# NOT TO COVER ALREADY. The safeguard that removes the guesswork is that the
+# coverage question is put to GIT, not to a grep of the file — `git check-ignore`
+# is the producer of the decision "is this path ignored in this repo", and it
+# knows the whole chain: every `.gitignore` at every depth, `.git/info/exclude`,
+# core.excludesFile, and the `!` negations that are exactly what a text match
+# gets backwards. Inferring coverage from the file's text would be inventing a
+# second, worse answer to a question something else already answers
+# (ORCHESTRATION.md's infer-vs-record rule).
+#
+# The guarantees, in order of how much they would cost to break:
+#   1. The human's bytes are a PREFIX of the result. Nothing is reordered,
+#      rewritten, de-duplicated or removed — the write is `>>`, never `>`.
+#   2. A repo that already covers everything comes out BYTE-IDENTICAL, with
+#      nothing appended at all, and is still recorded as kept.
+#   3. The block says LCARS wrote it and that it may be deleted, so the next
+#      human can tell our lines from their own and knows they own them.
+#   4. If git cannot answer, nothing is written. A coverage question we could not
+#      put to the authority is not one we answer ourselves.
+# A zero-byte or whitespace-only file needs no special case: it covers nothing,
+# so every pattern is uncovered and the whole block lands.
+#
+# The ARM is PASSED IN, never re-derived here: `apply_declared_setup` has already
+# resolved it for the install allowlist, from the tree, the declaration and the
+# repo's recorded stack. Re-reading the tree a second time at this point would be
+# asking the same question of a tree the setup has since changed, and inventing a
+# chance for the two answers to differ. The unattributable arm still contributes
+# no ecosystem patterns (`greenfield_gitignore_body`'s `*)` row), here as there.
+
+# A PROBE PATH for one ignore pattern: a concrete path whose being-ignored is
+# the same question as the pattern being covered, so `git check-ignore` can be
+# asked about it. Pure syntax, no tree access.
+# S298 ROUND 2 — ANCHORING DOES NOT DISTURB THIS. The `${p#/}` strip below means
+# `/build/` and `build/` derive the IDENTICAL probe (`build/lcars-probe`), so
+# anchoring the body changed no probe path and no coverage verdict. It also makes
+# the probe EXACTLY the question the anchored pattern asks: `/build/` is a claim
+# about the root-level `build/` only, and `build/lcars-probe` is precisely a
+# root-level path inside it.
+greenfield_gitignore_probe_path() { # ignore-pattern → a path git can judge
+  local p="${1:-}" pre rest cls post
+  [ -n "$p" ] || return 0
+  p="${p#/}"        # a rooted pattern is still just that path from the root
+  p="${p#\*\*/}"    # `**/x` matches a bare `x` at the root too
+  # A character class is ONE OF its members; take the first so the probe is a
+  # concrete name (`[Oo]bj/` → `Obj/`, `*.py[cod]` → `*.pyc`).
+  while :; do
+    case "$p" in *\[*\]*) ;; *) break ;; esac
+    pre="${p%%\[*}"; rest="${p#*\[}"; cls="${rest%%\]*}"; post="${rest#*\]}"
+    p="$pre${cls:0:1}$post"
+  done
+  p="${p//\*/x}"    # `*` stands for characters; `x` is a character
+  # A trailing slash means "the directory", and what git judges is a path
+  # INSIDE it — a bare `dir/` is not a path check-ignore can be asked about.
+  case "$p" in */) p="${p}lcars-probe" ;; esac
+  printf '%s' "$p"
+}
+
+# ASK GIT, the producer of this decision, whether this repo ALREADY ignores a
+# path. yes / no / unknown — never a guess from the file's text.
+greenfield_gitignore_covers() { # probe-path → prints yes|no|unknown
+  local rc=0
+  "${GIT_BIN:-git}" -C "${REPO_ROOT:-$PWD}" check-ignore --no-index -q -- "$1" \
+    </dev/null >/dev/null 2>&1 || rc=$?
+  case "$rc" in
+    0) printf 'yes' ;;      # already ignored, by whatever rule
+    1) printf 'no' ;;       # not ignored — ours would be the first rule for it
+    *) printf 'unknown' ;;  # git could not answer (no work tree, broken repo)
+  esac
+}
+
+# The separator that puts our block on its own line without disturbing the last
+# byte of his: nothing before an empty file, a terminator first if his last line
+# has none, and a blank line between in both of the non-empty cases.
+greenfield_gitignore_sep() { # file → prints the bytes to write before the block
+  local f="$1"
+  [ -s "$f" ] || return 0
+  if [ "$(tail -c1 "$f" | od -An -c | tr -d ' ')" = '\n' ]; then printf '\n'
+  else printf '\n\n'; fi
+}
+
+# THE HEADER IS THE PERMANENT COPY (S298 fix round 3). Round 2 made the SCREEN
+# line honest; this header is the one that lives in the captain's repo forever,
+# so it is the more important of the two. It used to say "your own lines above
+# were not touched" — true of the bytes, and false of what a reader hears, which
+# is "nothing about your file's behaviour changed". Git applies the LAST matching
+# pattern, so a rule in this block CAN override one of his above it. The header
+# now states the two guarantees (his lines kept verbatim, and deleting the block
+# undoes ours) and names the one thing that is not guaranteed. It also dates
+# itself plainly instead of in LCARS vocabulary — "when this repo's test
+# foundation was established" means nothing to a stranger reading the file in six
+# months, and carried no date at all.
+greenfield_gitignore_header() { # arm → the block's marked, attributed header
+  # The same $LCARS_NOW_ISO-overridable clock the rest of the script reads (see
+  # `usage_capture`), cut to its day, so a test can pin it.
+  local day; day="${LCARS_NOW_ISO:-$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null)}"
+  day="${day%%T*}"
+  [ -n "$day" ] || day="$(date +%Y-%m-%d)"
+  printf '# ---- Added by LCARS on %s: ignore rules for a %s project'"'"'s build\n' "$day" "$1"
+  printf '# output. Only the patterns this repo did not already ignore were added.\n'
+  printf '# Your own lines above are kept exactly as you wrote them. Note that git applies\n'
+  printf '# the LAST pattern that matches a path, so a rule in this block can override one\n'
+  printf '# of yours above it; delete this block, down to the end marker, to undo that.\n'
+}
+
+# THE BLOCK'S BOTTOM (S298 fix round 2). The header marked where our lines START
+# and nothing marked where they STOP, so the moment a human adds a line of their
+# own underneath, nobody — them included — can tell which lines were ours. The
+# header promises the block is "yours to delete or edit freely", and that promise
+# is only actionable if its extent is visible: with both markers it is one
+# gesture (delete from the `Added by` line to the `end` line) instead of a guess.
+greenfield_gitignore_footer() { # → the block's matching end marker
+  printf '# ---- end LCARS block\n'
+}
+
+greenfield_seed_gitignore() { # arm → 0 wrote something, 1 left alone
+  local arm="${1:-unknown}" gi="${REPO_ROOT:-$PWD}/.gitignore"
+  if [ -e "$gi" ]; then
+    greenfield_append_gitignore "$arm" "$gi"
+    return $?
+  fi
+  {
+    printf '# Seeded by LCARS when this repo'"'"'s test foundation was established.\n'
+    printf '# Stack: %s. Yours now — add to it freely; LCARS only ever APPENDS to\n' "$arm"
+    printf '# an existing .gitignore, in a marked block, and never rewrites one.\n'
+    greenfield_gitignore_common
+    # `$(…)` strips trailing newlines, so the final \n is printed back on —
+    # a file that does not end in one is a file whose last entry a later
+    # `>>` append would silently glue itself to.
+    local body; body="$(greenfield_gitignore_body "$arm")"
+    # An `if`, NOT `[ -n "$body" ] && printf …`: the group's exit status is its
+    # LAST command's, and on the unattributable arm the body is empty, so the
+    # `&&` form made the whole write report FAILURE — the file was written, the
+    # function said it was not, and no event was logged. A group whose status is
+    # read must not end in a test that can be false.
+    if [ -n "$body" ]; then printf '\n# %s\n%s\n' "$arm" "$body"; fi
+  } >"$gi" 2>/dev/null || return 1
+  emit_event gitignore_seeded implement \
+    "no .gitignore at the repo root — seeded one for the detected stack ($arm) so the first delivered commit carries no build litter" \
+    "ticket=${TICKET:-}" "stack=$arm"
+  # ON SCREEN, not only in events.jsonl. The live defect's worst half was the
+  # SILENCE: litter shipped, the mission advanced, and nothing said a word.
+  printf '  ✓ .gitignore SEEDED at the repo root for the %s stack (the repo had none)\n' "$arm" >&2
+  return 0
+}
+
+# APPEND the uncovered patterns, in a marked block, to a file we leave otherwise
+# byte-for-byte alone. Writes nothing when every pattern is already covered.
+greenfield_append_gitignore() { # arm  gitignore-path → 0 appended, 1 left alone
+  local arm="$1" gi="$2" pat probe uncovered="" n=0 u=0 cov
+  while IFS= read -r pat; do
+    case "$pat" in ''|'#'*) continue ;; esac
+    probe="$(greenfield_gitignore_probe_path "$pat")"
+    [ -n "$probe" ] || continue
+    n=$((n + 1))
+    cov="$(greenfield_gitignore_covers "$probe")"
+    if [ "$cov" = unknown ]; then
+      # The authority could not answer, so we do not answer for it.
+      emit_event gitignore_kept implement \
+        "this repo already has a .gitignore and git could not be asked what it ignores (check-ignore failed on '$probe') — left exactly as it was found rather than appending on a guess" \
+        "ticket=${TICKET:-}" "stack=$arm"
+      printf '  ⚠ .gitignore left UNTOUCHED — git could not say what this repo ignores, so nothing was appended\n' >&2
+      return 1
+    fi
+    [ "$cov" = no ] || continue
+    uncovered="$uncovered$pat
+"
+    u=$((u + 1))
+  done <<EOF
+$(greenfield_gitignore_common; greenfield_gitignore_body "$arm")
+EOF
+  if [ "$u" -eq 0 ]; then
+    emit_event gitignore_kept implement \
+      "this repo's existing .gitignore already ignores every pattern the $arm foundation would add ($n/$n covered, per git check-ignore) — left byte-identical, nothing appended" \
+      "ticket=${TICKET:-}" "stack=$arm"
+    printf '  ✓ .gitignore left BYTE-IDENTICAL — it already ignores all %d %s litter pattern(s)\n' "$n" "$arm" >&2
+    return 1
+  fi
+  {
+    greenfield_gitignore_sep "$gi"
+    greenfield_gitignore_header "$arm"
+    printf '%s' "$uncovered"
+    greenfield_gitignore_footer
+  } >>"$gi" 2>/dev/null || return 1
+  emit_event gitignore_appended implement \
+    "this repo's existing .gitignore did not ignore $u of the $n pattern(s) the $arm foundation needs (per git check-ignore) — appended those $u in a marked LCARS block; every existing line is untouched and still the file's prefix" \
+    "ticket=${TICKET:-}" "stack=$arm" "appended=$u" "covered=$((n - u))"
+  # HONEST ABOUT WHAT IS AND IS NOT GUARANTEED (S298 fix round 2). This line used
+  # to end "your own lines untouched". Literally true — no line of his is ever
+  # edited — but it reads as "nothing about your file's behaviour changed", and
+  # the tester built the case where that is false: a .gitignore whose line 5 is
+  # `!dist/manifest.json` gains `/dist/` below it, and because git takes the LAST
+  # matching pattern, the manifest he deliberately un-ignored is now ignored. His
+  # bytes survived and his intent did not. The message must not assert the
+  # stronger claim, so it states the two things that ARE guaranteed (his lines are
+  # preserved verbatim and still the file's prefix) and names the one that is not.
+  printf '  ✓ .gitignore APPENDED to — %d of %d %s litter pattern(s) were not ignored yet; added in a marked LCARS block below your own lines, which are preserved exactly\n' \
+    "$u" "$n" "$arm" >&2
+  printf '    git takes the LAST matching pattern, so an added line can override one of yours above it — delete the marked block to undo it\n' >&2
+  return 0
+}
+
 # Record the established command mission-locally and adopt it for this process.
 greenfield_record_cmd() { # cmd
   local cmd="$1" rec; rec="$(greenfield_cmd_record)"
@@ -9889,6 +10184,11 @@ apply_declared_setup() { # manifest-file  setup-dir  pkg-rel → 0 applied, 1 re
       return 1
     fi
     TEST_CMD_ENV="$gcmd"
+    # S298 — THE FOUNDATION'S .gitignore. Last of the scaffold arm's work, after
+    # the final refusal above it, so a rejected declaration leaves no litter of
+    # our own behind. `$arm` is the one the allowlist already resolved — the fact
+    # this path recorded, not a second reading of a tree the setup just changed.
+    greenfield_seed_gitignore "$arm" || :
   fi
   local irc=0
   if [ -n "$icmd" ]; then

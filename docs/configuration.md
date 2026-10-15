@@ -4,8 +4,30 @@ You should not need this page on day one. `lcars init` writes a working
 `.git/lcars/config.json` and the Align estimator chooses a model tier per Stage
 for you. This is the day-two reference for when you want to override something.
 
-LCARS **never** modifies `CLAUDE.md`, `.gitignore`, `CONTEXT.md`,
+LCARS **never** modifies `CLAUDE.md`, `CONTEXT.md`,
 `.claude/settings.json`, or any of your source files.
+
+The one exception is `.gitignore`, and only on a **greenfield initialization
+mission** — the run that establishes a brand-new repo's test foundation. If the
+repo has no `.gitignore`, LCARS seeds one for the detected stack so your first
+delivered commit carries no build litter. If it already has one, LCARS asks
+`git check-ignore` which of those patterns the repo does **not** already ignore
+and appends only those, in a block marked at the top and the bottom and placed
+below your own lines; your lines are never reordered, rewritten or removed, and a
+`.gitignore` that already covers the litter is left byte-identical. The block is
+yours to delete — delete from the `# ---- Added by LCARS` line to the
+`# ---- end LCARS block` line and the append is fully undone. Note that git takes
+the **last** matching pattern in a file, so although your lines are preserved
+exactly, an appended entry below them can override one of them; LCARS says so
+when it appends, both on screen and in the block's own dated header.
+
+Every entry that names a **root-level** output directory is anchored with a
+leading `/` — `/build/`, `/dist/`, `/venv/`, `/target/`, `/log/`, `/tmp/` — so a
+hand-written file at depth such as `tools/build/gen.py` or `lib/log/logger.rb`
+stays tracked. Entries for directories that genuinely recur at depth
+(`node_modules/`, `__pycache__/`, `.gradle/`, `[Bb]in/`) are left unanchored on
+purpose. Every other mission — every feature, every bug — leaves `.gitignore`
+alone.
 
 ## Per-repo config: `.git/lcars/config.json`
 
