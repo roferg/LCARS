@@ -106,6 +106,25 @@ and records its path. Number One uses this to run declared tests with the app's
 default port free, then relaunches before its browser walk. A later ordinary
 `--stop` still prunes the checkout. `--keep-worktree` requires `--stop`.
 
+### Occupied ports
+
+Before spawning, the launcher checks whether the predicted port already has a
+TCP listener. It never kills that listener. For literal single commands it
+chooses an OS-assigned free port and adapts matching `--port N`, `--port=N`,
+`-p N`, `PORT=N`, or `python3 -m http.server N` selectors; otherwise it supplies
+`PORT` for apps that honor that environment variable. Unrelated arguments and
+explicit ports that disagree with the prediction are preserved. Discovery should
+expose a supported port selector when the app offers one.
+
+This is best-effort: commands containing shell metacharacters are left untouched
+(even when quoted), apps with hard-coded ports that ignore `PORT` cannot be
+adapted, and another process can race the later bind. Missing Python or
+socket-inspection tools also leave the command unchanged. The normal liveness
+gate still catches failure. On success the final
+`url` always comes from the launched process group's observed socket, **not**
+the free-port suggestion; `predictedUrl` retains the inspector's original URL,
+including its path, query and fragment.
+
 ## The hint matters
 
 A repo's root often does **not** launch the app the captain wants — e.g. a root

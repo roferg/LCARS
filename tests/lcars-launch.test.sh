@@ -32,7 +32,8 @@ ADAPTER="$REPO_ROOT/skills/lcars-run/worker-adapter.sh"
 
 pass=0
 fail=0
-TMPROOT="$(mktemp -d)"
+TMPROOT="$(mktemp -d "${TMPDIR:-.}/lcars-launch.XXXXXX")"
+TMPROOT="$(cd "$TMPROOT" && pwd -P)"
 # The CANONICAL form of $TMPROOT (macOS mktemp hands back /var/... which is a
 # symlink to /private/var/...). launch.sh canonicalizes every path it builds with
 # `pwd -P`, and `git worktree list` reports realpaths, so every expectation in
@@ -1391,6 +1392,91 @@ check "28e. and B's launch never touched repo A's app" \
   "[ \"\$(hit_count \"$HITS28A\")\" = \"$A_HITS_BEFORE\" ]"
 ( cd "$R28A" && LCARS_WORKER_BIN="$W28A" bash "$LAUNCH_SH" m28a --stop >/dev/null 2>&1 )
 ( cd "$R28B" && LCARS_WORKER_BIN="$W28B" bash "$LAUNCH_SH" m28b --stop >/dev/null 2>&1 )
+
+# A foreign listener cannot be stopped by LCARS. Unlike test 28, this app
+# strictly binds the configured (occupied) port instead of choosing its own.
+P28STRICT="$(free_port)"
+FOREIGN28="$TMPROOT/foreign28.sh"
+make_binding_app "$FOREIGN28" "$P28STRICT"
+"$FOREIGN28" >"$TMPROOT/foreign28.log" 2>&1 &
+FOREIGN28PID=$!; LAUNCHED_PIDS+=("$FOREIGN28PID")
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+  curl -sf -m 1 "http://127.0.0.1:$P28STRICT" >/dev/null 2>&1 && break
+  nap 0.1
+done
+check "28f. collision fixture is a real foreign listener" \
+  "kill -0 \"$FOREIGN28PID\" && curl -sf -m 1 \"http://127.0.0.1:$P28STRICT\" >/dev/null"
+STRICT28="$TMPROOT/strict28.py"
+cat >"$STRICT28" <<'PY'
+import argparse, os
+from http.server import BaseHTTPRequestHandler, HTTPServer
+
+p = argparse.ArgumentParser()
+p.add_argument("--port", "-p", type=int, default=int(os.environ.get("PORT", "0")))
+p.add_argument("--label")
+a = p.parse_args()
+
+class Handler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        body = ("owned %s label=%s" % (self.server.server_port, a.label)).encode()
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(body)
+
+HTTPServer(("127.0.0.1", a.port), Handler).serve_forever()
+PY
+R28STRICT="$(make_repo m28strict)"; W28STRICT="$(claude_stub_path)"
+make_ready_worker "$W28STRICT" "python3 $STRICT28 --port $P28STRICT --label $P28STRICT" \
+  "strict app" "http://127.0.0.1:$P28STRICT?seed=42#view" "stop"
+OUT28STRICT="$( cd "$R28STRICT" && LCARS_WORKER_BIN="$W28STRICT" LCARS_LAUNCH_SETTLE=1.5 bash "$LAUNCH_SH" m28strict 2>&1 )"
+RC28STRICT=$?
+LJ28STRICT="$R28STRICT/.git/lcars/missions/m28strict/launch.json"
+PID28STRICT="$(json_num "$LJ28STRICT" pid)"; [ -n "$PID28STRICT" ] && LAUNCHED_PIDS+=("$PID28STRICT")
+URL28STRICT="$(json_field "$LJ28STRICT" url)"
+check "28g. strict app launches despite a foreign owner of its configured port" \
+  "[ \"$RC28STRICT\" = 0 ] && [ \"\$(json_field \"$LJ28STRICT\" status)\" = running ]"
+if [ "$RC28STRICT" != 0 ]; then printf '  strict collision evidence: %s\n' "$OUT28STRICT"; fi
+check "28h. verified replacement URL preserves query/fragment and original prediction" \
+  "[ \"$URL28STRICT\" != \"http://127.0.0.1:$P28STRICT?seed=42#view\" ] \
+   && printf '%s' \"$URL28STRICT\" | grep -q '?seed=42#view$' \
+   && [ \"\$(json_field \"$LJ28STRICT\" predictedUrl)\" = \"http://127.0.0.1:$P28STRICT?seed=42#view\" ]"
+check "28i. actual app serves the replacement URL with unrelated numeric argument intact" \
+  "curl -sf -m 2 \"$URL28STRICT\" | grep -q 'owned .* label=$P28STRICT'"
+( cd "$R28STRICT" && LCARS_WORKER_BIN="$W28STRICT" bash "$LAUNCH_SH" m28strict --stop --keep-worktree >/dev/null 2>&1 )
+check "28j. stop keeps the worktree and leaves the foreign listener serving" \
+  "[ -d \"\$(json_field \"$LJ28STRICT\" worktree)\" ] \
+   && ! kill -0 \"$PID28STRICT\" 2>/dev/null \
+   && kill -0 \"$FOREIGN28PID\" \
+   && curl -sf -m 1 \"http://127.0.0.1:$P28STRICT\" >/dev/null"
+( cd "$R28STRICT" && LCARS_WORKER_BIN="$W28STRICT" bash "$LAUNCH_SH" m28strict --stop >/dev/null 2>&1 )
+for FORM28 in equals short assignment env inherited python; do
+  case "$FORM28" in
+    equals) CMD28="python3 $STRICT28 --port='$P28STRICT' --label 'keep $P28STRICT space'" ;;
+    short) CMD28="python3 $STRICT28 -p $P28STRICT --label 'keep $P28STRICT space'" ;;
+    assignment) CMD28="PORT=$P28STRICT python3 $STRICT28 --label 'keep $P28STRICT space'" ;;
+    env) CMD28="env PORT=$P28STRICT python3 $STRICT28 --label 'keep $P28STRICT space'" ;;
+    inherited) CMD28="python3 $STRICT28 --label 'keep $P28STRICT space'" ;;
+    python) CMD28="python3 -m http.server $P28STRICT --bind 127.0.0.1" ;;
+  esac
+  R28FORM="$(make_repo "m28$FORM28")"; W28FORM="$(claude_stub_path)"
+  make_ready_worker "$W28FORM" "$CMD28" "strict app" "http://127.0.0.1:$P28STRICT" "stop"
+  OUT28FORM="$( cd "$R28FORM" && PORT="$P28STRICT" LCARS_WORKER_BIN="$W28FORM" LCARS_LAUNCH_SETTLE=1.5 bash "$LAUNCH_SH" "m28$FORM28" 2>&1 )"
+  RC28FORM=$?
+  LJ28FORM="$R28FORM/.git/lcars/missions/m28$FORM28/launch.json"
+  PID28FORM="$(json_num "$LJ28FORM" pid)"; [ -n "$PID28FORM" ] && LAUNCHED_PIDS+=("$PID28FORM")
+  URL28FORM="$(json_field "$LJ28FORM" url)"
+  check "28k-$FORM28. occupied-port command form launches on its own verified port" \
+    "[ \"$RC28FORM\" = 0 ] && [ \"\$(json_field \"$LJ28FORM\" status)\" = running ] \
+     && [ \"$URL28FORM\" != \"http://127.0.0.1:$P28STRICT\" ] \
+     && curl -sf -m 2 \"$URL28FORM\" >/dev/null"
+  if [ "$FORM28" != python ]; then
+    check "28l-$FORM28. quoted unrelated arguments survive port adaptation" \
+      "curl -sf -m 2 \"$URL28FORM\" | grep -q 'label=keep $P28STRICT space'"
+  fi
+  ( cd "$R28FORM" && LCARS_WORKER_BIN="$W28FORM" bash "$LAUNCH_SH" "m28$FORM28" --stop >/dev/null 2>&1 )
+done
+kill "$FOREIGN28PID" 2>/dev/null || true
+wait "$FOREIGN28PID" 2>/dev/null || true
 
 # =====================================================================
 # 29. AN APP THAT BINDS NOTHING (the legacy sleep-loop fixture — a CLI tool, a

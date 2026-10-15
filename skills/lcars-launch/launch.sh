@@ -826,6 +826,8 @@ ${TOUCHED_BLOCK}
 DISCOVER how to start it. Do NOT start it yourself, and do NOT modify any file in
 the checkout — inspection only. Read package.json / Makefile / pyproject / README
 / config as needed to find the exact command that starts the app the captain named.
+When supported by the app, expose its configured port explicitly in the command
+(--port, -p, or PORT=) so the launcher can avoid an occupied port before starting.
 
 Then write a JSON object to EXACTLY this path (and print nothing):
   $LAUNCH_DISCOVERY
@@ -1003,8 +1005,8 @@ fi
 # the truth rather than trust the guess: enumerate the launched process GROUP and
 # read its listening sockets.
 #
-# This adds OBSERVATION ONLY. The detached setsid spawn, PID == PGID, the group
-# kill on --stop, the liveness contract and idempotent re-launch are untouched.
+# The detached setsid spawn, PID == PGID, the group kill on --stop, the liveness
+# contract and idempotent re-launch are untouched.
 #
 # Darwin BSD userland, bash 3.2: `pgrep -g <pgid>` lists the group's pids and
 # `lsof -a -p <pids> -iTCP -sTCP:LISTEN -P -n` lists their LISTEN sockets. -P/-n
@@ -1073,6 +1075,65 @@ url_with_port() { # url port -> the same url with that port (scheme/host/path/qu
   [ -n "$host" ] || host="localhost"
   printf '%s://%s:%s%s%s\n' "$scheme" "$host" "$p" "$path" "$tail"
 }
+
+# Strict-binding apps die before socket observation can reconcile their URL.
+# Avoid a known collision BEFORE spawning; never signal the existing listener.
+# Only literal single commands are adapted, and only recognized port selectors
+# equal to the prediction. PORT is the fallback for apps configured by env.
+# The OS-selected port is advisory (another process can race the later bind);
+# the existing liveness gate and owned-socket observation remain authoritative.
+PRED_PORT="$(url_port "$URL")"
+if [ -n "$PRED_PORT" ] && [ -n "$LSOF_BIN" ] \
+   && "$LSOF_BIN" -iTCP:"$PRED_PORT" -sTCP:LISTEN -t >/dev/null 2>&1 \
+   && command -v python3 >/dev/null 2>&1; then
+  ADAPTED_CMD="$(python3 - "$CMD" "$PRED_PORT" <<'PY'
+import re, shlex, socket, sys
+
+command, predicted = sys.argv[1:]
+# Do not reinterpret shell expansions, operators, embedded code or redirections.
+if re.search(r'[;&|<>(){}\n`$\\*?\[\]~#]', command):
+    sys.exit(0)
+try:
+    args = shlex.split(command)
+except ValueError:
+    sys.exit(0)
+if not args:
+    sys.exit(0)
+assignment_count = 0
+while assignment_count < len(args) and re.match(r'^[A-Za-z_]\w*=', args[assignment_count]):
+    assignment_count += 1
+selectors = []
+for i, arg in enumerate(args):
+    if arg in ("--port", "-p") and i + 1 < len(args):
+        selectors.append((i + 1, "", args[i + 1]))
+    elif arg.startswith("--port="):
+        selectors.append((i, "--port=", arg[7:]))
+    elif arg.startswith("PORT=") and (
+        i < assignment_count or
+        (args[0] == "env" and all(re.match(r'^[A-Za-z_]\w*=', a) for a in args[1:i]))
+    ):
+        selectors.append((i, "PORT=", arg[5:]))
+# The Python built-in server uses a positional port, not --port.
+for i in range(len(args) - 2):
+    if args[i:i + 2] == ["-m", "http.server"] and args[i + 2].isdigit():
+        selectors.append((i + 2, "", args[i + 2]))
+# A different explicit port means the prediction was wrong, not the command.
+if selectors and any(value != predicted for _, _, value in selectors):
+    sys.exit(0)
+with socket.socket() as probe:
+    probe.bind(("127.0.0.1", 0))
+    port = str(probe.getsockname()[1])
+for i, prefix, _ in selectors:
+    args[i] = prefix + port
+if assignment_count:
+    args.insert(0, "env")
+if not selectors:
+    args = ["env", "PORT=" + port] + args
+print(" ".join(shlex.quote(arg) for arg in args))
+PY
+)"
+  [ -z "$ADAPTED_CMD" ] || CMD="$ADAPTED_CMD"
+fi
 
 : > "$LOG"
 # macOS has no setsid(1): perl POSIX::setsid makes the child its own session &
