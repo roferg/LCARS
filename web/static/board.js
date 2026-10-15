@@ -742,6 +742,19 @@ function xoScoreMeaning(m, s) {
 function xoNode(m) {
   var score = xoScorePill(m);
   var wrap;
+  var reportKind = m.numberOne && m.numberOne.reportKind;
+  if (reportKind === "partial" || (reportKind === "full" && !score)) {
+    wrap = el("div", "xo-block");
+    wrap.appendChild(el("div", "xo-line", reportKind === "partial"
+      ? "◈ Number One · INTERRUPTED — partial report (not a verdict)"
+      : "◈ Number One · Full report"));
+    var artifactRead = btn(reportKind === "partial"
+      ? "⊙ Read the partial report →" : "⊙ Read the full report →",
+      "xo-read-report", function () { openDetail(m.id, "xo"); });
+    artifactRead.setAttribute("data-act", "xo-report");
+    wrap.appendChild(artifactRead);
+    return wrap;
+  }
   if (score) {
     wrap = el("div", "xo-block xo-signal");
     var srow = el("div", "pills xo-pills");
@@ -773,7 +786,7 @@ function xoNode(m) {
        grade as well would take away information the card really does hold. A
        done card now ends with exactly one affordance, the whole-card click, and
        that is what `test_it_carries_no_data_act_control_of_any_kind` pins. */
-    if (!isRemoteDone(m)) {
+    if (!isRemoteDone(m) && reportKind !== "none") {
       var read = btn("⊙ Read the full report →", "xo-read-report", function () {
         openDetail(m.id, "xo");
       });
@@ -1436,6 +1449,8 @@ function openXoReport() {
   controls.appendChild(chipsGrp);
   body.appendChild(controls);
 
+  var artifactsWrap = el("div", "xo-report-artifacts");
+  body.appendChild(artifactsWrap);
   var groupsWrap = el("div", "xo-report-groups");
   body.appendChild(groupsWrap);
   var sinceHead = el("div", "xo-report-since-head");
@@ -1647,6 +1662,15 @@ function openXoReport() {
   }
 
   function render() {
+    artifactsWrap.innerHTML = "";
+    (data.reports || []).forEach(function (artifact) {
+      var det = document.createElement("details");
+      var label = artifact.kind === "partial"
+        ? "INTERRUPTED — partial report (not a verdict)" : "Full report";
+      det.appendChild(el("summary", "", artifact.title + " — " + label));
+      det.appendChild(el("pre", "xo-report-text", artifact.text));
+      artifactsWrap.appendChild(det);
+    });
     groupsWrap.innerHTML = "";
     sinceList.innerHTML = "";
     histWrap.innerHTML = "";
@@ -12108,6 +12132,13 @@ function xoReportPane(mi) {
       ? "The report lives on the issue — open it on GitHub."
       : "Number One hasn't looked at this one yet.";
     pane.appendChild(note);
+    return pane;
+  }
+  if (report.kind === "partial" ||
+      (report.kind === "full" && !report.verdict && !report.verdict2)) {
+    pane.appendChild(el("h3", "", report.kind === "partial"
+      ? "INTERRUPTED — partial report (not a verdict)" : "Full report"));
+    pane.appendChild(el("pre", "xo-report-text", report.text));
     return pane;
   }
 

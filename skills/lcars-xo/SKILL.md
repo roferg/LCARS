@@ -546,6 +546,18 @@ The order is the contract:
    The signal handler never changes state or appends journal entries; `xo off`
    remains the writer of stood-down status.
 
+   **Reading preserved evidence:** the local board card, Number One tab, report
+   modal/API, `lcars xo report`, and living comment prefer a nonempty
+   `xo/report.md`. Only when no full report exists do they offer
+   `xo/partial-report.md`, explicitly **INTERRUPTED — partial report (not a
+   verdict)**. Reading it requires neither a completed score nor a journal.
+   It supplies no score or merge recommendation; both files means the full
+   report wins, and neither file means no empty report button on the local card.
+   The shared reader treats only missing files as expected absence. An unreadable
+   report is an error, never permission to downgrade a full report to partial;
+   `lcars xo report` exits 1 with a stderr diagnostic and no report output.
+   Journal history remains separate from these preserved build reports.
+
    The four `lcars:xo:*` labels are part of `lcars init`'s canonical set, and
    the swap **ensures its own family first** (host adapter `label-ensure`) so a
    repo initialized before this round does not silently lose the verdict to a

@@ -1480,14 +1480,16 @@ class LocalAdapter(object):
             return None
         card.pop("_created", None)
         card["activity"] = self._activity(d)
-        # S205 behaviour 1: `numberOne.report` — DETAIL-ONLY, present only when
-        # the mission has a journal at all. `_done_card` may have handed back a
+        # `numberOne.report` — DETAIL-ONLY, from a journal or preserved report.
+        # `_done_card` may have handed back a
         # SHALLOW copy of a memoized card (S176: "no nested value is ever
         # mutated downstream") — `card["numberOne"]`, if present, can be the
         # SAME nested dict the memo holds, so this builds a FRESH dict rather
         # than mutating it in place. Mutating it would leak the detail-only
         # `report` key onto every future BOARD card for this mission too.
-        xo_report = _number_one_report(d)
+        report_reader = self._xo_report_module()
+        artifact = report_reader.read_report(d) if report_reader else None
+        xo_report = _number_one_report(d, artifact)
         if xo_report is not None:
             xo_existing = card.get("numberOne")
             xo_new = dict(xo_existing) if isinstance(xo_existing, dict) else {}
@@ -2093,6 +2095,10 @@ class LocalAdapter(object):
         # today. NOTHING IS INFERRED: a mission is engaged because the record
         # says `engaged`, never because a worker looks busy.
         xo = board.xo_block(state.get("numberOne"))
+        report_reader = self._xo_report_module()
+        artifact = report_reader.read_report(d) if report_reader else None
+        if artifact and xo is None:
+            xo = {}
         if xo is not None:
             # S214 fix round 1, D1 — THE SCORE WORD IS THE RECORDED ONE.
             # `xo/verdict.json` is where `xo-score.py` wrote the score; the
@@ -2128,6 +2134,11 @@ class LocalAdapter(object):
                     xo["meaning"] = said
             # S216 — the pill's two axes, off the same recorded verdict.
             xo.update(_xo_recorded_axes(d))
+            xo["reportKind"] = artifact["kind"] if artifact else "none"
+            if artifact and artifact["kind"] == "partial":
+                for key in ("score", "score2", "headline", "meaning",
+                            "recommendation"):
+                    xo.pop(key, None)
             card["numberOne"] = xo
         return card
 
@@ -2593,13 +2604,12 @@ def _number_one_shot_status(logs_doc, journal):
     return out
 
 
-def _number_one_report(d):
+def _number_one_report(d, artifact=None):
     """`numberOne.report` on the mission DETAIL payload — verdict(s), the
     filed gaps with their held/not-held/pending status, the shots directory
-    the current verdict's pictures live in, and a journal tail. Present ONLY
-    when the mission has a journal at all (S205 behaviour 1) — a mission
-    Number One has never looked at gets no `report` key, ever, not an empty
-    one.
+    the current verdict's pictures live in, and a journal tail. A preserved
+    partial report is evidence, not a verdict, and needs no journal. With no
+    artifact or journal there is no `report` key, not an empty one.
 
     EVERY FIELD IS A DISK READ. Nothing here re-derives what a verdict MEANS;
     it reads xo/verdict.json, xo/second/verdict.json (falling back to the
@@ -2607,7 +2617,9 @@ def _number_one_report(d):
     xo.sh itself left them.
     """
     journal_path = os.path.join(d, "number-one.jsonl")
-    if not os.path.isfile(journal_path):
+    if artifact and artifact["kind"] == "partial":
+        return artifact
+    if not os.path.isfile(journal_path) and not artifact:
         return None
     journal = _load_jsonl(journal_path)
 
@@ -2726,6 +2738,8 @@ def _number_one_report(d):
         "shotsDir": shots_dir,
         "journal": journal_sorted,
     }
+    if artifact:
+        out.update(artifact)
     if shots_dir2:
         out["shotsDir2"] = shots_dir2
     return out

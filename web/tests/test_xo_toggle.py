@@ -120,7 +120,8 @@ class CardPayloadIsAdditive(unittest.TestCase):
 
     def test_only_recorded_fields_appear(self):
         plant_number_one(self.tmp, "m-xo", {"status": "engaged"})
-        self.assertEqual({"status": "engaged"}, self.card("m-xo")["numberOne"])
+        self.assertEqual({"status": "engaged", "reportKind": "none"},
+                         self.card("m-xo")["numberOne"])
 
     def test_the_score_rides_when_recorded(self):
         plant_number_one(self.tmp, "m-xo",
