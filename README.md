@@ -95,6 +95,11 @@ lcars init          # one-time: per-repo state + the GitHub labels
 > (`lcars init`, `lcars file`, `lcars answer`, …) are *skills* — you type them
 > to your AI CLI inside the repo, not into a shell. `lcars-viewscreen` is a
 > real program and runs in any plain terminal.
+> In particular, shell `lcars status` is not an installed executable: ask
+> Claude Code or Copilot for `lcars status` instead. Adding `~/.local/bin` to
+> `PATH` enables the five hyphenated programs above, not a shell `lcars` command.
+> `lcars-launch --help` and `lcars-viewscreen --help` (also `-h`) are safe
+> shell reads; they start neither an app nor a board, even inside an agent.
 
 **Updating** is `git pull` here — the skills are symlinked, so they update in
 place. Re-run `./install.sh` only for brand-new commands, and `lcars update`

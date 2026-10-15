@@ -145,6 +145,19 @@ while [ $# -gt 0 ]; do
     add_positional "$1"; shift; continue
   fi
   case "$1" in
+    -h|--help)
+      cat <<'EOF'
+Usage: lcars-launch <mission> [hint words…] [--stop]
+       lcars-launch --main [hint words…] [--stop]
+       (Agent skill: lcars launch <same arguments>)
+
+Run a Mission's app, or the local default-branch HEAD with --main.
+  --stop           Stop the app and prune its disposable worktree.
+  --keep-worktree  With --stop, retain the worktree for inspection.
+  --               Treat remaining words as the target/hint, not options.
+  -h, --help       Show this help without launching anything.
+EOF
+      exit 0 ;;
     --main) MAIN=1; shift ;;
     --stop) STOP=1; shift ;;
     --keep-worktree) KEEP_WORKTREE=1; shift ;;

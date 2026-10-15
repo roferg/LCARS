@@ -33,6 +33,33 @@
 #
 set -uo pipefail
 
+# Help is a read, not a request to start a board in an agent session.
+for arg in "$@"; do
+  case "$arg" in
+    --) break ;;
+    -h|--help)
+      cat <<'EOF'
+Usage: lcars-viewscreen [options]  (alias: lcars-serve)
+
+Start the LCARS Kanban board from a plain terminal.
+  --open                 Open the browser; choose a free port unless specified.
+  --host HOST            Bind address (default: 127.0.0.1).
+  --port PORT            Bind port (default: 8765; 0 chooses a free port).
+  --adapter local|github Read local mission state or GitHub issues.
+  --repo-root PATH       Working tree to serve (default: current repository).
+  --gh-bin COMMAND       GitHub CLI executable (default: gh).
+  --gh-repo OWNER/NAME   Repository for the GitHub adapter.
+  --poll-interval SECS   State-change polling interval (default: 1).
+  --read-only            Disable write endpoints.
+  -h, --help             Show this help without starting the board.
+
+Starting a board inside Claude Code or Copilot is refused. Run it in a
+normal terminal; help is available in either environment.
+EOF
+      exit 0 ;;
+  esac
+done
+
 SELF="${BASH_SOURCE[0]}"
 SKILL_DIR="$(cd "$(dirname "$SELF")" && pwd)"
 
@@ -64,9 +91,10 @@ REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)"
 # human a copy-paste command to run in a real terminal. Automation that genuinely
 # wants a headless daemon here sets LCARS_VIEWSCREEN_ALLOW_AI=1 to bypass.
 _ai_session() {
-  [ "${CLAUDECODE:-}" = "1" ] && { printf 'Claude Code'; return 0; }
+  # Copilot can inherit CLAUDECODE from the terminal that launched it.
   { [ "${COPILOT_RUN_APP:-}" = "1" ] || [ -n "${COPILOT_CLI_BINARY_VERSION:-}" ]; } \
     && { printf 'Copilot'; return 0; }
+  [ "${CLAUDECODE:-}" = "1" ] && { printf 'Claude Code'; return 0; }
   return 1
 }
 if [ "${LCARS_VIEWSCREEN_ALLOW_AI:-}" != "1" ] && _AI="$(_ai_session)"; then

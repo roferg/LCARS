@@ -61,6 +61,7 @@ configuration away.
 ```bash
 lcars-viewscreen
 # the power alias is identical: lcars-serve
+lcars-viewscreen --help  # also -h; usage only, safe inside either agent
 ```
 
 > **From either CLI.** `lcars-viewscreen` (alias `lcars-serve`) is a real command
@@ -78,6 +79,9 @@ lcars-viewscreen
 > it **refuses to launch and prints a copy-paste `cd … && lcars-viewscreen --open`
 > to run in a real terminal**, unless `LCARS_VIEWSCREEN_ALLOW_AI=1` is set (the
 > bypass tests/automation use to boot a headless daemon deliberately).
+> Copilot's markers take precedence if it inherited `CLAUDECODE=1`.
+> `--help` / `-h` only print usage, without running Python, the version check,
+> or the board; actual board starts still pass through the session guard.
 
 This launches a **Python-3-stdlib-only** `http.server` daemon (no pip, no npm, no
 build step — ADR-007) bound to `127.0.0.1:8765` by default, serving:

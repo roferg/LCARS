@@ -40,6 +40,10 @@ lcars launch --main --stop                        # stop the main deploy + clean
 lcars launch --main -- "the browser build (npx vite --config vite.config.ts)"
 ```
 
+From a plain shell, use the installed `lcars-launch` executable with the same
+arguments. `lcars-launch --help` (or `-h`) prints usage without discovering or
+starting an app. Help flags after `--` remain literal hint words.
+
 ## `--main` — deploy what's already merged
 
 `lcars launch --main [hint]` runs the **local default-branch HEAD** — whatever is
