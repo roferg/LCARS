@@ -536,6 +536,26 @@ class TheEngagedCard(unittest.TestCase):
 @unittest.skipUnless(NODE, "node is required for the board.js vm harness")
 class DoneMissionsDoNotHaveTheConn(unittest.TestCase):
 
+    def test_pause_posture_is_only_live_before_done(self):
+        note = "Number One stood down 01:14 · you have the conn"
+        for stage in ("done", "implement", "verify"):
+            for running in (False, True):
+                with self.subTest(stage=stage, running=running):
+                    tree = _render_card(card(
+                        stage=stage, paused=True, running=running,
+                        numberOne={"status": "stood-down", "note": note}))
+                    self.assertIn(note, _texts(tree))
+                    self.assertFalse(_cls(tree, "running"),
+                                     "a retained pause must not become running")
+                    self.assertEqual(stage != "done", _cls(tree, "paused"),
+                                     "only nonterminal cards are dimmed")
+                    labels = [n["text"] for n in _find(
+                        tree, lambda n: _cls(n, "pause-status"))]
+                    expected = [] if stage == "done" else [
+                        "◐ PAUSING — stopping at next safe boundary"
+                        if running else "⏸ paused"]
+                    self.assertEqual(expected, labels)
+
     def test_done_cards_offer_no_first_officer_write_controls(self):
         for score in (None, "high"):
             with self.subTest(score=score):

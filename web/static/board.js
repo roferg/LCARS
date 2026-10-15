@@ -3330,6 +3330,8 @@ function clearMergingOnState(m) {
      running  : live driver advancing, not paused           (running && !paused)
    When the real running flag finally arrives we drop the optimistic flag. */
 function runState(m) {
+  // Done retains recorded lifecycle flags as history, never live posture.
+  if (m && m.stage === "done") return "idle";
   var running = !!(m && m.running);
   var paused = !!(m && m.paused);
   var queued = !!(m && m.queued);
