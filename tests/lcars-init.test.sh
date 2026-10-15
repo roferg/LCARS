@@ -1382,7 +1382,7 @@ visionMission="$repoVision/.git/lcars/missions/lcars-20260530-001-c10e"
 check "S295 vision: the documented command without --idea succeeds" \
   "[ '$rcVision' -eq 0 ]"
 check "S295 vision: files a real initialization mission pinned to copilot" \
-  "python3 -c 'import json,sys; s=json.load(open(sys.argv[1])); assert s[\"missionType\"] == \"initialization\" and s[\"workerBin\"] == \"copilot\"' '$visionMission/state.json'"
+  "python3 -c 'import json,os,sys; s=json.load(open(sys.argv[1])); assert s[\"missionType\"] == \"initialization\" and os.path.basename(s[\"workerBin\"]) == \"copilot\"' '$visionMission/state.json'"
 check "S295 vision: reports the filed mission id" \
   "grep -qx 'MISSION_ID=lcars-20260530-001-c10e' '$repoVision/vision-out.txt'"
 check "S295 vision: records the supplied stack and slice as the idea" \
