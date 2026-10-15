@@ -1899,6 +1899,9 @@ evpid=$!
 # Wait for the drive to be under way (the app is up, the driver is blocking).
 for _ in $(seq 1 60); do [ -f "$XO_DRIVE_LOG.slowpid" ] && break; sleep 0.2; done
 drivepid="$(cat "$XO_DRIVE_LOG.slowpid" 2>/dev/null)"
+printf 'Tried the helm. Saw a blank screen. Next: inspect navigation.\n' >"$mK3/xo/notes.md"
+printf '{"observations":[{"kind":"ui","detail":"Navigation missing","screen":"bridge","shot":"shots/bridge.png"}]}\n' >"$mK3/xo/observations.json"
+printf '{"action":"tested","outcome":"passed","detail":"Helm smoke check"}\n{"action":"tested","outcome":"failed","detail":"Navigation check"}\n' >>"$mK3/number-one.jsonl"
 ( cd "$repoK3" && bash "$SCRIPT" off "lcars-20260913-103" >"$repoK3/off.txt" 2>&1 ) || true
 for _ in $(seq 1 40); do kill -0 "$evpid" 2>/dev/null || break; sleep 0.25; done
 ev_alive=1; kill -0 "$evpid" 2>/dev/null || ev_alive=0
@@ -1917,6 +1920,18 @@ check "B11b. …no read-only work dir was left behind" \
   "[ \"\$(ls -1 '$evtmp' 2>/dev/null | grep -c .)\" = '0' ]"
 check "B11b. …and the state says stood-down" \
   "grep -q '\"status\": \"stood-down\"' '$mK3/state.json'"
+check "B11b. …interruption preserves a DISTINCT partial report" \
+  "[ -s '$mK3/xo/partial-report.md' ]"
+check "B11b. …the partial is INTERRUPTED, not a verdict or recommendation" \
+  "grep -q 'INTERRUPTED' '$mK3/xo/partial-report.md' && grep -qi 'partial' '$mK3/xo/partial-report.md' && grep -qi 'not a completed verdict' '$mK3/xo/partial-report.md' && grep -qi 'no.*score.*merge recommendation' '$mK3/xo/partial-report.md'"
+check "B11b. …notes retain exactly what was tried, seen, and next" \
+  "grep -Fq 'Tried the helm. Saw a blank screen. Next: inspect navigation.' '$mK3/xo/partial-report.md'"
+check "B11b. …structured observations preserve details and screenshot references" \
+  "grep -q 'Navigation missing' '$mK3/xo/partial-report.md' && grep -q 'bridge.png' '$mK3/xo/partial-report.md'"
+check "B11b. …the ROOT journal retains both passed and failed test outcomes" \
+  "grep -q 'Helm smoke check' '$mK3/xo/partial-report.md' && grep -q 'passed' '$mK3/xo/partial-report.md' && grep -q 'Navigation check' '$mK3/xo/partial-report.md' && grep -q 'failed' '$mK3/xo/partial-report.md'"
+check "B11b. …no completed report or verdict is manufactured" \
+  "[ ! -f '$mK3/xo/report.md' ] && [ ! -f '$mK3/xo/verdict.json' ]"
 
 # --------------------------------------------------------------------------
 # B11c (D2). A DIRECT SIGTERM to the recorded pid tears down just the same.
@@ -1939,19 +1954,93 @@ ev4=$!
 for _ in $(seq 1 60); do [ -f "$XO_DRIVE_LOG.slowpid" ] && break; sleep 0.2; done
 drive4="$(cat "$XO_DRIVE_LOG.slowpid" 2>/dev/null)"
 xopid="$(head -1 "$mK4/xo.pid" 2>/dev/null | tr -dc '0-9')"
+cp "$mK4/state.json" "$repoK4/state-before-term.json"
+cp "$mK4/number-one.jsonl" "$repoK4/journal-before-term.jsonl"
 [ -n "$xopid" ] && kill -TERM "$xopid" 2>/dev/null || true
 for _ in $(seq 1 40); do kill -0 "$ev4" 2>/dev/null || break; sleep 0.25; done
 ev4_alive=1; kill -0 "$ev4" 2>/dev/null || ev4_alive=0
 dr4_alive=1; [ -n "$drive4" ] && kill -0 "$drive4" 2>/dev/null || dr4_alive=0
 kill -9 "$ev4" 2>/dev/null || true
 [ -n "$drive4" ] && kill -9 "$drive4" 2>/dev/null || true
-wait "$ev4" 2>/dev/null || true
+ev4_rc=0; wait "$ev4" 2>/dev/null || ev4_rc=$?
 check "B11c. a direct TERM to xo.pid ends the spin" "[ '$ev4_alive' -eq 0 ]"
 check "B11c. …and the driver dies with it" "[ '$dr4_alive' -eq 0 ]"
 check "B11c. …the launch is stopped, not orphaned" \
   "grep -q -- '--stop' '$XO_LAUNCH_LOG'"
 check "B11c. …and no work dir survives" \
   "[ \"\$(ls -1 '$evtmp4' 2>/dev/null | grep -c .)\" = '0' ]"
+check "B11c. …TERM exits 143 and removes the pid" \
+  "[ '$ev4_rc' -eq 143 ] && [ ! -f '$mK4/xo.pid' ]"
+check "B11c. …TERM never rewrites state or appends a journal record" \
+  "cmp -s '$mK4/state.json' '$repoK4/state-before-term.json' && cmp -s '$mK4/number-one.jsonl' '$repoK4/journal-before-term.jsonl'"
+check "B11c. …bookkeeping alone does not produce an empty partial report" \
+  "[ ! -e '$mK4/xo/partial-report.md' ]"
+
+# Each source stands alone; corrupt evidence and write failures must not
+# compromise the real TERM trap's teardown or its state/journal non-writes.
+partial_case=110
+for evidence in notes observations journal malformed write-failure empty; do
+  partial_id="lcars-20260913-$partial_case"; partial_case=$((partial_case + 1))
+  partial_repo="$(new_repo '"numberOne": {"enabled": true, "engine": "copilot"}')"
+  partial_mission="$(plant_verify "$partial_repo" "$partial_id")"
+  rm -f "$XO_DRIVE_LOG.slowpid"
+  ( cd "$partial_repo" && \
+      LCARS_LAUNCH_SCRIPT="$LAUNCH_STUB" \
+      LCARS_XO_DRIVER="$SLOW_DRIVE" LCARS_NODE_BIN=bash \
+      LCARS_HOST_ADAPTER="$HOST_STUB" \
+      LCARS_WORKER_BIN="$EV_SHIM" LCARS_WORKER_CLI=copilot \
+      LCARS_GH_BIN=/usr/bin/true LCARS_NOTIFY=/usr/bin/true \
+      LCARS_OWNER_ENFORCE=0 TMPDIR="$evtmp4" \
+      bash "$SCRIPT" evaluate --mission "$partial_id" >"$partial_repo/ev.txt" 2>&1 ) &
+  partial_pid=$!; PROBE_PIDS="$PROBE_PIDS $partial_pid"
+  for _ in $(seq 1 60); do [ -f "$XO_DRIVE_LOG.slowpid" ] && break; sleep 0.2; done
+  check "B11c partial $evidence: the real evaluate reached its driver" \
+    "[ -s '$XO_DRIVE_LOG.slowpid' ]"
+  case "$evidence" in
+    notes|malformed|write-failure)
+      printf 'Tried impulse. Saw flicker. Next: inspect power.\n' >"$partial_mission/xo/notes.md" ;;
+  esac
+  case "$evidence" in
+    observations)
+      printf '{"observations":[{"kind":"ui","detail":"Independent observation","screen":"helm"}]}\n' >"$partial_mission/xo/observations.json" ;;
+    journal)
+      printf '{"action":"tested","outcome":"failed","detail":"Independent test failure"}\n' >>"$partial_mission/number-one.jsonl" ;;
+    malformed)
+      printf '{broken\n' >"$partial_mission/xo/observations.json"
+      printf 'bad journal line\n{"action":"tested","outcome":"passed","detail":"Surviving journal entry"}\n' >>"$partial_mission/number-one.jsonl" ;;
+    write-failure) mkdir "$partial_mission/xo/partial-report.md" ;;
+    empty)
+      printf ' \n' >"$partial_mission/xo/notes.md"
+      printf '{"observations":[]}\n' >"$partial_mission/xo/observations.json"
+      printf '{"action":"verdict-channel","detail":"Reply arrived on stdout"}\n{"action":"noted","lines":0}\n' >>"$partial_mission/number-one.jsonl" ;;
+  esac
+  cp "$partial_mission/state.json" "$partial_repo/state-before-term.json"
+  cp "$partial_mission/number-one.jsonl" "$partial_repo/journal-before-term.jsonl"
+  partial_xopid="$(head -1 "$partial_mission/xo.pid" 2>/dev/null | tr -dc '0-9')"
+  [ -n "$partial_xopid" ] && kill -TERM "$partial_xopid" 2>/dev/null || true
+  partial_rc=0; wait "$partial_pid" 2>/dev/null || partial_rc=$?
+  check "B11c partial $evidence: teardown still exits 143, stops launch, removes pid and work" \
+    "[ '$partial_rc' -eq 143 ] && [ ! -f '$partial_mission/xo.pid' ] && ! grep -q '\"status\": \"running\"' '$partial_mission/launch.json' && [ \"\$(ls -1 '$evtmp4' | grep -c .)\" = '0' ]"
+  check "B11c partial $evidence: state and journal remain byte-identical" \
+    "cmp -s '$partial_mission/state.json' '$partial_repo/state-before-term.json' && cmp -s '$partial_mission/number-one.jsonl' '$partial_repo/journal-before-term.jsonl'"
+  case "$evidence" in
+    notes) check "B11c partial notes: notes alone survive" \
+      "grep -Fq 'Tried impulse. Saw flicker. Next: inspect power.' '$partial_mission/xo/partial-report.md'" ;;
+    observations) check "B11c partial observations: object observations alone survive" \
+      "grep -q 'Independent observation' '$partial_mission/xo/partial-report.md'" ;;
+    journal) check "B11c partial journal: root test record alone survives with its outcome" \
+      "grep -q 'Independent test failure' '$partial_mission/xo/partial-report.md' && grep -q 'failed' '$partial_mission/xo/partial-report.md'" ;;
+    malformed)
+      check "B11c partial malformed: healthy sources and valid journal lines survive" \
+        "grep -q 'Tried impulse' '$partial_mission/xo/partial-report.md' && grep -q 'Surviving journal entry' '$partial_mission/xo/partial-report.md'"
+      check "B11c partial malformed: bad sources are diagnosed on stderr" \
+        "grep -q 'observations.json' '$partial_repo/ev.txt' && grep -q 'number-one.jsonl.*line' '$partial_repo/ev.txt'" ;;
+    write-failure) check "B11c partial write-failure: persistence failure is diagnosed" \
+      "grep -q 'partial-report.md' '$partial_repo/ev.txt'" ;;
+    empty) check "B11c partial empty: empty observations and bookkeeping produce nothing" \
+      "[ ! -e '$partial_mission/xo/partial-report.md' ]" ;;
+  esac
+done
 
 # --------------------------------------------------------------------------
 # B11d (D2 driver half). xo-drive.js tears its OWN Chrome down on a signal —

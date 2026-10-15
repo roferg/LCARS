@@ -523,6 +523,17 @@ The order is the contract:
    other two removed. One source per fact: the label is the score, the comment
    is the report.
 
+   An interrupted look stops its processes first, then preserves existing
+   `xo/notes.md`, `xo/observations.json`, and useful root `number-one.jsonl`
+   evidence in the distinct **`xo/partial-report.md`**, labelled **INTERRUPTED**
+   and partial. It is not a completed verdict: no score or merge recommendation
+   is inferred, and next steps are only those already recorded in the notes.
+   No findings means no partial artifact (empty observations and bookkeeping
+   alone do not count). Malformed sources and write failures are diagnosed on
+   stderr without preventing teardown or preservation of other readable sources.
+   The signal handler never changes state or appends journal entries; `xo off`
+   remains the writer of stood-down status.
+
    The four `lcars:xo:*` labels are part of `lcars init`'s canonical set, and
    the swap **ensures its own family first** (host adapter `label-ensure`) so a
    repo initialized before this round does not silently lose the verdict to a

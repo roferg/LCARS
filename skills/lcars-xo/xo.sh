@@ -2492,15 +2492,20 @@ xo_teardown() {
   # just the looking part, because the measured defect was a second look
   # overwriting the verdict AFTER the first had filed its bugs from it. It is
   # released here, on the EXIT trap, so every way out of a look gives it back.
-  xo_release_claim
+  [ "${1:-}" = keep-claim ] || xo_release_claim
   return 0
 }
 
 on_stand_down() {
-  xo_teardown
+  xo_teardown keep-claim
+  if [ -n "$XO_MISSION_DIR" ]; then
+    "$XO_PY" "$SKILL_DIR/xo-partial-report.py" "$XO_MISSION_DIR" ||
+      printf 'lcars xo: could not preserve xo/partial-report.md\n' >&2
+  fi
   [ -n "$XO_MISSION_DIR" ] && rm -f "$XO_MISSION_DIR/xo.pid"
-  # NOTHING IS RECORDED HERE. `lcars xo off` has already written stood-down, and
-  # a second writer racing it is how a stand-down ends up reading `escalated`.
+  xo_release_claim
+  # NO STATE OR JOURNAL IS WRITTEN HERE. `lcars xo off` has already written
+  # stood-down, and a second writer racing it is how it ends up `escalated`.
   printf '◈ NUMBER ONE: stood down mid-spin — you have the conn.\n' >&2
   exit 143
 }
