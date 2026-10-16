@@ -2312,8 +2312,8 @@ check "the table's explanation keeps the word it is explaining" \
 # COMMAND hologram, and spelled out the un-migrated ledger FILENAME, which still
 # carries the retired driver name. The file keeps its name (the on-disk state and
 # ~60 assertions depend on it); the prose stops broadcasting it.
-check "the table names the ECH, the hologram that actually runs the mission" \
-  "ap '$RPO' policy --table 2>&1 | qgrep -qF \"THE MERGE IS THE ECH'S CALL\""
+check "the table names the deciding hologram without an initialism a viewer must decode" \
+  "ap '$RPO' policy --table 2>&1 | qgrep -qF \"THE MERGE IS THE HOLOGRAM'S CALL\""
 check "the table no longer names the ENGINEERING hologram as the merge authority" \
   "! ap '$RPO' policy --table 2>&1 | qgrep -qF \"THE MERGE IS THE EEH'S CALL\""
 check "the table prints no retired driver name (it is filmed)" \
@@ -2536,8 +2536,8 @@ check "HOLOGRAM-COMMAND-MODE.md carries the whole merge table: all four actions"
   "( for a in 'merge' 'follow-ups' 'send-back' 'override'; do qgrep -qF \"\$a\" '$APM' || exit 1; done )"
 check "HOLOGRAM-COMMAND-MODE.md says a LOW for infrastructure only is fixed, verified live, and OVERRIDDEN" \
   "qgrep -qiE 'infrastructure' '$APM' && qgrep -qF 'autopilot-overrides.jsonl' '$APM'"
-check "HOLOGRAM-COMMAND-MODE.md says THE MERGE IS THE ECH'S CALL — Number One recommends" \
-  "qgrep -qiE \"the ECH's call|the ECH decides\" '$APM' && qgrep -qi 'recommend' '$APM'"
+check "HOLOGRAM-COMMAND-MODE.md says THE MERGE IS THE HOLOGRAM'S CALL — Number One recommends" \
+  "qgrep -qiE \"the hologram's call|the hologram\" '$APM' && qgrep -qi 'recommend' '$APM'"
 check "HOLOGRAM-COMMAND-MODE.md says every override is recorded WITH its evidence path" \
   "qgrep -qiE 'evidence path' '$APM'"
 check "HOLOGRAM-COMMAND-MODE.md keeps the send-back loop: file-bug -> resolve-logs -> re-verify with different data -> respond -> land" \
