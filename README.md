@@ -54,7 +54,7 @@ flowchart LR
 | **Plan Review** | 🤖 auto | Incoming inspection on the cut: a fresh reviewer with no memory of the planning audits every ticket for size, coupling and testability, and sends bad ones back. |
 | **Schedule** | 🤖 auto | Tickets are ordered by their dependencies into **waves** — the batches the floor can run side by side — and each becomes a sub-issue under the Mission. |
 | **Implement** | 🤖 auto | One test-first worker per ticket, one bench each, checked afterwards by machine: its new tests must fail before its change and pass after it, any edit to an existing test must be declared with a reason, and the whole suite must stay green. |
-| **Verify** | 🧑 you | Final inspection, and the one station you staff. You read the diff, run the app, and either approve — which merges the existing open pull request — or send it back with a note. |
+| **Verify** | 🧑 you | Final inspection, and the last station you staff. You read the diff, run the app, and either approve — which merges the existing open pull request — or send it back with a note. |
 
 ## Install
 

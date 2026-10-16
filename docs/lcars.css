@@ -906,34 +906,44 @@ section {
   .stage-arrow  { transform: rotate(90deg); }
 }
 
-/* ── The masthead at phone width ───────────────────────────────────────
+/* ── The masthead once the sidebar is gone ─────────────────────────────
    .header-block is `width: var(--lcars-nav-w)` (240px) because it is meant to
-   line up with the sidebar. Below ~560px that leaves the right-hand side about
-   80 CSS px for a breadcrumb, a stardate AND the stripe block, so the
-   breadcrumb wrapped onto three lines: one word stranded in the dark area, the
-   last word pushed through the header's bottom rule and over the body text,
-   and the stardate clipped at the right edge. The sidebar it was aligning with
-   is `display: none` at this width anyway, so the block stops reserving its
-   column, the brand's second line and the stripes (both decorative) are
-   dropped, and the breadcrumb is held to one line that ellipses rather than
-   wrapping. Nothing below the header is touched. */
-@media (max-width: 560px) {
-  :root { --lcars-head-h: 56px; }
-
+   line up with the sidebar — but `nav` is `display: none` from 768px down (the
+   rule above), so across that whole band the block was reserving a 240px
+   column for something that is not on the page. What is left over has to carry
+   a breadcrumb, a stardate AND the stripe block, so the breadcrumb wrapped:
+   onto two lines by 767px, three by 680px and four by 561px, far enough that
+   its last line pushed through the header's bottom rule and sat on top of the
+   body text, with the stardate clipped at the right edge by 400px. The fix
+   matches the sidebar's own breakpoint: the block stops reserving the column,
+   the brand's second line (decorative, and the one thing wide enough to keep
+   the block near its old width) is dropped, and the breadcrumb is held to one
+   line that ellipses rather than wrapping. Nothing below the header is
+   touched. */
+@media (max-width: 768px) {
   .header-block   { width: auto; max-width: 46%; padding: 0 14px; }
-  .header-brand   { font-size: 18px; letter-spacing: 0.1em; line-height: 1; }
   .header-brand span { display: none; }
 
   .header-right   { padding: 0 14px 0 34px; gap: 10px; min-width: 0; }
   .header-title   {
-    font-size: 12px;
-    letter-spacing: 0.02em;
     min-width: 0;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
   }
-  .header-stardate { flex-shrink: 0; font-size: 9px; }
+  .header-stardate { flex-shrink: 0; }
+}
+
+/* At true phone width even one line does not fit beside the decoration, so
+   the rest of the decoration goes too: the header shortens, the stripe block
+   is dropped, and the type steps down. */
+@media (max-width: 560px) {
+  :root { --lcars-head-h: 56px; }
+
+  .header-brand   { font-size: 18px; letter-spacing: 0.1em; line-height: 1; }
+
+  .header-title   { font-size: 12px; letter-spacing: 0.02em; }
+  .header-stardate { font-size: 9px; }
   .header-stripes  { display: none; }
 }
 

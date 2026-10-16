@@ -178,12 +178,14 @@ one milestone at a time on its own (`2026.10.1`).
 
 ![The ECH's own status in a terminal: the spec it is working to, the missions in scope with their stages and gates, the parallel slots in use, and the one question it has parked for you.](docs/assets/ech-status.png)
 
-Over one night it produced a command line, a page that renders its state, and a
-workflow that republishes that page — needing its operator exactly once during
-the shift, and catching two genuine bugs a fully green suite had waved through
-(`2026.10.1`). One step was still mine, and the same entry says so: on the final
-milestone a human ran the landing (`2026.10.1`). It is not claimed to ship with
-nobody there.
+The first night it ran unwatched is in here for what it settled, not for what
+it produced. The question was never whether an unattended shift could produce
+working software; it was whether anything it produced could be believed. Two of
+its bug reports had come through a fully green suite (`2026.10.1`) — the kind
+of finding that shows a shift inspecting its own work rather than merely
+finishing it. Autonomy it did not settle: the last milestone's landing was mine
+to run (`2026.10.1`), and nothing here claims a shift can end with nobody
+there.
 
 What makes the rest of it worth anything is not that it was clever. It is that
 the evidence was first-hand — nothing in that night's report was a prediction
