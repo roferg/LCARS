@@ -351,7 +351,14 @@ git -C "$CTL" config user.name t
 cp "$REPO_ROOT/.gitignore" "$CTL/.gitignore" 2>/dev/null || printf 'tests/drives/\n' > "$CTL/.gitignore"
 mkdir -p "$CTL/tests/lib" "$CTL/tests/fixtures"
 cp "$REPO_ROOT/tests/lib/MANIFEST" "$CTL/tests/lib/MANIFEST"
-printf '#!/usr/bin/env bash\necho suite\n' > "$CTL/tests/run.sh"
+# S299 FIXTURE ONLY — the stand-in runner now invokes a real program.
+# This leg has never been about the script's CONTENTS; it needed a tests/run.sh
+# that exits deterministically without a runner installed, and a bare `echo` was
+# the cheapest way to get one. The inert filter refuses a body that is only
+# shell no-ops, so the stand-in runs the same thing THROUGH a shell — `sh` is a
+# real command, the exit status and the output are identical, and what this leg
+# locks is unchanged.
+printf '#!/usr/bin/env bash\nsh -c "echo suite"\n' > "$CTL/tests/run.sh"
 printf '#!/usr/bin/env bash\necho suite\n' > "$CTL/tests/example.test.sh"
 printf '{"fixture":true}\n' > "$CTL/tests/fixtures/example.json"
 # …and its own fixtures allow-list, declaring exactly those two files, so the

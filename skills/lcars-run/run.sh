@@ -9337,6 +9337,26 @@ greenfield_detect_cmd() { # root → the detected command, or ""
   detect_test_cmd 2>/dev/null | head -1
 }
 
+# S299 — WHY THE ROOT HAS NO RUNNER, when the answer above came back empty. A
+# worker bounced for "no test command LCARS can detect at the repo root" wrote
+# an inert `tox.ini` next time (`[tox]` + an empty `envlist =`), which tells us
+# the refusal was not actionable: it reported an absence over a repo where the
+# worker had just put a FILE. `detect_inert_test_config` names the artifact it
+# found and says why it is not enough. Advisory only — it can never turn an
+# empty detection into a command, so it cannot weaken the gate.
+greenfield_inert_why() { # root → the inert-config reason, or ""
+  # Sourced on demand exactly as greenfield_detect_cmd does it — that call runs
+  # in a command substitution, so its subshell's `.` never reaches this one.
+  if ! command -v detect_inert_test_config >/dev/null 2>&1; then
+    local lib="${LCARS_COMMON_LIB:-$SKILL_DIR/../lcars-init/lcars-common.sh}"
+    # shellcheck source=../lcars-init/lcars-common.sh
+    [ -f "$lib" ] && . "$lib"
+  fi
+  command -v detect_inert_test_config >/dev/null 2>&1 || return 0
+  local TOPLEVEL="$1"
+  detect_inert_test_config 2>/dev/null | head -1
+}
+
 # ---------------------------------------------------------------------------
 # THE FOUNDATION'S .gitignore (S298)
 # ---------------------------------------------------------------------------
@@ -10179,7 +10199,11 @@ apply_declared_setup() { # manifest-file  setup-dir  pkg-rel → 0 applied, 1 re
   if [ -n "${LCARS_SETUP_GREENFIELD:-}" ]; then
     local gcmd; gcmd="$(greenfield_detect_cmd "$REPO_ROOT")"
     if [ -z "$gcmd" ]; then
-      SETUP_NOTE="the declared setup leaves no test command LCARS can detect at the repo root — a runner nothing can invoke is not an established test system"
+      # S299: name what IS there, when something is. The leading clause is
+      # unchanged — it is what the pending-question and refusal-record tests
+      # match on, and what a reader of the board already recognises.
+      local gwhy; gwhy="$(greenfield_inert_why "$REPO_ROOT")"
+      SETUP_NOTE="the declared setup leaves no test command LCARS can detect at the repo root — a runner nothing can invoke is not an established test system${gwhy:+. What IS there: $gwhy}"
       setup_rollback_copied "$__as_copied"
       return 1
     fi
@@ -23375,6 +23399,8 @@ FSG_EOF
   # install: detection alone gets ticket 2 a real gate) is exactly this call.
   greenfield-detect-cmd-test)
     printf 'DETECTED=%s\n' "$(greenfield_detect_cmd "${LCARS_GP_ROOT:-$PWD}")"
+    # S299: and the reason the gate's refusal quotes when that came back empty.
+    printf 'INERT=%s\n' "$(greenfield_inert_why "${LCARS_GP_ROOT:-$PWD}")"
     exit 0 ;;
   # The mission's FIRST ticket, derived from the plan/wave ORDERING.
   init-first-ticket-test)

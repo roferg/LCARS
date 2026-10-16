@@ -294,7 +294,14 @@ check "2b. a \$LCARS_TESTS_DIR-honouring explicit command is NOT flagged" \
 # honours $LCARS_TESTS_DIR so the red gate is satisfied with no hand-edit.
 repoTCb="$(new_repo)"
 mkdir -p "$repoTCb/tests"
-printf '#!/usr/bin/env bash\necho runner\n' >"$repoTCb/tests/run.sh"
+# S299 FIXTURE ONLY — the stand-in runner now invokes a real program.
+# This leg has never been about the script's CONTENTS; it needed a tests/run.sh
+# that exits deterministically without a runner installed, and a bare `echo` was
+# the cheapest way to get one. The inert filter refuses a body that is only
+# shell no-ops, so the stand-in runs the same thing THROUGH a shell — `sh` is a
+# real command, the exit status and the output are identical, and what this leg
+# locks is unchanged.
+printf '#!/usr/bin/env bash\nsh -c "echo runner"\n' >"$repoTCb/tests/run.sh"
 make_claude_stub "$repoTCb/claude"; make_gh_stub "$repoTCb/gh"
 export GH_LOG="$repoTCb/gh.log"; : >"$GH_LOG"
 export GH_EXISTING="$repoTCb/existing"; : >"$GH_EXISTING"
@@ -575,7 +582,7 @@ check "S82 init (npm): config.json is VALID JSON" \
 # pure-bash repo (only tests/run.sh): no installed runner to provision -> null
 repoWTb="$(new_repo)"
 mkdir -p "$repoWTb/tests"
-printf '#!/usr/bin/env bash\necho runner\n' >"$repoWTb/tests/run.sh"
+printf '#!/usr/bin/env bash\nsh -c "echo runner"\n' >"$repoWTb/tests/run.sh"
 make_claude_stub "$repoWTb/claude"; make_gh_stub "$repoWTb/gh"
 export GH_LOG="$repoWTb/gh.log"; : >"$GH_LOG"
 export GH_EXISTING="$repoWTb/existing"; : >"$GH_EXISTING"
@@ -997,7 +1004,7 @@ check "S146 init (unknown/greenfield): ONE calm bootstrap status — no ⚠ conf
 #     detected bash testCommand — byte-equivalence with pre-S105 (no suppression).
 repoBash105="$(new_repo)"
 mkdir -p "$repoBash105/tests"
-printf '#!/usr/bin/env bash\necho runner\n' >"$repoBash105/tests/run.sh"
+printf '#!/usr/bin/env bash\nsh -c "echo runner"\n' >"$repoBash105/tests/run.sh"
 make_claude_stub "$repoBash105/claude"; make_gh_stub "$repoBash105/gh"
 export GH_LOG="$repoBash105/gh.log"; : >"$GH_LOG"
 export GH_EXISTING="$repoBash105/existing"; : >"$GH_EXISTING"
@@ -1113,7 +1120,7 @@ check "S148 seed (pytest): an UNSET scope still defaults to exactly one '.' argu
 # --- (f) the bash runner arm — the pre-existing MODEL, must not regress ----
 repoWS6="$(new_repo)"
 mkdir -p "$repoWS6/tests"
-printf '#!/usr/bin/env bash\necho runner\n' >"$repoWS6/tests/run.sh"
+printf '#!/usr/bin/env bash\nsh -c "echo runner"\n' >"$repoWS6/tests/run.sh"
 WS_BASH="$(seeded_cmd_for "$repoWS6")"
 WS_BASH_WANT='bash tests/run.sh "${LCARS_TESTS_DIR:-tests}"'
 check "S148 seed (bash runner): the already-quoted model arm is unchanged" \

@@ -4911,15 +4911,60 @@ function readinessCopy(tr) {
      shipped voice below — those states were never wrong. */
   var fnd = tr && tr.foundation;
   if (fnd === "untested") {
+    /* S299 FIX ROUND 2 — the SAME parenthetical the CLI line carries, from the
+       same payload field. `untested` was never a contradiction (it does not
+       claim a test system), but it was SILENT about the file the captain or a
+       worker deliberately put there to be one: npm's generated placeholder
+       script lands exactly here, and the CLI names it while the board did not.
+       Same clause, same source, so the two surfaces cannot drift apart again.
+       Nothing branches on it — the voice, the sub and the controls are
+       untouched. */
     return {
       voice: "bootstrap",
       line: "◇ NO TEST SYSTEM FOUND — this repo has code, and nothing to prove "
-          + "a change with.",
+          + "a change with" + (tr.inertWhy ? " (" + tr.inertWhy + ")" : "")
+          + ".",
       sub: "Start with Establish Vision — normal missions unlock when the "
          + "foundation lands.",
     };
   }
   if (tr && tr.status === "unknown" && fnd === "unconfigured") {
+    /* S299 FIX ROUND 2 — THE SAME CONTRADICTION, ON THE SURFACE THE CAPTAIN
+       ACTUALLY WORKS FROM. Round 1 taught the detector to refuse a test
+       declaration that provably runs nothing (a `test:` target with no recipe,
+       an empty tests/run.sh, npm's placeholder script) and cured the CLI's
+       sentence. This branch was left asserting the opposite on the very same
+       repo: MEASURED through the real chain (readiness.sh → LocalAdapter →
+       this function), a decoy whose CLI line read "the test configuration at
+       the repo root cannot run: a Makefile `test:` target with no recipe …"
+       rendered on the board as "this repo HAS a test system", word for word
+       identical to a repo with a real jest config beside it. The board was the
+       more dangerous copy of the lie, because it is the surface he reads.
+
+       WHY ONE PAYLOAD CARRIES BOTH FACTS. `foundation` is deliberately claimed
+       from the mere PRESENCE of an artifact — it feeds the FILING gate, where a
+       false negative refuses a mission before it starts, so it errs toward
+       "there is something here". `inertWhy` is the detector's refusal of that
+       same artifact. Both are true; the honest sentence needs both, and until
+       this round the second one never left the shell.
+
+       THE WORDS ARE THE CLI's WORDS, not a second wording — lcars_readiness_line
+       in skills/lcars-init/lcars-common.sh owns them, and the only difference
+       here is that the board splits a sentence into a line and a sub-chip.
+       NOTHING ELSE CHANGES: the voice stays `repair`, so the same ⚡ FIX
+       affordance renders and the same controls stay unlocked, and `foundation`
+       itself is untouched — the filing route is byte-identical. */
+    if (tr.inertWhy) {
+      return {
+        voice: "repair",
+        line: "⚠ TEST SYSTEMS OFFLINE — the test configuration at the repo "
+            + "root cannot run: " + tr.inertWhy + "; missions cannot be "
+            + "proof-gated.",
+        sub: "Repair: establish a test runner that actually runs — or, if one "
+           + "is already here that LCARS missed, name it: "
+           + "lcars update --test-command '<command>'",
+      };
+    }
     /* The repo HAS a test system; LCARS just has no command for it. That is the
        `lcars update --test-command` case — the repair voice, worded the way the
        CLI line words it, never the bootstrap one. */

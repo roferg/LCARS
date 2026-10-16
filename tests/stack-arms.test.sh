@@ -1085,7 +1085,14 @@ d="$(pyrepo makefile <<'TOML'
 name = "app"
 TOML
 )"
-printf 'test:\n\t@echo ran\n' > "$d/Makefile"
+# S299 FIXTURE ONLY — the stand-in recipe now invokes a real program.
+# This leg has never been about the recipe's CONTENTS; it needed a `make test`
+# that exits deterministically without a runner installed, and `@echo` was the
+# cheapest way to get one. The inert filter refuses a recipe that is only shell
+# no-ops, so the stand-in runs the same thing THROUGH a shell — `sh` is a real
+# command, the exit status and the output are identical, and what this leg
+# locks is unchanged.
+printf 'test:\n\t@sh -c "echo ran"\n' > "$d/Makefile"
 got="$(dtc "$d")"
 [ "$got" = "make test" ] \
   && ok "I3a. a pyproject with NO test evidence no longer steals the Makefile's \`make test\`" \
@@ -1480,7 +1487,7 @@ fi
 gi_blank_repo() { # → a greenfield repo with NO stack marker but a detectable runner
   local r; r="$(new_mission_repo_bare js)"
   rm -f "$r/package.json"
-  printf 'test:\n\t@echo ok\n' > "$r/Makefile"
+  printf 'test:\n\t@sh -c "echo ok"\n' > "$r/Makefile"
   ( cd "$r" && git add -A && git commit -qm makefile )
   printf '%s' "$r"
 }

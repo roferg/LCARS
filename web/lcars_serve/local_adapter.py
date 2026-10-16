@@ -1241,6 +1241,18 @@ class LocalAdapter(object):
                     payload["foundation"] = blk.get("foundation")
                 if blk.get("foundationWhy"):
                     payload["foundationWhy"] = blk.get("foundationWhy")
+                # S299 fix round 2 — WHY the test configuration at the repo root
+                # cannot RUN. `foundation` and `foundationWhy` say the repo HAS
+                # a test artifact (presence, which is what the filing gate needs
+                # to err toward); this says the detector refused that same
+                # artifact as unable to run. Without it the board could only
+                # print the first half and so told the captain he HAS a test
+                # system on the very repo whose CLI line says the opposite.
+                # Forwarded only when the helper set it, so every repo without
+                # an inert artifact — and any older readiness.sh — yields a
+                # byte-identical payload.
+                if blk.get("inertWhy"):
+                    payload["inertWhy"] = blk.get("inertWhy")
         except Exception:
             payload = None
         self._readiness_memo = (key, payload)

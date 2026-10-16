@@ -137,7 +137,14 @@ check "1. broken: line names the one-click fix verb" \
 # missing — no testCommand, detection has a candidate (Makefile test target).
 repoM="$(new_repo)"
 write_config "$repoM" 'null'
-printf 'test:\n\t@echo 1 passed\n' >"$repoM/Makefile"
+# S299 FIXTURE ONLY — the stand-in recipe now invokes a real program.
+# This leg has never been about the recipe's CONTENTS; it needed a `make test`
+# that exits deterministically without a runner installed, and `@echo` was the
+# cheapest way to get one. The inert filter refuses a recipe that is only shell
+# no-ops, so the stand-in runs the same thing THROUGH a shell — `sh` is a real
+# command, the exit status and the output are identical, and what this leg
+# locks is unchanged.
+printf 'test:\n\t@sh -c "echo 1 passed"\n' >"$repoM/Makefile"
 ( cd "$repoM" && bash "$READINESS" --json >j.txt 2>&1; bash "$READINESS" --line >l.txt 2>&1 )
 check "1. missing: json status is missing"    "grep -q '\"status\":\"missing\"' '$repoM/j.txt'"
 check "1. missing: suggestion carries the detected candidate (make test)" \
@@ -333,7 +340,7 @@ check "3. probe with no command: refuses legibly (points at the setters)" \
 # 4a. suggestion present ⇒ set + probe in ONE invocation, NO worker spawned.
 repoF1="$(new_repo)"
 write_config "$repoF1" 'null'
-printf 'test:\n\t@echo 1 passed\n' >"$repoF1/Makefile"
+printf 'test:\n\t@sh -c "echo 1 passed"\n' >"$repoF1/Makefile"
 argvF1="$repoF1/worker-argv.txt"
 wkF1="$(make_worker_stub claude "$argvF1")"
 rcF1=0
@@ -350,7 +357,7 @@ check "4a. suggestion path: final verdict is ONLINE" \
 # 4b. probe fails after set ⇒ honestly SET BUT UNVERIFIED, never ready.
 repoF2="$(new_repo)"
 write_config "$repoF2" 'null'
-printf 'test:\n\t@exit 1\n' >"$repoF2/Makefile"
+printf 'test:\n\t@sh -c "exit 1"\n' >"$repoF2/Makefile"
 rcF2=0
 ( cd "$repoF2" && bash "$UPDATE" --fix-tests >outF2.txt 2>&1 ) || rcF2=$?
 check "4b. probe-fails-after-set: exits non-zero" "[ '$rcF2' -ne 0 ]"
@@ -607,7 +614,7 @@ check "5. readiness --json(greenfield): still 'unknown' (states never blur)" \
 
 repoH7="$(new_repo)"
 make_gh_stub "$repoH7/gh"; make_claude_stub "$repoH7/claude"
-printf 'test:\n\t@echo ok\n' >"$repoH7/Makefile"
+printf 'test:\n\t@sh -c "echo ok"\n' >"$repoH7/Makefile"
 ( cd "$repoH7" && LCARS_CLAUDE_BIN="$repoH7/claude" LCARS_GH_BIN="$repoH7/gh" bash "$INIT" >outH7.txt 2>&1 )
 check "5. init(make repo, runner resolves): silent — no OFFLINE, no crew line" \
   "! grep -q 'TEST SYSTEMS OFFLINE' '$repoH7/outH7.txt' && ! grep -qi 'engineering crew' '$repoH7/outH7.txt'"
@@ -750,7 +757,7 @@ check "6. init(dotnet): NO false \$LCARS_TESTS_DIR alarm (native isolation)" \
 repoN5="$(new_repo)"
 make_gh_stub "$repoN5/gh"; make_claude_stub "$repoN5/claude"
 { echo '<Project Sdk="Microsoft.NET.Sdk">'; echo '</Project>'; } >"$repoN5/App.csproj"
-printf 'test:\n\t@echo ok\n' >"$repoN5/Makefile"
+printf 'test:\n\t@sh -c "echo ok"\n' >"$repoN5/Makefile"
 ( cd "$repoN5" && LCARS_CLAUDE_BIN="$repoN5/claude" LCARS_GH_BIN="$repoN5/gh" bash "$INIT" >outN5.txt 2>&1 )
 check "6. init(dotnet marker + Makefile): still seeds 'make test'" \
   "grep -q '\"testCommand\": \"make test\"' '$repoN5/.git/lcars/config.json'"

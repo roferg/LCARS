@@ -371,6 +371,10 @@ if [ -n "$VERB" ]; then
       # S183 fix round 1 (D3): the SECOND axis, captured beside the first — the
       # one that can tell a `git init` from a tested monorepo.
       ORIG_FOUNDATION="${LCARS_TESTREADY_FOUNDATION:-}"
+      # S299 fix round 2: and the THIRD fact, captured the same way and for the
+      # same reason — a verdict read after `run_discovery` has run is a verdict
+      # about whatever the crew left behind, not the repo this report is about.
+      ORIG_INERT_WHY="${LCARS_TESTREADY_INERT_WHY:-}"
       if [ "$ORIG_STATUS" = "ready" ]; then
         echo "  ✓ TEST SYSTEMS ONLINE — nothing to repair (testCommand: $LCARS_TESTREADY_TESTCMD)."
         exit 0
@@ -463,6 +467,31 @@ AMB_EOF
               echo "    name it yourself: lcars update --test-command '<command>'"
               exit 0 ;;
             unknown:unconfigured)
+              # S299 fix round 2 — THE THIRD SURFACE CARRYING ROUND 1'S
+              # CONTRADICTION. The sentence below asserts "this repo HAS a test
+              # system" on the strength of the FOUNDATION axis, which claims one
+              # from the mere PRESENCE of an artifact (it feeds the filing gate,
+              # where a false negative kills a mission before it starts). When
+              # the detector has PROVED that same artifact runs nothing — a
+              # `test:` target with no recipe, an empty tests/run.sh, npm's
+              # placeholder script — this told the captain the opposite of what
+              # `lcars status` and the board had just told him, and prescribed
+              # `--test-command`, which is how round 1's measured captain got a
+              # green "TEST SYSTEMS ONLINE" over a command that runs nothing.
+              #
+              # Same words as the CLI readiness line (lcars_readiness_line in
+              # lcars-common.sh) — ONE wording across every surface. The EXIT
+              # CODE, the "config untouched" promise and the escape hatch are
+              # unchanged: this is the message, not the behaviour.
+              if [ -n "${ORIG_INERT_WHY:-}" ]; then
+                echo "  ✗ REPAIR INCOMPLETE — the test configuration at the repo root cannot run:"
+                echo "    ${ORIG_INERT_WHY}."
+                echo "    Discovery could not name a command that runs either: $DISC_MSG."
+                echo "    Config untouched. Establish a test runner that actually runs — or, if one"
+                echo "    is already here that LCARS missed, name it yourself:"
+                echo "    lcars update --test-command '<cmd>'"
+                exit 1
+              fi
               # This repo HAS a test system — LCARS just has no command for it,
               # and discovery could not name one either. That is a repair that
               # did not land, never a greenfield repo.
