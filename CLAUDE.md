@@ -1,8 +1,11 @@
 # LCARS — repo guide for Claude Code sessions
 
 This repo **is** LCARS: a reusable AI harness that drives a human idea to a
-merged PR. See `vision.md` for the full design and `CONTEXT.md` for the domain
-glossary — read both before doing substantial work.
+merged PR. `CONTEXT.md` is the domain glossary — read it before doing
+substantial work. `vision.md` is the project's STORY (why it was started, the
+year in turning points, what is still rough); read it for intent and history,
+not as a behaviour specification. Behaviour lives in `skills/<name>/SKILL.md`,
+the tests, and `CHANGELOG.md`.
 
 This file is the contract for *building* LCARS, written for an AI agent.
 [`CONTRIBUTING.md`](CONTRIBUTING.md) is the same contract for a human; read that
@@ -30,7 +33,7 @@ skills/<name>/        Skill source — one dir per `lcars` command.
 tests/                Tracked test suites. One <name>.test.sh per skill.
   run.sh                Runs every *.test.sh.
 install.sh            Symlinks skills/* into ~/.claude/skills/ (idempotent).
-vision.md             The product vision. Source of truth for behaviour.
+vision.md             The project's story: why, the year, what is rough, next.
 CONTEXT.md            Domain glossary. Use this language in code and docs.
 docs/                 Rendered vision / static assets.
 ```

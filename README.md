@@ -333,8 +333,9 @@ the short version: command source lives in `skills/<name>/`, every command has a
 test in `tests/`, write the failing test first, and run `./install.sh` before you
 try your change.
 
-[`vision.md`](vision.md) is the long-form design and the story of how it got
-here, [`CONTEXT.md`](CONTEXT.md) is the glossary for any word you are unsure of,
+[`vision.md`](vision.md) is the story — why this was started, how the idea
+changed over a year, what is still rough, and where it is going.
+[`CONTEXT.md`](CONTEXT.md) is the glossary for any word you are unsure of,
 [`CLAUDE.md`](CLAUDE.md) is this same contract written for an AI agent, and
 [`docs/index.html`](docs/index.html) is this page in LCARS livery.
 
