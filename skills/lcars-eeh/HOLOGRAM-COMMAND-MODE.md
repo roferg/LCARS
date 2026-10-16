@@ -591,7 +591,7 @@ prints the whole table.
 | low, for a **product** reason | pass | **send-back** |
 | low, for **infrastructure** reasons only | pass | **override** — fix the cause, verify that one point live, record the override |
 
-**THE MERGE IS THE EEH'S CALL.** Number One *recommends*; the EEH decides.
+**THE MERGE IS THE ECH'S CALL.** Number One *recommends*; the ECH decides.
 It scored every CLI or integration milestone `low` for reasons it could not
 reach, which is why a `bugs` live check sends back even a `high`, and why a
 `low` that is purely about infrastructure is an override rather than a stop. It

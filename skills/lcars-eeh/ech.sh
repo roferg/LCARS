@@ -3643,8 +3643,8 @@ policy_table() {
   say ""
   say "  The live check decides: Number One scored every CLI or integration milestone"
   say "  low for reasons it could not reach, so a \`bugs\` live check sends back a high."
-  say "  THE MERGE IS THE EEH'S CALL — this is the recommendation, and every"
-  say "  override lands in autopilot-overrides.jsonl with the evidence path."
+  say "  THE MERGE IS THE ECH'S CALL — this is the recommendation, and every"
+  say "  override is recorded in the overrides ledger with its evidence path."
 }
 
 # ==========================================================================

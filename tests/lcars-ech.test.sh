@@ -2307,6 +2307,19 @@ check "no subcommand's output leaks a shell error (an unescaped backtick in a sa
   "! ap '$RPO' policy --table 2>&1 | qgrep -qiE 'command not found|No such file or directory'"
 check "the table's explanation keeps the word it is explaining" \
   "ap '$RPO' policy --table 2>&1 | qgrep -qF 'live check sends back a high'"
+# THE TABLE IS FILMED. The 2026.10.5 rename retired the old companion and driver
+# names, but this footer still printed the ENGINEERING hologram where it means the
+# COMMAND hologram, and spelled out the un-migrated ledger FILENAME, which still
+# carries the retired driver name. The file keeps its name (the on-disk state and
+# ~60 assertions depend on it); the prose stops broadcasting it.
+check "the table names the ECH, the hologram that actually runs the mission" \
+  "ap '$RPO' policy --table 2>&1 | qgrep -qF \"THE MERGE IS THE ECH'S CALL\""
+check "the table no longer names the ENGINEERING hologram as the merge authority" \
+  "! ap '$RPO' policy --table 2>&1 | qgrep -qF \"THE MERGE IS THE EEH'S CALL\""
+check "the table prints no retired driver name (it is filmed)" \
+  "! ap '$RPO' policy --table 2>&1 | qgrep -qi 'autopilot'"
+check "the table still says every override is recorded with its evidence" \
+  "ap '$RPO' policy --table 2>&1 | qgrep -qi 'evidence'"
 check "no unescaped backtick inside any double-quoted \`say\` in the driver" \
   "! qgrep -qE 'say \"[^\"]*[^\\\\]\`' '$SCRIPT'"
 
@@ -2523,8 +2536,8 @@ check "HOLOGRAM-COMMAND-MODE.md carries the whole merge table: all four actions"
   "( for a in 'merge' 'follow-ups' 'send-back' 'override'; do qgrep -qF \"\$a\" '$APM' || exit 1; done )"
 check "HOLOGRAM-COMMAND-MODE.md says a LOW for infrastructure only is fixed, verified live, and OVERRIDDEN" \
   "qgrep -qiE 'infrastructure' '$APM' && qgrep -qF 'autopilot-overrides.jsonl' '$APM'"
-check "HOLOGRAM-COMMAND-MODE.md says THE MERGE IS THE EEH'S CALL — Number One recommends" \
-  "qgrep -qiE \"the EEH's call|the EEH decides\" '$APM' && qgrep -qi 'recommend' '$APM'"
+check "HOLOGRAM-COMMAND-MODE.md says THE MERGE IS THE ECH'S CALL — Number One recommends" \
+  "qgrep -qiE \"the ECH's call|the ECH decides\" '$APM' && qgrep -qi 'recommend' '$APM'"
 check "HOLOGRAM-COMMAND-MODE.md says every override is recorded WITH its evidence path" \
   "qgrep -qiE 'evidence path' '$APM'"
 check "HOLOGRAM-COMMAND-MODE.md keeps the send-back loop: file-bug -> resolve-logs -> re-verify with different data -> respond -> land" \
