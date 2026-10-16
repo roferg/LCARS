@@ -2944,6 +2944,43 @@ body.on-front-door .frame-top #helpBtn{display:none !important}
   border-left:2px solid var(--lcars-peach,#ff9966);padding-left:7px;
   margin:0 0 2px;white-space:pre-wrap;word-break:break-word}
 
+/* ── S292: THE CARD SAYS IT IS A SUMMARY ─────────────────────────────────
+   The shortened note keeps the quotation rule above (same rule, same rail) and
+   gains ONE line saying what has been done to it. Display type, because it is
+   the BOARD talking about the quotation rather than more of the quotation —
+   the two voices must not look like one run-on paragraph.
+
+   FIX ROUND 2 — that line now has two readings, because the card has two ways
+   of being shorter than the note: a truncation of the prose ("… CLIPPED · N
+   MORE CHARACTERS") or the gate's own one-line summary standing in for it
+   ("SUMMARY · THE FULL NOTE IS N CHARACTERS"). Both are the same voice about
+   the same quotation, so they share this one rule. `.xo-note-summary` is a
+   HOOK, deliberately carrying no declarations of its own: what changed is
+   which sentence is quoted, not how a quotation looks, and the marker above
+   the ⊙ is what tells him which of the two he is reading. */
+.xo-note-cut{font-family:var(--font-display);text-transform:uppercase;
+  letter-spacing:.08em;font-size:9px;line-height:1.3;
+  color:var(--lcars-peach,#ff9966);padding-left:9px;margin:0 0 3px}
+
+/* ── S292: THE WHOLE ESCALATION, where there is room for it ───────────────
+   On the ◈ Number One tab and in the gate modal he answers from. The capture
+   that started this had the (a)/(b)/(c) options off the screen in a ~260px
+   column; here they get the window's width, a readable size, and the note's
+   own line breaks kept, so a lettered option stays on its own line. Nothing
+   clips it: no max-height, no overflow — it is the thing he came to read. */
+.xo-escalation{border-left:3px solid var(--lcars-peach,#ff9966);
+  padding:2px 0 2px 12px;margin:0 0 14px}
+.xo-escalation-label{display:block;font-family:var(--font-display);
+  text-transform:uppercase;letter-spacing:.08em;font-size:11px;
+  color:var(--lcars-peach,#ff9966);margin-bottom:6px}
+/* ONE frame, not two: the peach rail above already says where this block
+   starts and ends, so the quotation itself carries no slab of its own. */
+.xo-escalation-text{font-family:var(--font-mono,ui-monospace,monospace);
+  font-size:13px;line-height:1.6;color:var(--lcars-text-bright);
+  background:transparent;border:0;border-radius:0;padding:0;
+  margin:0;white-space:pre-wrap;overflow-wrap:anywhere;max-width:78ch}
+.xo-pane .xo-escalation-text{color:var(--xo-ink)}
+
 /* ── S203: THE INTENT-MATCH PILL ──────────────────────────────────────────
    The verdict Number One reached about the built thing, beside the pill that
    says who has the conn.

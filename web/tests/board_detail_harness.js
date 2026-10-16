@@ -197,6 +197,16 @@ async function main() {
       sandbox.RESUMABLE[String(mission.id)] = "sid-client";
     }
     captured.node = sandbox.cardNode(mission); // cardNode returns the node directly
+  } else if (mode === "respond") {
+    /* S292 — THE ANSWERING SURFACE. `openRespond(id)` re-reads the mission and
+       builds the gate modal the captain types his answer into. The spec file IS
+       the mission detail the GET answers with, so the modal is built off the
+       same payload shape the daemon serves. The point is composition: the card's
+       summary is only honest if the FULL escalation is reachable from the one
+       surface that asks him to decide. */
+    fetchStub._next = mission;
+    sandbox.openRespond(mission.id);
+    await flush(); await flush(); await flush();
   } else if (mode === "file") {
     sandbox.openFile(); // builds the File-New-Mission modal → showOverlay captures it
   } else if (mode === "close-keeps") {

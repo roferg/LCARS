@@ -575,12 +575,202 @@ function xoLine(m) {
   return null;
 }
 
+/* ── S292: A STATUS OBJECT IS NOT A DOCUMENT VIEWER ───────────────────────
+
+   MEASURED ON THE CAPTAIN'S OWN BOARD (2880×1626, mission #11). When a mission
+   escalates, the note it leaves is the NEWS — and this is where the board drew
+   it. The whole of it: Number One's plain-English explanation, the source it
+   quotes, and then the formal gate text with its (a)/(b)/(c) options. Over a
+   thousand characters of 11px mono in a ~260px column — about 28 characters to
+   a line. The card filled the entire column height, was STILL clipped at the
+   bottom by the column, and the three options he was being asked to choose
+   between were off the screen. Every other column on that board sat empty.
+
+   His words: "That escalation UI crammed into the card is horrible. We need to
+   fix that so you click to see the details as part of answering the
+   escalation."
+
+   SO THE NEWS STAYS AND THE DOCUMENT GOES. The intent the S213 block below
+   describes is right — an escalation note is what Number One needs him to do,
+   and suppressing it would be worse than the wall. What is wrong is the
+   QUANTITY. A note that fits the column is drawn exactly as it always was; one
+   that does not is cut at the last sentence boundary inside the budget, and
+   the cut is SAID OUT LOUD with the number of characters not shown, so a
+   cut-off wall can never be mistaken for the whole message.
+
+   AND THE CLIP IS ONLY HONEST WHEN THERE IS A WAY TO READ THE REST. A remote
+   done card has no local detail to open (S278), so there is nowhere for the
+   remainder to live — such a card keeps the whole note rather than lose half
+   of it to a button that cannot exist. Clipping is never information loss.
+
+   THE BUDGET IS THE COLUMN'S, not a round number: ~140 characters is about
+   five lines at the column's real measure, which is a glance. */
+var XO_NOTE_CARD_CHARS = 140;
+
+/* Where to cut, as {text, cut}. `cut` is 0 when nothing was taken away, which
+   is the ONE flag every caller keys off — no caller re-measures the string. */
+function xoNoteClip(note) {
+  var t = String(note).replace(/\s+/g, " ").trim();
+  if (t.length <= XO_NOTE_CARD_CHARS) return { text: t, cut: 0 };
+  var head = t.slice(0, XO_NOTE_CARD_CHARS);
+  var at = -1, i, ch;
+  // A SENTENCE BOUNDARY FIRST — the last one inside the budget, so the summary
+  // reads as something somebody wrote rather than a string operation. The 40
+  // floor stops a one-word opener ("Blocked.") from becoming the whole summary.
+  for (i = head.length - 1; i >= 40; i--) {
+    ch = head.charAt(i);
+    if ((ch === "." || ch === "!" || ch === "?") &&
+        /\s/.test(t.charAt(i + 1) || " ")) { at = i + 1; break; }
+  }
+  // …then a word boundary, and only then a hard cut: a note with no sentence
+  // and no space in 140 characters is not prose, and it still must not overflow.
+  if (at < 0) at = head.lastIndexOf(" ");
+  if (at < 40) at = XO_NOTE_CARD_CHARS;
+  var kept = t.slice(0, at).replace(/\s+$/, "");
+  return { text: kept + " …", cut: t.length - kept.length };
+}
+
+/* MAY THIS CARD'S NOTE BE CUT? Only when the ◈ Number One tab would really
+   show the rest, because a clip is a PROMISE that the remainder is one click
+   away — and a button onto a surface that declines to draw it is worse than
+   the wall it replaced.
+
+   TWO CARDS CANNOT KEEP THAT PROMISE, and they are the same two the rest of
+   this file already treats as special:
+     · a REMOTE DONE card has no local detail at all (S278);
+     · an ENGAGED mission's note is the worker TRANSCRIPT, and the tab refuses
+       it for the same reason the card does — nobody wrote it for him.
+   Both keep their note exactly as the board has always drawn it. */
+function xoNoteOpenable(m) {
+  return !isRemoteDone(m) && xoStatus(m) !== "engaged";
+}
+
+/* Is this card's note being cut — and therefore owed a way in? Read by xoNode
+   to decide whether the card needs (or relabels) its one ⊙ control, so the
+   button and the clip can never disagree about whether anything is hidden. */
+function xoNoteIsClipped(m) {
+  var x = xoBlock(m);
+  var note = x && x.note ? String(x.note) : "";
+  if (!note || !xoNoteOpenable(m)) return false;
+  return xoNoteClip(note).cut > 0;
+}
+
+/* ── S292 FIX ROUND 2: A SHORTER WALL IS NOT A SUMMARY ────────────────────
+
+   MEASURED ON ROUND 1's OWN CAPTURE. The clip above works — the card came
+   down from over a thousand characters to five lines — and it still fails the
+   only question a kanban card has to answer: WHICH decision is this? What it
+   printed was
+
+       "Two things stopped this, and the first one is yours. …"
+
+   which is the opening of Number One's PROSE. It is the preamble, not the
+   call. Put two escalations on the board and BOTH cards read that same
+   sentence, so the captain is back to opening each one to find out which is
+   which — the clip bought him a shorter card and no information.
+
+   THE SENTENCE THAT NAMES THE DECISION WAS ALREADY IN THE PAYLOAD. BUG-027
+   had the harness write `humanSummary` into pending.json — one purpose-written
+   line, in plain language, with GitHub issue numbers instead of internal ids:
+
+       "The drawing wants a LIST of tags per note; the app stores one. Build it
+        anyway, cut the parts that need it, or change the data first?"
+
+   The gate modal has rendered it as its HEADLINE ever since. The card rendered
+   it nowhere. So the card prefers it.
+
+   AND ONLY WHERE A CLIP WAS ALREADY BEING MADE. This substitutes for the
+   TRUNCATION, never for the note: a note that FITS is still drawn verbatim and
+   unmarked (nothing is hidden, so there is nothing to summarise), and a card
+   whose detail surface would refuse the note — engaged, remote-done — is still
+   left whole and unclipped. Every invariant round 1 established survives
+   literally; what changes is exactly the card the captain was looking at. */
+
+/* The gate's own one-liner, or "" when this card has no usable one.
+
+   IT IS UNTRUSTED PAYLOAD TEXT and is treated as such — the same treatment the
+   note it stands in for gets, plus the one the field itself already gets:
+     · whitespace-collapsed and written through `el()` (textContent, so the DOM
+       escapes it; nothing here ever touches innerHTML);
+     · put through `sanitizeGateText`, the SAME sanitizer `openRespond` runs on
+       this SAME field, because UX-33 forbids CLI syntax on a GUI surface and
+       one payload must not read two ways on two surfaces;
+     · and it is the caller that holds it to `xoNoteClip`'s budget, so an
+       absurd summary cannot hand back the wall through a different field.
+   Empty after all that ⇒ there is no summary and the prose clip stands. */
+function xoGateSummary(m) {
+  var g = m && m.gate;
+  if (!g || typeof g.humanSummary !== "string") return "";
+  return sanitizeGateText(g.humanSummary).replace(/\s+/g, " ").trim();
+}
+
 /* The mission's own recorded note — an escalation, or a stand-down. Mono,
    because it is a quotation of something written elsewhere, not board copy. */
 function xoNote(m) {
   var x = xoBlock(m);
   var note = x && x.note ? String(x.note) : "";
-  return note ? el("div", "xo-note", note) : null;
+  if (!note) return null;
+  if (!xoNoteOpenable(m)) return el("div", "xo-note", note);
+  var clip = xoNoteClip(note);
+  if (!clip.cut) return el("div", "xo-note", clip.text);
+
+  var wrap = el("div", "xo-note-wrap");
+  var summary = xoGateSummary(m);
+  if (!summary) {
+    wrap.appendChild(el("div", "xo-note xo-note-clipped", clip.text));
+    // THE CUT, COUNTED. "…" alone is a punctuation mark he can read past; a
+    // number is a fact he cannot. It is the difference between a card that
+    // looks complete and a card that admits it is a summary.
+    wrap.appendChild(el("div", "xo-note-cut",
+                        "… clipped · " + clip.cut + " more characters"));
+    return wrap;
+  }
+  /* THE MARKER CANNOT GO ON SAYING "CLIPPED · N MORE CHARACTERS", because this
+     sentence is not the first N characters of anything. Nothing was cut off
+     its end, the note does not carry on where it stops, and a count of
+     characters removed from a string that is not on the card would be a number
+     measuring nothing — a truncation claimed where none happened, which is the
+     same dishonesty round 1 existed to remove, pointed the other way.
+
+     What he still has to know is unchanged: that this is a SUMMARY rather than
+     the message, and that there is more waiting. So the marker says both, and
+     the number it quotes is the FULL NOTE's length — a fact he can check by
+     pressing the ⊙ directly beneath it. The summary gets the same budget as
+     the prose, and on the rare occasion it needs cutting too the marker admits
+     THAT cut as well rather than quietly shortening his headline. */
+  var kept = xoNoteClip(summary);
+  var whole = String(note).replace(/\s+/g, " ").trim().length;
+  wrap.appendChild(el("div", "xo-note xo-note-summary", kept.text));
+  wrap.appendChild(el("div", "xo-note-cut",
+                      (kept.cut ? "… clipped summary · " : "summary · ") +
+                      "the full note is " + whole + " characters"));
+  return wrap;
+}
+
+/* S292 — THE WHOLE ESCALATION, at real width, for the surfaces that have room:
+   the ◈ Number One tab and the gate modal he answers from. ONE builder, so the
+   two can never carry different text.
+
+   THE SAME STATUS RULE THE CARD USES, read from the same place. `xo_finish`
+   writes the worker's TRANSCRIPT into `note` only while a mission is ENGAGED;
+   every other status's note is a sentence somebody wrote for the captain. So
+   `engaged` is the one status whose note is not news, and it is the one status
+   this block refuses — exactly as the card does. Keying off anything else (the
+   presence of a score, say) is the mistake S213 already made once. */
+function xoEscalationNode(mi) {
+  var x = xoBlock(mi);
+  var note = x && typeof x.note === "string" ? x.note.trim() : "";
+  if (!note) return null;
+  var status = xoStatus(mi);
+  if (status === "engaged") return null;
+  var box = el("div", "xo-escalation");
+  box.appendChild(el("div", "xo-escalation-label", status === "escalated"
+    ? "◈ Number One escalated this to you"
+    : "◈ What Number One left on this mission"));
+  // A <pre>, because the note's own line breaks ARE its structure — the
+  // lettered options arrive on lines of their own and must stay on them.
+  box.appendChild(el("pre", "xo-escalation-text", note));
+  return box;
 }
 
 /* ── S203: THE INTENT MATCH ───────────────────────────────────────────────
@@ -761,9 +951,11 @@ function xoNode(m) {
     srow.appendChild(score);
     wrap.appendChild(srow);
     // The note, unless this is the ENGAGED status whose note is the transcript.
+    var noteClipped = false;
     if (xoStatus(m) !== "engaged") {
       var scoredNote = xoNote(m);
       if (scoredNote) wrap.appendChild(scoredNote);
+      noteClipped = xoNoteIsClipped(m);
     }
     /* S278 FIX ROUND 1 (D2) — EXCEPT ON A CARD THAT HAS NO REPORT TO OPEN.
 
@@ -786,11 +978,22 @@ function xoNode(m) {
        grade as well would take away information the card really does hold. A
        done card now ends with exactly one affordance, the whole-card click, and
        that is what `test_it_carries_no_data_act_control_of_any_kind` pins. */
-    if (!isRemoteDone(m) && reportKind !== "none") {
-      var read = btn("⊙ Read the full report →", "xo-read-report", function () {
+    /* S292 — AND WHEN THE ESCALATION IS WHAT IS CLIPPED, THE BUTTON SAYS SO.
+       A mission scored LOW and then escalated has BOTH a report and an
+       escalation, and the tab it opens now leads with the escalation. It gets
+       ONE control either way: a second orange button onto the same tab is the
+       defect S278 found 11 times on the captain's own board, and it would cost
+       him a second Tab stop to say nothing new. */
+    var escalating = noteClipped && xoStatus(m) === "escalated";
+    if (!isRemoteDone(m) && (reportKind !== "none" || noteClipped)) {
+      var read = btn(escalating ? "⊙ Read the full escalation →"
+                                : "⊙ Read the full report →",
+                     "xo-read-report", function () {
         openDetail(m.id, "xo");
       });
-      read.title = "Open this mission on its ◈ Number One tab";
+      read.title = escalating
+        ? "Open this mission on its ◈ Number One tab to read it all"
+        : "Open this mission on its ◈ Number One tab";
       // NOT swept by applyXoLock: reading the report is the one thing an engaged
       // mission must never stop the captain doing (it is how he finds out what
       // Number One did on his behalf), and it writes nothing.
@@ -810,6 +1013,22 @@ function xoNode(m) {
   }
   if (line) wrap.appendChild(el("div", "xo-line", line));
   if (note) wrap.appendChild(note);
+  /* S292 — THE WAY IN, on the shape the captain's #11 actually was: escalated
+     at Validate, nothing scored yet, so no verdict and (until now) no control
+     at all under a thousand-character wall. Same idiom, same `data-act`, same
+     exemption from the engaged sweep — reading what Number One needs him to do
+     writes nothing. */
+  if (note && xoNoteIsClipped(m)) {
+    var escalated = xoStatus(m) === "escalated";
+    var noteRead = btn(escalated ? "⊙ Read the full escalation →"
+                                 : "⊙ Read the full note →",
+                       "xo-read-report", function () {
+      openDetail(m.id, "xo");
+    });
+    noteRead.title = "Open this mission on its ◈ Number One tab to read it all";
+    noteRead.setAttribute("data-act", "xo-report");
+    wrap.appendChild(noteRead);
+  }
   if (xoEngaged(m)) wrap.title = xoLockLine(m);
   return wrap;
 }
@@ -8212,6 +8431,19 @@ function openRespond(id) {
       : whyCopyForGate(gate.escalationType),
       design ? "amber" : undefined));
 
+    /* S292 — AND WHAT NUMBER ONE SAID WHEN IT HANDED THIS BACK, HERE, where he
+       is being asked to decide. The captain's words were "click to see the
+       details AS PART OF ANSWERING the escalation": a summary on the card is
+       only honest if the full thing is on the surface that takes his answer.
+
+       NOTHING NEW IS WIRED. This modal already posts to
+       /api/mission/<id>/respond and has since BUG-027; the escalation is a
+       READ off the same `numberOne` block the card drew, rendered by the same
+       builder the ◈ Number One tab uses. An ordinary pipeline gate has no
+       `numberOne` at all and this adds nothing to it. */
+    var xoEsc = xoEscalationNode(mi);
+    if (xoEsc) m.body.appendChild(xoEsc);
+
     // technicalDetail → collapsible disclosure (raw reason + command + any
     // internal ids). Only shown when the harness supplied it.
     if (gate.technicalDetail) {
@@ -12170,7 +12402,25 @@ function xoReportPane(mi) {
   var xo = mi.numberOne || {};
   var report = xo.report;
 
+  /* S292 — THE ESCALATION LEADS, because it is the only thing on this pane
+     that is WAITING ON HIM. A verdict is a record of something that already
+     happened; an escalation is a question with a mission parked behind it, and
+     this is the surface the card's ⊙ now sends him to. It is also where the
+     (a)/(b)/(c) options get the width they never had in a 260px column.
+
+     IT IS NOT A SECOND COPY. The card carries a clipped summary and this
+     carries the whole note — both out of `numberOne.note`, through ONE builder
+     (xoEscalationNode), so the two cannot drift. */
+  var escalation = xoEscalationNode(mi);
+  if (escalation) pane.appendChild(escalation);
+
   if (!report) {
+    // …AND WHEN THE ESCALATION IS ALL THERE IS, IT IS THE WHOLE PANE. A mission
+    // can escalate before anything has been scored (the captain's #11 did,
+    // at Validate). This pane used to answer that with "Number One hasn't
+    // looked at this one yet" — both untrue and the only copy of the
+    // escalation gone with it.
+    if (escalation) return pane;
     var note = el("p");
     note.style.cssText = "font-size:13px;color:var(--lcars-text-dim)";
     note.textContent = isRemote(mi)
