@@ -859,7 +859,13 @@ d24repo="$(mktemp -d "$TMPROOT/d24.XXXX")"
 ( cd "$d24repo" && git init -q 2>/dev/null )
 printf 'M0: a thing\n' >"$d24repo/spec.md"
 d24help="$(bash "$AP277_D2" --help 2>&1 || true)"
-d24init="$(LCARS_AUTOPILOT_CWD="$d24repo" bash "$AP277_D2" init --spec "$d24repo/spec.md" --scope M0 2>&1 || true)"
+# S300: `</dev/null`, the same hygiene tests/lcars-buddy-autopilot.test.sh's
+# `ap()` has always applied. `init` now ends by asking its setup questions on
+# the terminal, and harness.test.sh runs this suite from a pty with stdin OPEN
+# on purpose — so without the redirect this one line borrowed that terminal and
+# took the whole suite from 5.9s to the cage's 120s kill. What is asserted below
+# is unchanged; only the invocation's stdin is.
+d24init="$(LCARS_AUTOPILOT_CWD="$d24repo" bash "$AP277_D2" init --spec "$d24repo/spec.md" --scope M0 2>&1 </dev/null || true)"
 d24bare="$(mktemp -d "$TMPROOT/d24b.XXXX")"; ( cd "$d24bare" && git init -q 2>/dev/null )
 d24state="$(LCARS_AUTOPILOT_CWD="$d24bare" bash "$AP277_D2" status 2>&1 || true)"
 d24ask="$(LCARS_AUTOPILOT_CWD="$d24repo" bash "$AP277_D2" ask 2>&1 || true)"

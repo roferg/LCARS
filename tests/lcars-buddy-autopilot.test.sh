@@ -198,6 +198,8 @@ ap() {
   LCARS_RESOLVE_LOGS_SCRIPT="$STUBS/resolve-logs.sh" \
   LCARS_NOTIFY="$STUBS/notify.sh" \
   LCARS_CRONTAB_BIN="$STUBS/crontab" \
+  LCARS_GH_BIN="${PF_GH:-$PFGH_YES}" \
+  COPILOT_ALLOW_ALL="${PF_ALLOW_ALL-true}" \
   bash "$SCRIPT" "$@" </dev/null
 }
 
@@ -224,6 +226,13 @@ import json,sys
 p=sys.argv[1]; d=json.load(open(p)); d["stage"]="done"; json.dump(d,open(p,"w"))
 PY'
 stub "$STUBS/notify.sh"       0
+# THE FORGE-CLI STUBS (S300 fix1). `gh auth status` is a preflight check now —
+# no login, no pull request — so the suite must declare which answer it is
+# measuring. A real `gh` would make the arms depend on the machine that runs
+# them, which is the opposite of a measurement.
+PFGH_YES="$STUBS/gh-logged-in"; printf '#!/usr/bin/env bash\nexit 0\n' >"$PFGH_YES"
+PFGH_NO="$STUBS/gh-logged-out"; printf '#!/usr/bin/env bash\nprintf "not logged in\\n" >&2\nexit 1\n' >"$PFGH_NO"
+chmod +x "$PFGH_YES" "$PFGH_NO"
 # A crontab stub backed by one file, so `install` / `remove` are observable.
 CRONFILE="$TMPROOT/crontab.txt"
 : >"$CRONFILE"
@@ -2528,6 +2537,1025 @@ check "AUTOPILOT.md still forbids the hand-merge after the rewrite" \
   "qgrep -qiE 'never (merge by hand|hand-merge)' '$APM'"
 check "AUTOPILOT.md still tells the model to run the live check from a DETACHED worktree" \
   "qgrep -qiF 'detached' '$APM'"
+
+# ==========================================================================
+# S300. preflight — the setup questions get asked WHILE A HUMAN IS STILL HERE,
+#       and with nobody there the run DECIDES instead of waiting
+# ==========================================================================
+# THE DEFECT. The driver discovered what it needed at the moment it failed. On
+# 2026-10-14/15 three overnight runs died at verification waiting on a
+# permission nobody was awake to give, and a fourth could not open a PR because
+# there was no remote — a fact LCARS had ALREADY written into the mission's own
+# state.json (`githubIssue: null`) and never surfaced at the gate. A blocked run
+# and a healthy idle one look identical from outside; nothing inside the run can
+# detect or recover from it, so the cost is the rest of the night, every time.
+#
+# THE RIG, AND WHY IT HAS TWO GENUINELY DIFFERENT ARMS. "No terminal" is the
+# behaviour most easily faked by a test that never actually detaches one, so
+# both arms are real and every assertion below is paired with the other arm
+# printing a DIFFERENT answer:
+#
+#   ap_pty   — pty.fork(), so the child is a session leader whose CONTROLLING
+#              TERMINAL is the pty. Not merely `[ -t 0 ]`-satisfying: /dev/tty
+#              genuinely opens, which is what the driver detects.
+#   ap_caged — tests/lib/cage.py, which gives the child stdin=DEVNULL AND
+#              start_new_session=True. A new session with no tty attached has NO
+#              CONTROLLING TERMINAL, so /dev/tty cannot be opened — the
+#              detached-daemon case, which is the one that ate the nights.
+#
+# NOTHING KEYS ON THE CAGE'S OWN EXIT STATUS for the hang question: the printed
+# `ELAPSED …` line is parsed, because a cage that comes back silent and a cage
+# that was killed are the same $? to a reader who does not look.
+echo "-- S300. preflight (asked while he is still here; never hangs) --"
+
+CAGE="$REPO_ROOT/tests/lib/cage.py"
+check "the cage this section depends on exists" "[ -f '$CAGE' ]"
+
+PTYRIG="$TMPROOT/ptyrig.py"
+cat >"$PTYRIG" <<'PYRIG'
+# A REAL controlling terminal. pty.fork() (not openpty + Popen) is deliberate:
+# only the fork path makes the child a session leader with the slave as its
+# CONTROLLING terminal, which is the thing the driver tests for.
+#
+# IT ANSWERS WHEN ASKED, NOT UP FRONT. The first version wrote every answer
+# 0.4s in and they were silently lost: in CANONICAL mode an incomplete line is
+# never delivered, and `ANSWERS="$(printf 'x\n')"` loses its newline to command
+# substitution, so the driver's bounded read correctly timed out and the arm
+# measured "nobody answered" while claiming to measure "he answered". A rig that
+# can report the wrong arm is worse than no rig, so answers are now written in
+# response to the prompt the driver actually printed.
+#
+# ANSWERS is `|`-joined and each entry gets its own newline. UNSET means nobody
+# is behind the terminal at all; set-but-empty means one bare return.
+import os, pty, select, signal, sys, time
+raw = os.environ.get("ANSWERS")
+pending = raw.split("|") if raw is not None else []
+deadline = float(os.environ.get("PTY_DEADLINE", "15"))
+pid, fd = pty.fork()
+if pid == 0:
+    # STDIN_DEVNULL keeps the pty as the CONTROLLING terminal (so /dev/tty still
+    # opens) while fd 0 is /dev/null. That separates the two halves of the
+    # detection, and it is the shape every suite in this repo runs commands in.
+    if os.environ.get("STDIN_DEVNULL"):
+        dn = os.open(os.devnull, os.O_RDONLY)
+        os.dup2(dn, 0)
+    try:
+        os.execvp(sys.argv[1], sys.argv[1:])
+    except Exception:
+        pass
+    os._exit(127)
+out, written, stop = b"", 0, time.time() + deadline
+while time.time() < stop:
+    r, _, _ = select.select([fd], [], [], 0.3)
+    if r:
+        try:
+            b = os.read(fd, 4096)
+        except OSError:
+            break
+        if not b:
+            break
+        out += b
+        # One answer per prompt the driver printed, in order.
+        while pending and out.count(b"\n> ") > written:
+            os.write(fd, (pending.pop(0) + "\n").encode())
+            written += 1
+    elif os.waitpid(pid, os.WNOHANG)[0]:
+        break
+sys.stdout.write(out.decode("utf-8", "replace"))
+sys.stdout.write("\nPTYPROMPTS %d ANSWERED %d\n" % (out.count(b"\n> "), written))
+try:
+    os.kill(pid, signal.SIGKILL)
+except OSError:
+    pass
+try:
+    st = os.waitpid(pid, 0)[1]
+except OSError:
+    st = 0
+rc = os.WEXITSTATUS(st) if os.WIFEXITED(st) else 128 + os.WTERMSIG(st)
+sys.stdout.write("\nPTYEXIT %d\n" % rc)
+PYRIG
+
+# The env both arms share — the same stubs `ap` uses, plus the four git
+# credential muzzles (GIT_TERMINAL_PROMPT alone is not enough: git prefers
+# $GIT_ASKPASS, and it does not read its prompt from stdin, so closing stdin is
+# no defence either).
+pf_env() {
+  printf '%s\n' \
+    "TMPDIR=$TMPROOT/tmp" \
+    "LCARS_AUTOPILOT_CWD=$1" \
+    "STUB_LOG=$STUB_LOG" \
+    "LCARS_RUN_SCRIPT=$STUBS/run.sh" \
+    "LCARS_APPROVE_SCRIPT=$STUBS/approve.sh" \
+    "LCARS_XO_SCRIPT=$STUBS/xo.sh" \
+    "LCARS_RESPOND_SCRIPT=$STUBS/respond.sh" \
+    "LCARS_LOG_SCRIPT=$STUBS/log.sh" \
+    "LCARS_FILE_SCRIPT=$STUBS/file.sh" \
+    "LCARS_RESOLVE_LOGS_SCRIPT=$STUBS/resolve-logs.sh" \
+    "LCARS_NOTIFY=$STUBS/notify.sh" \
+    "LCARS_CRONTAB_BIN=$STUBS/crontab" \
+    "LCARS_AUTOPILOT_ASK_TIMEOUT=${PF_ASKT:-6}" \
+    "LCARS_AUTOPILOT_PROBE_TIMEOUT=${PF_PROBET:-10}" \
+    "LCARS_GH_BIN=${PF_GH:-$PFGH_YES}" \
+    "COPILOT_ALLOW_ALL=${PF_ALLOW_ALL-true}" \
+    "GIT_TERMINAL_PROMPT=0" "GIT_ASKPASS=" "SSH_ASKPASS="
+}
+
+# ap_pty <repo> <answers> <args…> — the driver with a real controlling terminal.
+# <answers> is `|`-joined; the literal string NONE means nobody is behind the
+# terminal at all (ANSWERS stays unset), which is a different measurement from
+# one bare return.
+ap_pty() {
+  local repo="$1" answers="$2"; shift 2
+  mkdir -p "$TMPROOT/tmp"
+  local e; e="$(pf_env "$repo" | tr '\n' ' ')"
+  if [ "$answers" = NONE ]; then
+    PTY_DEADLINE="${PF_PTYDL:-12}" \
+      python3 "$CAGE" 40 python3 "$PTYRIG" env $e bash "$SCRIPT" "$@" 2>&1
+  else
+    ANSWERS="$answers" PTY_DEADLINE="${PF_PTYDL:-12}" \
+      python3 "$CAGE" 40 python3 "$PTYRIG" env $e bash "$SCRIPT" "$@" 2>&1
+  fi
+}
+
+# ap_caged <secs> <repo> <args…> — the driver with NO controlling terminal.
+ap_caged() {
+  local secs="$1" repo="$2"; shift 2
+  mkdir -p "$TMPROOT/tmp"
+  local e; e="$(pf_env "$repo" | tr '\n' ' ')"
+  python3 "$CAGE" "$secs" env $e bash "$SCRIPT" "$@" 2>&1
+}
+
+# cage_first <output> — the ELAPSED line, which is the only verdict a cage can
+# support. Printed in the report for every no-terminal arm.
+cage_first() { printf '%s\n' "$1" | sed -n 1p; }
+
+# --- B1 + B2: ONE repo state, the two arms, different answers ---------------
+# Both repos are identical and fully provisioned (a testCommand in config.json
+# and a real origin), so the ONLY question outstanding is where the launch
+# copies go — which is exactly the question that must be asked, or defaulted
+# and SAID, rather than waited on.
+PFA="$(new_repo)"
+PFB="$(new_repo)"
+printf 'M0 the CLI\n' >"$TMPROOT/pf-spec.md"
+
+pfa="$(ap_pty "$PFA" "" init --spec "$TMPROOT/pf-spec.md" --scope M0)"
+pfb="$(ap_caged 30 "$PFB" init --spec "$TMPROOT/pf-spec.md" --scope M0)"
+PFA_J="$PFA/.git/lcars/autopilot.json"
+PFB_J="$PFB/.git/lcars/autopilot.json"
+echo "    [terminal arm]   $(printf '%s' "$pfa" | sed -n '/PTYEXIT/p')"
+echo "    [no-terminal arm] $(cage_first "$pfb")"
+
+# B1 — a terminal is present, so it ASKS, once, with a recommended default.
+check "B1 a terminal present: starting a run ASKS its setup question" \
+  "printf '%s' \"\$pfa\" | qgrep -q 'asked 1 question'"
+check "B1 the question carries a RECOMMENDED default" \
+  "printf '%s' \"\$pfa\" | qgrep -q 'RECOMMENDED'"
+check "B1 the recommended default is the value it proposes to use" \
+  "printf '%s' \"\$pfa\" | qgrep -qF '$TMPROOT/tmp'"
+check "B1 return accepts it, and the answer is RECORDED, not re-derived later" \
+  "[ \"\$(jget '$PFA_J' 'd[\"launchDir\"]')\" = '$TMPROOT/tmp' ]"
+check "B1 'yes to all' is offered, so one keystroke answers the block" \
+  "printf '%s' \"\$pfa\" | qgrep -qi 'yes'"
+check "B1 RIG CONTROL: the rig actually answered the prompt it was shown" \
+  "printf '%s' \"\$pfa\" | qgrep -q 'PTYPROMPTS 1 ANSWERED 1'"
+check "B1 the terminal arm exits 0" \
+  "printf '%s' \"\$pfa\" | qgrep -q 'PTYEXIT 0'"
+
+# B2 — THE ONE THAT MATTERS. No controlling terminal at all: it must come back.
+check "B2 no terminal: the caged run RETURNED (it did not hang)" \
+  "cage_first \"\$pfb\" | qgrep -q 'EXIT' && ! cage_first \"\$pfb\" | qgrep -q 'TIMED OUT'"
+check "B2 no terminal: and it returned 0 — a stated default, not a stop" \
+  "cage_first \"\$pfb\" | qgrep -q 'EXIT 0'"
+check "B2 no terminal: it SAYS there is no terminal rather than waiting on one" \
+  "printf '%s' \"\$pfb\" | qgrep -q 'NO TERMINAL'"
+check "B2 no terminal: it prints the question it WOULD have asked" \
+  "printf '%s' \"\$pfb\" | qgrep -qi 'would have asked'"
+check "B2 no terminal: and names the value it is proceeding with" \
+  "printf '%s' \"\$pfb\" | qgrep -qF '$TMPROOT/tmp'"
+check "B2 no terminal: nothing was asked (nobody was there to ask)" \
+  "printf '%s' \"\$pfb\" | qgrep -q 'asked 0 question'"
+check "B2 no terminal: the default it proceeded on is RECORDED all the same" \
+  "[ \"\$(jget '$PFB_J' 'd[\"launchDir\"]')\" = '$TMPROOT/tmp' ]"
+# THE LIVE CONTROL for every B2 assertion above: the identical command on the
+# identical repo state, with a terminal, prints the OTHER answer. Two arms
+# printing the same thing would mean the detection is not detecting anything.
+check "B2 CONTROL: the terminal arm did NOT take the no-terminal path" \
+  "! printf '%s' \"\$pfa\" | qgrep -q 'NO TERMINAL'"
+check "B2 CONTROL: the two arms disagree about how many questions were asked" \
+  "printf '%s' \"\$pfa\" | qgrep -q 'asked 1 question' && printf '%s' \"\$pfb\" | qgrep -q 'asked 0 question'"
+
+# --- B4: the questions cover all three prerequisites -----------------------
+check "B4 covers where the launch copies go" \
+  "printf '%s' \"\$pfb\" | qgrep -qi 'launch copies'"
+check "B4 covers whether a test command is recorded" \
+  "printf '%s' \"\$pfb\" | qgrep -qi 'test command'"
+check "B4 covers whether there is somewhere to push" \
+  "printf '%s' \"\$pfb\" | qgrep -qi 'somewhere to push'"
+check "B4 reads the ALREADY RECORDED test command instead of re-deriving it" \
+  "printf '%s' \"\$pfb\" | qgrep -qF 'bash tests/run.sh'"
+check "B4 names the remote it found, so the push gate is settled up front" \
+  "printf '%s' \"\$pfb\" | qgrep -q 'origin'"
+
+# --- B3: prerequisites already satisfied → it asks NOTHING ------------------
+# Same rig, same repo, a terminal present both times — so the only difference
+# is that the first run settled the question. That is the control.
+pfa2="$(ap_pty "$PFA" "" preflight)"
+check "B3 satisfied: a second run with a terminal asks NOTHING" \
+  "printf '%s' \"\$pfa2\" | qgrep -q 'asked 0 question'"
+check "B3 satisfied: it says the recorded answer is why" \
+  "printf '%s' \"\$pfa2\" | qgrep -qi 'already recorded'"
+check "B3 CONTROL: the FIRST run on that same repo did ask one" \
+  "printf '%s' \"\$pfa\" | qgrep -q 'asked 1 question'"
+check "B3 satisfied: exits 0" "printf '%s' \"\$pfa2\" | qgrep -q 'PTYEXIT 0'"
+
+# --- B2 (stdin closed, terminal still attached) ----------------------------
+# THE REGRESSION THIS PINS, MEASURED. The first cut of this detected a human by
+# `/dev/tty` ALONE. tests/harness.test.sh runs every suite from a pty with stdin
+# OPEN on purpose, and `tests/lcars-buddy.test.sh` invokes `autopilot init`; the
+# prompt opened /dev/tty, nobody was behind it, and that suite went from 5.9s to
+# ELAPSED 120.0s — the exact read bound — and was killed by the cage. A bounded
+# read turned a hang into a long hang, which is not the same as not hanging.
+#
+# So stdin being redirected is itself an answer: this whole repo's convention is
+# that a command run with stdin closed is unattended (CLAUDE.md: `tests/run.sh`
+# invokes every suite that way), and the detection has to honour it. Both halves
+# must agree before anything is asked.
+PFS="$(new_repo)"
+pfs="$(STDIN_DEVNULL=1 PF_ASKT=4 ap_pty "$PFS" NONE init --spec "$TMPROOT/pf-spec.md" --scope M0)"
+echo "    [terminal attached, stdin /dev/null] $(cage_first "$pfs")"
+check "B2-stdin: a terminal with stdin REDIRECTED asks nothing and does not wait" \
+  "printf '%s' \"\$pfs\" | qgrep -q 'asked 0 question' && printf '%s' \"\$pfs\" | qgrep -q 'NO TERMINAL'"
+check "B2-stdin: it never even printed a prompt (nothing to time out on)" \
+  "printf '%s' \"\$pfs\" | qgrep -q 'PTYPROMPTS 0 ANSWERED 0'"
+check "B2-stdin: and it came back fast — no bounded read was entered at all" \
+  "cage_first \"\$pfs\" | qgrep -q 'EXIT 0' && ! cage_first \"\$pfs\" | qgrep -q 'TIMED OUT'"
+# CONTROL: the SAME rig, the SAME repo, stdin left on the pty — it asks. The only
+# variable is fd 0, which is what makes this a measurement and not a tautology.
+PFS2="$(new_repo)"
+pfs2="$(ap_pty "$PFS2" "" init --spec "$TMPROOT/pf-spec.md" --scope M0)"
+check "B2-stdin CONTROL: with stdin left on the terminal the same run DOES ask" \
+  "printf '%s' \"\$pfs2\" | qgrep -q 'asked 1 question' && printf '%s' \"\$pfs2\" | qgrep -q 'PTYPROMPTS 1 ANSWERED 1'"
+
+# --- B2 (stop arm): the question with nothing safe to default to ------------
+# No remote means there is nowhere to push and no PR can be opened. There is
+# nothing to invent, so with nobody to ask the run STOPS DELIBERATELY — the
+# other legal outcome — and records the question rather than finding out at
+# 03:00.
+PFC="$(new_repo)"; git -C "$PFC" remote remove origin
+PFD="$(new_repo)"; git -C "$PFD" remote remove origin
+pfc="$(ap_caged 30 "$PFC" init --spec "$TMPROOT/pf-spec.md" --scope M0)"
+echo "    [no-remote, no terminal] $(cage_first "$pfc")"
+PFC_J="$PFC/.git/lcars/autopilot.json"
+check "B2-stop: the caged run RETURNED (it did not hang)" \
+  "cage_first \"\$pfc\" | qgrep -q 'EXIT' && ! cage_first \"\$pfc\" | qgrep -q 'TIMED OUT'"
+check "B2-stop: it STOPPED deliberately, with the captain-question exit code" \
+  "cage_first \"\$pfc\" | qgrep -q 'EXIT 10'"
+check "B2-stop: it says it is stopping, and why" \
+  "printf '%s' \"\$pfc\" | qgrep -qi 'STOPPING' && printf '%s' \"\$pfc\" | qgrep -qi 'nowhere to push'"
+check "B2-stop: the stop is RECORDED as a real question, not just printed" \
+  "python3 -c 'import json,sys;d=json.load(open(sys.argv[1]));sys.exit(0 if [q for q in d[\"questions\"].values() if not q.get(\"answeredAt\")] else 1)' '$PFC_J'"
+check "B2-stop: and the question names the one command that would fix it" \
+  "printf '%s' \"\$pfc\" | qgrep -q 'git remote add origin'"
+# CONTROL: the same missing prerequisite, WITH a terminal, is a question he can
+# answer in one line instead of a stop.
+# TWO prompts are outstanding on this repo (the launch dir, then the push), so
+# the answers are "return, then local" - in order.
+pfd="$(ap_pty "$PFD" "|local" init --spec "$TMPROOT/pf-spec.md" --scope M0)"
+PFD_J="$PFD/.git/lcars/autopilot.json"
+check "B2-stop CONTROL: with a terminal the same gap is ASKED, not stopped on" \
+  "printf '%s' \"\$pfd\" | qgrep -q 'asked 2 question' && printf '%s' \"\$pfd\" | qgrep -q 'PTYEXIT 0'"
+check "B2-stop CONTROL: his answer is recorded as the push mode" \
+  "[ \"\$(jget '$PFD_J' 'd[\"push\"][\"mode\"]')\" = 'local-only' ]"
+check "B2-stop CONTROL: and it did NOT record a question" \
+  "[ \"\$(jget '$PFD_J' 'd[\"questions\"]')\" = '{}' ]"
+
+# --- B2 (the tty with nobody behind it) ------------------------------------
+# A terminal EXISTS but the human has gone — `nohup … &` from a login shell, or
+# a detached tmux pane. /dev/tty still opens, so detection alone cannot save
+# this case: every read is BOUNDED, and a read that nobody answers falls through
+# to exactly the no-terminal decision. Costing 2 seconds, never the night.
+PFE="$(new_repo)"
+pfe="$(PF_ASKT=2 PF_PTYDL=20 ap_pty "$PFE" NONE init --spec "$TMPROOT/pf-spec.md" --scope M0)"
+echo "    [tty, nobody answering] $(cage_first "$pfe")"
+check "B2-idle RIG CONTROL: a prompt WAS printed and nothing answered it" \
+  "printf '%s' \"\$pfe\" | qgrep -q 'PTYPROMPTS 1 ANSWERED 0'"
+check "B2-idle: a terminal nobody answers still RETURNS (bounded read)" \
+  "cage_first \"\$pfe\" | qgrep -q 'EXIT' && ! cage_first \"\$pfe\" | qgrep -q 'TIMED OUT'"
+check "B2-idle: it says nobody answered" \
+  "printf '%s' \"\$pfe\" | qgrep -qi 'nobody answered'"
+check "B2-idle: and proceeds on the stated default" \
+  "[ \"\$(jget '$PFE/.git/lcars/autopilot.json' 'd[\"launchDir\"]')\" = '$TMPROOT/tmp' ]"
+
+# --- RECORD, DON'T INFER: the fourth failure, surfaced at the gate ---------
+# The run that could not open a PR had the answer on disk already. LCARS writes
+# `githubIssue: null` into a mission's OWN state.json when it had no forge to
+# reach; the gate re-derived its own view and missed it. preflight READS that
+# record.
+PFR="$(new_repo)"
+ap "$PFR" init --spec "$TMPROOT/pf-spec.md" --scope M0 >/dev/null 2>&1
+new_mission "$PFR" lcars-pf-noissue verify
+pfr_state="$PFR/.git/lcars/missions/lcars-pf-noissue/state.json"
+pf_set_issue() { # <json-value>
+  python3 - "$pfr_state" "$1" <<'PFPY'
+import json, sys
+p, v = sys.argv[1], sys.argv[2]
+d = json.load(open(p))
+d["githubIssue"] = None if v == "null" else int(v)
+json.dump(d, open(p, "w"))
+PFPY
+}
+pf_set_issue null
+pfr="$(ap_caged 25 "$PFR" preflight)"
+echo "    [no forge issue recorded] $(cage_first "$pfr")"
+check "record-dont-infer: the caged run RETURNED" \
+  "cage_first \"\$pfr\" | qgrep -q 'EXIT' && ! cage_first \"\$pfr\" | qgrep -q 'TIMED OUT'"
+check "record-dont-infer: a mission LCARS recorded as having NO forge issue is surfaced AT THE GATE" \
+  "printf '%s' \"\$pfr\" | qgrep -q 'lcars-pf-noissue' && printf '%s' \"\$pfr\" | qgrep -q 'githubIssue'"
+# CONTROL: the same repo, the same command, with a real issue recorded - silent.
+pf_set_issue 7
+pfr2="$(ap_caged 25 "$PFR" preflight)"
+check "record-dont-infer CONTROL: with an issue recorded it says nothing of the kind" \
+  "! printf '%s' \"\$pfr2\" | qgrep -q 'lcars-pf-noissue'"
+
+# --- the recorded answer is LOAD-BEARING, not theatre ----------------------
+# Recording where the launch copies go would be decoration if `worktree` still
+# hard-coded ${TMPDIR:-/tmp}. It is read back.
+PFW="$(new_repo)"
+ap "$PFW" init --spec "$TMPROOT/pf-spec.md" --scope M0 >/dev/null 2>&1
+mkdir -p "$TMPROOT/elsewhere"
+ap "$PFW" record launchDir "$TMPROOT/elsewhere" >/dev/null 2>&1
+new_mission "$PFW" lcars-pf-wt verify
+pfw="$(ap "$PFW" worktree lcars-pf-wt 2>&1)"
+check "the recorded launch directory is where the launch copies are MADE" \
+  "printf '%s' \"\$pfw\" | qgrep -qF 'WORKTREE: $TMPROOT/elsewhere'"
+# CONTROL on the SAME repo: delete the record and the launch copies go back to
+# ${TMPDIR:-/tmp}. Two arms, two different directories.
+ap "$PFW" record launchDir '' >/dev/null 2>&1
+check "CONTROL: with none recorded they fall back to TMPDIR" \
+  "printf '%s' \"\$(ap '$PFW' worktree lcars-pf-wt 2>&1)\" | qgrep -qF 'WORKTREE: $TMPROOT/tmp'"
+
+# The playbook and the script must not drift: the mode's own prose has to name
+# the verb, or the next model walks away without running it.
+check "AUTOPILOT.md names the preflight verb, and says to run it before walking away" \
+  "qgrep -qF 'lcars-autopilot preflight' '$APM'"
+check "the driver documents the \`preflight\` subcommand in its own usage" \
+  "out=\$(ap '$PFB' --help 2>&1 || true); printf '%s' \"\$out\" | qgrep -q 'preflight'"
+
+# ==========================================================================
+# S300 fix round 1 — the three environmental facts, the background launch,
+#                    and a stop he can actually settle
+# ==========================================================================
+# WHAT A FRESH TESTER FOUND after the block above went green: preflight was
+# "checking the three things it can compute locally and missing the three
+# environmental facts that actually killed the nights", plus two high-severity
+# holes of its own. Each arm below is one of those, and each is paired with a
+# live control that must print a DIFFERENT answer.
+
+echo
+echo "-- S300 fix1. the background launch, reachability, the environment, a settleable stop --"
+
+PTYRUN="$REPO_ROOT/tests/lib/ptyrun.py"
+check "F0 the pty runner this section depends on exists" "[ -f '$PTYRUN' ]"
+
+# --- the rigs -------------------------------------------------------------
+# A FAITHFUL BACKGROUND LAUNCH, and `set -m` is what makes it faithful: job
+# control is ON in every interactive and login shell, so `cmd &` there gets its
+# OWN process group and is NOT the terminal's foreground group — which is the
+# only condition that produces SIGTTIN. Without `set -m` the `&` child stays in
+# the shell's foreground group, the bug cannot happen, and a rig built that way
+# would pass while proving nothing. The verdict is read from `ps -o stat=`:
+# process state `T` IS the failure, measured, not inferred.
+PFBG="$TMPROOT/pf-bg.sh"
+cat >"$PFBG" <<'BGRIG'
+#!/usr/bin/env bash
+set -m
+OUT="$1"; shift
+"$@" >"$OUT" 2>&1 &
+child=$!
+echo "BGPID $child"
+i=0
+while [ "$i" -lt 80 ]; do
+  if kill -0 "$child" 2>/dev/null; then
+    st="$(ps -o stat= -p "$child" 2>/dev/null | tr -d ' ')"
+    case "$st" in
+      *T*) echo "BGSTAT $st"; echo "BGVERDICT STOPPED-SIGTTIN"; kill -9 "$child" 2>/dev/null; exit 0 ;;
+    esac
+    echo "BGSTAT $st"
+  else
+    echo "BGVERDICT EXITED"
+    exit 0
+  fi
+  sleep 0.25
+  i=$((i + 1))
+done
+echo "BGVERDICT STILL-RUNNING"
+kill -9 "$child" 2>/dev/null
+exit 0
+BGRIG
+
+# ap_bg <repo> <args…> — the driver launched as a REAL background job from a
+# REAL terminal: the pty is its controlling terminal, and it is in a process
+# group that is not the foreground one. Prints the rig's verdict lines and then
+# the driver's own output.
+ap_bg() {
+  local repo="$1"; shift
+  mkdir -p "$TMPROOT/tmp"
+  local e; e="$(pf_env "$repo" | tr '\n' ' ')"
+  local out; out="$(mktemp "$TMPROOT/bg.XXXXXX")"
+  local rep
+  rep="$(python3 "$CAGE" 45 python3 "$PTYRUN" bash "$PFBG" "$out" env $e bash "$SCRIPT" "$@" 2>&1)"
+  printf '%s\nBGCHILD-OUTPUT\n%s\n' "$rep" "$(cat "$out")"
+}
+
+# --- F1: a background launch must not hang for ever on SIGTTIN -------------
+# MEASURED BEFORE THE FIX: `bash autopilot.sh init --spec … &` from a terminal
+# printed question 1, went to process state `T`, and stayed there for the full
+# 60s of observation — zero output, zero progress, no exit. That is the
+# `nohup`/detached-tmux shape AND the shape ORCHESTRATION.md tells the captain
+# to use ("detach every leg"), so it is the common case, not the exotic one. It
+# is also exactly "a blocked run and a healthy idle run look identical from
+# outside" — the failure this whole step exists to abolish — reintroduced by the
+# fix for it.
+PF1="$(new_repo)"
+pf1="$(ap_bg "$PF1" init --spec "$TMPROOT/pf-spec.md" --scope M0)"
+echo "    [background job] $(printf '%s' "$pf1" | qgrep -o 'BGVERDICT .*' | sed -n 1p)"
+check "F1 a REAL background job EXITED (it did not sit in SIGTTIN state T)" \
+  "printf '%s' \"\$pf1\" | qgrep -q 'BGVERDICT EXITED'"
+check "F1 and it was NEVER once observed in process state T" \
+  "! printf '%s' \"\$pf1\" | qgrep -qE '^BGSTAT [A-Z]*T'"
+check "F1 RIG CONTROL: the rig did observe the job running at all (it is watching something)" \
+  "printf '%s' \"\$pf1\" | qgrep -qE '^BGSTAT |BGVERDICT EXITED' && printf '%s' \"\$pf1\" | qgrep -q 'BGPID '"
+check "F1 it says WHY it asked nothing: it is a background job" \
+  "printf '%s' \"\$pf1\" | qgrep -qi 'BACKGROUND job'"
+check "F1 and it names the measurement — the foreground group it is not in" \
+  "printf '%s' \"\$pf1\" | qgrep -qi 'foreground group'"
+check "F1 it did the work anyway: the defaulted answer is RECORDED" \
+  "[ \"\$(jget '$PF1/.git/lcars/autopilot.json' 'd[\"launchDir\"]')\" = '$TMPROOT/tmp' ]"
+check "F1 it asked nothing (a background job cannot be answered)" \
+  "printf '%s' \"\$pf1\" | qgrep -q 'asked 0 question'"
+# THE LIVE CONTROL. The same driver, the same repo state, the same pty — in the
+# FOREGROUND. It asks. Two arms, one variable (the process group), two answers.
+PF1C="$(new_repo)"
+pf1c="$(ap_pty "$PF1C" "" init --spec "$TMPROOT/pf-spec.md" --scope M0)"
+check "F1 CONTROL: in the FOREGROUND of a terminal the same run DOES ask" \
+  "printf '%s' \"\$pf1c\" | qgrep -q 'asked 1 question' && printf '%s' \"\$pf1c\" | qgrep -q 'PTYPROMPTS 1 ANSWERED 1'"
+check "F1 CONTROL: and the foreground arm says nothing about a background job" \
+  "! printf '%s' \"\$pf1c\" | qgrep -qi 'BACKGROUND job'"
+
+# --- F1b: the reason printed is the reason FOUND, not one guess ------------
+# "NO TERMINAL — there is no /dev/tty to ask on" was printed for every case,
+# including a run whose /dev/tty was perfectly good and whose stdin was merely
+# redirected. Three arms, three different reasons, is the control.
+PF1S="$(new_repo)"
+ap "$PF1S" init --spec "$TMPROOT/pf-spec.md" --scope M0 >/dev/null 2>&1
+pf1s="$(STDIN_DEVNULL=1 PF_ASKT=4 ap_pty "$PF1S" NONE preflight)"
+PF1N="$(new_repo)"
+ap "$PF1N" init --spec "$TMPROOT/pf-spec.md" --scope M0 >/dev/null 2>&1
+pf1n="$(ap_caged 30 "$PF1N" preflight)"
+check "F1b stdin redirected: the reason names STDIN, not a missing /dev/tty" \
+  "printf '%s' \"\$pf1s\" | qgrep -qi 'stdin is not a terminal'"
+check "F1b no controlling terminal: THAT reason names /dev/tty" \
+  "printf '%s' \"\$pf1n\" | qgrep -qi 'no /dev/tty'"
+check "F1b CONTROL: the three no-ask reasons are three DIFFERENT sentences" \
+  "! printf '%s' \"\$pf1s\" | qgrep -qi 'no /dev/tty' && ! printf '%s' \"\$pf1n\" | qgrep -qi 'stdin is not a terminal' && ! printf '%s' \"\$pf1n\" | qgrep -qi 'BACKGROUND job'"
+
+# --- F2: the push check must speak to the remote, not read its name --------
+# MEASURED BEFORE THE FIX: `git remote set-url origin
+# https://github.invalid.example/nope/nope.git` and a dead local path both gave
+# `ELAPSED 0.4s EXIT 0 … Somewhere to push: origin -> … — not asking.` The 0.4s
+# is itself the proof it never spoke to the far end. A deleted repo, a typo'd
+# host and revoked auth all pass a name check and die at the pull-request gate
+# at 03:00 — the fourth dead night's exact class.
+PF2="$(new_repo)"
+ap "$PF2" init --spec "$TMPROOT/pf-spec.md" --scope M0 >/dev/null 2>&1
+git -C "$PF2" remote set-url origin "$TMPROOT/there-is-no-repo-here.git"
+pf2="$(ap_caged 40 "$PF2" preflight)"
+echo "    [origin is a dead path] $(cage_first "$pf2")"
+check "F2 RIG CONTROL: a NAME check still passes on this repo (get-url succeeds)" \
+  "git -C '$PF2' remote get-url origin >/dev/null 2>&1"
+check "F2 the dead remote is caught: it STOPS with the captain-question code" \
+  "cage_first \"\$pf2\" | qgrep -q 'EXIT 10'"
+check "F2 and it says the remote does not answer" \
+  "printf '%s' \"\$pf2\" | qgrep -qi 'does NOT answer'"
+check "F2 the stop is a RECORDED question, not just a printed line" \
+  "python3 -c 'import json,sys;d=json.load(open(sys.argv[1]));sys.exit(0 if [q for q in d[\"questions\"].values() if not q.get(\"answeredAt\") and \"does not answer\" in q[\"what\"]] else 1)' '$PF2/.git/lcars/autopilot.json'"
+check "F2 and it names the command that shows him what the remote said" \
+  "printf '%s' \"\$pf2\" | qgrep -q 'ls-remote origin'"
+# CONTROL: the SAME repo, origin pointed back at the real local bare repo it was
+# created with. Reachable, and it says so. One variable, two answers.
+git -C "$PF2" remote set-url origin "$PF2.git"
+pf2c="$(ap_caged 40 "$PF2" preflight)"
+check "F2 CONTROL: with a remote that DOES answer the same run proceeds" \
+  "cage_first \"\$pf2c\" | qgrep -q 'EXIT 0' && printf '%s' \"\$pf2c\" | qgrep -qi 'reachable'"
+check "F2 CONTROL: and the two arms disagree (one stops, one proceeds)" \
+  "cage_first \"\$pf2\" | qgrep -q 'EXIT 10' && cage_first \"\$pf2c\" | qgrep -q 'EXIT 0'"
+# AND THE PROBE ITSELF CANNOT BECOME THE HANG. A reachability check that hangs
+# is strictly worse than none: it IS the silent forever-hang this step exists to
+# abolish. 10.255.255.1 is a non-routable address that black-holes the SYN, so
+# an unbounded probe would sit there until the TCP stack gave up (minutes).
+PF2B="$(new_repo)"
+ap "$PF2B" init --spec "$TMPROOT/pf-spec.md" --scope M0 >/dev/null 2>&1
+git -C "$PF2B" remote set-url origin https://10.255.255.1/nope/nope.git
+pf2b="$(PF_PROBET=6 ap_caged 60 "$PF2B" preflight)"
+pf2b_el="$(cage_first "$pf2b" | sed -n 's/^ELAPSED \([0-9.]*\)s.*/\1/p')"
+echo "    [origin black-holes the connection, 6s bound] $(cage_first "$pf2b")"
+check "F2b a black-holed host does NOT hang: the cage got a verdict, not a timeout" \
+  "! cage_first \"\$pf2b\" | qgrep -q 'TIMED OUT' && cage_first \"\$pf2b\" | qgrep -q 'EXIT 10'"
+check "F2b and it came back inside the bound it printed (measured ELAPSED ${pf2b_el:-?}s < 30s)" \
+  "python3 -c 'import sys; sys.exit(0 if float(sys.argv[1]) < 30 else 1)' \"\${pf2b_el:-999}\""
+check "F2b it says the probe outran its bound, rather than inventing a reason" \
+  "printf '%s' \"\$pf2b\" | qgrep -qi 'outran its'"
+check "F2b and it leaves no orphan ls-remote behind (the bound kills the group)" \
+  "[ \"\$(ps -eo command= | grep -c '[l]s-remote --exit-code origin' || true)\" = 0 ]"
+
+# --- F3: the environment the nights actually died on ----------------------
+# 1. COPILOT_ALLOW_ALL. This playbook's OPENING SECTION is about it: with it
+#    unset a measured buddy round was refused on every command, including
+#    read-only ones, with "Permission denied because no interactive user
+#    response was available", and nothing inside a blocked run can detect or
+#    recover from it. Three of the four dead nights are this one fact, and a
+#    grep of the whole init+preflight output for COPILOT_ALLOW_ALL, allow-all,
+#    permission and authenticat found ZERO mentions.
+PF3="$(new_repo)"
+pf3="$(PF_ALLOW_ALL= ap_caged 40 "$PF3" init --spec "$TMPROOT/pf-spec.md" --scope M0)"
+echo "    [engine copilot, COPILOT_ALLOW_ALL unset] $(cage_first "$pf3")"
+check "F3a COPILOT_ALLOW_ALL unset on a copilot run is CAUGHT" \
+  "printf '%s' \"\$pf3\" | qgrep -q 'COPILOT_ALLOW_ALL'"
+check "F3a it STOPS deliberately rather than starting a run that is refused on every command" \
+  "cage_first \"\$pf3\" | qgrep -q 'EXIT 10' && printf '%s' \"\$pf3\" | qgrep -qi 'STOPPING'"
+check "F3a the stop names the exact command that fixes it, in the shell he launches from" \
+  "printf '%s' \"\$pf3\" | qgrep -qF 'export COPILOT_ALLOW_ALL=true'"
+check "F3a and it is RECORDED as a settleable question" \
+  "python3 -c 'import json,sys;d=json.load(open(sys.argv[1]));sys.exit(0 if [q for q in d[\"questions\"].values() if not q.get(\"answeredAt\") and \"COPILOT_ALLOW_ALL\" in q[\"what\"]] else 1)' '$PF3/.git/lcars/autopilot.json'"
+check "F3a it says what a blocked run looks like from outside (why nobody notices)" \
+  "printf '%s' \"\$pf3\" | qgrep -qi 'Permission denied'"
+# CONTROL: the same repo, the same command, the variable exported — it proceeds.
+pf3c="$(ap_caged 40 "$PF3" preflight)"
+check "F3a CONTROL: with COPILOT_ALLOW_ALL=true exported the same run proceeds" \
+  "cage_first \"\$pf3c\" | qgrep -q 'EXIT 0' && printf '%s' \"\$pf3c\" | qgrep -qi 'not asking'"
+check "F3a CONTROL: the two arms disagree about whether this is a stop" \
+  "cage_first \"\$pf3\" | qgrep -q 'EXIT 10' && cage_first \"\$pf3c\" | qgrep -q 'EXIT 0'"
+# TRUTHY-BUT-WRONG is a FAILING value, and AUTOPILOT.md says so: `1`, `yes`, `on`
+# and `y` auto-approve TOOLS without trusting the working directory. It is the
+# hardest version of this to debug at 03:00 and the cheapest to catch here.
+PF3T="$(new_repo)"
+ap "$PF3T" init --spec "$TMPROOT/pf-spec.md" --scope M0 >/dev/null 2>&1
+pf3t="$(PF_ALLOW_ALL=1 ap_caged 40 "$PF3T" preflight)"
+check "F3b COPILOT_ALLOW_ALL=1 is NOT accepted (only the string true trusts the directory)" \
+  "cage_first \"\$pf3t\" | qgrep -q 'EXIT 10' && printf '%s' \"\$pf3t\" | qgrep -qF 'NOT the string'"
+# ENGINE-AWARE: a claude run is not affected, and says so. Third answer.
+PF3E="$(new_repo)"
+python3 - "$PF3E/.git/lcars/config.json" <<'PFE'
+import json, sys
+p = sys.argv[1]
+d = json.load(open(p))
+d["engine"] = "claude"
+json.dump(d, open(p, "w"))
+PFE
+pf3e="$(PF_ALLOW_ALL= ap_caged 40 "$PF3E" init --spec "$TMPROOT/pf-spec.md" --scope M0)"
+check "F3c engine-aware: a CLAUDE run is not stopped by a copilot variable" \
+  "cage_first \"\$pf3e\" | qgrep -q 'EXIT 0' && printf '%s' \"\$pf3e\" | qgrep -qi 'engine is claude'"
+check "F3c CONTROL: the identical gap on a COPILOT run does stop" \
+  "cage_first \"\$pf3\" | qgrep -q 'EXIT 10'"
+
+# 2. `gh auth status`. No authentication, no pull request — the same class and
+#    the same cost as having no remote, and a one-line check.
+PF3G="$(new_repo)"
+ap "$PF3G" init --spec "$TMPROOT/pf-spec.md" --scope M0 >/dev/null 2>&1
+PF3G_J="$PF3G/.git/lcars/autopilot.json"
+# A forge-SHAPED url (so there IS an account to log in to) at a non-routable
+# address (so no arm here depends on the network). Its reachability question is
+# answered first, deliberately: this arm measures the LOGIN, not the host.
+git -C "$PF3G" remote set-url origin https://10.255.255.1/nope/nope.git
+pf3g0="$(PF_PROBET=4 PF_GH="$PFGH_YES" ap_caged 60 "$PF3G" preflight)"
+ap "$PF3G" answered "$(jget "$PF3G_J" 'd["pending"]["id"]')" "push anyway" >/dev/null 2>&1
+pf3g="$(PF_PROBET=4 PF_GH="$PFGH_NO" ap_caged 60 "$PF3G" preflight)"
+echo "    [forge remote, gh logged OUT] $(cage_first "$pf3g")"
+check "F3d a forge remote with the CLI logged OUT is caught" \
+  "printf '%s' \"\$pf3g\" | qgrep -qi 'NOT logged in'"
+check "F3d it STOPS: no login, no pull request, whatever the run builds" \
+  "cage_first \"\$pf3g\" | qgrep -q 'EXIT 10'"
+check "F3d and it names the one command that fixes it" \
+  "printf '%s' \"\$pf3g\" | qgrep -q 'auth login'"
+check "F3d recorded as a settleable question" \
+  "python3 -c 'import json,sys;d=json.load(open(sys.argv[1]));sys.exit(0 if [q for q in d[\"questions\"].values() if not q.get(\"answeredAt\") and \"not logged in\" in q[\"what\"]] else 1)' '$PF3G/.git/lcars/autopilot.json'"
+# CONTROL: the same repo, the same remote, a logged-IN CLI. Proceeds.
+pf3gc="$(PF_PROBET=4 PF_GH="$PFGH_YES" ap_caged 60 "$PF3G" preflight)"
+check "F3d CONTROL: with the CLI logged IN the same run proceeds" \
+  "printf '%s' \"\$pf3gc\" | qgrep -qi 'says logged in' && ! printf '%s' \"\$pf3gc\" | qgrep -qi 'NOT logged in'"
+# AND IT IS SCOPED. The suite's own origin is a local bare repo: there is no
+# forge and no account, so stopping on a login would be a false stop. Fourth
+# answer from the same check.
+check "F3d scoped: a LOCAL-path origin has no forge to log in to, and is not stopped on" \
+  "printf '%s' \"\$pf2c\" | qgrep -qi 'local path' && cage_first \"\$pf2c\" | qgrep -q 'EXIT 0'"
+
+# --- F4: the stop must be SETTLEABLE, and must WITHDRAW when cured ---------
+# MEASURED BEFORE THE FIX, both halves:
+#   `answered q1 "ship local-only, no push"` recorded the answer and NOTHING
+#   read it, so the next preflight minted q2 with identical text. Four attempts
+#   produced ['q1','q2','q3','q4','q5'] — one question, five times, in the inbox
+#   of a man answering from his phone.
+#   And after `git remote add origin …`, preflight said `proceeding` while
+#   `status` still showed `open questions: 1 [q5] … no origin remote` and `next`
+#   said `answer-pending`: he had to hand-answer something no longer true to
+#   unstick a run that was already unstuck.
+PF4="$(new_repo)"; git -C "$PF4" remote remove origin
+PF4_J="$PF4/.git/lcars/autopilot.json"
+pf4a="$(ap_caged 40 "$PF4" init --spec "$TMPROOT/pf-spec.md" --scope M0)"
+pf4qid="$(jget "$PF4_J" 'd["pending"]["id"]')"
+check "F4 the no-remote stop raised exactly ONE question, with an id" \
+  "[ -n '$pf4qid' ] && [ \"\$(jget '$PF4_J' 'len(d[\"questions\"])')\" = 1 ]"
+# He answers it, from his phone, in his own words.
+ap "$PF4" answered "$pf4qid" "ship local-only, no push" >/dev/null 2>&1
+pf4b="$(ap_caged 40 "$PF4" preflight)"
+pf4c="$(ap_caged 40 "$PF4" preflight)"
+pf4d="$(ap_caged 40 "$PF4" preflight)"
+echo "    [answered, then three more preflights] $(cage_first "$pf4d") / questions: $(jget "$PF4_J" 'sorted(d["questions"])')"
+check "F4a his answer is READ: the stop is settled and the run proceeds" \
+  "cage_first \"\$pf4b\" | qgrep -q 'EXIT 0'"
+check "F4a and three further runs mint NO clones — still exactly one question" \
+  "[ \"\$(jget '$PF4_J' 'len(d[\"questions\"])')\" = 1 ]"
+check "F4a the free-form answer is ACTED ON, not just stored (push.mode = local-only)" \
+  "[ \"\$(jget '$PF4_J' 'd[\"push\"][\"mode\"]')\" = 'local-only' ]"
+check "F4a and it says whose decision it is proceeding on" \
+  "printf '%s' \"\$pf4b\" | qgrep -qi 'SETTLED BY YOU'"
+# CONTROL: the identical repo state with the question LEFT UNANSWERED keeps
+# stopping, and says nothing about being settled. One variable: the answer.
+PF4U="$(new_repo)"; git -C "$PF4U" remote remove origin
+pf4u1="$(ap_caged 40 "$PF4U" init --spec "$TMPROOT/pf-spec.md" --scope M0)"
+pf4u2="$(ap_caged 40 "$PF4U" preflight)"
+check "F4a CONTROL: unanswered, the same stop still stops" \
+  "cage_first \"\$pf4u2\" | qgrep -q 'EXIT 10' && ! printf '%s' \"\$pf4u2\" | qgrep -qi 'SETTLED BY YOU'"
+check "F4a CONTROL: and it still never minted a second question either" \
+  "[ \"\$(jget '$PF4U/.git/lcars/autopilot.json' 'len(d[\"questions\"])')\" = 1 ]"
+
+# WITHDRAWAL: cure the cause and the question retires itself.
+PF4W="$(new_repo)"; git -C "$PF4W" remote remove origin
+PF4W_J="$PF4W/.git/lcars/autopilot.json"
+pf4w1="$(ap_caged 40 "$PF4W" init --spec "$TMPROOT/pf-spec.md" --scope M0)"
+pf4w_before_status="$(ap "$PF4W" status 2>&1 || true)"
+pf4w_before_next="$(ap "$PF4W" next 2>&1 || true)"
+git -C "$PF4W" remote add origin "$PF4W.git"
+pf4w2="$(ap_caged 40 "$PF4W" preflight)"
+pf4w_after_status="$(ap "$PF4W" status 2>&1 || true)"
+pf4w_after_next="$(ap "$PF4W" next 2>&1 || true)"
+check "F4b CONTROL (before the cure): status shows the open question and next is parked" \
+  "printf '%s' \"\$pf4w_before_status\" | qgrep -q 'open questions for the captain: 1' && printf '%s' \"\$pf4w_before_next\" | qgrep -q 'answer-pending'"
+check "F4b after the cure the run proceeds" \
+  "cage_first \"\$pf4w2\" | qgrep -q 'EXIT 0'"
+check "F4b and the question WITHDRAWS itself — he never answers a dead question" \
+  "printf '%s' \"\$pf4w2\" | qgrep -q 'WITHDRAWN'"
+check "F4b status agrees: nothing is open any more" \
+  "printf '%s' \"\$pf4w_after_status\" | qgrep -q 'open questions for the captain: none'"
+check "F4b and next is no longer parked on an answer that is not needed" \
+  "! printf '%s' \"\$pf4w_after_next\" | qgrep -q 'answer-pending'"
+check "F4b it never DELETED the question — the record keeps it, withdrawn" \
+  "[ \"\$(jget '$PF4W_J' 'len(d[\"questions\"])')\" = 1 ] && [ -n \"\$(jget '$PF4W_J' 'd[\"questions\"][\"q1\"].get(\"withdrawnAt\")')\" ]"
+# A WITHDRAWAL IS NOT A DECISION. Break it again: a prerequisite that breaks
+# AFTER being cured is a real new event and must earn a real new question, not
+# proceed silently on preflight's own retirement note.
+git -C "$PF4W" remote remove origin
+pf4w3="$(ap_caged 40 "$PF4W" preflight)"
+check "F4c a prerequisite that breaks AGAIN raises a real new question" \
+  "cage_first \"\$pf4w3\" | qgrep -q 'EXIT 10' && [ \"\$(jget '$PF4W_J' 'len(d[\"questions\"])')\" = 2 ]"
+check "F4c CONTROL: and it did NOT read its own withdrawal as the captain's decision" \
+  "! printf '%s' \"\$pf4w3\" | qgrep -qi 'SETTLED BY YOU'"
+# AN ANSWER IT CANNOT ACT ON is said out loud and raises NOTHING. The inbox is
+# never the place a misunderstanding multiplies.
+PF4G="$(new_repo)"; git -C "$PF4G" remote remove origin
+pf4g1="$(ap_caged 40 "$PF4G" init --spec "$TMPROOT/pf-spec.md" --scope M0)"
+ap "$PF4G" answered q1 "ok" >/dev/null 2>&1
+pf4g2="$(ap_caged 40 "$PF4G" preflight)"
+check "F4d an answer that is neither a URL nor local-only is named as unusable" \
+  "printf '%s' \"\$pf4g2\" | qgrep -qi 'cannot act on it'"
+check "F4d it still stops (nothing was invented) but raises no clone" \
+  "cage_first \"\$pf4g2\" | qgrep -q 'EXIT 10' && [ \"\$(jget '$PF4G/.git/lcars/autopilot.json' 'len(d[\"questions\"])')\" = 1 ]"
+
+# --- F5: an answer that cannot work is caught while he is in the room ------
+# MEASURED: `/nonexistent/…`, `/System/Library` (real, unwritable) and a bare
+# `ok` were all accepted verbatim — `ok` recorded as a RELATIVE launchDir — and
+# each one fails hours later inside `worktree`, with nobody there.
+PF5="$(new_repo)"
+pf5="$(ap_pty "$PF5" "ok" init --spec "$TMPROOT/pf-spec.md" --scope M0)"
+check "F5 a relative answer is NOT recorded as the launch directory" \
+  "[ \"\$(jget '$PF5/.git/lcars/autopilot.json' 'd[\"launchDir\"]')\" != 'ok' ]"
+check "F5 it says why, and names the vetted default it took instead" \
+  "printf '%s' \"\$pf5\" | qgrep -qi 'not an absolute path' && [ \"\$(jget '$PF5/.git/lcars/autopilot.json' 'd[\"launchDir\"]')\" = '$TMPROOT/tmp' ]"
+PF5U="$(new_repo)"
+pf5u="$(ap_pty "$PF5U" "/System/Library" init --spec "$TMPROOT/pf-spec.md" --scope M0)"
+check "F5 a real but UNWRITABLE directory is not recorded either" \
+  "[ \"\$(jget '$PF5U/.git/lcars/autopilot.json' 'd[\"launchDir\"]')\" = '$TMPROOT/tmp' ] && printf '%s' \"\$pf5u\" | qgrep -qi 'NOT WRITABLE'"
+# CONTROL: a writable absolute answer IS recorded, so this is a check and not a
+# refusal to listen.
+PF5W="$(new_repo)"
+mkdir -p "$TMPROOT/launch-here"
+pf5w="$(ap_pty "$PF5W" "$TMPROOT/launch-here" init --spec "$TMPROOT/pf-spec.md" --scope M0)"
+check "F5 CONTROL: a writable absolute answer IS recorded, verbatim" \
+  "[ \"\$(jget '$PF5W/.git/lcars/autopilot.json' 'd[\"launchDir\"]')\" = '$TMPROOT/launch-here' ]"
+
+# --- F7: the driver must not offer to drive past its own preflight stop ----
+# MEASURED: the driver printed `ALSO RUNNABLE: foundation` beside its own
+# preflight stop, while AUTOPILOT.md says plainly not to drive a milestone past
+# one. `next` is the one line a model reads for its next move, so the two
+# surfaces cannot disagree there.
+PF7="$(new_repo)"; git -C "$PF7" remote remove origin
+pf7init="$(ap_caged 40 "$PF7" init --spec "$TMPROOT/pf-spec.md" --scope M0)"
+pf7="$(ap "$PF7" next 2>&1 || true)"
+check "F7 a run-wide prerequisite is surfaced as the next step" \
+  "printf '%s' \"\$pf7\" | qgrep -q 'answer-pending'"
+check "F7 and NOTHING else is offered beside it" \
+  "! printf '%s' \"\$pf7\" | qgrep -q 'ALSO RUNNABLE' && printf '%s' \"\$pf7\" | qgrep -q 'NOTHING ELSE IS OFFERED'"
+check "F7 it names the way out rather than a milestone to drive" \
+  "printf '%s' \"\$pf7\" | qgrep -qi 'do not drive a milestone past a preflight stop'"
+# CONTROL: § 9 is untouched — a question filed against ONE MILESTONE still parks
+# only that milestone, and `next` still names the other milestone's work. Same
+# command, same verb, a question with a mission instead of none.
+check "F7 CONTROL: a MILESTONE question still leaves the other milestone runnable" \
+  "printf '%s' \"\$nx14\" | qgrep -q 'answer-pending' && printf '%s' \"\$nx14\" | qgrep -q 'verify-gate lcars-ready-1' && ! printf '%s' \"\$nx14\" | qgrep -q 'NOTHING ELSE IS OFFERED'"
+
+# ==========================================================================
+# S300 fix round 2 — what a fresh tester measured on the cures above
+# ==========================================================================
+echo "-- S300r2. a deadline is not a refusal; one command settles local-only --"
+
+# --- F8: a HEALTHY BUT SLOW remote must not be called dead ----------------
+# MEASURED: an `ext::` origin that answers correctly after 25s (a cold VPN
+# handshake, a monorepo with a huge ref advertisement, a loaded forge all look
+# like this). `git ls-remote origin` → EXIT 0 with refs in 25.2s. Preflight →
+# `ELAPSED 15.8s EXIT 10`, headline "The remote does NOT answer", body blaming
+# "a deleted repo, a typo'd host and revoked auth", advice "fix the URL or the
+# auth". Every word of that is FALSE for this repo, and the only honest part —
+# `rc 124` — was in small type underneath it. Worse, it is the ONE stop that can
+# never retire itself, because the remote stays slow, so it demands an answer
+# for ever.
+#
+# THE RIG. `ext::` runs a command as the transport, so a slow-but-correct remote
+# is a script that sleeps and then serves the suite's OWN bare repo. No network
+# is involved, and the far side is genuinely healthy — which is the whole point.
+PF8="$(new_repo)"
+PF8_J="$PF8/.git/lcars/autopilot.json"
+cat >"$TMPROOT/slowpack" <<SLOW
+#!/bin/sh
+sleep 6
+exec git upload-pack "$PF8.git"
+SLOW
+chmod +x "$TMPROOT/slowpack"
+git -C "$PF8" remote set-url origin "ext::$TMPROOT/slowpack"
+git -C "$PF8" config protocol.ext.allow always
+# RIG CONTROL, LIVE AND TIMED: the remote this arm calls "may be slow" really
+# does answer. Without this the arm could be measuring a broken fixture.
+pf8_t0="$(date +%s)"
+pf8_refs="$(git -C "$PF8" ls-remote origin 2>/dev/null | wc -l | tr -d ' ')"
+pf8_el=$(( $(date +%s) - pf8_t0 ))
+echo "    [ext:: origin, sleeps 6s then serves the real bare repo] unbounded ls-remote: ${pf8_refs} ref(s) in ${pf8_el}s"
+check "F8 RIG CONTROL: the remote is HEALTHY — an unbounded ls-remote returns refs" \
+  "[ '$pf8_refs' -ge 1 ]"
+check "F8 RIG CONTROL: and it is genuinely SLOWER than the bound the probe will use" \
+  "[ '$pf8_el' -ge 4 ]"
+ap "$PF8" init --spec "$TMPROOT/pf-spec.md" --scope M0 >/dev/null 2>&1
+pf8="$(PF_PROBET=3 ap_caged 60 "$PF8" preflight)"
+pf8qid="$(jget "$PF8_J" 'd["pending"]["id"]')"
+echo "    [preflight, 3s bound] $(cage_first "$pf8")"
+check "F8a it does NOT claim the remote does not answer" \
+  "! printf '%s' \"\$pf8\" | qgrep -qi 'does NOT answer'"
+check "F8a it names the DEADLINE instead, and says git never refused" \
+  "printf '%s' \"\$pf8\" | qgrep -qi 'did not answer IN TIME' && printf '%s' \"\$pf8\" | qgrep -qF 'rc 124' && printf '%s' \"\$pf8\" | qgrep -qi 'git never said no'"
+check "F8b it blames NOTHING it cannot support — no deleted repo, typo, revoked auth" \
+  "! printf '%s' \"\$pf8\" | qgrep -qi 'deleted' && ! printf '%s' \"\$pf8\" | qgrep -qi \"typo\" && ! printf '%s' \"\$pf8\" | qgrep -qi 'revoked auth'"
+check "F8b and it does not advise fixing the URL or the auth" \
+  "! printf '%s' \"\$pf8\" | qgrep -qi 'fix the URL'"
+check "F8c it says the remote may simply be SLOW, and names the healthy causes" \
+  "printf '%s' \"\$pf8\" | qgrep -qi 'may simply be slow' && printf '%s' \"\$pf8\" | qgrep -qi 'VPN'"
+check "F8d it offers the settle route explicitly, as a command he can paste" \
+  "printf '%s' \"\$pf8\" | qgrep -qF \"answered <id> \\\"it's just slow\\\"\""
+check "F8d and the widen-the-bound route, with the variable that does it" \
+  "printf '%s' \"\$pf8\" | qgrep -qF 'LCARS_AUTOPILOT_PROBE_TIMEOUT=60'"
+check "F8e it says this stop cannot retire itself (a slow remote stays slow)" \
+  "printf '%s' \"\$pf8\" | qgrep -qi 'cannot retire itself'"
+check "F8f the INBOX headline is the deadline, not the false 'cannot reach' one" \
+  "python3 -c 'import json,sys;d=json.load(open(sys.argv[1]));sys.exit(0 if [q for q in d[\"questions\"].values() if not q.get(\"answeredAt\") and \"inside the probe deadline\" in q[\"what\"]] else 1)' '$PF8_J'"
+check "F8f and the recorded WHY calls it a deadline rather than a refusal" \
+  "printf '%s' \"\$(jget '$PF8_J' 'd[\"pending\"][\"why\"]')\" | qgrep -qi 'a deadline, not a refusal'"
+check "F8f the recorded COMMAND offers the settle route and does NOT say fix the URL" \
+  "printf '%s' \"\$(jget '$PF8_J' 'd[\"pending\"][\"command\"]')\" | qgrep -qF \"it's just slow\" && ! printf '%s' \"\$(jget '$PF8_J' 'd[\"pending\"][\"command\"]')\" | qgrep -qi 'fix the URL'"
+# IT CLEARS FOR GOOD. The whole complaint is that this stop can never retire
+# itself, so the escape hatch it prints has to work on the very next run.
+ap "$PF8" answered "$pf8qid" "it's just slow" >/dev/null 2>&1
+pf8s="$(PF_PROBET=3 ap_caged 60 "$PF8" preflight)"
+pf8s2="$(PF_PROBET=3 ap_caged 60 "$PF8" preflight)"
+check "F8g the printed settle route WORKS: the next run proceeds on his answer" \
+  "cage_first \"\$pf8s\" | qgrep -q 'EXIT 0' && printf '%s' \"\$pf8s\" | qgrep -qi 'SETTLED BY YOU'"
+check "F8g and a slow remote that stays slow mints NO clone (still one question)" \
+  "cage_first \"\$pf8s2\" | qgrep -q 'EXIT 0' && [ \"\$(jget '$PF8_J' 'len(d[\"questions\"])')\" = 1 ]"
+# THE LIVE CONTROL: a remote that genuinely REFUSES, fast, on the same preflight.
+# 127.0.0.1:1 is nothing listening — connection refused in 0ms, no network, no
+# bound involved — so rc is a refusal and not 124. One variable (slow vs
+# refusing), and the two arms must print DIFFERENT findings.
+PF8C="$(new_repo)"
+git -C "$PF8C" remote set-url origin https://127.0.0.1:1/nope/nope.git
+ap "$PF8C" init --spec "$TMPROOT/pf-spec.md" --scope M0 >/dev/null 2>&1
+pf8c="$(PF_PROBET=3 PF_GH="$PFGH_YES" ap_caged 60 "$PF8C" preflight)"
+echo "    [CONTROL: https origin, connection REFUSED] $(cage_first "$pf8c")"
+check "F8 CONTROL: a remote that REFUSES keeps the genuine-failure wording" \
+  "printf '%s' \"\$pf8c\" | qgrep -qi 'does NOT answer' && printf '%s' \"\$pf8c\" | qgrep -qi 'deleted'"
+# The ADVICE lives in the recorded question (that is what reaches his inbox),
+# and both arms are read out of the same field so the comparison is honest.
+check "F8 CONTROL: and the question it files still advises fixing the URL or the auth" \
+  "printf '%s' \"\$(jget '$PF8C/.git/lcars/autopilot.json' 'd[\"pending\"][\"command\"]')\" | qgrep -qi 'fix the URL'"
+check "F8 CONTROL: the two arms DISAGREE — neither sentence appears in both" \
+  "! printf '%s' \"\$pf8c\" | qgrep -qi 'may simply be slow' && ! printf '%s' \"\$pf8\" | qgrep -qi 'fix the URL'"
+check "F8 CONTROL: and its inbox headline is the unreachable one, not the deadline" \
+  "python3 -c 'import json,sys;d=json.load(open(sys.argv[1]));sys.exit(0 if [q for q in d[\"questions\"].values() if \"git cannot reach\" in q[\"what\"]] else 1)' '$PF8C/.git/lcars/autopilot.json'"
+
+# --- F9: "settleable in one command" has to be TRUE for the offline captain -
+# MEASURED: an https origin with the forge CLI logged out raised BOTH the push
+# question and the gh-auth question. `answered q1 "ship local-only, no push"`
+# answered the first and printed "Still open: q2", and the next preflight still
+# stopped on the forge login. So the offline/train/local-only case cost TWO
+# commands against a playbook that promises one — and it contradicted the login
+# check's own stated scope ("skipped when … a run recorded as local-only"): a
+# question answered *local-only* is the plainest record of that intent there is.
+PF9="$(new_repo)"
+PF9_J="$PF9/.git/lcars/autopilot.json"
+git -C "$PF9" remote set-url origin https://127.0.0.1:1/nope/nope.git
+pf9a="$(PF_PROBET=3 PF_GH="$PFGH_NO" ap_caged 60 "$PF9" init --spec "$TMPROOT/pf-spec.md" --scope M0)"
+pf9qid="$(python3 -c 'import json,sys
+d=json.load(open(sys.argv[1]))
+print(next((k for k,q in sorted(d["questions"].items()) if "push remote" in q["what"]), ""))' "$PF9_J")"
+echo "    [https origin + logged OUT] $(cage_first "$pf9a") / questions: $(jget "$PF9_J" 'sorted(d["questions"])')"
+check "F9 RIG CONTROL: this state really does raise BOTH questions (two cards)" \
+  "[ \"\$(jget '$PF9_J' 'len(d[\"questions\"])')\" = 2 ] && [ -n '$pf9qid' ]"
+# ONE command, in his own words, from his phone.
+pf9ans="$(ap "$PF9" answered "$pf9qid" "ship local-only, no push" 2>&1)"
+pf9b="$(PF_PROBET=3 PF_GH="$PFGH_NO" ap_caged 60 "$PF9" preflight)"
+echo "    [after ONE answer: ship local-only, no push] $(cage_first "$pf9b")"
+check "F9a ONE answer is enough: the whole round proceeds" \
+  "cage_first \"\$pf9b\" | qgrep -q 'EXIT 0'"
+check "F9b the forge-login check is SKIPPED, and says on whose authority" \
+  "printf '%s' \"\$pf9b\" | qgrep -q 'NOT CHECKED' && printf '%s' \"\$pf9b\" | qgrep -qF \"you answered [$pf9qid]\""
+check "F9b it never ran the probe it had nothing to prove with" \
+  "! printf '%s' \"\$pf9b\" | qgrep -qi 'NOT logged in'"
+check "F9c and the forge question WITHDRAWS — his inbox is empty, not at one" \
+  "printf '%s' \"\$(ap '$PF9' status 2>&1)\" | qgrep -q 'open questions for the captain: none'"
+check "F9d \`answered\` itself says he does not owe the second one an answer" \
+  "printf '%s' \"\$pf9ans\" | qgrep -qi 'you do not owe it an answer'"
+# THE LIVE CONTROL: the identical repo state and the identical verb, with an
+# answer that means the OPPOSITE. One variable (what he decided), two answers.
+PF9C="$(new_repo)"
+PF9C_J="$PF9C/.git/lcars/autopilot.json"
+git -C "$PF9C" remote set-url origin https://127.0.0.1:1/nope/nope.git
+pf9c0="$(PF_PROBET=3 PF_GH="$PFGH_NO" ap_caged 60 "$PF9C" init --spec "$TMPROOT/pf-spec.md" --scope M0)"
+pf9cqid="$(python3 -c 'import json,sys
+d=json.load(open(sys.argv[1]))
+print(next((k for k,q in sorted(d["questions"].items()) if "push remote" in q["what"]), ""))' "$PF9C_J")"
+pf9cans="$(ap "$PF9C" answered "$pf9cqid" "push anyway" 2>&1)"
+pf9c="$(PF_PROBET=3 PF_GH="$PFGH_NO" ap_caged 60 "$PF9C" preflight)"
+check "F9 CONTROL: answered 'push anyway' instead, the login check still RUNS and STOPS" \
+  "cage_first \"\$pf9c\" | qgrep -q 'EXIT 10' && printf '%s' \"\$pf9c\" | qgrep -qi 'NOT logged in'"
+check "F9 CONTROL: and it is NOT skipped as local-only (the two arms disagree)" \
+  "! printf '%s' \"\$pf9c\" | qgrep -q 'NOT CHECKED'"
+check "F9 CONTROL: \`answered 'push anyway'\` still names the second question as owed" \
+  "printf '%s' \"\$pf9cans\" | qgrep -q 'Still open' && ! printf '%s' \"\$pf9cans\" | qgrep -qi 'do not owe'"
+
+# --- F10: `record localOnly true` must DO something, or refuse -------------
+# MEASURED: it printed "recorded localOnly" and nothing read it — a repo with no
+# remote kept stopping at question 3. An accepted key that does nothing is the
+# worst of the three available behaviours: it reads as success.
+PF10="$(new_repo)"; git -C "$PF10" remote remove origin
+PF10_J="$PF10/.git/lcars/autopilot.json"
+pf10a="$(ap_caged 40 "$PF10" init --spec "$TMPROOT/pf-spec.md" --scope M0)"
+check "F10 CONTROL (before): with no remote and no record, preflight STOPS" \
+  "cage_first \"\$pf10a\" | qgrep -q 'EXIT 10'"
+pf10rec="$(ap "$PF10" record localOnly true 2>&1)"
+pf10b="$(ap_caged 40 "$PF10" preflight)"
+echo "    [record localOnly true, then preflight] $(cage_first "$pf10b")"
+check "F10a the record says which key it landed in, not just 'recorded'" \
+  "printf '%s' \"\$pf10rec\" | qgrep -qF 'push.mode = local-only'"
+check "F10a and it is HONOURED: the same repo now proceeds" \
+  "cage_first \"\$pf10b\" | qgrep -q 'EXIT 0' && printf '%s' \"\$pf10b\" | qgrep -q 'NOT ASKING'"
+check "F10a the push question withdraws itself rather than waiting on him" \
+  "printf '%s' \"\$(ap '$PF10' status 2>&1)\" | qgrep -q 'open questions for the captain: none'"
+check "F10a and it names the undo" \
+  "printf '%s' \"\$pf10rec\" | qgrep -qF 'record push.mode origin'"
+# IT IS REVERSIBLE — a second answer from the same verb.
+ap "$PF10" record localOnly false >/dev/null 2>&1
+pf10c="$(ap_caged 40 "$PF10" preflight)"
+check "F10b CONTROL: \`record localOnly false\` clears it and the stop comes back" \
+  "cage_first \"\$pf10c\" | qgrep -q 'EXIT 10'"
+# AND IT IS SPECIFIC. A key that is NOT this one is still stored verbatim and
+# still changes nothing — so F10a measured an alias, not a blanket effect.
+ap "$PF10" record somethingElse true >/dev/null 2>&1
+pf10d="$(ap_caged 40 "$PF10" preflight)"
+check "F10b CONTROL: an unrelated key is stored verbatim and does NOT unstick it" \
+  "[ \"\$(jget '$PF10_J' 'd[\"somethingElse\"]')\" = true ] && cage_first \"\$pf10d\" | qgrep -q 'EXIT 10'"
+check "F10c a value that is neither true nor false is REFUSED, not stored silently" \
+  "! ap '$PF10' record localOnly maybe >/dev/null 2>&1"
+# AND A RECORDED LOCAL-ONLY RUN IS NOT OVERRULED BY A REMOTE BEING PRESENT. The
+# old body wrote push.mode = origin unconditionally and then probed a remote the
+# run was never going to use.
+PF10R="$(new_repo)"
+git -C "$PF10R" remote set-url origin https://127.0.0.1:1/nope/nope.git
+ap "$PF10R" init --spec "$TMPROOT/pf-spec.md" --scope M0 >/dev/null 2>&1
+ap "$PF10R" record localOnly true >/dev/null 2>&1
+pf10r="$(PF_PROBET=3 PF_GH="$PFGH_NO" ap_caged 60 "$PF10R" preflight)"
+check "F10d with an origin present, a recorded local-only run neither uses nor probes it" \
+  "cage_first \"\$pf10r\" | qgrep -q 'EXIT 0' && printf '%s' \"\$pf10r\" | qgrep -qi 'neither used nor probed'"
+check "F10d and the forge login is skipped too (one decision, both questions)" \
+  "printf '%s' \"\$pf10r\" | qgrep -q 'NOT CHECKED' && ! printf '%s' \"\$pf10r\" | qgrep -qi 'NOT logged in'"
+
+# --- F11: the bound must leave no `ppid 1` orphan, measured over HTTPS ------
+# MEASURED on the https black-hole probe: `93085 ppid 1 … git-remote-https
+# origin https://10.255.255.1/x.git`, still alive 50s later, drifting toward
+# libcurl's ~300s connect timeout. The bound SIGKILLed the DIRECT CHILD, so the
+# transport helper one level down survived and re-parented to init.
+#
+# WHY F2b DID NOT CATCH IT: F2b greps for `ls-remote --exit-code origin` — the
+# process that IS killed. The survivor is the helper `git ls-remote` execs, and
+# only the URL attributes it. A `ppid 1` orphan outlives the cage and corrupts
+# every later process measurement (`harness` 7b asserts zero attributed ones),
+# so this arm watches for the helper, by URL, on an HTTPS remote.
+PF11="$(new_repo)"
+PF11_URL="https://10.255.255.231/orphan-f11/x.git"
+git -C "$PF11" remote set-url origin "$PF11_URL"
+ap "$PF11" init --spec "$TMPROOT/pf-spec.md" --scope M0 >/dev/null 2>&1
+f11_helpers() { ps -eo pid=,ppid=,command= | grep 'remote-https' | grep -c '10\.255\.255\.231' || true; }
+f11_orphans() { ps -eo pid=,ppid=,command= | grep 'remote-https' | grep '10\.255\.255\.231' | awk '$2 == 1' | wc -l | tr -d ' '; }
+pf11_out="$TMPROOT/f11.out"
+( PF_PROBET=6 ap_caged 60 "$PF11" preflight >"$pf11_out" 2>&1 ) &
+pf11_pid=$!
+BG_PIDS="$BG_PIDS $pf11_pid"
+sleep 3
+pf11_during="$(f11_helpers)"
+wait "$pf11_pid" 2>/dev/null || true
+sleep 2
+pf11_after="$(f11_helpers)"
+pf11_orph="$(f11_orphans)"
+pf11="$(cat "$pf11_out")"
+echo "    [https black hole, 6s bound] $(cage_first "$pf11") / helpers during: $pf11_during  after: $pf11_after  at ppid 1: $pf11_orph"
+check "F11 RIG CONTROL (live): the transport helper IS spawned — so zero after means something" \
+  "[ '$pf11_during' -ge 1 ]"
+check "F11 RIG CONTROL: the probe really did hit the bound on this arm" \
+  "cage_first \"\$pf11\" | qgrep -q 'EXIT 10' && printf '%s' \"\$pf11\" | qgrep -qF 'rc 124'"
+check "F11a NO git-remote-https survives the run (the bound kills the GROUP)" \
+  "[ '$pf11_after' = 0 ]"
+check "F11b and specifically ZERO at ppid 1 — nothing re-parented to init" \
+  "[ '$pf11_orph' = 0 ]"
+
+# --- F12: no raw job-control line in the captain's report ------------------
+# SEEN mid-report, between items 3 and 3b:
+#   autopilot.sh: line 740: 93081 Killed: 9  "$@" > /dev/null 2>&1 < /dev/null
+# It exposes an internal line number and a raw `"$@"`, and reads like a crash to
+# a human at 03:00. Measured on the arms above, which are the ones that kill.
+check "F12a the report carries no job-control notification (no 'Killed: 9')" \
+  "! printf '%s' \"\$pf11\" | qgrep -qF 'Killed: 9' && ! printf '%s' \"\$pf8\" | qgrep -qF 'Killed: 9'"
+check "F12a and no internal line number or raw \"\\\$@\" leaks into it" \
+  "! printf '%s' \"\$pf11\" | qgrep -qE 'autopilot\.sh: line [0-9]+:' && ! printf '%s' \"\$pf8\" | qgrep -qE 'autopilot\.sh: line [0-9]+:'"
+# THE CONTROL THAT GIVES THAT ASSERTION TEETH. The same bash, the same SIGKILL,
+# in the shape the driver used to have: spawn, kill the child, reap it in THIS
+# shell. If that arm were silent too, F12a would be measuring nothing.
+f12old="$TMPROOT/f12-old.sh"
+cat >"$f12old" <<'F12'
+#!/usr/bin/env bash
+set -uo pipefail
+# The old `pf_bounded`, reduced to the three lines that leaked: spawn, let a
+# watchdog SIGKILL it, and reap it in THIS shell with an unredirected `wait`.
+sleep 30 >/dev/null 2>&1 </dev/null &
+p=$!
+( sleep 1; kill -9 "$p" >/dev/null 2>&1 ) </dev/null >/dev/null 2>&1 &
+w=$!
+rc=0
+wait "$p" || rc=$?
+kill -9 "$w" >/dev/null 2>&1 || true
+F12
+f12old_out="$(bash "$f12old" 2>&1)"
+check "F12 CONTROL: the OLD spawn-and-reap shape DOES print it in this very bash" \
+  "printf '%s' \"\$f12old_out\" | qgrep -qF 'Killed: 9'"
+
+# --- F13: two refusals, two remedies --------------------------------------
+# MEASURED: answering a relative path like `ok` is correctly refused as not
+# absolute, but the advice printed was "re-run preflight after `mkdir -p <dir>`"
+# — the remedy for a MISSING directory. `mkdir -p ok` would succeed and leave
+# the same refusal in place. The same text was reused for both reasons.
+check "F13a the RELATIVE refusal is not told to create a directory" \
+  "! printf '%s' \"\$pf5\" | qgrep -qF 'mkdir -p'"
+check "F13a it is told the thing that actually fixes it: give an ABSOLUTE path" \
+  "printf '%s' \"\$pf5\" | qgrep -qi 'ABSOLUTE path' && printf '%s' \"\$pf5\" | qgrep -qi 'nothing to create'"
+check "F13 CONTROL: the UNWRITABLE refusal still gets the mkdir remedy, by name" \
+  "printf '%s' \"\$pf5u\" | qgrep -qF 'mkdir -p /System/Library'"
+check "F13 CONTROL: the two refusals print DIFFERENT advice (neither in both)" \
+  "! printf '%s' \"\$pf5u\" | qgrep -qi 'nothing to create' && ! printf '%s' \"\$pf5\" | qgrep -qi 'make it writable'"
+
+# --- F6: the playbook has to carry the same contract ----------------------
+check "F6 AUTOPILOT.md names COPILOT_ALLOW_ALL as something preflight CHECKS" \
+  "qgrep -q 'COPILOT_ALLOW_ALL' '$APM' && qgrep -qi 'preflight' '$APM'"
+check "F6b AUTOPILOT.md says a deadline is not a refusal, and names both ways out" \
+  "qgrep -qi 'deadline is not a refusal' '$APM' && qgrep -qF 'LCARS_AUTOPILOT_PROBE_TIMEOUT=60' '$APM'"
+check "F6b it promises local-only costs ONE command, and names \`record localOnly\`" \
+  "qgrep -qi 'ONE command' '$APM' && qgrep -qF 'record localOnly true' '$APM'"
+check "F6b and it warns about the two ssh cases preflight can still false-stop on" \
+  "qgrep -qF 'BatchMode=yes' '$APM' && qgrep -qi 'FIDO2' '$APM' && qgrep -qF 'GIT_SSH_COMMAND' '$APM'"
+check "F6 AUTOPILOT.md tells him a settled question is READ, not re-raised" \
+  "qgrep -qi 'answered' '$APM' && qgrep -qi 'withdraw' '$APM'"
 
 # ==========================================================================
 # ZERO SPEND — the PATH shim must never have been reached

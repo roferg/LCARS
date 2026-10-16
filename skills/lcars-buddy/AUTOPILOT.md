@@ -197,6 +197,87 @@ lcars-autopilot record liveTargets '{"host":"…","owners":["…"]}'
 lcars-autopilot heartbeat install
 ```
 
+`init` finishes by running `lcars-autopilot preflight`, and that is on purpose:
+it is the one moment a human is reliably in the room. **Do not walk away before
+that round has printed `proceeding`.** It settles five things the run cannot
+settle for itself later:
+
+| # | what it settles | with nobody there |
+|---|-----------------|-------------------|
+| 1 | where the launch copies go | PROCEEDS on a stated default (and refuses an answer that is not a writable absolute path) |
+| 2 | the test command the push gate runs | PROCEEDS: `next` already names the `foundation` step for a repo with no suite |
+| 3 | somewhere to push — and whether that remote **answers**, probed with a bounded `git ls-remote` | STOPS |
+| 4 | the forge login a pull request needs (`gh auth status`) | STOPS |
+| 5 | the engine's unattended permission — `COPILOT_ALLOW_ALL=true`, on a copilot run | STOPS |
+
+1 and 2 carry a RECOMMENDED default, so `yes` answers the block. Re-run
+`lcars-autopilot preflight` any time; a prerequisite already recorded is not
+asked about again.
+
+3 is a **reachability** check, not a name check: a deleted repo, a typo'd host
+and revoked auth all leave `origin` in the config and die at the pull-request
+gate at 03:00. 5 is the fact this file's own opening section is about, and it is
+checked here because three of the four dead nights were that one variable.
+
+**A deadline is not a refusal.** If the probe runs out its bound (`rc 124`) the
+stop says the remote *may simply be slow* and blames nothing: a cold VPN
+handshake, a monorepo with a huge ref advertisement and a loaded forge all read
+exactly like a dead host, and all three are healthy. It is also the one stop
+that **cannot retire itself** — a slow remote stays slow — so it offers the two
+real ways out: `lcars-autopilot answered <id> "it's just slow"` clears it for
+good, and `LCARS_AUTOPILOT_PROBE_TIMEOUT=60 lcars-autopilot preflight` widens
+the bound. A remote that genuinely *refuses* keeps the old wording, which does
+name the URL and the auth.
+
+**A local-only run costs ONE command, not two.** "No push" settles 3 and 4
+together: answer the push question in your own words (`answered <id> "ship
+local-only, no push"`) and the forge-login check is **not run at all**, with the
+reason printed — there is no pull request for a login to be needed for.
+`lcars-autopilot record localOnly true` is the same decision stated up front; it
+writes `push.mode = local-only`, which is the key preflight reads, and an
+`origin` that happens to exist is then neither used nor probed. Undo it with
+`record push.mode origin`. (It is a *preflight* decision: it stops the setup
+asking about pushing. It does not yet gate `push-gated`.)
+
+**Two ssh cases preflight can still false-stop on**, both settleable with one
+`answered … "push anyway"`:
+
+* The probe runs `ssh -oBatchMode=yes`, which **fails any key that needs a
+  human** — a hardware token (FIDO2, `sk-ssh-ed25519`) waiting for a touch, or
+  a passphrase key with no agent loaded. That is deliberate (an unattended run
+  cannot answer a prompt, and a probe that hangs is worse than none), but it
+  means a touch-key captain sees a stop on a remote that works fine for him
+  interactively.
+* The probe **sets** `GIT_SSH_COMMAND` rather than extending it, so a
+  proxy-jump or custom identity exported in the environment is dropped for the
+  probe only. The same settings in `~/.ssh/config` are read as normal and are
+  unaffected.
+
+If it prints `STOPPING`, the question is already in `.questions` with the one
+command that fixes it. **Do not drive a milestone past a preflight stop.** You
+have exactly two ways out, and both work:
+
+* **Fix the cause** and re-run. A prerequisite that is satisfied now
+  **withdraws its own question** — he never has to answer something that is no
+  longer true to unstick a run that is already unstuck.
+* **`lcars-autopilot answered <id> "<what you decided>"`.** That answer is READ
+  on the next run, so the same question is never raised twice, and where it
+  names a decision (`local-only`) it is acted on. His inbox is never filled with
+  clones of one question.
+
+Three overnight runs on 2026-10-14/15 died at verification on a permission
+nobody was awake to give, and a fourth could not open a pull request because
+there was no remote, which LCARS had already written into the Mission's own
+`state.json` as `githubIssue: null`. A blocked run and a healthy idle one look
+identical from outside and nothing inside the run can recover from either, so
+the whole cost lands on the night.
+
+**Launch it in the foreground, or expect the defaults.** A detached launch —
+`… &`, `nohup`, a detached tmux pane — cannot read the terminal, so preflight
+detects that it is not the terminal's foreground process group and takes the
+defaults (or stops) instead of asking. It never waits on a terminal it cannot
+read: that is the hang this step exists to abolish.
+
 **This is the whole interrupt budget for the setup.** A second question round
 is a defect in how you ran this step, not a fact about the spec.
 
