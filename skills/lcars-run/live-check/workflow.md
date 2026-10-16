@@ -1,14 +1,14 @@
 # Live check — a CI workflow
 
 Run every item from the **detached** worktree with the **throwaway HOME** that
-`autopilot.sh live-check <mission> --type workflow` prints.
+`ech.sh live-check <mission> --type workflow` prints.
 
 A workflow is the one surface where a suite's green is almost meaningless: the
 tests import the function, CI runs the command. On the modelled weekend three of
 six live breaks were only ever visible to the real runner, and one of them was a
 module invoked as a file.
 
-The runner for these items is **`autopilot.sh workflow-run <mission>
+The runner for these items is **`ech.sh workflow-run <mission>
 <workflow.yml>`** — a minimal step runner that executes each step the way the
 workflow does: same cwd (honouring `working-directory`), the step's own command,
 and the env Actions always sets. It is deliberately not `act`: a third-party
@@ -47,7 +47,7 @@ fire on one event (an issue opened *with* a label fires `opened` **and**
 
 ### 2. Run the workflow **exactly as CI does**, locally
 
-Run `autopilot.sh workflow-run <mission> <workflow.yml>`. It executes the job's
+Run `ech.sh workflow-run <mission> <workflow.yml>`. It executes the job's
 steps in order, each from the cwd the workflow declares, with
 `GITHUB_SERVER_URL`, `GITHUB_REPOSITORY_OWNER`, `GITHUB_REPOSITORY` and
 `GITHUB_EVENT_PATH` set, and stops at the first failing step and names it.

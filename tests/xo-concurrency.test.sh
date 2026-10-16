@@ -247,7 +247,7 @@ check "5b. ...and names the one command that starts it" \
 check "5b. nothing billed on the --no-sweep path" \
   "[ \"\$(awk -F'\t' '\$2==\"yes\"{n++} END{print n+0}' '$SHIM_LOG')\" -eq 0 ]"
 
-# 5c. The variable does the same thing, for an autopilot with no argv to change.
+# 5c. The variable does the same thing, for an ECH with no argv to change.
 repo7="$(new_repo)"; sweep_rig "$repo7"
 ( cd "$repo7" && LCARS_XO_SWEEP_ON_START=0 LCARS_XO_SWEEP_BIN="$repo7/sweepbin" \
     bash "$XO" on --engine claude >"$repo7/on.out" 2>&1 ) || true

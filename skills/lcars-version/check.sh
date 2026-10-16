@@ -61,7 +61,7 @@ MODE="${1:-warn}"
 # --- global kill switch: zero output, ZERO git calls ----------------------
 [ "${LCARS_VERSION_CHECK:-1}" = "0" ] && exit 0
 
-# --- locate the LCARS checkout (mirrors version.sh / buddy.sh) ------------
+# --- locate the LCARS checkout (mirrors version.sh / eeh.sh) ------------
 SELF="${BASH_SOURCE[0]}"
 SCRIPT_DIR="$(cd "$(dirname "$SELF")" && pwd -P)"
 DEFAULT_REPO="$(cd "$SCRIPT_DIR/../.." 2>/dev/null && pwd -P)"

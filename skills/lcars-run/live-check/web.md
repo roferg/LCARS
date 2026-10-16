@@ -1,7 +1,7 @@
 # Live check — a generated or deployed page
 
 Run every item from the **detached** worktree with the **throwaway HOME** that
-`autopilot.sh live-check <mission> --type web` prints.
+`ech.sh live-check <mission> --type web` prints.
 
 A green suite is not evidence that a page renders. A DOM harness is a stub of a
 browser: seven fix rounds on the modelled project were cured only when someone

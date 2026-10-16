@@ -3,7 +3,7 @@
 The template for a bug the **live check** found. File it with:
 
 ```bash
-autopilot.sh file-bug --parent <mission-id> --prd <your-bug-prd.md>
+ech.sh file-bug --parent <mission-id> --prd <your-bug-prd.md>
 ```
 
 `file-bug` validates this shape and then calls `lcars log`, which files the bug

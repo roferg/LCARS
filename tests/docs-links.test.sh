@@ -81,6 +81,44 @@ html_targets() {
     | sed -e 's/#.*$//' | grep -v '^$' | sort -u
 }
 
+# html_fragments <file> — every href="#x" fragment in an html file. These are
+# exactly what html_targets() throws away, which is why nothing caught a broken
+# one for as long as this suite has existed.
+html_fragments() {
+  grep -oE 'href="#[^"]+"' "$1" 2>/dev/null \
+    | sed -E -e 's/^href="#//' -e 's/"$//' | sort -u
+}
+
+# html_ids <file> — every id="x" in an html file.
+html_ids() {
+  grep -oE 'id="[^"]*"' "$1" 2>/dev/null \
+    | sed -E -e 's/^id="//' -e 's/"$//' | sort -u
+}
+
+# dead_fragments <file> — the href="#x" fragments with no id="x" in the SAME
+# file. Prints them space-prefixed; empty output means the page is clean.
+dead_fragments() {
+  local f="$1" ids a out=""
+  ids="$(html_ids "$f")"
+  while IFS= read -r a; do
+    [ -n "$a" ] || continue
+    printf '%s\n' "$ids" | grep -qxF -- "$a" || out="$out #$a"
+  done < <(html_fragments "$f")
+  printf '%s' "$out"
+}
+
+# bad_ids <file> — the ids that break the convention every id in these pages
+# already follows: lowercase, digits, hyphen or underscore, one token, no
+# spaces. Prints them space-prefixed; empty output means the page is clean.
+bad_ids() {
+  local f="$1" i out=""
+  while IFS= read -r i; do
+    [ -n "$i" ] || continue
+    printf '%s' "$i" | grep -qE '^[a-z0-9][a-z0-9_-]*$' || out="$out $i"
+  done < <(html_ids "$f")
+  printf '%s' "$out"
+}
+
 # ── 1. relative links in README.md / vision.md resolve to TRACKED files ─────
 for src in README.md vision.md; do
   missing=""; untracked=""
@@ -209,6 +247,33 @@ for page in docs/*.html; do
     || bad "$page: links escape docs/ with ../ (404s when Pages serves from docs/) —$escapes"
 done
 
+# ── 7d. in-page anchors in docs/*.html resolve, and ids keep the convention ─
+#    A blanket rename turned vision.html's `autopilot` section anchor into
+#    `the ECH` — a space and two capitals — in all THREE places at once (one
+#    id, two hrefs). Being internally consistent, it still navigated inside the
+#    file, and every check here stayed green: section 7 drops `#`-only hrefs by
+#    design and nothing had ever looked at ids at all. What broke was invisible
+#    from inside the page — the published `#autopilot` deep link went dead, and
+#    "copy link to section" started handing people `#the%20ECH`. So both halves
+#    are pinned: every fragment resolves to an id in the same page, AND every
+#    id is the one shape the other twenty-odd ids already have.
+for page in docs/*.html; do
+  [ -f "$page" ] || continue
+  nfrag="$(html_fragments "$page" | grep -c . || true)"
+  dead="$(dead_fragments "$page")"
+  if [ "${nfrag:-0}" -eq 0 ]; then
+    ok "$page: no in-page anchors to resolve"
+  else
+    [ -z "$dead" ] \
+      && ok "$page: all $nfrag in-page anchors resolve to an id in the same page" \
+      || bad "$page: anchors with no matching id —$dead"
+  fi
+  offenders="$(bad_ids "$page")"
+  [ -z "$offenders" ] \
+    && ok "$page: every id is lowercase and space-free (deep links stay copyable)" \
+    || bad "$page: ids that break the convention (spaces/capitals) —$offenders"
+done
+
 # ── 7c. every PATH launcher install.sh drops is NAMED in README.md ────────
 #    Derived from the installer, not retyped: the README said install.sh put
 #    ONE command on $PATH when it puts five, and the installer's own
@@ -231,6 +296,24 @@ else
   ok "control: the link check does detect a target that does not exist"
 fi
 printf '# LCARS\nSession 280 built this in .dev/ after a grill.\n' >"$TMP/leaky.md"
+
+# 7d controls — the anchor sweep must be able to go red on BOTH halves, and
+# must stay green on the legitimate shapes. Same helpers the real pages use.
+printf '<a href="#nope">x</a>\n<h2 id="alive">y</h2>\n' >"$TMP/deadanchor.html"
+[ -n "$(dead_fragments "$TMP/deadanchor.html")" ] \
+  && ok "control: the anchor sweep detects an href=\"#x\" with no matching id" \
+  || bad "control: an href with no matching id was NOT detected"
+[ -z "$(dead_fragments "$TMP/deadanchor.html" | grep -F '#alive' || true)" ] \
+  && ok "control: the anchor sweep leaves a fragment that DOES resolve alone" \
+  || bad "control: the anchor sweep flagged a fragment that resolves"
+printf '<section id="the ECH">x</section>\n<section id="Autopilot">y</section>\n<section id="day-zero">z</section>\n' >"$TMP/badids.html"
+ctl_bad="$(bad_ids "$TMP/badids.html")"
+case "$ctl_bad" in *"the ECH"*) ok "control: the id check rejects an id with a space" ;;
+  *) bad "control: an id with a space was NOT rejected" ;; esac
+case "$ctl_bad" in *Autopilot*) ok "control: the id check rejects an id with capitals" ;;
+  *) bad "control: an id with capitals was NOT rejected" ;; esac
+case "$ctl_bad" in *day-zero*) bad "control: the id check rejected a legitimate hyphenated id" ;;
+  *) ok "control: the id check accepts the convention it is enforcing (day-zero)" ;; esac
 n="$(grep -cEi 'session [0-9]|\.dev/|grill' "$TMP/leaky.md")"
 [ "$n" -ge 1 ] \
   && ok "control: the vocabulary patterns do match internal prose" \

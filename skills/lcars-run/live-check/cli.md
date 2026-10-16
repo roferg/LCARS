@@ -1,7 +1,7 @@
 # Live check — a CLI surface
 
 Run every item from the **detached** worktree with the **throwaway HOME** that
-`autopilot.sh live-check <mission> --type cli` prints. Never from the checked-out
+`ech.sh live-check <mission> --type cli` prints. Never from the checked-out
 branch, and never with your own `HOME`: a config you wrote earlier makes a
 product that cannot be configured look configured.
 

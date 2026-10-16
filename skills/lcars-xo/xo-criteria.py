@@ -173,7 +173,7 @@ def plan_criteria(doc):
 # S239 — PRODUCT TYPES AND `reachVia`: HOW THIS CRITERION IS REACHED AT ALL.
 # ===========================================================================
 # THE MEASUREMENT THAT PUT THIS HERE. Canvas weekend, 26-29 Sep 2026, same
-# product, 34 runs: Number One filed 0 of 31 bugs; the captain's buddy found all
+# product, 34 runs: Number One filed 0 of 31 bugs; the captain's EEH found all
 # 31. Every one of the 16 recorded misses
 # (lcars-dev/canvas-weekend-2026-09-26/evidence/number-one-misses.jsonl) is a
 # REACH error, never a judgement error — "CLI argument handling and env-var

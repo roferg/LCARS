@@ -26,7 +26,7 @@ set -uo pipefail
 GIT_BIN="${GIT_BIN:-git}"
 CWD="${LCARS_VERSION_CWD:-$PWD}"
 
-# --- locate the LCARS checkout (mirrors buddy.sh) -------------------------
+# --- locate the LCARS checkout (mirrors eeh.sh) -------------------------
 # This script ships at <repo>/skills/lcars-version/version.sh but is invoked
 # through the install symlink; `pwd -P` resolves the symlinked dir to its
 # PHYSICAL path, so ../.. lands on the real checkout. An explicit LCARS_REPO wins.

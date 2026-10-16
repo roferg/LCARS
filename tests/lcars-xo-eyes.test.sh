@@ -2,8 +2,8 @@
 # tests/lcars-xo-eyes.test.sh — S261: the reviewer gets to look for itself.
 #
 # WHAT WAS MEASURED, AND WHY THIS SUITE EXISTS AT ALL. On 2026-10-08 (S260) the
-# reviewer was run against the captain's buddy on three milestones of a real
-# product. Number One found 0 real defects and filed 0; the buddy found 4 and
+# reviewer was run against the captain's EEH on three milestones of a real
+# product. Number One found 0 real defects and filed 0; the EEH found 4 and
 # filed 4. Of the six recorded failures, THREE WERE THE FENCE — 10 of 13 drawn
 # parts unreachable, a HOME store read fenced out, a shell action fenced out —
 # and one was that it could not run a thing and watch it. Not one was a prompt
@@ -464,8 +464,8 @@ check "7c. …and the throwaway HOME rides with it" \
   'grep -q "export LCARS_XO_THROWAWAY_HOME" "$XOSH"'
 check "7c2. …and the hand-over is CLEARED when the copy is torn down" \
   'grep -q "unset LCARS_XO_WORKTREE LCARS_XO_THROWAWAY_HOME" "$XOSH"'
-check "7d. the copy is still minted by the BUDDY's one helper, not a new one" \
-  'grep -q "autopilot.sh" "$XORUN" &&
+check "7d. the copy is still minted by the EEH's one helper, not a new one" \
+  'grep -q "ech.sh" "$XORUN" &&
    grep -qE "\"?worktree\"?" "$XORUN" &&
    grep -q "XO_RUN_PY. prepare" "$XOSH"'
 check "7e. CONTROL — run.sh never mints a worktree of its own for the reviewer" \

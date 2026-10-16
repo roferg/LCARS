@@ -17105,7 +17105,7 @@ exactly as specified above, in the scratch output directory, and nowhere else.$p
 # why a look does not happen.
 LIVE_CHECK_DIR="${LCARS_LIVE_CHECK_DIR:-$SKILL_DIR/live-check}"
 
-number_one_checklists() { # <input-dir> — the whole checklists, as the buddy gets them
+number_one_checklists() { # <input-dir> — the whole checklists, as the EEH gets them
   local indir="${1:-}" crit="" types="" kind f
   [ -d "$LIVE_CHECK_DIR" ] || return 0
   crit="$indir/criteria.json"
@@ -17547,7 +17547,7 @@ saying rather than grading the empty one."
   #
   # WHAT WAS MEASURED. S262: a reviewer with a real shell settled 54 of 65 rows
   # by its own action, ran a real mutation test — and FILED NOTHING, while the
-  # captain's human buddy filed three on the same build. Two of those three had
+  # captain's human EEH filed three on the same build. Two of those three had
   # no criterion and `volunteered` was their only route. The lane was plumbed
   # and the prompt made it sound optional: "you do NOT have to throw it away",
   # then three separate sentences on what it can never do. A careful model reads
@@ -17731,7 +17731,7 @@ readout that proved it. Name a different one, or say so by declaring none."
   # === WHAT IS CONSENTED TO BE TOUCHED FOR REAL (S249) =====================
   #
   # WHY THE WORKER IS TOLD AT ALL. Five of the twenty-nine bugs the captain's
-  # buddy found on the weekend needed a REAL publish against a REAL host — and a
+  # the EEH found on the weekend needed a REAL publish against a REAL host — and a
   # worker that does not know a live target exists cannot ask for one. So when the
   # record names a host and an owner, the round says so, in the one place a fact
   # about THIS round's inputs belongs (and not in `evaluate.md`, which is one line
@@ -17754,7 +17754,7 @@ readout that proved it. Name a different one, or say so by declaring none."
   # book was refused. So the field goes in the example, and the rule gets one
   # plain sentence — BOTH only when the line `xo.sh` handed us names repos, which
   # it writes as "; repos: a, b" inside the same parenthetical. With no repos
-  # recorded (the default shape, and what the autopilot writes) the round says
+  # recorded (the default shape, and what the ECH writes) the round says
   # nothing about them at all: a prompt is not the place to describe a constraint
   # this repo does not have.
   local live_line="" live_decl="" repo_rule=""
@@ -17806,8 +17806,8 @@ two honest ways to settle one: take the hop with a \`live:\` step, or rate it
 
   # === THE LIVE-CHECK CHECKLISTS, HANDED OVER WHOLE (S246) ==================
   #
-  # WHY WHOLE, AND WHY HERE. These are the files the captain's buddy reads — the
-  # same ones, byte for byte — and the buddy found all 31 bugs on the weekend
+  # WHY WHOLE, AND WHY HERE. These are the files the captain's EEH reads — the
+  # same ones, byte for byte — and the EEH found all 31 bugs on the weekend
   # Number One found none. What it had that Number One did not was not a better
   # model: it was the whole checklist, in front of it, with permission to INVENT
   # the values a human would. LCARS used to lift fenced templates out of these
@@ -17830,8 +17830,8 @@ two honest ways to settle one: take the hop with a \`live:\` step, or rate it
   # === THE DISPOSABLE COPY — AND THE SHELL THAT COMES WITH IT (S261) ========
   #
   # WHY THIS EXISTS, MEASURED. On 2026-10-08 the reviewer was run beside the
-  # captain's buddy on three milestones of a real product: it found 0 real
-  # defects and filed 0, the buddy found 4 and filed 4, and it handed a HIGH to
+  # captain's EEH on three milestones of a real product: it found 0 real
+  # defects and filed 0, the EEH found 4 and filed 4, and it handed a HIGH to
   # code that crashed on null records. THREE of its six recorded failures were
   # the S168 fence — 10 of 13 drawn parts unreachable, a HOME store read fenced
   # out, a shell action fenced out — and a fourth was that it could not run a
@@ -17856,7 +17856,7 @@ two honest ways to settle one: take the hop with a \`live:\` step, or rate it
   # even if a worktree happens to be in the environment.
   #
   # WHO MINTS IT: nobody here. `xo.sh` mints ONE tree and ONE throwaway HOME per
-  # look through the buddy's single helper (`autopilot.sh worktree`, reached via
+  # look through the EEH's single helper (`ech.sh worktree`, reached via
   # `xo-run.py prepare`) and exports both. A second "detach a worktree" in this
   # file would be a second thing that can be subtly wrong.
   #
@@ -21120,7 +21120,7 @@ notify_gate() { # gate-type  one-line-decision-ready-summary
 
 # --- print pending.json's questions, one bare string per line ----------------
 #
-# THIS IS THE WALK-AWAY PROMISE. `lcars run` / the autopilot / night-watch is
+# THIS IS THE WALK-AWAY PROMISE. `lcars run` / the ECH / night-watch is
 # the UNATTENDED surface: when a Stage parks, the question reaching the captain
 # HERE is the whole difference between a gate he can answer and a Stage that
 # looks dead. It read pending.json with

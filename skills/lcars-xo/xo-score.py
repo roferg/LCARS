@@ -161,7 +161,7 @@ def shot_name_evidence(name):
     if low.endswith(".json"):
         return "measurement"
     return "picture"
-# The two line prefixes `autopilot.sh workflow-run` prints (xo-run.py names the
+# The two line prefixes `ech.sh workflow-run` prints (xo-run.py names the
 # same two). `  SKIP: ` is its notice that a step was NOT executed and is
 # UNPROVEN, not passed; a step's OWN output is printed four spaces in, so a build
 # that prints the word itself is never mistaken for the runner's notice.
@@ -1493,7 +1493,7 @@ def landing_readout(shotsroot, name):
 def workflow_unproven(readout):
     """The workflow steps a LOCAL `workflow-run` recorded that it did NOT run.
 
-    THE RECORD, AND WHY IT IS A RECORD. `autopilot.sh workflow-run` executes a
+    THE RECORD, AND WHY IT IS A RECORD. `ech.sh workflow-run` executes a
     job's `run:` steps and nothing else. Every step it declines it prints as its
     own two-space notice — `  SKIP: … is a packaged action … It is UNPROVEN, not
     passed.` — and `xo-run.py` now carries the labels of those steps onto the
@@ -4476,7 +4476,7 @@ def main():
     # THE MEASURED DEFECT. Until S249 no credential ever reached a step, so a
     # criterion about a REAL publish, a REAL workflow run or a REAL deployment
     # could not be checked at all — and the look, having run the command against
-    # nothing, called it `met`. Five of the twenty-nine bugs the captain's buddy
+    # nothing, called it `met`. Five of the twenty-nine bugs the captain's EEH
     # found on the weekend sat behind exactly that.
     #
     # So the harness now refuses a live step the record did not consent to, and

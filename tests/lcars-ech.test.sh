@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 #
-# tests/lcars-buddy-autopilot.test.sh — the AUTOPILOT half of `lcars buddy`
-# (skill source: skills/lcars-buddy/autopilot.sh + AUTOPILOT.md + SKILL.md § 3).
+# tests/lcars-ech.test.sh — the ECH half of `lcars eeh`
+# (skill source: skills/lcars-eeh/ech.sh + HOLOGRAM-COMMAND-MODE.md + SKILL.md § 3).
 #
-# WHAT IS UNDER TEST. `lcars buddy` gained a second half: a mode the captain
+# WHAT IS UNDER TEST. `lcars eeh` gained a second half: a mode the captain
 # starts with "run it for me <spec>" and walks away from. The JUDGEMENT in that
-# mode is prose the MODEL follows (AUTOPILOT.md); everything SEQUENCEABLE is
-# `autopilot.sh`, a token-free bash driver OVER the existing LCARS verbs. This
+# mode is prose the MODEL follows (HOLOGRAM-COMMAND-MODE.md); everything SEQUENCEABLE is
+# `ech.sh`, a token-free bash driver OVER the existing LCARS verbs. This
 # suite exercises the driver directly, with every verb and every AI CLI stubbed,
 # plus a CONTRACT test that the INSTALLED prose carries the headings the
 # driver's own `next` output names — so the script and the playbook cannot
@@ -21,7 +21,7 @@
 #
 # DEPENDENCIES ARE ENV-INJECTED (the lcars-init pattern) so nothing real is
 # touched and nothing is spent:
-#   LCARS_AUTOPILOT_CWD        the repo to operate on        (default $PWD)
+#   LCARS_ECH_CWD        the repo to operate on        (default $PWD)
 #   LCARS_GIT_BIN              git                            (real git here)
 #   LCARS_PYTHON_BIN           python3                        (real python3 here)
 #   LCARS_RUN_SCRIPT           lcars-run/run.sh               (stubbed)
@@ -40,12 +40,12 @@
 # this suite PREPENDS tests/lib/shims/deploy-watcher (which shims BOTH `claude`
 # and `copilot`) to PATH and asserts at the end that the shim log is empty.
 #
-# Usage: bash tests/lcars-buddy-autopilot.test.sh
+# Usage: bash tests/lcars-ech.test.sh
 set -uo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-SCRIPT="${LCARS_AUTOPILOT_SCRIPT:-$REPO_ROOT/skills/lcars-buddy/autopilot.sh}"
+SCRIPT="${LCARS_ECH_SCRIPT:-$REPO_ROOT/skills/lcars-eeh/ech.sh}"
 
 pass=0
 fail=0
@@ -76,7 +76,7 @@ ok()   { printf '  \033[32mPASS\033[0m %s\n' "$1"; pass=$((pass + 1)); }
 bad()  { printf '  \033[31mFAIL\033[0m %s\n' "$1"; fail=$((fail + 1)); }
 check(){ if eval "$2"; then ok "$1"; else bad "$1 ($2)"; fi; }
 
-# qgrep: see tests/lcars-buddy.test.sh for the full reasoning. Draining stdin
+# qgrep: see tests/lcars-eeh.test.sh for the full reasoning. Draining stdin
 # only when NO file operand was passed is what keeps `grep -q` from either
 # SIGPIPE-ing a live producer or reading INHERITED stdin (which blocks forever
 # from a terminal, and passes by accident when stdin is closed).
@@ -187,7 +187,7 @@ ap() {
   local repo="$1"; shift
   mkdir -p "$TMPROOT/tmp"
   TMPDIR="$TMPROOT/tmp" \
-  LCARS_AUTOPILOT_CWD="$repo" \
+  LCARS_ECH_CWD="$repo" \
   STUB_LOG="$STUB_LOG" \
   LCARS_RUN_SCRIPT="$STUBS/run.sh" \
   LCARS_APPROVE_SCRIPT="$STUBS/approve.sh" \
@@ -220,7 +220,7 @@ stub "$STUBS/resolve-logs.sh" 0
 # gating on its exit code alone reported that one as a landing.
 APPROVE_MERGES='m=""
 while [ $# -gt 0 ]; do case "$1" in --mission) m="$2"; shift ;; esac; shift; done
-s="$LCARS_AUTOPILOT_CWD/.git/lcars/missions/$m/state.json"
+s="$LCARS_ECH_CWD/.git/lcars/missions/$m/state.json"
 [ -f "$s" ] && python3 - "$s" <<PY
 import json,sys
 p=sys.argv[1]; d=json.load(open(p)); d["stage"]="done"; json.dump(d,open(p,"w"))
@@ -259,7 +259,7 @@ PY
 }
 
 echo
-echo "=== lcars buddy autopilot: the driver ==================================="
+echo "=== lcars ech: the driver ==================================="
 echo
 
 # ==========================================================================
@@ -410,13 +410,13 @@ for verdict in high medium low absent; do
   check "S260 Verify: $verdict review still routes to our live check on every next" \
     "printf '%s' \"\$nxown\" | qgrep -q '^NEXT: verify-gate lcars-own-check$' && printf '%s' \"\$nxown\" | qgrep -q '^PLAYBOOK: ## 6\.' && [ \"\$nxown\" = \"\$nxownagain\" ]"
 done
-check "S260 Verify: repo playbook makes the buddy's check a standing job, never a fallback" \
-  "qgrep -qF 'This is your standing job, never a fallback.' '$REPO_ROOT/skills/lcars-buddy/AUTOPILOT.md'"
+check "S260 Verify: repo playbook makes the EEH's check a standing job, never a fallback" \
+  "qgrep -qF 'This is your standing job, never a fallback.' '$REPO_ROOT/skills/lcars-eeh/HOLOGRAM-COMMAND-MODE.md'"
 
 usage260="$(ap "$RE" 2>&1)"; usagerc260=$?
-# S277: command-name literal ONLY. AUTOPILOT.md now names the on-PATH `lcars-autopilot <verb>` (a Copilot user has no ~/.claude/skills path). The asserted BEHAVIOUR is unchanged -- do not revert to `autopilot.sh`.
+# S277: command-name literal ONLY. HOLOGRAM-COMMAND-MODE.md now names the on-PATH `lcars-ech <verb>` (a Copilot user has no ~/.claude/skills path). The asserted BEHAVIOUR is unchanged -- do not revert to `ech.sh`.
 check "S260 usage: no arguments print help with exit 1 and no shell errors" \
-  "[ $usagerc260 -eq 1 ] && printf '%s' \"\$usage260\" | qgrep -q '^Usage: lcars-autopilot' && ! printf '%s' \"\$usage260\" | qgrep -q 'command not found'"
+  "[ $usagerc260 -eq 1 ] && printf '%s' \"\$usage260\" | qgrep -q '^Usage: lcars-ech' && ! printf '%s' \"\$usage260\" | qgrep -q 'command not found'"
 check "S260 usage: backticked examples are printed literally, not executed" \
   "printf '%s' \"\$usage260\" | qgrep -qF 'AC #1 = \`Observed live:\`' && printf '%s' \"\$usage260\" | qgrep -qF 'through \`lcars log\`' && printf '%s' \"\$usage260\" | qgrep -qF '\`--table\` prints'"
 
@@ -434,7 +434,7 @@ nxnoscreen="$(ap "$RH" next 2>&1)"
 check "S260 holodeck: the no-screens branch goes directly to file" \
   "printf '%s' \"\$nxnoscreen\" | sed -n '/^OTHERWISE:/,\$p' | qgrep -q '^NEXT: file M0$' && ! printf '%s' \"\$nxnoscreen\" | sed -n '/^OTHERWISE:/,\$p' | qgrep -q '^NEXT: holodeck'"
 check "S260 holodeck: repo prose distinguishes the real surface from an attachment" \
-  "qgrep -qF 'holodeck_start' '$REPO_ROOT/skills/lcars-buddy/AUTOPILOT.md' && qgrep -qF 'holodeck_say' '$REPO_ROOT/skills/lcars-buddy/AUTOPILOT.md' && qgrep -qF 'holodeck_end' '$REPO_ROOT/skills/lcars-buddy/AUTOPILOT.md' && qgrep -qF 'mockup.html' '$REPO_ROOT/skills/lcars-buddy/AUTOPILOT.md' && qgrep -qF 'State which path you took.' '$REPO_ROOT/skills/lcars-buddy/AUTOPILOT.md'"
+  "qgrep -qF 'holodeck_start' '$REPO_ROOT/skills/lcars-eeh/HOLOGRAM-COMMAND-MODE.md' && qgrep -qF 'holodeck_say' '$REPO_ROOT/skills/lcars-eeh/HOLOGRAM-COMMAND-MODE.md' && qgrep -qF 'holodeck_end' '$REPO_ROOT/skills/lcars-eeh/HOLOGRAM-COMMAND-MODE.md' && qgrep -qF 'mockup.html' '$REPO_ROOT/skills/lcars-eeh/HOLOGRAM-COMMAND-MODE.md' && qgrep -qF 'State which path you took.' '$REPO_ROOT/skills/lcars-eeh/HOLOGRAM-COMMAND-MODE.md'"
 
 R2="$(new_repo)"
 ap "$R2" init --spec "$TMPROOT/spec.md" --scope M0,M1 >/dev/null 2>&1
@@ -537,7 +537,7 @@ SH
 chmod +x "$STUBS/run-long.sh"
 
 t0=$(date +%s)
-drv="$(LCARS_AUTOPILOT_CWD="$R3" STUB_LOG="$STUB_LOG" \
+drv="$(LCARS_ECH_CWD="$R3" STUB_LOG="$STUB_LOG" \
        LCARS_RUN_SCRIPT="$STUBS/run-long.sh" \
        LCARS_APPROVE_SCRIPT="$STUBS/approve.sh" LCARS_XO_SCRIPT="$STUBS/xo.sh" \
        LCARS_NOTIFY="$STUBS/notify.sh" LCARS_CRONTAB_BIN="$STUBS/crontab" \
@@ -882,17 +882,17 @@ check "ledgers live in .git/lcars, never in the working tree" \
 echo '0 9 * * * echo someone-elses-job' >"$CRONFILE"
 h11="$(ap "$R11" heartbeat install 2>&1)"; rch=$?
 check "heartbeat install exits 0"            "[ $rch -eq 0 ]"
-check "heartbeat uses crontab (not a harness tool)" "qgrep -q 'autopilot.sh' '$CRONFILE' || qgrep -q 'autopilot' '$CRONFILE'"
+check "heartbeat uses crontab (not a harness tool)" "qgrep -q 'ech.sh' '$CRONFILE' || qgrep -q 'the ECH' '$CRONFILE'"
 check "the cron line calls 'stalled'"        "qgrep -q 'stalled' '$CRONFILE'"
 check "heartbeat kept the captain's other cron entries" \
   "qgrep -q 'someone-elses-job' '$CRONFILE'"
-check "heartbeat owns exactly ONE line"      "[ \"\$(grep -c 'LCARS-AUTOPILOT' '$CRONFILE')\" = 1 ]"
+check "heartbeat owns exactly ONE line"      "[ \"\$(grep -c 'LCARS-ECH' '$CRONFILE')\" = 1 ]"
 ap "$R11" heartbeat install >/dev/null 2>&1
 check "a second install is idempotent (still ONE line)" \
-  "[ \"\$(grep -c 'LCARS-AUTOPILOT' '$CRONFILE')\" = 1 ]"
+  "[ \"\$(grep -c 'LCARS-ECH' '$CRONFILE')\" = 1 ]"
 ap "$R11" heartbeat remove >/dev/null 2>&1
 check "heartbeat remove GENUINELY removes the line" \
-  "! qgrep -q 'LCARS-AUTOPILOT' '$CRONFILE'"
+  "! qgrep -q 'LCARS-ECH' '$CRONFILE'"
 check "remove left the captain's other entries alone" \
   "qgrep -q 'someone-elses-job' '$CRONFILE'"
 hs="$(ap "$R11" heartbeat status 2>&1)"
@@ -905,14 +905,14 @@ check "heartbeat status reports it is not installed" "printf '%s' \"\$hs\" | qgr
 # not installed. The captain's own crontab is empty, so this fired every time.
 : >"$CRONFILE"
 ap "$R11" heartbeat install >/dev/null 2>&1
-check "install works against an EMPTY crontab" "qgrep -q 'LCARS-AUTOPILOT' '$CRONFILE'"
+check "install works against an EMPTY crontab" "qgrep -q 'LCARS-ECH' '$CRONFILE'"
 rmo="$(ap "$R11" heartbeat remove 2>&1)"; rcrm=$?
 check "remove exits 0 when ours is the ONLY line (empty table is a success)" \
   "[ $rcrm -eq 0 ]"
 check "that removal does NOT claim crontab refused the table" \
   "! printf '%s' \"\$rmo\" | qgrep -qi 'refused'"
 check "the line really is gone (the empty table was written)" \
-  "! qgrep -q 'LCARS-AUTOPILOT' '$CRONFILE'"
+  "! qgrep -q 'LCARS-ECH' '$CRONFILE'"
 check "remove reports the removal plainly" "printf '%s' \"\$rmo\" | qgrep -qi 'removed'"
 hs1b="$(ap "$R11" heartbeat status 2>&1)"
 check "status agrees with remove (not installed), so the two cannot disagree" \
@@ -926,8 +926,8 @@ cat >/dev/null
 exit 0
 SH
 chmod +x "$STUBS/crontab-sticky"
-printf '17 * * * * cd /x && bash /x/autopilot.sh stalled # LCARS-AUTOPILOT %s\n' "$R11" >"$CRONFILE"
-rmo2="$(LCARS_AUTOPILOT_CWD="$R11" STUB_LOG="$STUB_LOG" \
+printf '17 * * * * cd /x && bash /x/ech.sh stalled # LCARS-ECH %s\n' "$R11" >"$CRONFILE"
+rmo2="$(LCARS_ECH_CWD="$R11" STUB_LOG="$STUB_LOG" \
         LCARS_CRONTAB_BIN="$STUBS/crontab-sticky" bash "$SCRIPT" heartbeat remove 2>&1 </dev/null)"; rcrm2=$?
 check "remove still REFUSES to claim success while the line is present" \
   "[ $rcrm2 -ne 0 ] && printf '%s' \"\$rmo2\" | qgrep -qi 'still present'"
@@ -937,8 +937,8 @@ check "remove still REFUSES to claim success while the line is present" \
 # 9. Hygiene of the script itself (the §9 mistakes, as assertions)
 # ==========================================================================
 echo "-- 9. script hygiene --"
-check "autopilot.sh exists and is executable" "[ -x '$SCRIPT' ]"
-check "autopilot.sh parses under bash"        "bash -n '$SCRIPT'"
+check "ech.sh exists and is executable" "[ -x '$SCRIPT' ]"
+check "ech.sh parses under bash"        "bash -n '$SCRIPT'"
 check "bash-3.2 clean: no associative arrays" "! qgrep -q 'declare -A' '$SCRIPT'"
 check "bash-3.2 clean: no mapfile/readarray"  "! qgrep -qE 'mapfile|readarray' '$SCRIPT'"
 check "bash-3.2 clean: no \${x^^}"            "! qgrep -qE '\\\$\\{[A-Za-z_]+\\^\\^?\\}' '$SCRIPT'"
@@ -966,7 +966,7 @@ echo "-- 11. failure cap / question ledger / no false parking / quiet waiter --"
 # which is exactly what `stalled` watches.
 ap_drive_sync() {
   local repo="$1" runs="$2" m="$3" rc i=0
-  LCARS_AUTOPILOT_CWD="$repo" STUB_LOG="$STUB_LOG" \
+  LCARS_ECH_CWD="$repo" STUB_LOG="$STUB_LOG" \
   LCARS_RUN_SCRIPT="$runs" \
   LCARS_APPROVE_SCRIPT="$STUBS/approve.sh" LCARS_XO_SCRIPT="$STUBS/xo.sh" \
   LCARS_NOTIFY="$STUBS/notify.sh" LCARS_CRONTAB_BIN="$STUBS/crontab" \
@@ -1036,7 +1036,7 @@ check "a SUCCESSFUL drive clears the failure count (a flake is not fatal)" \
 
 # --- D6: the waiter must not ping the captain on a ROUTINE stage stop -------
 # `notify … drive-stopped` fired unconditionally on EVERY drive exit, exit 0
-# included. AUTOPILOT.md § 9 promises exactly four things reach him.
+# included. HOLOGRAM-COMMAND-MODE.md § 9 promises exactly four things reach him.
 check "a clean drive exit fires NO notification (interrupt budget)" \
   "! qgrep -q 'notify.sh lcars-flake-1' '$STUB_LOG'"
 check "no 'drive-stopped' ping exists at all for a routine stop" \
@@ -1103,7 +1103,7 @@ check "answered refuses an id it does not know (it never invents one)" \
 # the same bug child appended q3, q4 and q5 BYTE-IDENTICAL, and because
 # write_pending holds the script's ONE `notify` call site, each duplicate fired
 # its own push. Three pings at the captain's phone for one problem is the
-# interrupt-budget violation D6 exists to prevent (AUTOPILOT.md § 9: "exactly
+# interrupt-budget violation D6 exists to prevent (HOLOGRAM-COMMAND-MODE.md § 9: "exactly
 # four things reach him"), and downstream `answered <mission>` closes only the
 # oldest, so he answers the identical sentence over and over.
 # The key is the PAIR (mission, what), never the mission alone.
@@ -1236,7 +1236,7 @@ check "and the land question is recorded beside it" \
 # --- N1d: the ADOPTION path must use the SAME dedupe key as the RAISE path ---
 # `write_pending` had TWO keys. The raise path dedupes on (mission, what) gated
 # on `not answeredAt` — correct. The ADOPTION path (carrying a hand-written
-# `.pending`, which AUTOPILOT.md § 9 still tells the model to write, into the
+# `.pending`, which HOLOGRAM-COMMAND-MODE.md § 9 still tells the model to write, into the
 # ledger) matched on `what` ALONE, across ANSWERED questions too. So: answer a
 # hand-written question, have the same problem recur, hand-write it again — and
 # it is silently dropped. Not in `status`, no notification, no `questions`
@@ -1310,11 +1310,11 @@ check "and it is NOT adopted twice" \
 # --- N1f: a hand-written `.pending` must be shown ALONGSIDE the ledger's -----
 # `open_questions` fell back to `.pending` only `if not qs` — i.e. ONLY when the
 # ledger had nothing open. So the moment ONE ordinary question was open, a
-# hand-written one (AUTOPILOT.md § 9 tells the model to write exactly that shape
+# hand-written one (HOLOGRAM-COMMAND-MODE.md § 9 tells the model to write exactly that shape
 # for a product call, a scope change or a standing-rule conflict — the questions
 # that MOST need the captain) was MASKED: zero rows in `status`, zero rows in
 # `next`, and the header said "open questions for the captain: 1" while two were
-# open. It masked precisely when the autopilot was busiest. This display
+# open. It masked precisely when the ECH was busiest. This display
 # behaviour was on the tester's list of things not covered by either suite, and
 # it then regressed silently under 311 green checks. These are the checks that
 # would have caught it.
@@ -1785,23 +1785,23 @@ check "and record works on it (a clean file is never refused)" \
 # ==========================================================================
 echo "-- 10. prose/script contract (INSTALLED files) --"
 # WHY THE INSTALLED COPY. The mode is what a MODEL reads at
-# ~/.claude/skills/lcars-buddy/. A test over the repo copy proves the source and
+# ~/.claude/skills/lcars-eeh/. A test over the repo copy proves the source and
 # says nothing about what runs. install.sh symlinks, so the installed copy is
 # the repo copy — but asserting the INSTALLED path is what catches a skill that
 # was never installed, or installed from a different clone.
-INSTALLED_DIR="${LCARS_SKILLS_DEST:-$HOME/.claude/skills}/lcars-buddy"
+INSTALLED_DIR="${LCARS_SKILLS_DEST:-$HOME/.claude/skills}/lcars-eeh"
 SK="$INSTALLED_DIR/SKILL.md"
-APM="$INSTALLED_DIR/AUTOPILOT.md"
+APM="$INSTALLED_DIR/HOLOGRAM-COMMAND-MODE.md"
 # NO FALLBACK TO THE REPO COPY. A fallback made these two checks print PASS
 # against a genuinely EMPTY skills dir — 162/0, byte-identical to a real run,
 # with the file absent — which destroyed the very intent stated above. An absent
 # installed file now FAILS, naming the path it looked at. The flip is proved by
 # the CONTROL at the bottom of this file.
-check "AUTOPILOT.md is installed at $APM" "[ -f '$APM' ]"
+check "HOLOGRAM-COMMAND-MODE.md is installed at $APM" "[ -f '$APM' ]"
 check "SKILL.md is installed at $SK"      "[ -f '$SK' ]"
 
 # The driver publishes its own action→heading table. Every heading it names MUST
-# exist, verbatim, in the installed AUTOPILOT.md. That is the anti-drift lock:
+# exist, verbatim, in the installed HOLOGRAM-COMMAND-MODE.md. That is the anti-drift lock:
 # renaming a heading breaks this test, and so does adding an action with no
 # prose behind it.
 pb="$(ap "$R11" playbook 2>&1)"
@@ -1812,7 +1812,7 @@ while IFS="$(printf '\t')" read -r action heading; do
   [ -n "${action:-}" ] || continue
   case "$action" in \#*) continue ;; esac
   nactions=$((nactions + 1))
-  check "AUTOPILOT.md carries the heading for '$action'" \
+  check "HOLOGRAM-COMMAND-MODE.md carries the heading for '$action'" \
     "qgrep -qF -- '$heading' '$APM'"
 done <<EOF
 $(printf '%s\n' "$pb")
@@ -1820,7 +1820,7 @@ EOF
 check "the table is not empty"             "[ $nactions -ge 5 ]"
 
 # The specific prose the mode cannot work without.
-check "AUTOPILOT.md § 3 is pointed at from SKILL.md" "qgrep -qF 'AUTOPILOT.md' '$SK'"
+check "HOLOGRAM-COMMAND-MODE.md § 3 is pointed at from SKILL.md" "qgrep -qF 'HOLOGRAM-COMMAND-MODE.md' '$SK'"
 check "SKILL.md gained a '## 3.' section"            "qgrep -qE '^## 3\\.' '$SK'"
 check "SKILL.md § 3 carries the trigger phrase"      "qgrep -qiF 'run it for me' '$SK'"
 check "SKILL.md still has § 1 (ride-along) UNCHANGED in name" \
@@ -1829,66 +1829,66 @@ check "SKILL.md still has § 2 (orchestrated fix)" \
   "qgrep -qF '## 2. When it' '$SK'"
 check "SKILL.md points at ORCHESTRATION.md once, and does not restate the loop" \
   "[ \"\$(grep -c 'ORCHESTRATION.md' '$APM')\" -le 2 ]"
-check "AUTOPILOT.md names autopilot.sh as the state's home" "qgrep -qF 'autopilot.json' '$APM'"
-check "AUTOPILOT.md states the HEARTBEAT is crontab" \
+check "HOLOGRAM-COMMAND-MODE.md names ech.sh as the state's home" "qgrep -qF 'autopilot.json' '$APM'"
+check "HOLOGRAM-COMMAND-MODE.md states the HEARTBEAT is crontab" \
   "qgrep -qF 'crontab' '$APM'"
-check "AUTOPILOT.md does NOT name a harness-only tool as the heartbeat" \
+check "HOLOGRAM-COMMAND-MODE.md does NOT name a harness-only tool as the heartbeat" \
   "! qgrep -qF 'CronCreate' '$APM'"
-check "AUTOPILOT.md says WHY crontab and not a harness tool" \
+check "HOLOGRAM-COMMAND-MODE.md says WHY crontab and not a harness tool" \
   "qgrep -qiE 'not inside Claude Code|outside Claude Code|people who are not' '$APM'"
-check "AUTOPILOT.md carries the interrupt budget"   "qgrep -qiF 'interrupt budget' '$APM'"
-check "AUTOPILOT.md carries the two-parallel rule"  "qgrep -qiE 'two (missions|at a time|parallel)' '$APM'"
-check "AUTOPILOT.md carries the memory rule (re-read after compaction)" \
+check "HOLOGRAM-COMMAND-MODE.md carries the interrupt budget"   "qgrep -qiF 'interrupt budget' '$APM'"
+check "HOLOGRAM-COMMAND-MODE.md carries the two-parallel rule"  "qgrep -qiE 'two (missions|at a time|parallel)' '$APM'"
+check "HOLOGRAM-COMMAND-MODE.md carries the memory rule (re-read after compaction)" \
   "qgrep -qiF 'compaction' '$APM'"
-check "AUTOPILOT.md carries the communication rules" \
+check "HOLOGRAM-COMMAND-MODE.md carries the communication rules" \
   "qgrep -qiE 'final message of the turn' '$APM'"
-check "AUTOPILOT.md carries the deadline re-forecast rule" \
+check "HOLOGRAM-COMMAND-MODE.md carries the deadline re-forecast rule" \
   "qgrep -qiF 're-forecast' '$APM'"
-check "AUTOPILOT.md carries the copy-paste-safe secret instruction" \
+check "HOLOGRAM-COMMAND-MODE.md carries the copy-paste-safe secret instruction" \
   "qgrep -qF 'pbpaste | gh secret set' '$APM'"
-check "AUTOPILOT.md forbids the hand-merge in writing" \
+check "HOLOGRAM-COMMAND-MODE.md forbids the hand-merge in writing" \
   "qgrep -qiE 'never (merge by hand|hand-merge)' '$APM'"
-# S277: command-name literal ONLY. AUTOPILOT.md now names the on-PATH `lcars-autopilot <verb>` (a Copilot user has no ~/.claude/skills path). The asserted BEHAVIOUR is unchanged -- do not revert to `autopilot.sh`.
-check "AUTOPILOT.md tells the model to run \`autopilot.sh next\`" \
-  "qgrep -qF 'lcars-autopilot next' '$APM'"
+# S277: command-name literal ONLY. HOLOGRAM-COMMAND-MODE.md now names the on-PATH `lcars-ech <verb>` (a Copilot user has no ~/.claude/skills path). The asserted BEHAVIOUR is unchanged -- do not revert to `ech.sh`.
+check "HOLOGRAM-COMMAND-MODE.md tells the model to run \`ech.sh next\`" \
+  "qgrep -qF 'lcars-ech next' '$APM'"
 # --- the prose for the fix-round cures, so script and playbook cannot drift --
-check "AUTOPILOT.md names ALL SIX sections file.sh requires" \
+check "HOLOGRAM-COMMAND-MODE.md names ALL SIX sections file.sh requires" \
   "for sec in 'Mission title' 'Type' 'Goal' 'Acceptance Criteria' 'Out of Scope' 'Constraints'; do qgrep -qF \"\$sec\" '$APM' || exit 1; done"
-check "AUTOPILOT.md gives alignment question 3 a key to record its answer in" \
+check "HOLOGRAM-COMMAND-MODE.md gives alignment question 3 a key to record its answer in" \
   "qgrep -qF 'record deploy' '$APM'"
-check "AUTOPILOT.md documents the DECLINED captain-only step state" \
+check "HOLOGRAM-COMMAND-MODE.md documents the DECLINED captain-only step state" \
   "qgrep -qF '\"declined\":true' '$APM' && qgrep -qiF 'never \`done: true\`' '$APM'"
-check "AUTOPILOT.md documents \`autopilot.sh answered\` as how a question closes" \
-  "qgrep -qF 'lcars-autopilot answered' '$APM'"
-check "AUTOPILOT.md says re-raising an OPEN question is a no-op" \
+check "HOLOGRAM-COMMAND-MODE.md documents \`ech.sh answered\` as how a question closes" \
+  "qgrep -qF 'lcars-ech answered' '$APM'"
+check "HOLOGRAM-COMMAND-MODE.md says re-raising an OPEN question is a no-op" \
   "qgrep -qi 'raising the same question twice' '$APM'"
-check "AUTOPILOT.md says questions are a LEDGER, not one slot" \
+check "HOLOGRAM-COMMAND-MODE.md says questions are a LEDGER, not one slot" \
   "qgrep -qiE 'ledger, not a slot|every question ever raised' '$APM'"
 # --- S233: the prose must instruct the VERB, never a hand-edit of `pending` --
 # The playbook telling the model to hand-write into `.pending` is what made that
 # field load-bearing storage, and that ambiguity cost five defects. § 9 now
-# names `autopilot.sh ask`, and declares `pending` derived and read-only.
-check "AUTOPILOT.md § 9 instructs the \`ask\` VERB" \
-  "qgrep -qF 'lcars-autopilot ask' '$APM'"
-check "AUTOPILOT.md gives \`ask\` its --mission flag so it blocks one milestone" \
-  "qgrep -qE 'autopilot.sh ask .*--mission|--mission <' '$APM'"
-check "AUTOPILOT.md no longer tells the model to hand-write a question into pending" \
+# names `ech.sh ask`, and declares `pending` derived and read-only.
+check "HOLOGRAM-COMMAND-MODE.md § 9 instructs the \`ask\` VERB" \
+  "qgrep -qF 'lcars-ech ask' '$APM'"
+check "HOLOGRAM-COMMAND-MODE.md gives \`ask\` its --mission flag so it blocks one milestone" \
+  "qgrep -qE 'ech.sh ask .*--mission|--mission <' '$APM'"
+check "HOLOGRAM-COMMAND-MODE.md no longer tells the model to hand-write a question into pending" \
   "! qgrep -qiE 'write the same shape by hand|by hand, into .pending|hand-write' '$APM'"
-check "AUTOPILOT.md declares \`pending\` a DERIVED, READ-ONLY mirror" \
+check "HOLOGRAM-COMMAND-MODE.md declares \`pending\` a DERIVED, READ-ONLY mirror" \
   "qgrep -qiE 'read-only.*mirror|mirror.*read-only|never storage' '$APM'"
-check "AUTOPILOT.md says an older run's hand-written pending is still honoured" \
+check "HOLOGRAM-COMMAND-MODE.md says an older run's hand-written pending is still honoured" \
   "qgrep -qiE 'adopt(ed|s)? .*(the moment|on first sight|first time it is (seen|read))' '$APM'"
 # `usage` exits 1 by design and this suite runs with `pipefail`, so the exit
 # code has to be discarded or the pipeline reports the usage exit, not the grep.
 check "the driver documents the \`ask\` subcommand in its own usage" \
   "{ ap '$R11' --help 2>&1 || true; } | qgrep -qE '^  ask '"
-check "AUTOPILOT.md states the three-failure drive cap" \
+check "HOLOGRAM-COMMAND-MODE.md states the three-failure drive cap" \
   "qgrep -qiE 'three failures in a row|failures in a row' '$APM'"
-check "AUTOPILOT.md states that a routine stage stop pings nobody" \
+check "HOLOGRAM-COMMAND-MODE.md states that a routine stage stop pings nobody" \
   "qgrep -qiE 'routine stage stop pings nobody|routine stage stop' '$APM'"
-check "AUTOPILOT.md says one question does not park the other milestones" \
+check "HOLOGRAM-COMMAND-MODE.md says one question does not park the other milestones" \
   "qgrep -qiE 'none of them parks the run|does not park' '$APM'"
-check "AUTOPILOT.md does not fork ORCHESTRATION.md's loop" \
+check "HOLOGRAM-COMMAND-MODE.md does not fork ORCHESTRATION.md's loop" \
   "! qgrep -qiF 'hard stop at three rounds' '$APM'"
 
 # ==========================================================================
@@ -2107,7 +2107,7 @@ done
 n=0
 for p in $prds; do
   n=$((n+1))
-  d="$LCARS_AUTOPILOT_CWD/.git/lcars/missions/bug-00$n"
+  d="$LCARS_ECH_CWD/.git/lcars/missions/bug-00$n"
   mkdir -p "$d"
   cp "$p" "$d/prd.md"
   cat >"$d/state.json" <<JSON
@@ -2248,7 +2248,7 @@ check "live-check BUGS sends back on medium too" \
 POL1="$(ap "$RPO" policy --verdict high --live-check pass 2>&1)"
 check "policy prints EXACTLY ONE action line" \
   "[ \"\$(printf '%s\n' \"\$POL1\" | grep -c '^ACTION: ')\" = 1 ]"
-check "policy cites the AUTOPILOT.md heading for the action" \
+check "policy cites the HOLOGRAM-COMMAND-MODE.md heading for the action" \
   "printf '%s' \"\$POL1\" | qgrep -qF 'PLAYBOOK: ##'"
 check "policy prints the commands that carry the action out" \
   "printf '%s' \"\$POL1\" | qgrep -qE '^THEN:'"
@@ -2282,7 +2282,7 @@ check "the recorded override carries the EVIDENCE PATH" \
   "qgrep -qF '$LCEVOK' '$OVL'"
 check "the recorded override carries the mission, the verdict and the reason" \
   "qgrep -qF 'lcars-20261001-020' '$OVL' && qgrep -qF 'infrastructure' '$OVL' && qgrep -qF '\"verdict\": \"low\"' '$OVL'"
-check "the recorded override carries the note the buddy wrote" \
+check "the recorded override carries the note the EEH wrote" \
   "qgrep -qF 'the runner had no python3' '$OVL'"
 check "a MERGE action records NO override" \
   "ap '$RPO2' policy --verdict high --live-check pass >/dev/null 2>&1; [ \"\$(wc -l <'$OVL' | tr -d ' ')\" = 1 ]"
@@ -2297,7 +2297,7 @@ mkdir -p "$RPO/.git/lcars/missions/lcars-20261001-020/xo"
 printf '{"score":"medium","summary":"s"}\n' >"$RPO/.git/lcars/missions/lcars-20261001-020/xo/verdict.json"
 check "with --mission and no --verdict it reads Number One's own xo/verdict.json" \
   "[ \"\$(polact --mission lcars-20261001-020 --live-check pass)\" = 'merge+follow-ups' ]"
-check "policy prints the whole table so the buddy can see the row it took" \
+check "policy prints the whole table so the EEH can see the row it took" \
   "ap '$RPO' policy --table 2>&1 | qgrep -qF 'merge+follow-ups'"
 # AN UNESCAPED BACKTICK IN A `say` RAN AS A COMMAND. `policy --table` printed
 # "command not found: bugs" into the middle of the merge table and swallowed the
@@ -2349,7 +2349,7 @@ cat >"$GOLDEN" <<GOLDENEOF
 <!doctype html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Autopilot progress</title>
+<title>ECH progress</title>
 <style>
   body { font-family: -apple-system, system-ui, sans-serif; margin: 2rem; max-width: 60rem; }
   table { border-collapse: collapse; width: 100%; }
@@ -2359,7 +2359,7 @@ cat >"$GOLDEN" <<GOLDENEOF
   @media (max-width: 500px) { body { margin: .75rem; } }
 </style></head>
 <body>
-<h1 id="report-title">Autopilot progress</h1>
+<h1 id="report-title">ECH progress</h1>
 <p id="report-meta">spec: $TMPROOT/spec-rpt.md &middot; started: 2026-10-01T09:00:00-07:00</p>
 <table id="report-milestones">
 <thead><tr><th>Milestone</th><th>Mission</th><th>Stage</th><th>Number One</th><th>Live check</th><th>Shots</th><th>Bugs filed</th><th>Bugs fixed</th></tr></thead>
@@ -2434,7 +2434,7 @@ check "report NEVER publishes an artifact from a test" \
   "! qgrep -qiE 'claude\.ai/artifact|Artifact tool' '$SCRIPT'"
 
 # ==========================================================================
-# S234.6 the prose contracts — bug-prd.md and AUTOPILOT.md's two new sections
+# S234.6 the prose contracts — bug-prd.md and HOLOGRAM-COMMAND-MODE.md's two new sections
 # ==========================================================================
 echo "-- S234.6 prose contract (INSTALLED files) --"
 BPRD="$INSTALLED_DIR/bug-prd.md"
@@ -2453,7 +2453,7 @@ check "bug-prd.md says the title states the BROKEN BEHAVIOUR as a sentence" \
   "qgrep -qiE 'broken behaviour|broken behavior' '$BPRD'"
 check "bug-prd.md says Goal states the CORRECTED INVARIANT" \
   "qgrep -qiE 'corrected invariant' '$BPRD'"
-check "bug-prd.md names \`autopilot.sh file-bug\` as how it is filed" \
+check "bug-prd.md names \`ech.sh file-bug\` as how it is filed" \
   "qgrep -qF 'file-bug' '$BPRD'"
 check "bug-prd.md carries a filled-in EXAMPLE, not just a skeleton" \
   "qgrep -qiE 'example' '$BPRD'"
@@ -2499,43 +2499,43 @@ check "the worked example is NOT the fixture product's own seam fault (it hands 
   "! qgrep -qE 'host_of|\"origin\"|pkg/model\.py|pkg/render\.py|relay\.py' '$EXAMPLE_PRD'"
 check "the worked example is still CONCRETE — a quoted command, a quoted output and real identifiers" \
   "qgrep -qF 'Observed live:' '$EXAMPLE_PRD' && qgrep -qi 'round-trip' '$EXAMPLE_PRD' && qgrep -qF '**Seam:**' '$EXAMPLE_PRD'"
-check "AUTOPILOT.md names bug-prd.md's WORKED EXAMPLE as the one style exemplar" \
+check "HOLOGRAM-COMMAND-MODE.md names bug-prd.md's WORKED EXAMPLE as the one style exemplar" \
   "qgrep -qiF 'worked example' '$APM'"
-check "AUTOPILOT.md does NOT point at the archive PRD the validator refuses" \
+check "HOLOGRAM-COMMAND-MODE.md does NOT point at the archive PRD the validator refuses" \
   "! qgrep -qF 'bug-020-1' '$APM'"
 
-check "AUTOPILOT.md's live-verification section is no longer an S234 STUB" \
+check "HOLOGRAM-COMMAND-MODE.md's live-verification section is no longer an S234 STUB" \
   "! qgrep -qiE 'S234 — STUB|S234 - STUB' '$APM'"
-check "AUTOPILOT.md points at the shared checklists by path" \
+check "HOLOGRAM-COMMAND-MODE.md points at the shared checklists by path" \
   "qgrep -qF 'lcars-run/live-check' '$APM'"
-# S277: command-name literal ONLY. AUTOPILOT.md now names the on-PATH `lcars-autopilot <verb>` (a Copilot user has no ~/.claude/skills path). The asserted BEHAVIOUR is unchanged -- do not revert to `autopilot.sh`.
-check "AUTOPILOT.md names the live-check verb" \
-  "qgrep -qF 'lcars-autopilot live-check' '$APM'"
-check "AUTOPILOT.md names the workflow-run verb for every workflow a mission adds" \
-  "qgrep -qF 'lcars-autopilot workflow-run' '$APM'"
-check "AUTOPILOT.md names the file-bug verb and the template" \
-  "qgrep -qF 'lcars-autopilot file-bug' '$APM' && qgrep -qF 'bug-prd.md' '$APM'"
-check "AUTOPILOT.md names the policy verb" \
-  "qgrep -qF 'lcars-autopilot policy' '$APM'"
-check "AUTOPILOT.md names the report verb" \
-  "qgrep -qF 'lcars-autopilot report' '$APM'"
-check "AUTOPILOT.md carries the whole merge table: all four actions" \
+# S277: command-name literal ONLY. HOLOGRAM-COMMAND-MODE.md now names the on-PATH `lcars-ech <verb>` (a Copilot user has no ~/.claude/skills path). The asserted BEHAVIOUR is unchanged -- do not revert to `ech.sh`.
+check "HOLOGRAM-COMMAND-MODE.md names the live-check verb" \
+  "qgrep -qF 'lcars-ech live-check' '$APM'"
+check "HOLOGRAM-COMMAND-MODE.md names the workflow-run verb for every workflow a mission adds" \
+  "qgrep -qF 'lcars-ech workflow-run' '$APM'"
+check "HOLOGRAM-COMMAND-MODE.md names the file-bug verb and the template" \
+  "qgrep -qF 'lcars-ech file-bug' '$APM' && qgrep -qF 'bug-prd.md' '$APM'"
+check "HOLOGRAM-COMMAND-MODE.md names the policy verb" \
+  "qgrep -qF 'lcars-ech policy' '$APM'"
+check "HOLOGRAM-COMMAND-MODE.md names the report verb" \
+  "qgrep -qF 'lcars-ech report' '$APM'"
+check "HOLOGRAM-COMMAND-MODE.md carries the whole merge table: all four actions" \
   "( for a in 'merge' 'follow-ups' 'send-back' 'override'; do qgrep -qF \"\$a\" '$APM' || exit 1; done )"
-check "AUTOPILOT.md says a LOW for infrastructure only is fixed, verified live, and OVERRIDDEN" \
+check "HOLOGRAM-COMMAND-MODE.md says a LOW for infrastructure only is fixed, verified live, and OVERRIDDEN" \
   "qgrep -qiE 'infrastructure' '$APM' && qgrep -qF 'autopilot-overrides.jsonl' '$APM'"
-check "AUTOPILOT.md says THE MERGE IS THE BUDDY'S CALL — Number One recommends" \
-  "qgrep -qiE \"buddy's call|the buddy decides\" '$APM' && qgrep -qi 'recommend' '$APM'"
-check "AUTOPILOT.md says every override is recorded WITH its evidence path" \
+check "HOLOGRAM-COMMAND-MODE.md says THE MERGE IS THE EEH'S CALL — Number One recommends" \
+  "qgrep -qiE \"the EEH's call|the EEH decides\" '$APM' && qgrep -qi 'recommend' '$APM'"
+check "HOLOGRAM-COMMAND-MODE.md says every override is recorded WITH its evidence path" \
   "qgrep -qiE 'evidence path' '$APM'"
-check "AUTOPILOT.md keeps the send-back loop: file-bug -> resolve-logs -> re-verify with different data -> respond -> land" \
+check "HOLOGRAM-COMMAND-MODE.md keeps the send-back loop: file-bug -> resolve-logs -> re-verify with different data -> respond -> land" \
   "qgrep -qF 'resolve-logs' '$APM' && qgrep -qiF 'different data' '$APM'"
-check "AUTOPILOT.md says the anchor rule and the seam constraint are HARNESS DEFAULTS now (S236/S237), not the mode's job" \
+check "HOLOGRAM-COMMAND-MODE.md says the anchor rule and the seam constraint are HARNESS DEFAULTS now (S236/S237), not the mode's job" \
   "qgrep -qiE 'harness default' '$APM' && qgrep -qE 'S236|S237' '$APM'"
-check "AUTOPILOT.md does NOT tell the mode to inject the anchor rule into every PRD (that would duplicate S236/S237)" \
+check "HOLOGRAM-COMMAND-MODE.md does NOT tell the mode to inject the anchor rule into every PRD (that would duplicate S236/S237)" \
   "! qgrep -qiE 'inject the anchor rule|add the anchor rule' '$APM'"
-check "AUTOPILOT.md still forbids the hand-merge after the rewrite" \
+check "HOLOGRAM-COMMAND-MODE.md still forbids the hand-merge after the rewrite" \
   "qgrep -qiE 'never (merge by hand|hand-merge)' '$APM'"
-check "AUTOPILOT.md still tells the model to run the live check from a DETACHED worktree" \
+check "HOLOGRAM-COMMAND-MODE.md still tells the model to run the live check from a DETACHED worktree" \
   "qgrep -qiF 'detached' '$APM'"
 
 # ==========================================================================
@@ -2642,7 +2642,7 @@ PYRIG
 pf_env() {
   printf '%s\n' \
     "TMPDIR=$TMPROOT/tmp" \
-    "LCARS_AUTOPILOT_CWD=$1" \
+    "LCARS_ECH_CWD=$1" \
     "STUB_LOG=$STUB_LOG" \
     "LCARS_RUN_SCRIPT=$STUBS/run.sh" \
     "LCARS_APPROVE_SCRIPT=$STUBS/approve.sh" \
@@ -2653,8 +2653,8 @@ pf_env() {
     "LCARS_RESOLVE_LOGS_SCRIPT=$STUBS/resolve-logs.sh" \
     "LCARS_NOTIFY=$STUBS/notify.sh" \
     "LCARS_CRONTAB_BIN=$STUBS/crontab" \
-    "LCARS_AUTOPILOT_ASK_TIMEOUT=${PF_ASKT:-6}" \
-    "LCARS_AUTOPILOT_PROBE_TIMEOUT=${PF_PROBET:-10}" \
+    "LCARS_ECH_ASK_TIMEOUT=${PF_ASKT:-6}" \
+    "LCARS_ECH_PROBE_TIMEOUT=${PF_PROBET:-10}" \
     "LCARS_GH_BIN=${PF_GH:-$PFGH_YES}" \
     "COPILOT_ALLOW_ALL=${PF_ALLOW_ALL-true}" \
     "GIT_TERMINAL_PROMPT=0" "GIT_ASKPASS=" "SSH_ASKPASS="
@@ -2771,7 +2771,7 @@ check "B3 satisfied: exits 0" "printf '%s' \"\$pfa2\" | qgrep -q 'PTYEXIT 0'"
 # --- B2 (stdin closed, terminal still attached) ----------------------------
 # THE REGRESSION THIS PINS, MEASURED. The first cut of this detected a human by
 # `/dev/tty` ALONE. tests/harness.test.sh runs every suite from a pty with stdin
-# OPEN on purpose, and `tests/lcars-buddy.test.sh` invokes `autopilot init`; the
+# OPEN on purpose, and `tests/lcars-eeh.test.sh` invokes `the ECH init`; the
 # prompt opened /dev/tty, nobody was behind it, and that suite went from 5.9s to
 # ELAPSED 120.0s — the exact read bound — and was killed by the cage. A bounded
 # read turned a hang into a long hang, which is not the same as not hanging.
@@ -2896,8 +2896,8 @@ check "CONTROL: with none recorded they fall back to TMPDIR" \
 
 # The playbook and the script must not drift: the mode's own prose has to name
 # the verb, or the next model walks away without running it.
-check "AUTOPILOT.md names the preflight verb, and says to run it before walking away" \
-  "qgrep -qF 'lcars-autopilot preflight' '$APM'"
+check "HOLOGRAM-COMMAND-MODE.md names the preflight verb, and says to run it before walking away" \
+  "qgrep -qF 'lcars-ech preflight' '$APM'"
 check "the driver documents the \`preflight\` subcommand in its own usage" \
   "out=\$(ap '$PFB' --help 2>&1 || true); printf '%s' \"\$out\" | qgrep -q 'preflight'"
 
@@ -2968,7 +2968,7 @@ ap_bg() {
 }
 
 # --- F1: a background launch must not hang for ever on SIGTTIN -------------
-# MEASURED BEFORE THE FIX: `bash autopilot.sh init --spec … &` from a terminal
+# MEASURED BEFORE THE FIX: `bash ech.sh init --spec … &` from a terminal
 # printed question 1, went to process state `T`, and stayed there for the full
 # 60s of observation — zero output, zero progress, no exit. That is the
 # `nohup`/detached-tmux shape AND the shape ORCHESTRATION.md tells the captain
@@ -3070,7 +3070,7 @@ check "F2b and it leaves no orphan ls-remote behind (the bound kills the group)"
 
 # --- F3: the environment the nights actually died on ----------------------
 # 1. COPILOT_ALLOW_ALL. This playbook's OPENING SECTION is about it: with it
-#    unset a measured buddy round was refused on every command, including
+#    unset a measured EEH round was refused on every command, including
 #    read-only ones, with "Permission denied because no interactive user
 #    response was available", and nothing inside a blocked run can detect or
 #    recover from it. Three of the four dead nights are this one fact, and a
@@ -3095,7 +3095,7 @@ check "F3a CONTROL: with COPILOT_ALLOW_ALL=true exported the same run proceeds" 
   "cage_first \"\$pf3c\" | qgrep -q 'EXIT 0' && printf '%s' \"\$pf3c\" | qgrep -qi 'not asking'"
 check "F3a CONTROL: the two arms disagree about whether this is a stop" \
   "cage_first \"\$pf3\" | qgrep -q 'EXIT 10' && cage_first \"\$pf3c\" | qgrep -q 'EXIT 0'"
-# TRUTHY-BUT-WRONG is a FAILING value, and AUTOPILOT.md says so: `1`, `yes`, `on`
+# TRUTHY-BUT-WRONG is a FAILING value, and HOLOGRAM-COMMAND-MODE.md says so: `1`, `yes`, `on`
 # and `y` auto-approve TOOLS without trusting the working directory. It is the
 # hardest version of this to debug at 03:00 and the cheapest to catch here.
 PF3T="$(new_repo)"
@@ -3255,7 +3255,7 @@ check "F5 CONTROL: a writable absolute answer IS recorded, verbatim" \
 
 # --- F7: the driver must not offer to drive past its own preflight stop ----
 # MEASURED: the driver printed `ALSO RUNNABLE: foundation` beside its own
-# preflight stop, while AUTOPILOT.md says plainly not to drive a milestone past
+# preflight stop, while HOLOGRAM-COMMAND-MODE.md says plainly not to drive a milestone past
 # one. `next` is the one line a model reads for its next move, so the two
 # surfaces cannot disagree there.
 PF7="$(new_repo)"; git -C "$PF7" remote remove origin
@@ -3329,7 +3329,7 @@ check "F8c it says the remote may simply be SLOW, and names the healthy causes" 
 check "F8d it offers the settle route explicitly, as a command he can paste" \
   "printf '%s' \"\$pf8\" | qgrep -qF \"answered <id> \\\"it's just slow\\\"\""
 check "F8d and the widen-the-bound route, with the variable that does it" \
-  "printf '%s' \"\$pf8\" | qgrep -qF 'LCARS_AUTOPILOT_PROBE_TIMEOUT=60'"
+  "printf '%s' \"\$pf8\" | qgrep -qF 'LCARS_ECH_PROBE_TIMEOUT=60'"
 check "F8e it says this stop cannot retire itself (a slow remote stays slow)" \
   "printf '%s' \"\$pf8\" | qgrep -qi 'cannot retire itself'"
 check "F8f the INBOX headline is the deadline, not the false 'cannot reach' one" \
@@ -3503,13 +3503,13 @@ check "F11b and specifically ZERO at ppid 1 — nothing re-parented to init" \
 
 # --- F12: no raw job-control line in the captain's report ------------------
 # SEEN mid-report, between items 3 and 3b:
-#   autopilot.sh: line 740: 93081 Killed: 9  "$@" > /dev/null 2>&1 < /dev/null
+#   ech.sh: line 740: 93081 Killed: 9  "$@" > /dev/null 2>&1 < /dev/null
 # It exposes an internal line number and a raw `"$@"`, and reads like a crash to
 # a human at 03:00. Measured on the arms above, which are the ones that kill.
 check "F12a the report carries no job-control notification (no 'Killed: 9')" \
   "! printf '%s' \"\$pf11\" | qgrep -qF 'Killed: 9' && ! printf '%s' \"\$pf8\" | qgrep -qF 'Killed: 9'"
 check "F12a and no internal line number or raw \"\\\$@\" leaks into it" \
-  "! printf '%s' \"\$pf11\" | qgrep -qE 'autopilot\.sh: line [0-9]+:' && ! printf '%s' \"\$pf8\" | qgrep -qE 'autopilot\.sh: line [0-9]+:'"
+  "! printf '%s' \"\$pf11\" | qgrep -qE 'ech\.sh: line [0-9]+:' && ! printf '%s' \"\$pf8\" | qgrep -qE 'ech\.sh: line [0-9]+:'"
 # THE CONTROL THAT GIVES THAT ASSERTION TEETH. The same bash, the same SIGKILL,
 # in the shape the driver used to have: spawn, kill the child, reap it in THIS
 # shell. If that arm were silent too, F12a would be measuring nothing.
@@ -3546,15 +3546,15 @@ check "F13 CONTROL: the two refusals print DIFFERENT advice (neither in both)" \
   "! printf '%s' \"\$pf5u\" | qgrep -qi 'nothing to create' && ! printf '%s' \"\$pf5\" | qgrep -qi 'make it writable'"
 
 # --- F6: the playbook has to carry the same contract ----------------------
-check "F6 AUTOPILOT.md names COPILOT_ALLOW_ALL as something preflight CHECKS" \
+check "F6 HOLOGRAM-COMMAND-MODE.md names COPILOT_ALLOW_ALL as something preflight CHECKS" \
   "qgrep -q 'COPILOT_ALLOW_ALL' '$APM' && qgrep -qi 'preflight' '$APM'"
-check "F6b AUTOPILOT.md says a deadline is not a refusal, and names both ways out" \
-  "qgrep -qi 'deadline is not a refusal' '$APM' && qgrep -qF 'LCARS_AUTOPILOT_PROBE_TIMEOUT=60' '$APM'"
+check "F6b HOLOGRAM-COMMAND-MODE.md says a deadline is not a refusal, and names both ways out" \
+  "qgrep -qi 'deadline is not a refusal' '$APM' && qgrep -qF 'LCARS_ECH_PROBE_TIMEOUT=60' '$APM'"
 check "F6b it promises local-only costs ONE command, and names \`record localOnly\`" \
   "qgrep -qi 'ONE command' '$APM' && qgrep -qF 'record localOnly true' '$APM'"
 check "F6b and it warns about the two ssh cases preflight can still false-stop on" \
   "qgrep -qF 'BatchMode=yes' '$APM' && qgrep -qi 'FIDO2' '$APM' && qgrep -qF 'GIT_SSH_COMMAND' '$APM'"
-check "F6 AUTOPILOT.md tells him a settled question is READ, not re-raised" \
+check "F6 HOLOGRAM-COMMAND-MODE.md tells him a settled question is READ, not re-raised" \
   "qgrep -qi 'answered' '$APM' && qgrep -qi 'withdraw' '$APM'"
 
 # ==========================================================================
@@ -3592,29 +3592,109 @@ check "zero billed (--model) invocations"    "[ '$shim_model' = 0 ]"
 # ==========================================================================
 # A contract test that cannot tell a real install from an empty directory is
 # worse than no test: with the old repo-copy fallback this suite printed
-# `PASS AUTOPILOT.md is installed` and 162/0 against an EMPTY skills dir, with
+# `PASS HOLOGRAM-COMMAND-MODE.md is installed` and 162/0 against an EMPTY skills dir, with
 # the file absent. So re-run THIS suite once against an empty prefix and require
 # it to go red for exactly that reason. LCARS_AP_NO_NEST stops the recursion.
 if [ -z "${LCARS_AP_NO_NEST:-}" ]; then
   echo
   echo "-- contract control (the same suite against an EMPTY skills dir) --"
   EMPTY_DEST="$TMPROOT/empty-skills"
-  mkdir -p "$EMPTY_DEST/lcars-buddy"
+  mkdir -p "$EMPTY_DEST/lcars-eeh"
   nested="$TMPROOT/nested.txt"
   LCARS_AP_NO_NEST=1 LCARS_SKILLS_DEST="$EMPTY_DEST" \
     bash "$DIR/$(basename "${BASH_SOURCE[0]}")" >"$nested" 2>&1 </dev/null
   nrc=$?
   check "against an empty skills dir the suite goes RED (it can fail)" "[ $nrc -ne 0 ]"
-  check "it fails on the ABSENT AUTOPILOT.md, naming the path it looked at" \
-    "qgrep -qE 'FAIL.*AUTOPILOT.md is installed at .*empty-skills' '$nested'"
+  check "it fails on the ABSENT HOLOGRAM-COMMAND-MODE.md, naming the path it looked at" \
+    "qgrep -qE 'FAIL.*HOLOGRAM-COMMAND-MODE.md is installed at .*empty-skills' '$nested'"
   check "it fails on the ABSENT SKILL.md too" \
     "qgrep -qE 'FAIL.*SKILL.md is installed at .*empty-skills' '$nested'"
   check "and it does NOT print a PASS for either absent file (the false green)" \
-    "! qgrep -qE 'PASS.*(AUTOPILOT|SKILL).md is installed' '$nested'"
+    "! qgrep -qE 'PASS.*(ECH|SKILL).md is installed' '$nested'"
   check "the empty-dir run is NOT byte-identical to the real one (the old bug)" \
     "[ \"\$(grep -c '^  .PASS' '$nested')\" != \"$pass\" ]"
 fi
 
+# ==========================================================================
+# S301 — THE EMERGENCY COMMAND HOLOGRAM ANNOUNCEMENT, OFF THE DATA PATH
+# ==========================================================================
+# THE DECISION THIS PINS. The driver announces itself as the Emergency Command
+# Hologram — but it is ALSO the program the chain, xo-run.py and these suites
+# call dozens of times per run and PARSE. Its verbs emit line-oriented machine
+# records on STDOUT: `playbook` prints a bare TAB-SEPARATED table with no
+# prefix at all, `next` prints `NEXT:`/`WHY:`/`PLAYBOOK:` lines that
+# tests/lcars-eeh.test.sh anchors with `^`, and `worktree` prints
+# `WORKTREE:`/`HOME:` lines that xo-run.py scans by prefix — and reports a
+# refusal by reading the LAST line of the output. A banner anywhere on stdout
+# is therefore indistinguishable from data: at the top it corrupts a
+# first-line reader, at the bottom it corrupts xo-run.py's error path.
+#
+# So the banner goes to STDERR and only when stdout is a REAL TTY, i.e. a human
+# is looking. Every captured call — command substitution, a pipe, subprocess
+# with capture_output — is not a tty, so it is silent, and stdout stays
+# BYTE-IDENTICAL to before the rename. `LCARS_ECH_QUIET=1` is the explicit
+# off switch for a human who is in a loop and tired of it.
+#
+# "Only the first time per session" was considered and REJECTED: each
+# `lcars-ech <verb>` is its own short-lived process, so "first in a session"
+# would need new persisted state in autopilot.json — new behaviour, which this
+# rename is not allowed to add. A tty test needs no state at all.
+echo "-- S301. the ECH banner --"
+R301="$(new_repo)"
+ap "$R301" init --spec "$TMPROOT/spec.md" --scope M0 >/dev/null 2>&1
+
+# stdout, not a tty: pure data, no banner.
+pb301="$(ap "$R301" playbook 2>/dev/null)"
+check "S301. playbook stdout carries NO banner when stdout is not a tty" \
+  "! printf '%s' \"\$pb301\" | qgrep -q 'Emergency Command Hologram'"
+check "S301. playbook stdout is still the tab-separated table" \
+  "[ \"\$(printf '%s\\n' \"\$pb301\" | head -1 | cut -f1)\" = align ]"
+# stderr, not a tty: also silent (the gate is on stdout being a tty).
+pbe301="$(ap "$R301" playbook 2>&1 >/dev/null)"
+check "S301. nothing is written to stderr either when stdout is not a tty" \
+  "! printf '%s' \"\$pbe301\" | qgrep -q 'Emergency Command Hologram'"
+
+# A REAL TTY: the human sees the announcement. ptyrun.py gives stdin/stdout/
+# stderr a genuine pty, which is the only honest way to exercise `[ -t 1 ]`.
+PTY301="$DIR/lib/ptyrun.py"
+tty301="$TMPROOT/tty301.txt"
+TMPDIR="$TMPROOT/tmp" LCARS_ECH_CWD="$R301" STUB_LOG="$STUB_LOG" \
+  LCARS_NOTIFY="$STUBS/notify.sh" LCARS_GH_BIN="$PFGH_YES" \
+  python3 "$PTY301" bash "$SCRIPT" playbook >"$tty301" 2>&1 || true
+check "S301. from a real tty it announces the Emergency Command Hologram" \
+  "qgrep -q 'Emergency Command Hologram' '$tty301'"
+check "S301. from a real tty it asks the nature of the command emergency" \
+  "qgrep -qi 'nature of the command emergency' '$tty301'"
+check "S301. the tty run still prints the playbook table (banner did not replace data)" \
+  "qgrep -q 'align' '$tty301'"
+# The off switch, honoured even at a tty.
+qt301="$TMPROOT/qt301.txt"
+TMPDIR="$TMPROOT/tmp" LCARS_ECH_CWD="$R301" STUB_LOG="$STUB_LOG" \
+  LCARS_NOTIFY="$STUBS/notify.sh" LCARS_GH_BIN="$PFGH_YES" LCARS_ECH_QUIET=1 \
+  python3 "$PTY301" bash "$SCRIPT" playbook >"$qt301" 2>&1 || true
+check "S301. LCARS_ECH_QUIET=1 silences the banner at a tty" \
+  "! qgrep -q 'Emergency Command Hologram' '$qt301'"
+check "S301. LCARS_ECH_QUIET=1 still prints the data" \
+  "qgrep -q 'align' '$qt301'"
+
+# S301 fix round 1 — IT IS A VALUE CHECK, NOT A PRESENCE CHECK. The first cut
+# gated on `[ -z "${LCARS_ECH_QUIET:-}" ]`, which silences the banner for ANY
+# non-empty value — so somebody setting `=0` to mean "leave it on" got exactly
+# the opposite. Only the literal `1` is quiet now, the same idiom
+# `LCARS_BASE_QUIET` and every other boolean switch in this repo uses.
+z301="$TMPROOT/z301.txt"
+TMPDIR="$TMPROOT/tmp" LCARS_ECH_CWD="$R301" STUB_LOG="$STUB_LOG" \
+  LCARS_NOTIFY="$STUBS/notify.sh" LCARS_GH_BIN="$PFGH_YES" LCARS_ECH_QUIET=0 \
+  python3 "$PTY301" bash "$SCRIPT" playbook >"$z301" 2>&1 || true
+check "S301-fix1. LCARS_ECH_QUIET=0 means NOT quiet (value check, not presence)" \
+  "qgrep -q 'Emergency Command Hologram' '$z301'"
+y301="$TMPROOT/y301.txt"
+TMPDIR="$TMPROOT/tmp" LCARS_ECH_CWD="$R301" STUB_LOG="$STUB_LOG" \
+  LCARS_NOTIFY="$STUBS/notify.sh" LCARS_GH_BIN="$PFGH_YES" LCARS_ECH_QUIET=yes \
+  python3 "$PTY301" bash "$SCRIPT" playbook >"$y301" 2>&1 || true
+check "S301-fix1. only the literal 1 is quiet (=yes does not silence it)" \
+  "qgrep -q 'Emergency Command Hologram' '$y301'"
+
 echo
-echo "=== lcars-buddy-autopilot: $pass passed, $fail failed ==="
+echo "=== lcars-ech: $pass passed, $fail failed ==="
 [ "$fail" -eq 0 ]

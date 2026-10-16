@@ -19,7 +19,7 @@ checked the claim.
 
 | file | status | who needs it |
 |---|---|---|
-| `cage.py` | exercised | `harness`, `lcars-buddy`, `lcars-xo-observe`, `lcars-xo-press`, `lcars-xo-phone`, `lcars-xo-evidence`, `lcars-xo-render-gate` |
+| `cage.py` | exercised | `harness`, `lcars-eeh`, `lcars-xo-observe`, `lcars-xo-press`, `lcars-xo-phone`, `lcars-xo-evidence`, `lcars-xo-render-gate` |
 | `drive-rig.sh` | exercised | `establish-vision`, `foundation-gate` (was `tests/drives/s182/rig.sh`) |
 | `real-worker.sh` | exercised | `real-worker-resolution` |
 | `evaluate_prompt_guard.py` | exercised | `lcars-xo-drives`, `lcars-xo-eyes` — the load-bearing headings of the Number One evaluate prompt |

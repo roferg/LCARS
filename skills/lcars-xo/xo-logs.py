@@ -680,7 +680,7 @@ def where_observed(shotsdir, row, finding):
     THE MEASURED DEFECT (S250 fix round 1, D3). Every bug PRD opens its first
     acceptance criterion with `Observed live:` — mandatory, and rightly so: the
     exact output is the one part of a bug report that cannot be wrong, and
-    `autopilot.sh file-bug` refuses a PRD without it. But on the S250 drive all
+    `ech.sh file-bug` refuses a PRD without it. But on the S250 drive all
     three filed PRDs said `Observed live:` when `xo/live.json` did not exist and
     not one step had reached a real host. The evidence was the reviewer's own
     local transcript, and a fix worker reading that line would believe the
@@ -829,10 +829,10 @@ def already_filed(path):
 
 
 def write_prd(path, **k):
-    """THE EVIDENCE-FIRST BUG PRD (skills/lcars-buddy/bug-prd.md).
+    """THE EVIDENCE-FIRST BUG PRD (skills/lcars-eeh/bug-prd.md).
 
     Not prose. On the modelled weekend the bugs that were fixed FIRST TIME all
-    had the same three things, and `autopilot.sh file-bug` refuses a PRD without
+    had the same three things, and `ech.sh file-bug` refuses a PRD without
     them: a title that states the broken behaviour as a SENTENCE, an AC #1 that
     is literally `Observed live:` with the exact output and the real identifiers,
     and a ROUND-TRIP criterion wherever a seam is declared. The six sections

@@ -343,7 +343,7 @@ fi
 # --- S189: solo ownership, the light lock ----------------------------------
 # A mission assigned to SOMEONE ELSE on GitHub is READ-ONLY to this laptop's
 # write verbs. `lcars log` FILES bug missions against a parent and nests them under its issue, so it consults the lock; the READ verbs (status,
-# buddy, the viewscreen's reads) never do. The remedy is deliberately a HUMAN act
+# the EEH, the viewscreen's reads) never do. The remedy is deliberately a HUMAN act
 # on GitHub — the solo protocol's premise is that the captain moves ownership
 # where both laptops can see it, and LCARS never takes a mission off anyone.
 #

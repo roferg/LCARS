@@ -476,7 +476,7 @@ install_launcher() {
   #
   #  (1) a backtick written HERE is a backtick IN THE GENERATED FILE. 2026-10-12:
   #      the dangling-target guard quoted the command name as \`$cmd\`, so the
-  #      generated file read  echo "lcars: `lcars-buddy` points at …"  — running a
+  #      generated file read  echo "lcars: `lcars-eeh` points at …"  — running a
   #      launcher whose target was gone RAN THE LAUNCHER AGAIN. With the bin dir
   #      on PATH (the shipped configuration) that is unbounded recursion: caged
   #      at 20 s it never returned, and install.sh's own READY probe inherited
@@ -574,7 +574,7 @@ EOF
 
 # reconcile_launchers — case (a): a launcher bearing OUR marker whose name this
 # checkout no longer generates is stale, so remove it. This is the half a plain
-# re-install could never do: `main` does not generate `lcars-buddy`, so it could
+# re-install could never do: `main` does not generate `lcars-eeh`, so it could
 # not reclaim the name a branch install had left behind, and the dangling command
 # survived every repair attempt. Only marked files are ever touched.
 reconcile_launchers() {
@@ -617,7 +617,7 @@ reconcile_launchers() {
 # install "succeeded": on 2026-10-12 five installed commands all exited 127 and
 # nothing in any output said so.
 launcher_verdict() {
-  local probe="lcars-buddy" resolved="" out="" rc=0
+  local probe="lcars-eeh" resolved="" out="" rc=0
 
   # D6: if the launcher directory itself was unusable, nothing was installed
   # there. Say that, in words, rather than leaving the reader with a bash line
@@ -625,14 +625,14 @@ launcher_verdict() {
   if [ -n "$BIN_DEST_PROBLEM" ]; then
     echo "  ✗ NOT READY — the launcher directory $BIN_DEST_PROBLEM:"
     echo "      $BIN_DEST"
-    echo "    No LCARS command was installed there, so \`lcars-buddy\`,"
+    echo "    No LCARS command was installed there, so \`lcars-eeh\`,"
     echo "    \`lcars-viewscreen\` and the rest will say \"command not found\"."
     echo "    Cures, either works:"
     echo "      1. make it writable (chmod u+w \"$BIN_DEST\"), then re-run ./install.sh"
     echo "      2. choose another directory:"
     echo "         LCARS_BIN_DEST=\"\$HOME/bin\" ./install.sh"
     echo "      3. skip the launchers entirely and call the script directly:"
-    echo "         bash $REPO_ROOT/skills/lcars-buddy/buddy.sh"
+    echo "         bash $REPO_ROOT/skills/lcars-eeh/eeh.sh"
     return 0
   fi
 
@@ -656,9 +656,9 @@ launcher_verdict() {
     echo "  ✗ NOT READY — \`$probe\` does not resolve on your PATH, so LCARS"
     echo "    commands will say \"command not found\". Two cures, either works:"
     echo "      1. export PATH=\"$BIN_DEST:\$PATH\"   (add to your shell profile, new shell)"
-    echo "      2. bash $REPO_ROOT/skills/lcars-buddy/buddy.sh   (no PATH change at all)"
-    if [ -r "$REPO_ROOT/skills/lcars-buddy/buddy.sh" ] \
-       && bash -n "$REPO_ROOT/skills/lcars-buddy/buddy.sh" 2>/dev/null; then
+    echo "      2. bash $REPO_ROOT/skills/lcars-eeh/eeh.sh   (no PATH change at all)"
+    if [ -r "$REPO_ROOT/skills/lcars-eeh/eeh.sh" ] \
+       && bash -n "$REPO_ROOT/skills/lcars-eeh/eeh.sh" 2>/dev/null; then
       echo "    (route 2 verified just now: that file is present and parses.)"
     else
       echo "    ⚠ route 2's script is missing from this checkout — your clone is incomplete."
@@ -767,14 +767,14 @@ install_launcher "lcars-serve"      "skills/lcars-viewscreen/serve.sh"
 # makes it reachable from any shell:
 #   LCARS_WORKTREE_SETUP_CMD='pnpm install --no-frozen-lockfile' lcars-launch <id>
 install_launcher "lcars-launch"     "skills/lcars-launch/launch.sh"
-# S277: the buddy's documents name a COMMAND and the model runs it verbatim.
-# They used to name `bash ~/.claude/skills/lcars-buddy/<script>`, which is
+# S277: the EEH's documents name a COMMAND and the model runs it verbatim.
+# They used to name `bash ~/.claude/skills/lcars-eeh/<script>`, which is
 # Claude Code's install location — a Copilot-only machine has no `~/.claude`,
 # and a real Copilot turn given that prose took exit 127, reported it, and
 # stopped rather than finding the plugin mount it had loaded the skill from.
 # These two launchers are the CLI-neutral front door the prose now names.
-install_launcher "lcars-buddy"      "skills/lcars-buddy/buddy.sh"
-install_launcher "lcars-autopilot"  "skills/lcars-buddy/autopilot.sh"
+install_launcher "lcars-eeh"      "skills/lcars-eeh/eeh.sh"
+install_launcher "lcars-ech"  "skills/lcars-eeh/ech.sh"
 
 reconcile_launchers
 fi
@@ -785,18 +785,18 @@ case ":$PATH:" in
   *)
     # LOUD, not a footnote. $BIN_DEST (~/.local/bin) is NOT on PATH by default on
     # macOS, so an install can finish "successfully" and still leave every
-    # launcher the buddy's prose names — `lcars-buddy`, `lcars-autopilot`,
+    # launcher the EEH's prose names — `lcars-eeh`, `lcars-ech`,
     # `lcars-viewscreen` — answering "command not found". install.sh does not and
     # must not edit anyone's shell profile, so the only cure is this message
     # being impossible to miss, plus the absolute-path fallback below.
     echo "  ────────────────────────────────────────────────────────────────"
     echo "  ⚠  ACTION NEEDED: $BIN_DEST is NOT on your PATH."
-    echo "     Until you add it, \`lcars-buddy\`, \`lcars-autopilot\` and"
+    echo "     Until you add it, \`lcars-eeh\`, \`lcars-ech\` and"
     echo "     \`lcars-viewscreen\` will say \"command not found\"."
     echo "     Add this line to your ~/.zshrc (or ~/.bashrc), then open a new shell:"
     echo "         export PATH=\"$BIN_DEST:\$PATH\""
     echo "     Fallback, works right now with no PATH change:"
-    echo "         bash $REPO_ROOT/skills/lcars-buddy/buddy.sh"
+    echo "         bash $REPO_ROOT/skills/lcars-eeh/eeh.sh"
     echo "  ────────────────────────────────────────────────────────────────"
     ;;
 esac

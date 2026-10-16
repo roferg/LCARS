@@ -1562,7 +1562,7 @@ cmd_on() {
     esac
   done
   # THE ESCAPE HATCH, both directions, no code edit either way: `lcars xo on
-  # --sweep` — or $LCARS_XO_SWEEP_ON_START=1 for an autopilot with no argv to
+  # --sweep` — or $LCARS_XO_SWEEP_ON_START=1 for an ECH with no argv to
   # change — restores the pre-S241 behaviour exactly: switch on AND work the
   # backlog. A flag on the command line beats the variable.
   if [ -z "$sweep" ]; then
@@ -2937,10 +2937,10 @@ XO_PY="${LCARS_PYTHON_BIN:-python3}"
 # $LCARS_XO_MAX_ROUNDS, which the round loop exports for the spawn. A second
 # hard-coded 3 in prose is exactly how the two drift apart.
 # S246 — AND THE CEILING IS NOW OPT-IN, BECAUSE A LOOK HAS NO CLOCK (captain,
-# 2026-10-04). The buddy, following the same checklists by hand, ran for HOURS.
+# 2026-10-04). The EEH, following the same checklists by hand, ran for HOURS.
 # Number One was cut off at two rounds — roughly five minutes — so it could never
 # seed in one round and read the effect in the next, which is most of what the
-# buddy's day consists of. UNSET now means NO CEILING: the loop runs until the
+# EEH's day consists of. UNSET now means NO CEILING: the loop runs until the
 # worker writes its verdict, and the bounds that remain are the per-step cage,
 # the captain's `lcars xo off`, and the look timeout. SET still means a ceiling,
 # and every sentence below that quotes it still reads true — the benchmark rig
@@ -4078,7 +4078,7 @@ PY
 
 # ── THE NOTEBOOK (S246) ─────────────────────────────────────────────────────
 #
-# The buddy keeps a memory file. Number One's rounds are COLD SPAWNS — a fresh
+# The EEH keeps a memory file. Number One's rounds are COLD SPAWNS — a fresh
 # model each time, with no memory of the last one but the artifacts in its input
 # dir — so without a notebook a worker that spent round 1 learning something has
 # no way to tell round 2. It re-reads the same transcripts and asks for the same
@@ -4176,7 +4176,7 @@ except Exception:
 # `origin` while the consumer reads `host`, was unreachable by construction.
 #
 # THE CURE. The look prepares the pair ONCE, here, through the same ONE helper
-# (`autopilot.sh worktree`, reached via `xo-run.py prepare` so there is still no
+# (`ech.sh worktree`, reached via `xo-run.py prepare` so there is still no
 # second implementation), and hands it to every `xo-run.py run` of the look. The
 # pair is removed at the end of the look AND from the TERM trap, because a
 # `finally` does not run on a signal and a killed look used to leave a REGISTERED
@@ -4802,7 +4802,7 @@ xo_finish() { # <mission-dir> <score> <status> <why> [<headline>] [<meaning>] [<
     obj="$(obj_del "$obj" meaning)"
   fi
   # S240 — THE ACTION, MIRRORED. `numberOne.recommendation` is what the board,
-  # the living comment and the autopilot's `policy` read; it is the word the
+  # the living comment and the ECH's `policy` read; it is the word the
   # SCORER decided, never re-derived from `score` by a surface (that hand-mapping
   # is the defect S240 exists to remove).
   if [ -n "$recommendation" ]; then

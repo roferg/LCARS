@@ -7,7 +7,7 @@
 # fresh worktree and a fresh throwaway HOME per PROCESS, refused any HOME but the
 # one it minted, and the round loop stopped at 2 rounds × 12 actions. So a worker
 # could not seed in one round and read in the next, could not be a second user,
-# and was cut off at roughly five minutes. The captain's buddy, following the
+# and was cut off at roughly five minutes. The captain's EEH, following the
 # SAME checklists by hand, ran for hours. And when the launch had no url,
 # `verdict.json` was overwritten with `score: low, criteria: []` — every reach
 # transcript already on disk thrown away.
@@ -26,7 +26,7 @@
 #      "nothing to look at" only with no transcripts AND no tests.
 #   6  THE `looking` ENTRY — every round journals what it is doing NOW, and the
 #      First Officer's report renders it with its `did` lines.
-#   7  THE PROMPT, BUDDY-SHAPED — the live-check checklists are handed to the
+#   7  THE PROMPT, EEH-SHAPED — the live-check checklists are handed to the
 #      worker WHOLE, and nothing claims a step was built from the record.
 #
 # THE FENCE THIS FILE GUARDS. The worker role stays repo-read with NO shell. It
@@ -151,7 +151,7 @@ echo ""
 echo "1. one tree and one throwaway HOME, carried across every call of a look"
 
 # `xo-run.py prepare` is how the LOOK gets the tree and the HOME ONCE, from the
-# ONE helper (autopilot.sh wt_prepare). It must print both, in the shape xo.sh
+# ONE helper (ech.sh wt_prepare). It must print both, in the shape xo.sh
 # reads back.
 PREP="$TMPROOT/prepare.out"
 "$PY" "$CAGE" 120 "$PY" "$XORUN" prepare --repo "$PROD" --branch feat/relay \
@@ -711,7 +711,7 @@ sys.exit(0)
 EOF'
 
 # ===========================================================================
-# 7. THE PROMPT, BUDDY-SHAPED — the checklists handed over WHOLE
+# 7. THE PROMPT, EEH-SHAPED — the checklists handed over WHOLE
 # ===========================================================================
 echo ""
 echo "7. the checklists reach the worker whole; the templater's text does not"
@@ -800,7 +800,7 @@ check "7c. …and that IT decides when it has seen enough" \
 # S261 — THIS CHECK USED TO READ: the fence sentence ("You have no shell, and
 # you are not getting one") SURVIVES the rewrite. The captain amended that S168
 # clause on 2026-10-08 at 19:33 MDT, because three of the six failures measured
-# against his buddy that morning were the fence and not the prompt. The reviewer
+# against his EEH that morning were the fence and not the prompt. The reviewer
 # now gets a real shell inside a DISPOSABLE COPY. What this row still guards is
 # the same thing it always guarded — that the rewrite did not drop the paragraph
 # this sentence lived in — so it now pins the clause that REPLACED it, and the

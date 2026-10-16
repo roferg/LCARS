@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- lcars-docs-src: vision.md sha256:8c844c676bd7b9cbae978a14fdb75876ecd0285874aaea3908622b62685add34 -->
+<!-- lcars-docs-src: vision.md sha256:47e72d57920148ce26dfd168416acb81b20d517ca26f7da8c5df81e029bb02ba -->
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
@@ -63,7 +63,7 @@
       <a href="#isolation"><div class="dot"></div>Stage Isolation</a>
       <a href="#human"><div class="dot"></div>Human Control</a>
       <a href="#numberone"><div class="dot"></div>Number One <span class="nav-badge">first officer</span></a>
-      <a href="#autopilot"><div class="dot"></div>Autopilot <span class="nav-badge">the factory</span></a>
+      <a href="#ech"><div class="dot"></div>Hologram Command Mode <span class="nav-badge">the factory</span></a>
       <a href="#multi"><div class="dot"></div>Multi-Mission</a>
       <a href="#cli"><div class="dot"></div>The CLI</a>
     </div>
@@ -148,7 +148,7 @@
         shells to it.</div>
       </div>
 
-      <p>The lock is deliberately <strong>light</strong>. Reading is never gated — <code>lcars status</code>, <code>lcars buddy</code> and every board read work on anyone's Mission. An <strong>unassigned</strong> Mission is not locked: empty means <em>unowned</em>, not <em>forbidden</em>. And an identity LCARS cannot resolve never locks anything, because a false lock — telling the captain he is someone else — is strictly worse than the thing the lock prevents.</p>
+      <p>The lock is deliberately <strong>light</strong>. Reading is never gated — <code>lcars status</code>, <code>lcars eeh</code> and every board read work on anyone's Mission. An <strong>unassigned</strong> Mission is not locked: empty means <em>unowned</em>, not <em>forbidden</em>. And an identity LCARS cannot resolve never locks anything, because a false lock — telling the captain he is someone else — is strictly worse than the thing the lock prevents.</p>
 
       <p><strong>You can see work happening on machines you do not have.</strong> A Mission with no local copy is not missing from the board; it is read from the forge and rendered as a <strong>remote</strong> card at its real stage, with its cost and difficulty pills intact, marked <code>◈ REMOTE · DRIVEN ELSEWHERE</code>. Its write controls are disabled and carry the same sentence the daemon would answer with: <em>driven from another machine — adopt at Align/Verify to act here.</em></p>
 
@@ -600,10 +600,10 @@ lcars xo off                      # stand down, hand the conn back</pre>
       </div>
     </section>
 
-    <!-- AUTOPILOT -->
-    <section id="autopilot">
-      <h2>Autopilot: Handing Over the Factory</h2>
-      <p>Number One works one Mission's gates. <strong>Autopilot takes the loop
+    <!-- ECH -->
+    <section id="ech">
+      <h2>Hologram Command Mode: Handing Over the Factory</h2>
+      <p>Number One works one Mission's gates. <strong>The ECH takes the loop
       itself.</strong></p>
 
       <div class="idea-quote">"It helps take on the loop — the factory — for you,
@@ -614,12 +614,12 @@ lcars xo off                      # stand down, hand the conn back</pre>
       already has: signals in — an idea, a bug, a ticket — triaged into planned
       changes, then built, tested, reviewed and shipped by agents, and out the
       other end as a merged pull request. LCARS <em>is</em> that factory.
-      Autopilot is what lets you hand the running of it over, because the
+      The ECH is what lets you hand the running of it over, because the
       repetitive middle — file a milestone, drive it, wait on it, look at what
       came out, fix what is wrong, land it, start the next one — is work that has
       to happen and does not need the captain to do it.</p>
 
-      <p>You hand <code>lcars buddy</code> a goal, it holds <strong>one</strong>
+      <p>You hand <code>lcars eeh</code> a goal, it holds <strong>one</strong>
       alignment round with you to agree what to build, and then it runs the
       factory, milestone after milestone, coming back only when it genuinely
       needs you. <strong>What you keep is the part that actually needs you:</strong>
@@ -632,7 +632,7 @@ lcars xo off                      # stand down, hand the conn back</pre>
       every output into something you have to re-derive by hand, which is how an
       agent that is nominally saving you time quietly hands the work back.</p>
 
-      <p><strong>So autopilot does not ask to be trusted. It produces the evidence
+      <p><strong>So the ECH does not ask to be trusted. It produces the evidence
       that makes trust unnecessary.</strong> It <em>uses</em> what it built,
       against a checklist for that kind of product; records what it saw —
       transcripts, screenshots — under the Mission's own state; files what it finds
@@ -641,18 +641,18 @@ lcars xo off                      # stand down, hand the conn back</pre>
       with the evidence that decision rests on; and says so plainly when a check
       found nothing. The trail runs from the thing it did to the change it made,
       generated by the loop as it went rather than reconstructed afterwards.
-      Confidence here is not a claim autopilot makes about itself — it is what you
+      Confidence here is not a claim the ECH makes about itself — it is what you
       get from being able to go and look.</p>
 
-      <p>It is a <em>mode</em> of the buddy, asked for in plain words rather than a
+      <p>It is a <em>mode</em> of the EEH, asked for in plain words rather than a
       new verb:</p>
 
-      <pre>lcars buddy
-buddy&gt; run it for me &lt;spec&gt;       # or "drive this for me" / "run while I sleep"</pre>
+      <pre>lcars eeh
+the EEH&gt; run it for me &lt;spec&gt;       # or "drive this for me" / "run while I sleep"</pre>
 
       <h3>What one full run looked like</h3>
 
-      <p>Across one night, autopilot took a goal and built a working product — a
+      <p>Across one night, the ECH took a goal and built a working product — a
       command-line tool, a page that renders its state, and a CI workflow that
       republishes that page — driving each milestone through the pipeline and
       landing the work. It <strong>needed the captain exactly once</strong>: the
@@ -673,7 +673,7 @@ buddy&gt; run it for me &lt;spec&gt;       # or "drive this for me" / "run while
 
       <div class="lcars-alert amber">
         <div>One step remains the captain's: on the final milestone, a human ran the
-        landing. So autopilot <strong>builds, checks and fixes a round on its own and
+        landing. So the ECH <strong>builds, checks and fixes a round on its own and
         comes back when it needs you</strong> — it is not claimed to ship a round end
         to end with nobody there.</div>
       </div>
@@ -684,7 +684,7 @@ buddy&gt; run it for me &lt;spec&gt;       # or "drive this for me" / "run while
       handed over at all.</p>
 
       <p>A green suite is not evidence that the product works. Over one weekend of a
-      buddy driving LCARS to build a real product, <strong>31 bugs were found and
+      the EEH driving LCARS to build a real product, <strong>31 bugs were found and
       every one of them came from someone using the thing by hand</strong>. Number
       One filed none of them — and its misses were, every one, a <strong>reach</strong>
       error rather than a judgement error: there was no screen to look at, nothing
@@ -692,17 +692,17 @@ buddy&gt; run it for me &lt;spec&gt;       # or "drive this for me" / "run while
       untestable.</p>
 
       <p>So the step that found them is an instrument now instead of a habit. At the
-      Verify gate, autopilot runs a checklist for <strong>each kind of thing the
+      Verify gate, the ECH runs a checklist for <strong>each kind of thing the
       milestone actually is</strong> — a command line, a web page, or a CI workflow —
       and every item is an <strong>action, plus the evidence to capture, plus what
       counts as a defect</strong>; no item is "verify that X works". The script owns
       the setup, the evidence paths and the record; the <em>looking</em> is the
       model's.</p>
 
-      <pre>autopilot.sh live-check &lt;mission&gt; --type cli,web,workflow    # setup + the checklists
-autopilot.sh workflow-run &lt;mission&gt; .github/workflows/x.yml  # a CI job, run as CI runs it
-autopilot.sh live-check done &lt;mission&gt; --verdict pass|bugs   # there is no default verdict
-autopilot.sh policy --mission &lt;mission&gt; --live-check pass    # the ONE action that follows</pre>
+      <pre>ech.sh live-check &lt;mission&gt; --type cli,web,workflow    # setup + the checklists
+ech.sh workflow-run &lt;mission&gt; .github/workflows/x.yml  # a CI job, run as CI runs it
+ech.sh live-check done &lt;mission&gt; --verdict pass|bugs   # there is no default verdict
+ech.sh policy --mission &lt;mission&gt; --live-check pass    # the ONE action that follows</pre>
 
       <p>Setup is a <strong>detached</strong> worktree of the Mission's branch and a
       <strong>throwaway HOME</strong>, never the checked-out branch and never the
@@ -730,7 +730,7 @@ autopilot.sh policy --mission &lt;mission&gt; --live-check pass    # the ONE act
       read later as one that passed. A small table then turns the pair of verdicts —
       Number One's and the live check's — into exactly <strong>one</strong> action:
       merge; merge and file the gaps it named as their own Missions; send back; or
-      override. <strong>The merge is autopilot's call</strong> — Number One
+      override. <strong>The merge is the ECH's call</strong> — Number One
       recommends. A <code>bugs</code> live check sends back even a <code>high</code>
       review, and a <code>low</code> that is purely about infrastructure it could not
       reach is an override rather than a stop. Every override is written to a ledger
@@ -765,7 +765,7 @@ autopilot.sh policy --mission &lt;mission&gt; --live-check pass    # the ONE act
       the brief; a corrupt record <strong>fails closed naming the file</strong> rather
       than being quietly replaced with an empty one.</p>
 
-      <p><strong>The driver spends nothing.</strong> <code>autopilot.sh</code> is
+      <p><strong>The driver spends nothing.</strong> <code>ech.sh</code> is
       plain shell, in the same spirit as the Stage loop: it sequences file → drive →
       wait → verify gate → land for each milestone over LCARS's own verbs, and answers
       <code>next</code> with the one next step plus the playbook heading that describes
@@ -781,12 +781,12 @@ autopilot.sh policy --mission &lt;mission&gt; --live-check pass    # the ONE act
           a standing-rule conflict (including every permission denial and a refused
           merge), and an LCARS bug with no verb-level workaround. Nothing else. The
           quality decisions — whether the live check passed, whether a bug
-          round-tripped, whether to merge — autopilot makes alone and
+          round-tripped, whether to merge — the ECH makes alone and
           <strong>records</strong>.</div>
         </div>
         <div class="control-card">
           <div class="control-cmd">one home for a question</div>
-          <div class="control-desc"><code>autopilot.sh ask</code> is the only way a
+          <div class="control-desc"><code>ech.sh ask</code> is the only way a
           question is raised, carrying the same four fields every time: what is
           blocked, why it is safe, the one command that will run, the rollback. It
           lands in the questions ledger with its own id and pings <strong>once</strong>;
@@ -806,7 +806,7 @@ autopilot.sh policy --mission &lt;mission&gt; --live-check pass    # the ONE act
 
       <p><strong>It never edits LCARS.</strong> An LCARS bug is recorded and worked
       around with another verb, or it becomes one of the four interrupts. Fixing LCARS
-      is the buddy's <em>other</em> mode, and that one briefs and waits for the go.</p>
+      is the EEH's <em>other</em> mode, and that one briefs and waits for the go.</p>
     </section>
 
     <!-- MULTI-MISSION -->
@@ -860,8 +860,8 @@ autopilot.sh policy --mission &lt;mission&gt; --live-check pass    # the ONE act
           <div class="control-desc">The read-only board: every active Mission, its Stage, and anything awaiting you. With <code>--watch</code> it follows a single running Mission live — tailing its event stream into a streaming view with a pace/position line (wave, ticket, tickets green, hire count, any bounces, avg/ticket, elapsed) — so a long unattended run is observable as it moves, not a black box until the next gate.</div>
         </div>
         <div class="control-card">
-          <div class="control-cmd">lcars buddy</div>
-          <div class="control-desc">The ride-along companion. Read-only by default: where the LCARS source sits and its git state, whether the installed skills match that checkout, and a live snapshot of this repo's Missions. It is also the way in to the two things that drive LCARS <em>for</em> you — an orchestrated fix of LCARS itself, and the <strong>autopilot</strong> that runs the factory for you (see <a href="#autopilot">Autopilot</a>).</div>
+          <div class="control-cmd">lcars eeh</div>
+          <div class="control-desc">The ride-along companion. Read-only by default: where the LCARS source sits and its git state, whether the installed skills match that checkout, and a live snapshot of this repo's Missions. It is also the way in to the two things that drive LCARS <em>for</em> you — an orchestrated fix of LCARS itself, and the <strong>ECH</strong> that runs the factory for you (see <a href="#ech">Hologram Command Mode</a>).</div>
         </div>
         <div class="control-card">
           <div class="control-cmd">lcars adopt &lt;issue#&gt;</div>

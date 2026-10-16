@@ -1,20 +1,20 @@
 #!/usr/bin/env bash
 #
-# Tests for `lcars buddy` (skill source: skills/lcars-buddy/buddy.sh).
+# Tests for `lcars eeh` (skill source: skills/lcars-eeh/eeh.sh).
 #
-# `lcars buddy` is the GLOBAL, repo-agnostic "spin up an LCARS debugging buddy
-# anywhere" skill. Invoked from ANY repo, its bundled buddy.sh prints a single
+# `lcars eeh` is the GLOBAL, repo-agnostic "spin up an LCARS debugging EEH
+# anywhere" skill. Invoked from ANY repo, its bundled eeh.sh prints a single
 # diagnostic brief that (a) locates the LCARS checkout and reports its git state,
 # (b) checks whether the INSTALLED skills actually point at that checkout (so the
 # captain knows the code they edit is the code that runs), and (c) snapshots the
 # CURRENT repo's LCARS mission state (the thing that is misbehaving). All logic
-# lives in buddy.sh so it is exercised directly here, deps injected via env:
+# lives in eeh.sh so it is exercised directly here, deps injected via env:
 #   LCARS_REPO          the LCARS checkout to debug (default: resolved from the script)
 #   GIT_BIN             git binary (stubbed here)
-#   LCARS_BUDDY_CWD     the repo to inspect for active missions (default: $PWD)
+#   LCARS_EEH_CWD     the repo to inspect for active missions (default: $PWD)
 #   LCARS_SKILLS_DEST   the installed-skills dir (default: ~/.claude/skills)
 #
-# Usage: bash tests/lcars-buddy.test.sh
+# Usage: bash tests/lcars-eeh.test.sh
 set -uo pipefail
 
 # qgrep reads stdin ONLY when no FILE operand was given. Draining stdin first
@@ -37,15 +37,15 @@ qgrep() {
 }
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-SCRIPT="${LCARS_BUDDY_SCRIPT:-$REPO_ROOT/skills/lcars-buddy/buddy.sh}"
+SCRIPT="${LCARS_EEH_SCRIPT:-$REPO_ROOT/skills/lcars-eeh/eeh.sh}"
 
 
 pass=0
 fail=0
-TMPROOT="$(mktemp -d "${TMPDIR:-.}/lcars-buddy.XXXXXX")"
+TMPROOT="$(mktemp -d "${TMPDIR:-.}/lcars-eeh.XXXXXX")"
 TMPROOT="$(cd "$TMPROOT" && pwd)"
 trap 'rm -rf "$TMPROOT"' EXIT
-# S277 — FENCE THE SECOND FARM FOR THE WHOLE FILE. buddy.sh now reports Copilot's
+# S277 — FENCE THE SECOND FARM FOR THE WHOLE FILE. eeh.sh now reports Copilot's
 # plugin mount as well as Claude's skill farm, and its default is
 # $HOME/.copilot/installed-plugins/_direct — the captain's REAL one, which points
 # at his real checkout and would make every fixture-based verdict below read
@@ -62,14 +62,14 @@ check(){ if eval "$2"; then ok "$1"; else bad "$1 ($2)"; fi; }
 
 # --- helpers --------------------------------------------------------------
 
-# A directory that LOOKS like an LCARS checkout (the markers buddy.sh validates).
+# A directory that LOOKS like an LCARS checkout (the markers eeh.sh validates).
 new_lcars_checkout() {
   local repo; repo="$(mktemp -d "$TMPROOT/lcars.XXXX")"
   : >"$repo/vision.md"
   : >"$repo/install.sh"
   : >"$repo/CONTEXT.md"
   : >"$repo/CLAUDE.md"
-  mkdir -p "$repo/skills/lcars-run" "$repo/skills/lcars-buddy"
+  mkdir -p "$repo/skills/lcars-run" "$repo/skills/lcars-eeh"
   echo "$repo"
 }
 
@@ -108,7 +108,7 @@ JSON
   echo "$repo"
 }
 
-# A stub git that answers the queries buddy.sh makes (branch / HEAD / status / log).
+# A stub git that answers the queries eeh.sh makes (branch / HEAD / status / log).
 make_git_stub() {
   local stub="$TMPROOT/git-stub-$$-$RANDOM"
   cat >"$stub" <<'EOF'
@@ -131,7 +131,7 @@ LCARS="$(new_lcars_checkout)"
 
 # --- 1. locates and reports the LCARS checkout ----------------------------
 out1="$TMPROOT/out1.txt"
-LCARS_REPO="$LCARS" GIT_BIN="$GIT_STUB" LCARS_BUDDY_CWD="$(new_plain_dir)" \
+LCARS_REPO="$LCARS" GIT_BIN="$GIT_STUB" LCARS_EEH_CWD="$(new_plain_dir)" \
   LCARS_SKILLS_DEST="$(new_plain_dir)" bash "$SCRIPT" >"$out1" 2>&1
 check "1. reports the LCARS checkout path" \
   "qgrep -q '$LCARS' '$out1'"
@@ -150,7 +150,7 @@ check "2. the error names the missing LCARS checkout" \
 # --- 3. snapshots the current repo's mission + stage ----------------------
 work="$(new_repo_with_mission lcars-20260627-001 research)"
 out3="$TMPROOT/out3.txt"
-LCARS_REPO="$LCARS" GIT_BIN="$GIT_STUB" LCARS_BUDDY_CWD="$work" \
+LCARS_REPO="$LCARS" GIT_BIN="$GIT_STUB" LCARS_EEH_CWD="$work" \
   LCARS_SKILLS_DEST="$(new_plain_dir)" bash "$SCRIPT" >"$out3" 2>&1
 check "3. lists the active mission id" \
   "qgrep -q 'lcars-20260627-001' '$out3'"
@@ -162,12 +162,12 @@ check "3. surfaces the current repo's worktreeSetupCommand/testCommand config" \
   "qgrep -qi 'testCommand' '$out3'"
 
 # --- 3b. a config/state value carrying ESCAPED QUOTES renders IN FULL ------
-# buddy's json_str claimed to "mirror status.sh" but had drifted to the old
+# the EEH's json_str claimed to "mirror status.sh" but had drifted to the old
 # naive sed reader whose value class is [^"]* — it stops at the FIRST escaped
 # quote. That is not an exotic input: S148 makes every testCommand LCARS itself
 # seeds QUOTE its $LCARS_TESTS_DIR scope, so a correctly-configured repo always
 # stores \" in config.json. The brief then printed a TRUNCATED command — the
-# exact value a captain runs buddy to verify — reading as if the config were
+# exact value a captain runs the EEH to verify — reading as if the config were
 # mangled when it was fine. Same class for a mission title containing a quote.
 # Expected values live in files so `check`'s eval never re-expands the $ and "
 # they are made of.
@@ -194,7 +194,7 @@ printf '%s\n' 'npx vitest run ${LCARS_TESTS_DIR:+"${LCARS_TESTS_DIR#"$PWD/"}"}' 
 printf '%s\n' 'if [ -d "$MAIN/node_modules" ]; then ln -snf "$MAIN/node_modules" node_modules; else npm ci; fi' >"$TMPROOT/exp-ws.txt"
 printf '%s\n' 'a mission that says "hello" mid-sentence' >"$TMPROOT/exp-title.txt"
 out3b="$TMPROOT/out3b.txt"
-LCARS_REPO="$LCARS" GIT_BIN="$GIT_STUB" LCARS_BUDDY_CWD="$work3b" \
+LCARS_REPO="$LCARS" GIT_BIN="$GIT_STUB" LCARS_EEH_CWD="$work3b" \
   LCARS_SKILLS_DEST="$(new_plain_dir)" bash "$SCRIPT" >"$out3b" 2>&1
 check "3b. renders a QUOTED testCommand in full (not cut at the first escaped quote)" \
   "grep -qFf '$TMPROOT/exp-tc.txt' '$out3b'"
@@ -206,7 +206,7 @@ check "3b. renders a mission title containing quotes in full" \
 # --- 4. flags an awaiting-human mission -----------------------------------
 work4="$(new_repo_with_mission lcars-20260627-002 implement true)"
 out4="$TMPROOT/out4.txt"
-LCARS_REPO="$LCARS" GIT_BIN="$GIT_STUB" LCARS_BUDDY_CWD="$work4" \
+LCARS_REPO="$LCARS" GIT_BIN="$GIT_STUB" LCARS_EEH_CWD="$work4" \
   LCARS_SKILLS_DEST="$(new_plain_dir)" bash "$SCRIPT" >"$out4" 2>&1
 check "4. flags an awaiting-human mission" \
   "qgrep -qi 'awaiting' '$out4'"
@@ -221,7 +221,7 @@ for paused_stage in done implement; do
     "$paused_stage" "$paused_stage" >"$pause_dir/state.json"
   cp "$pause_dir/state.json" "$pause_dir/state.before"
   pause_out="$TMPROOT/pause-$paused_stage.txt"
-  LCARS_REPO="$REPO_ROOT" GIT_BIN=git LCARS_BUDDY_CWD="$pause_work" \
+  LCARS_REPO="$REPO_ROOT" GIT_BIN=git LCARS_EEH_CWD="$pause_work" \
     LCARS_SKILLS_DEST="$(new_plain_dir)" bash "$SCRIPT" >"$pause_out" 2>&1
   check "4-terminal $paused_stage. mission stage and awaiting input stay visible" \
     "grep -q 'MISSION pause-$paused_stage .*stage: $paused_stage.*⚠ awaiting-human' '$pause_out'"
@@ -238,7 +238,7 @@ done
 
 # --- 5. graceful when the current repo is not LCARS-initialized ------------
 out5="$TMPROOT/out5.txt"
-LCARS_REPO="$LCARS" GIT_BIN="$GIT_STUB" LCARS_BUDDY_CWD="$(new_plain_dir)" \
+LCARS_REPO="$LCARS" GIT_BIN="$GIT_STUB" LCARS_EEH_CWD="$(new_plain_dir)" \
   LCARS_SKILLS_DEST="$(new_plain_dir)" bash "$SCRIPT" >"$out5" 2>&1
 rc5=$?
 check "5. exits 0 even when the current repo has no LCARS missions" "[ $rc5 -eq 0 ]"
@@ -252,9 +252,9 @@ check "5. says the current repo is not LCARS-initialized (not an error)" \
 # correctly-aimed link out of eighteen is not a synced install — see group 15).
 dest_sync="$(new_plain_dir)"
 ln -snf "$LCARS/skills/lcars-run"   "$dest_sync/lcars-run"
-ln -snf "$LCARS/skills/lcars-buddy" "$dest_sync/lcars-buddy"
+ln -snf "$LCARS/skills/lcars-eeh" "$dest_sync/lcars-eeh"
 out6a="$TMPROOT/out6a.txt"
-LCARS_REPO="$LCARS" GIT_BIN="$GIT_STUB" LCARS_BUDDY_CWD="$(new_plain_dir)" \
+LCARS_REPO="$LCARS" GIT_BIN="$GIT_STUB" LCARS_EEH_CWD="$(new_plain_dir)" \
   LCARS_SKILLS_DEST="$dest_sync" bash "$SCRIPT" >"$out6a" 2>&1
 check "6a. reports installed skills are IN SYNC with this checkout" \
   "qgrep -qiE 'in sync|up to date|points at' '$out6a'"
@@ -264,26 +264,26 @@ other="$(new_lcars_checkout)"
 dest_stale="$(new_plain_dir)"
 ln -snf "$other/skills/lcars-run" "$dest_stale/lcars-run"
 out6b="$TMPROOT/out6b.txt"
-LCARS_REPO="$LCARS" GIT_BIN="$GIT_STUB" LCARS_BUDDY_CWD="$(new_plain_dir)" \
+LCARS_REPO="$LCARS" GIT_BIN="$GIT_STUB" LCARS_EEH_CWD="$(new_plain_dir)" \
   LCARS_SKILLS_DEST="$dest_stale" bash "$SCRIPT" >"$out6b" 2>&1
 check "6b. WARNS when installed skills do not point at this checkout" \
   "qgrep -qiE 'stale|do not point|install\.sh' '$out6b'"
 
-# --- 7. points the buddy at the key source docs ---------------------------
-check "7. points the buddy at vision.md and CLAUDE.md" \
+# --- 7. points the EEH at the key source docs ---------------------------
+check "7. points the EEH at vision.md and CLAUDE.md" \
   "qgrep -q 'vision.md' '$out1' && qgrep -q 'CLAUDE.md' '$out1'"
 
 # --- 8. ORCHESTRATION.md — the ONE shared orchestration rules file --------
-# S197: run-session (lcars-dev), night-watch (lcars-dev) and `lcars buddy` all
+# S197: run-session (lcars-dev), night-watch (lcars-dev) and `lcars eeh` all
 # follow the SAME orchestration loop — implementor (TDD) → fresh tester → fix
 # rounds → teardown → commit → readout. Until now each of the three RESTATED it,
-# which is exactly how three copies drift apart (and buddy's copy had already
+# which is exactly how three copies drift apart (and the EEH's copy had already
 # lost the tester, the round counter and the regression guard). The rules MOVED
 # into this file; every consumer points at
-# `~/.claude/skills/lcars-buddy/ORCHESTRATION.md` — a stable path from any cwd,
+# `~/.claude/skills/lcars-eeh/ORCHESTRATION.md` — a stable path from any cwd,
 # reached through the install symlink, so no installer changes.
-ORCH="$REPO_ROOT/skills/lcars-buddy/ORCHESTRATION.md"
-check "8. skills/lcars-buddy/ORCHESTRATION.md exists" "[ -f '$ORCH' ]"
+ORCH="$REPO_ROOT/skills/lcars-eeh/ORCHESTRATION.md"
+check "8. skills/lcars-eeh/ORCHESTRATION.md exists" "[ -f '$ORCH' ]"
 
 cat >"$TMPROOT/exp-headings.txt" <<'EOF'
 ## Who reads this
@@ -356,18 +356,18 @@ check "8b. and passes a fast probe's own exit code and output straight through" 
   "qgrep -q 'EXIT 64' '$cagefast' && qgrep -q 'alive' '$cagefast'"
 
 # --- 9. SKILL.md points at the rules file instead of restating them -------
-SKILL_MD="$REPO_ROOT/skills/lcars-buddy/SKILL.md"
+SKILL_MD="$REPO_ROOT/skills/lcars-eeh/SKILL.md"
 # S277 — THIS ASSERTION WAS CHANGED, DELIBERATELY. It used to read:
 #   check "9. SKILL.md references the rules file by its INSTALL path" \
-#     "grep -qF '~/.claude/skills/lcars-buddy/ORCHESTRATION.md' '$SKILL_MD'"
+#     "grep -qF '~/.claude/skills/lcars-eeh/ORCHESTRATION.md' '$SKILL_MD'"
 # i.e. it ENFORCED the one literal that breaks the skill under Copilot, whose
-# install mount is ~/.copilot/installed-plugins/_direct/lcars/skills/lcars-buddy.
+# install mount is ~/.copilot/installed-plugins/_direct/lcars/skills/lcars-eeh.
 # The requirement behind it is unchanged — SKILL.md must POINT at the rules file
 # rather than restate it — so what is asserted now is that it points at it in a
 # form that resolves in BOTH mounts. Group 17 below holds the positive form of
 # this contract; group 16 holds the prohibition.
 check "9. SKILL.md references the rules file by a form that works in BOTH mounts" \
-  "grep -qF 'ORCHESTRATION.md' '$SKILL_MD' && grep -qF 'lcars-buddy docs orchestration' '$SKILL_MD' && ! grep -qF '~/.claude/skills/lcars-buddy/ORCHESTRATION.md' '$SKILL_MD'"
+  "grep -qF 'ORCHESTRATION.md' '$SKILL_MD' && grep -qF 'lcars-eeh docs orchestration' '$SKILL_MD' && ! grep -qF '~/.claude/skills/lcars-eeh/ORCHESTRATION.md' '$SKILL_MD'"
 check "9. SKILL.md no longer restates the moved rule sentences" \
   "! grep -qE 'TDD.*: write the failing|Commit only when asked' '$SKILL_MD'"
 check "9. SKILL.md's fix half is an ORCHESTRATOR (brief, fix/<slug>, tester, readout)" \
@@ -376,22 +376,22 @@ check "9. SKILL.md carries the clean-and-on-main refusal" \
   "grep -qF 'will not stack a fix onto it' '$SKILL_MD'"
 
 # --- 10. the brief stops carrying a SECOND copy of the rules --------------
-# buddy.sh used to print its own five-rule block — the same five rules SKILL.md
+# eeh.sh used to print its own five-rule block — the same five rules SKILL.md
 # stated, i.e. a drift surface inside one skill. One pointer line replaces it.
-check "10. the brief no longer prints the duplicated BUDDY RULES block" \
-  "! grep -qiE 'BUDDY RULES|TDD: failing test first' '$out1'"
+check "10. the brief no longer prints the duplicated EEH RULES block" \
+  "! grep -qiE 'EEH RULES|TDD: failing test first' '$out1'"
 check "10. the brief prints exactly ONE pointer line naming ORCHESTRATION.md" \
   "[ \"\$(grep -c 'ORCHESTRATION.md' '$out1')\" = 1 ]"
 
 # --- 11. INSTALL SYNC is case-TOLERANT (the S197 bug) --------------------
-# buddy.sh compared the install symlink target against $REPO with a
+# eeh.sh compared the install symlink target against $REPO with a
 # case-SENSITIVE `case` glob. APFS is case-insensitive but `pwd -P` preserves
-# the case you TYPED, so `LCARS_REPO=~/Projects/lcars` (or a buddy invoked
+# the case you TYPED, so `LCARS_REPO=~/Projects/lcars` (or an EEH invoked
 # through a lowercase path) reported a perfectly in-sync install as STALE — the
-# one check a captain runs buddy in order to trust.
+# one check a captain runs the EEH in order to trust.
 caseroot="$(mktemp -d "$TMPROOT/case.XXXX")"
 case_upper="$caseroot/Fake-LCARS"
-mkdir -p "$case_upper/skills/lcars-run" "$case_upper/skills/lcars-buddy"
+mkdir -p "$case_upper/skills/lcars-run" "$case_upper/skills/lcars-eeh"
 : >"$case_upper/vision.md"; : >"$case_upper/install.sh"
 case_lower="$caseroot/fake-lcars"
 # On a case-INSENSITIVE FS the lowercase spelling already resolves to the same
@@ -400,9 +400,9 @@ case_lower="$caseroot/fake-lcars"
 dest_case="$(new_plain_dir)"
 # Both shipped skills linked — completeness is group 15's subject, not this one.
 ln -snf "$case_upper/skills/lcars-run"   "$dest_case/lcars-run"
-ln -snf "$case_upper/skills/lcars-buddy" "$dest_case/lcars-buddy"
+ln -snf "$case_upper/skills/lcars-eeh" "$dest_case/lcars-eeh"
 out11="$TMPROOT/out11.txt"
-LCARS_REPO="$case_lower" GIT_BIN="$GIT_STUB" LCARS_BUDDY_CWD="$(new_plain_dir)" \
+LCARS_REPO="$case_lower" GIT_BIN="$GIT_STUB" LCARS_EEH_CWD="$(new_plain_dir)" \
   LCARS_SKILLS_DEST="$dest_case" bash "$SCRIPT" >"$out11" 2>&1
 check "11. IN SYNC when the symlink target and LCARS_REPO differ only by CASE" \
   "grep -qi 'in sync' '$out11'"
@@ -411,21 +411,21 @@ check "11. and does NOT cry STALE on that case-different path" \
 
 # --- 12. default repo resolution through the install symlink -------------
 # Every case above passes LCARS_REPO explicitly, so the `pwd -P` default path
-# (buddy.sh's normal production path — invoked as
-# ~/.claude/skills/lcars-buddy/buddy.sh) was never exercised.
+# (eeh.sh's normal production path — invoked as
+# ~/.claude/skills/lcars-eeh/eeh.sh) was never exercised.
 defroot="$(mktemp -d "$TMPROOT/def.XXXX")"
 defrepo="$defroot/LCARS"
-mkdir -p "$defrepo/skills/lcars-run" "$defrepo/skills/lcars-buddy"
+mkdir -p "$defrepo/skills/lcars-run" "$defrepo/skills/lcars-eeh"
 : >"$defrepo/vision.md"; : >"$defrepo/install.sh"
-cp "$SCRIPT" "$defrepo/skills/lcars-buddy/buddy.sh"
+cp "$SCRIPT" "$defrepo/skills/lcars-eeh/eeh.sh"
 dest_def="$(new_plain_dir)"
-ln -snf "$defrepo/skills/lcars-buddy" "$dest_def/lcars-buddy"
+ln -snf "$defrepo/skills/lcars-eeh" "$dest_def/lcars-eeh"
 ln -snf "$defrepo/skills/lcars-run" "$dest_def/lcars-run"
 defphys="$(cd "$defrepo" && pwd -P)"
 out12="$TMPROOT/out12.txt"
 ( unset LCARS_REPO
-  GIT_BIN="$GIT_STUB" LCARS_BUDDY_CWD="$(new_plain_dir)" \
-    LCARS_SKILLS_DEST="$dest_def" bash "$dest_def/lcars-buddy/buddy.sh" ) >"$out12" 2>&1
+  GIT_BIN="$GIT_STUB" LCARS_EEH_CWD="$(new_plain_dir)" \
+    LCARS_SKILLS_DEST="$dest_def" bash "$dest_def/lcars-eeh/eeh.sh" ) >"$out12" 2>&1
 check "12. with NO LCARS_REPO, resolves the PHYSICAL checkout behind the symlink" \
   "grep -qF 'LCARS REPO: $defphys' '$out12'"
 check "12. and that default resolution reads as IN SYNC" \
@@ -434,27 +434,27 @@ check "12. and that default resolution reads as IN SYNC" \
 # --- 13. the build contract is complete in its own file ------------------
 CONTRACT="$REPO_ROOT/CLAUDE.md"
 check "13. CLAUDE.md points at the shared orchestration rules file" \
-  "grep -qF 'skills/lcars-buddy/ORCHESTRATION.md' '$CONTRACT'"
+  "grep -qF 'skills/lcars-eeh/ORCHESTRATION.md' '$CONTRACT'"
 check "13. CLAUDE.md scopes the FULL suite to ship-it, fixes/sessions to the scoped suite" \
   "grep -qF 'ship-it' '$CONTRACT' && grep -qiE 'scoped' '$CONTRACT'"
 check "13. CLAUDE.md states the branch-naming convention and the commit trailer" \
   "grep -qF 'fix/<slug>' '$CONTRACT' && grep -qF 'Co-Authored-By' '$CONTRACT'"
 
 # --- 14. INSTALL SYNC judges ALL installed skills, not one symlink -------
-# buddy.sh resolved install sync by reading the `lcars-run` symlink ALONE, so a
+# eeh.sh resolved install sync by reading the `lcars-run` symlink ALONE, so a
 # PARTIAL install — lcars-run linked to this checkout while the other skills
 # still point somewhere else — reported a confident, wrong "in sync". That is
-# the one line a captain runs buddy in order to trust before editing code, and a
+# the one line a captain runs the EEH in order to trust before editing code, and a
 # partial install is exactly what a half-finished `./install.sh`, a renamed
 # checkout, or an isolated-dest experiment leaves behind.
 other14="$(new_lcars_checkout)"
 mkdir -p "$other14/skills/lcars-answer" "$LCARS/skills/lcars-answer"
 dest_partial="$(new_plain_dir)"
 ln -snf "$LCARS/skills/lcars-run"      "$dest_partial/lcars-run"      # THIS checkout
-ln -snf "$LCARS/skills/lcars-buddy"    "$dest_partial/lcars-buddy"    # THIS checkout
+ln -snf "$LCARS/skills/lcars-eeh"    "$dest_partial/lcars-eeh"    # THIS checkout
 ln -snf "$other14/skills/lcars-answer" "$dest_partial/lcars-answer"   # somewhere ELSE
 out14="$TMPROOT/out14.txt"
-LCARS_REPO="$LCARS" GIT_BIN="$GIT_STUB" LCARS_BUDDY_CWD="$(new_plain_dir)" \
+LCARS_REPO="$LCARS" GIT_BIN="$GIT_STUB" LCARS_EEH_CWD="$(new_plain_dir)" \
   LCARS_SKILLS_DEST="$dest_partial" bash "$SCRIPT" >"$out14" 2>&1
 check "14. a PARTIAL install does NOT report in sync" \
   "! grep -qi 'in sync' '$out14'"
@@ -468,10 +468,10 @@ check "14. and still tells them to run install.sh" \
 # 14b. unanimity is still IN SYNC — several skills, all pointing here.
 dest_all="$(new_plain_dir)"
 ln -snf "$LCARS/skills/lcars-run"    "$dest_all/lcars-run"
-ln -snf "$LCARS/skills/lcars-buddy"  "$dest_all/lcars-buddy"
+ln -snf "$LCARS/skills/lcars-eeh"  "$dest_all/lcars-eeh"
 ln -snf "$LCARS/skills/lcars-answer" "$dest_all/lcars-answer"
 out14b="$TMPROOT/out14b.txt"
-LCARS_REPO="$LCARS" GIT_BIN="$GIT_STUB" LCARS_BUDDY_CWD="$(new_plain_dir)" \
+LCARS_REPO="$LCARS" GIT_BIN="$GIT_STUB" LCARS_EEH_CWD="$(new_plain_dir)" \
   LCARS_SKILLS_DEST="$dest_all" bash "$SCRIPT" >"$out14b" 2>&1
 check "14b. every skill agreeing reads IN SYNC" "grep -qi 'in sync' '$out14b'"
 check "14b. and says HOW MANY skills it checked (so 'in sync' is falsifiable)" \
@@ -485,7 +485,7 @@ dest_allstale="$(new_plain_dir)"
 ln -snf "$other14/skills/lcars-run"    "$dest_allstale/lcars-run"
 ln -snf "$other14/skills/lcars-answer" "$dest_allstale/lcars-answer"
 out14c="$TMPROOT/out14c.txt"
-LCARS_REPO="$LCARS" GIT_BIN="$GIT_STUB" LCARS_BUDDY_CWD="$(new_plain_dir)" \
+LCARS_REPO="$LCARS" GIT_BIN="$GIT_STUB" LCARS_EEH_CWD="$(new_plain_dir)" \
   LCARS_SKILLS_DEST="$dest_allstale" bash "$SCRIPT" >"$out14c" 2>&1
 check "14c. a wholly different checkout still reads STALE, not partial" \
   "grep -qi 'stale' '$out14c' && ! grep -qi 'in sync' '$out14c'"
@@ -507,14 +507,14 @@ sync_section() { # sync_section <brief-file> <out-file>
   awk '/^INSTALL SYNC/{f=1} /^CURRENT REPO:/{f=0} f' "$1" >"$2"
 }
 
-c15="$(new_lcars_checkout)"                      # ships lcars-run + lcars-buddy
+c15="$(new_lcars_checkout)"                      # ships lcars-run + lcars-eeh
 mkdir -p "$c15/skills/lcars-answer" "$c15/skills/lcars-status"   # ships 4 now
 
 # 15a. ONLY lcars-run installed, correctly aimed — the ledger's exact shape.
 dest15a="$(new_plain_dir)"
 ln -snf "$c15/skills/lcars-run" "$dest15a/lcars-run"
 out15a="$TMPROOT/out15a.txt"
-LCARS_REPO="$c15" GIT_BIN="$GIT_STUB" LCARS_BUDDY_CWD="$(new_plain_dir)" \
+LCARS_REPO="$c15" GIT_BIN="$GIT_STUB" LCARS_EEH_CWD="$(new_plain_dir)" \
   LCARS_SKILLS_DEST="$dest15a" bash "$SCRIPT" >"$out15a" 2>&1
 check "15a. ONE correctly-linked skill out of four does NOT read in sync" \
   "! grep -qi 'in sync' '$out15a'"
@@ -522,16 +522,16 @@ check "15a. it reports the installed count AGAINST the shipped count (1 of 4)" \
   "grep -qE '1 of 4' '$out15a'"
 sec15a="$TMPROOT/sec15a.txt"; sync_section "$out15a" "$sec15a"
 check "15a. the VERDICT names a skill that is missing, so the gap is visible" \
-  "grep -qE 'lcars-(answer|status|buddy)' '$sec15a'"
+  "grep -qE 'lcars-(answer|status|the EEH)' '$sec15a'"
 check "15a. and still tells them to run install.sh" "grep -qF 'install.sh' '$sec15a'"
 
 # 15b. many skills installed and aimed here, but lcars-run MISSING.
 dest15b="$(new_plain_dir)"
-ln -snf "$c15/skills/lcars-buddy"  "$dest15b/lcars-buddy"
+ln -snf "$c15/skills/lcars-eeh"  "$dest15b/lcars-eeh"
 ln -snf "$c15/skills/lcars-answer" "$dest15b/lcars-answer"
 ln -snf "$c15/skills/lcars-status" "$dest15b/lcars-status"
 out15b="$TMPROOT/out15b.txt"
-LCARS_REPO="$c15" GIT_BIN="$GIT_STUB" LCARS_BUDDY_CWD="$(new_plain_dir)" \
+LCARS_REPO="$c15" GIT_BIN="$GIT_STUB" LCARS_EEH_CWD="$(new_plain_dir)" \
   LCARS_SKILLS_DEST="$dest15b" bash "$SCRIPT" >"$out15b" 2>&1
 check "15b. three of four installed does NOT read in sync" \
   "! grep -qi 'in sync' '$out15b'"
@@ -546,15 +546,15 @@ check "15b. the VERDICT names lcars-run as the one that is missing" \
 # and the bare `lcars` link at a DIFFERENT checkout and still got a confident
 # "in sync. (17 skill(s) checked)" while 18 skills were installed.
 c15c="$(new_lcars_checkout)"
-mkdir -p "$c15c/skills/lcars"                     # ships lcars, lcars-run, lcars-buddy
+mkdir -p "$c15c/skills/lcars"                     # ships lcars, lcars-run, lcars-eeh
 other15c="$(new_lcars_checkout)"
 mkdir -p "$other15c/skills/lcars"
 dest15c="$(new_plain_dir)"
 ln -snf "$c15c/skills/lcars-run"    "$dest15c/lcars-run"      # THIS checkout
-ln -snf "$c15c/skills/lcars-buddy"  "$dest15c/lcars-buddy"    # THIS checkout
+ln -snf "$c15c/skills/lcars-eeh"  "$dest15c/lcars-eeh"    # THIS checkout
 ln -snf "$other15c/skills/lcars"    "$dest15c/lcars"          # somewhere ELSE
 out15c="$TMPROOT/out15c.txt"
-LCARS_REPO="$c15c" GIT_BIN="$GIT_STUB" LCARS_BUDDY_CWD="$(new_plain_dir)" \
+LCARS_REPO="$c15c" GIT_BIN="$GIT_STUB" LCARS_EEH_CWD="$(new_plain_dir)" \
   LCARS_SKILLS_DEST="$dest15c" bash "$SCRIPT" >"$out15c" 2>&1
 check "15c. a bare \`lcars\` pointing elsewhere is NOT reported as in sync" \
   "! grep -qi 'in sync' '$out15c'"
@@ -568,9 +568,9 @@ check "15c. the VERDICT names the bare \`lcars\` as the disagreeing skill" \
 dest15d="$(new_plain_dir)"
 ln -snf "$c15c/skills/lcars"       "$dest15d/lcars"
 ln -snf "$c15c/skills/lcars-run"   "$dest15d/lcars-run"
-ln -snf "$c15c/skills/lcars-buddy" "$dest15d/lcars-buddy"
+ln -snf "$c15c/skills/lcars-eeh" "$dest15d/lcars-eeh"
 out15d="$TMPROOT/out15d.txt"
-LCARS_REPO="$c15c" GIT_BIN="$GIT_STUB" LCARS_BUDDY_CWD="$(new_plain_dir)" \
+LCARS_REPO="$c15c" GIT_BIN="$GIT_STUB" LCARS_EEH_CWD="$(new_plain_dir)" \
   LCARS_SKILLS_DEST="$dest15d" bash "$SCRIPT" >"$out15d" 2>&1
 check "15d. CONTROL: a complete, correctly-aimed install reads IN SYNC" \
   "grep -qi 'in sync' '$out15d'"
@@ -581,9 +581,9 @@ check "15d. CONTROL: no false partial/stale/missing on a complete install" \
   "! grep -qiE 'disagree|partial|stale|missing|incomplete' '$sec15d'"
 
 # ==========================================================================
-# S277 — THE BUDDY RUNS FROM EITHER CLI
+# S277 — THE EEH RUNS FROM EITHER CLI
 #
-# The three documents told the model to run `bash ~/.claude/skills/lcars-buddy/
+# The three documents told the model to run `bash ~/.claude/skills/lcars-eeh/
 # <script>`. `~/.claude/skills/` is CLAUDE CODE's install location; a Copilot
 # user does not have it (Copilot mounts the whole plugin at
 # ~/.copilot/installed-plugins/_direct/lcars/). The S277 spike put that prose in
@@ -593,17 +593,17 @@ check "15d. CONTROL: no false partial/stale/missing on a complete install" \
 # run, so the prose names on-PATH commands (install.sh generates them) and the
 # documents-to-READ get a mount-independent form.
 # ==========================================================================
-SKILL_MD277="$REPO_ROOT/skills/lcars-buddy/SKILL.md"
-ORCH277="$REPO_ROOT/skills/lcars-buddy/ORCHESTRATION.md"
-AUTOP277="$REPO_ROOT/skills/lcars-buddy/AUTOPILOT.md"
+SKILL_MD277="$REPO_ROOT/skills/lcars-eeh/SKILL.md"
+ORCH277="$REPO_ROOT/skills/lcars-eeh/ORCHESTRATION.md"
+AUTOP277="$REPO_ROOT/skills/lcars-eeh/HOLOGRAM-COMMAND-MODE.md"
 
 # --- 16. no Claude-only path survives in the three documents --------------
-check "16. SKILL.md carries NO ~/.claude/skills/lcars-buddy literal" \
-  "[ \"\$(grep -c '~/.claude/skills/lcars-buddy' '$SKILL_MD277')\" -eq 0 ]"
-check "16. ORCHESTRATION.md carries NO ~/.claude/skills/lcars-buddy literal" \
-  "[ \"\$(grep -c '~/.claude/skills/lcars-buddy' '$ORCH277')\" -eq 0 ]"
-check "16. AUTOPILOT.md carries NO ~/.claude/skills/lcars-buddy literal" \
-  "[ \"\$(grep -c '~/.claude/skills/lcars-buddy' '$AUTOP277')\" -eq 0 ]"
+check "16. SKILL.md carries NO ~/.claude/skills/lcars-eeh literal" \
+  "[ \"\$(grep -c '~/.claude/skills/lcars-eeh' '$SKILL_MD277')\" -eq 0 ]"
+check "16. ORCHESTRATION.md carries NO ~/.claude/skills/lcars-eeh literal" \
+  "[ \"\$(grep -c '~/.claude/skills/lcars-eeh' '$ORCH277')\" -eq 0 ]"
+check "16. HOLOGRAM-COMMAND-MODE.md carries NO ~/.claude/skills/lcars-eeh literal" \
+  "[ \"\$(grep -c '~/.claude/skills/lcars-eeh' '$AUTOP277')\" -eq 0 ]"
 # No document may hand the model a `bash ~/.claude…` (or ~/.copilot…) command
 # for ANY skill — that is the exit-127 shape, whichever skill it points at.
 check "16. no document tells the model to \`bash\` a path under an install farm" \
@@ -622,23 +622,23 @@ check "16. CONTROL: the two-mount farm phrasing is present and names both CLIs" 
 # --- 17. SKILL.md names the rules file in a form that works in BOTH mounts -
 # This REPLACES the old assertion "SKILL.md references the rules file by its
 # INSTALL path", which enforced the very literal that broke Copilot. The new
-# contract: the rules file is reached by the PATH command (`lcars-buddy docs
+# contract: the rules file is reached by the PATH command (`lcars-eeh docs
 # orchestration`), which resolves ORCHESTRATION.md beside whichever copy of
-# buddy.sh ran — Claude's per-skill symlink or Copilot's plugin mount.
+# eeh.sh ran — Claude's per-skill symlink or Copilot's plugin mount.
 check "17. SKILL.md still names ORCHESTRATION.md as the rules file" \
   "grep -qF 'ORCHESTRATION.md' '$SKILL_MD277'"
 check "17. and reaches it by the mount-independent command, not a Claude path" \
-  "grep -qF 'lcars-buddy docs orchestration' '$SKILL_MD277'"
-check "17. SKILL.md's primary action is the on-PATH \`lcars-buddy\` command" \
-  "grep -qE '^lcars-buddy *$' '$SKILL_MD277'"
-check "17. SKILL.md's autopilot driver lines are the on-PATH \`lcars-autopilot\`" \
-  "grep -qE '^lcars-autopilot next' '$SKILL_MD277' && grep -qE '^lcars-autopilot status' '$SKILL_MD277' && grep -qE '^lcars-autopilot playbook' '$SKILL_MD277'"
-check "17. AUTOPILOT.md's own \"what do I do next\" command is on-PATH" \
-  "grep -qE '^lcars-autopilot next' '$AUTOP277'"
-check "17. AUTOPILOT.md reaches the four sibling scripts through a PATH command" \
-  "grep -qF 'lcars-autopilot exec lcars-init/establish-vision.sh' '$AUTOP277' && grep -qF 'lcars-autopilot exec lcars-file/file.sh' '$AUTOP277' && grep -qF 'lcars-autopilot exec lcars-resolve-logs/resolve-logs.sh' '$AUTOP277' && grep -qF 'lcars-autopilot exec lcars-respond/respond.sh' '$AUTOP277'"
+  "grep -qF 'lcars-eeh docs orchestration' '$SKILL_MD277'"
+check "17. SKILL.md's primary action is the on-PATH \`lcars-eeh\` command" \
+  "grep -qE '^lcars-eeh *$' '$SKILL_MD277'"
+check "17. SKILL.md's ECH driver lines are the on-PATH \`lcars-ech\`" \
+  "grep -qE '^lcars-ech next' '$SKILL_MD277' && grep -qE '^lcars-ech status' '$SKILL_MD277' && grep -qE '^lcars-ech playbook' '$SKILL_MD277'"
+check "17. HOLOGRAM-COMMAND-MODE.md's own \"what do I do next\" command is on-PATH" \
+  "grep -qE '^lcars-ech next' '$AUTOP277'"
+check "17. HOLOGRAM-COMMAND-MODE.md reaches the four sibling scripts through a PATH command" \
+  "grep -qF 'lcars-ech exec lcars-init/establish-vision.sh' '$AUTOP277' && grep -qF 'lcars-ech exec lcars-file/file.sh' '$AUTOP277' && grep -qF 'lcars-ech exec lcars-resolve-logs/resolve-logs.sh' '$AUTOP277' && grep -qF 'lcars-ech exec lcars-respond/respond.sh' '$AUTOP277'"
 
-# --- 18. `lcars-buddy docs <name>` — the FILES-TO-READ class --------------
+# --- 18. `lcars-eeh docs <name>` — the FILES-TO-READ class --------------
 # A PATH launcher cannot be `cat`ed, so "read ORCHESTRATION.md" needs its own
 # mount-independent answer. This subcommand prints the document (or its path),
 # resolved from the script's own physical directory — proven here by invoking it
@@ -647,32 +647,32 @@ docs_out="$TMPROOT/docs-orch.txt"
 bash "$SCRIPT" docs orchestration >"$docs_out" 2>&1
 check "18. \`docs orchestration\` prints ORCHESTRATION.md's own first line" \
   "qgrep -q 'ORCHESTRATION.md — how an LCARS orchestrator runs' '$docs_out'"
-check "18. \`docs --path autopilot\` prints a path that exists" \
-  "[ -f \"\$(bash '$SCRIPT' docs --path autopilot)\" ]"
+check "18. \`docs --path ech\` prints a path that exists" \
+  "[ -f \"\$(bash '$SCRIPT' docs --path ech)\" ]"
 check "18. an unknown document name is refused, not silently empty" \
   "! bash '$SCRIPT' docs no-such-doc >/dev/null 2>&1"
-# The symlinked-mount proof: a fake plugin mount whose lcars-buddy dir is a
+# The symlinked-mount proof: a fake plugin mount whose lcars-eeh dir is a
 # symlink to the real one. Skipped when SCRIPT is not inside a skill dir.
 mountdir="$TMPROOT/fake-mount"
 mkdir -p "$mountdir"
-ln -snf "$(cd "$(dirname "$SCRIPT")" && pwd -P)" "$mountdir/lcars-buddy"
-check "18. docs resolve when buddy.sh is invoked through a SYMLINKED mount" \
-  "bash '$mountdir/lcars-buddy/buddy.sh' docs --path orchestration | qgrep -q 'ORCHESTRATION.md'"
+ln -snf "$(cd "$(dirname "$SCRIPT")" && pwd -P)" "$mountdir/lcars-eeh"
+check "18. docs resolve when eeh.sh is invoked through a SYMLINKED mount" \
+  "bash '$mountdir/lcars-eeh/eeh.sh' docs --path orchestration | qgrep -q 'ORCHESTRATION.md'"
 
 # --- 19. INSTALL SYNC reads BOTH farms ------------------------------------
-# buddy.sh read only Claude's farm, so on a Copilot-only machine it announced
+# eeh.sh read only Claude's farm, so on a Copilot-only machine it announced
 # "LCARS skills are not installed here — run ./install.sh" while they WERE
-# installed, at the other mount. That is the one line a captain runs buddy in
+# installed, at the other mount. That is the one line a captain runs the EEH in
 # order to trust, and it was false for half the audience.
 c19="$(new_lcars_checkout)"
 dest19="$(new_plain_dir)"
 ln -snf "$c19/skills/lcars-run"   "$dest19/lcars-run"
-ln -snf "$c19/skills/lcars-buddy" "$dest19/lcars-buddy"
+ln -snf "$c19/skills/lcars-eeh" "$dest19/lcars-eeh"
 
 # 19a. the Copilot plugin link points at THIS checkout -> IN SYNC
 cop19a="$(new_plain_dir)"; ln -snf "$c19" "$cop19a/lcars"
 out19a="$TMPROOT/out19a.txt"
-LCARS_REPO="$c19" GIT_BIN="$GIT_STUB" LCARS_BUDDY_CWD="$(new_plain_dir)" \
+LCARS_REPO="$c19" GIT_BIN="$GIT_STUB" LCARS_EEH_CWD="$(new_plain_dir)" \
   LCARS_SKILLS_DEST="$dest19" LCARS_COPILOT_PLUGINS_DIR="$cop19a" \
   bash "$SCRIPT" >"$out19a" 2>&1
 check "19a. a Copilot plugin aimed at this checkout reads \"Copilot plugin: IN SYNC\"" \
@@ -682,7 +682,7 @@ check "19a. a Copilot plugin aimed at this checkout reads \"Copilot plugin: IN S
 other19="$(new_lcars_checkout)"
 cop19b="$(new_plain_dir)"; ln -snf "$other19" "$cop19b/lcars"
 out19b="$TMPROOT/out19b.txt"
-LCARS_REPO="$c19" GIT_BIN="$GIT_STUB" LCARS_BUDDY_CWD="$(new_plain_dir)" \
+LCARS_REPO="$c19" GIT_BIN="$GIT_STUB" LCARS_EEH_CWD="$(new_plain_dir)" \
   LCARS_SKILLS_DEST="$dest19" LCARS_COPILOT_PLUGINS_DIR="$cop19b" \
   bash "$SCRIPT" >"$out19b" 2>&1
 check "19b. a Copilot plugin aimed elsewhere reads STALE and names install.sh" \
@@ -690,7 +690,7 @@ check "19b. a Copilot plugin aimed elsewhere reads STALE and names install.sh" \
 
 # 19c. no plugin link and no copilot CLI -> not a fault, nothing to check
 out19c="$TMPROOT/out19c.txt"
-LCARS_REPO="$c19" GIT_BIN="$GIT_STUB" LCARS_BUDDY_CWD="$(new_plain_dir)" \
+LCARS_REPO="$c19" GIT_BIN="$GIT_STUB" LCARS_EEH_CWD="$(new_plain_dir)" \
   LCARS_SKILLS_DEST="$dest19" LCARS_COPILOT_PLUGINS_DIR="$(new_plain_dir)" \
   LCARS_COPILOT_BIN="$TMPROOT/nope-copilot" \
   bash "$SCRIPT" >"$out19c" 2>&1
@@ -702,7 +702,7 @@ check "19c. and does NOT cry STALE or ABSENT about a CLI that is not there" \
 # 19d. copilot IS installed but nothing is linked -> that IS a fault
 copstub="$TMPROOT/copilot-stub"; printf '#!/bin/sh\nexit 0\n' >"$copstub"; chmod +x "$copstub"
 out19d="$TMPROOT/out19d.txt"
-LCARS_REPO="$c19" GIT_BIN="$GIT_STUB" LCARS_BUDDY_CWD="$(new_plain_dir)" \
+LCARS_REPO="$c19" GIT_BIN="$GIT_STUB" LCARS_EEH_CWD="$(new_plain_dir)" \
   LCARS_SKILLS_DEST="$dest19" LCARS_COPILOT_PLUGINS_DIR="$(new_plain_dir)" \
   LCARS_COPILOT_BIN="$copstub" \
   bash "$SCRIPT" >"$out19d" 2>&1
@@ -721,7 +721,7 @@ ln -snf "$c20" "$cop20/lcars"
 out20="$TMPROOT/out20.txt"
 env -u LCARS_SKILLS_DEST -u LCARS_COPILOT_PLUGINS_DIR -u LCARS_COPILOT_BIN \
   HOME="$home20" PATH="/usr/bin:/bin" \
-  LCARS_REPO="$c20" GIT_BIN="$GIT_STUB" LCARS_BUDDY_CWD="$(new_plain_dir)" \
+  LCARS_REPO="$c20" GIT_BIN="$GIT_STUB" LCARS_EEH_CWD="$(new_plain_dir)" \
   bash "$SCRIPT" >"$out20" 2>&1
 check "20. on a Copilot-only HOME it does NOT claim the skills are not installed" \
   "! qgrep -q 'LCARS skills are not installed here' '$out20'"
@@ -732,14 +732,14 @@ check "20. it reports the Copilot mount it CAN see as IN SYNC" \
 check "20. and prints NO .claude path anywhere in the brief" \
   "! qgrep -q '/\\.claude' '$out20'"
 check "20. the fix-contract pointer is a runnable command, not a dead path" \
-  "qgrep -qF 'lcars-buddy docs orchestration' '$out20'"
+  "qgrep -qF 'lcars-eeh docs orchestration' '$out20'"
 
 # --- 21. the one scope sentence: the orchestrator half is Claude Code today
-# The buddy's THREE halves do not have the same reach: the ride-along brief and
-# the autopilot are shell + prose and run anywhere, while the fix orchestrator
+# The EEH's THREE halves do not have the same reach: the ride-along brief and
+# the ECH are shell + prose and run anywhere, while the fix orchestrator
 # spawns sub-agents, which is a Claude Code harness feature today. Saying so
-# once, in both files, is the honest version of "the buddy works on Copilot".
-SENT277='The orchestrator half spawns sub-agents and is run from Claude Code today; the ride-along brief and the autopilot run from either CLI.'
+# once, in both files, is the honest version of "the EEH works on Copilot".
+SENT277='The orchestrator half spawns sub-agents and is run from Claude Code today; the ride-along brief and the ECH run from either CLI.'
 check "21. ORCHESTRATION.md carries the Claude-Code-today sentence exactly once" \
   "[ \"\$(grep -cF \"\$SENT277\" '$ORCH277')\" -eq 1 ]"
 check "21. SKILL.md's BODY carries the same sentence exactly once" \
@@ -751,34 +751,34 @@ check "21. SKILL.md's frontmatter DESCRIPTION does not carry it" \
 check "21. ORCHESTRATION.md names /tdd as a Claude Code skill with a by-hand equivalent" \
   "grep -qF 'the \`/tdd\` skill in Claude Code' '$ORCH277' && grep -qiF 'equivalent discipline by hand' '$ORCH277'"
 
-# --- 22. `lcars-autopilot exec <skill>/<script>` — the four sibling scripts
-# AUTOPILOT.md names four scripts belonging to OTHER skills. They are not
+# --- 22. `lcars-ech exec <skill>/<script>` — the four sibling scripts
+# HOLOGRAM-COMMAND-MODE.md names four scripts belonging to OTHER skills. They are not
 # `lcars` verbs (lcars.sh has no file/respond/establish-vision route, and
 # `lcars file` is an Align conversation, not `file.sh --prd`), so the driver the
 # playbook already uses on every line resolves them from its own physical
 # location instead — correct under either CLI's mount, with no stage logic
-# added. These checks live here rather than in tests/lcars-buddy-autopilot
+# added. These checks live here rather than in tests/lcars-ech
 # .test.sh because that suite's heading/latitude contract is deliberately
 # untouched this session.
-AP277="${LCARS_AUTOPILOT_SCRIPT:-$REPO_ROOT/skills/lcars-buddy/autopilot.sh}"
+AP277="${LCARS_ECH_SCRIPT:-$REPO_ROOT/skills/lcars-eeh/ech.sh}"
 ap_repo277="$(mktemp -d "$TMPROOT/aprepo.XXXX")"
 ( cd "$ap_repo277" && git init -q 2>/dev/null )
 # respond.sh (like the driver's own usage) exits non-zero on a bare invocation,
 # and this suite runs with `pipefail`, so the output is captured FIRST — piping
 # it would report the producer's exit code instead of the grep's.
-ex22a="$(LCARS_AUTOPILOT_CWD="$ap_repo277" bash "$AP277" exec lcars-respond/respond.sh 2>&1 || true)"
-ex22b="$(LCARS_AUTOPILOT_CWD="$ap_repo277" bash "$AP277" exec lcars-respond respond.sh 2>&1 || true)"
+ex22a="$(LCARS_ECH_CWD="$ap_repo277" bash "$AP277" exec lcars-respond/respond.sh 2>&1 || true)"
+ex22b="$(LCARS_ECH_CWD="$ap_repo277" bash "$AP277" exec lcars-respond respond.sh 2>&1 || true)"
 ap22usage="$(bash "$AP277" 2>&1 || true)"
 check "22. \`exec lcars-respond/respond.sh\` reaches the real sibling script" \
   "printf '%s' \"\$ex22a\" | qgrep -qi 'respond'"
 check "22. the two-argument form \`exec <skill> <script>\` works too" \
   "printf '%s' \"\$ex22b\" | qgrep -qi 'respond'"
-check "22. all four scripts AUTOPILOT.md names are reachable through it" \
+check "22. all four scripts HOLOGRAM-COMMAND-MODE.md names are reachable through it" \
   "for sc in lcars-init/establish-vision.sh lcars-file/file.sh lcars-resolve-logs/resolve-logs.sh lcars-respond/respond.sh; do [ -f \"$REPO_ROOT/skills/\$sc\" ] || exit 1; done"
 check "22. it refuses a script that is not in this clone (no silent no-op)" \
-  "! LCARS_AUTOPILOT_CWD='$ap_repo277' bash '$AP277' exec lcars-nope/nope.sh >/dev/null 2>&1"
+  "! LCARS_ECH_CWD='$ap_repo277' bash '$AP277' exec lcars-nope/nope.sh >/dev/null 2>&1"
 check "22. it refuses an out-of-tree path" \
-  "! LCARS_AUTOPILOT_CWD='$ap_repo277' bash '$AP277' exec ../../../etc/passwd >/dev/null 2>&1"
+  "! LCARS_ECH_CWD='$ap_repo277' bash '$AP277' exec ../../../etc/passwd >/dev/null 2>&1"
 check "22. the driver documents \`exec\` in its own usage" \
   "printf '%s' \"\$ap22usage\" | qgrep -qF 'exec <skill>/<script>'"
 
@@ -786,10 +786,10 @@ check "22. the driver documents \`exec\` in its own usage" \
 # S277 round 1 — THE THREE THINGS THE FRESH TESTER PROVED STILL BROKEN
 #
 # Round 0 converted the handful of lines its brief listed and covered the other
-# ~59 with a NOTE at the top of AUTOPILOT.md ("a bare `autopilot.sh <verb>` is
-# shorthand for `lcars-autopilot <verb>`"). A fresh tester then ran real Copilot
+# ~59 with a NOTE at the top of HOLOGRAM-COMMAND-MODE.md ("a bare `ech.sh <verb>` is
+# shorthand for `lcars-ech <verb>`"). A fresh tester then ran real Copilot
 # turns on a copilot-only PATH and the note did not hold, FOUR times out of four
-# framings — including the navigation AUTOPILOT.md itself prescribes ("ask the
+# framings — including the navigation HOLOGRAM-COMMAND-MODE.md itself prescribes ("ask the
 # driver what to do next, then read that section"), which lands the reader in
 # § 8/§ 9 having never seen line 28. Each time the model ran the bare line
 # verbatim, took exit 127 and STOPPED. Prose a reader may legitimately never see
@@ -800,85 +800,91 @@ check "22. the driver documents \`exec\` in its own usage" \
 # branch of the "not installed here" sentence round 0's own fix missed.
 # ==========================================================================
 
-# --- 23. D1: no document hands the model a bare `autopilot.sh <verb>` ----
-# The shape is "the word autopilot.sh, not preceded by a path separator or
+# --- 23. D1: no document hands the model a bare `ech.sh <verb>` ----
+# The shape is "the word ech.sh, not preceded by a path separator or
 # another word character, followed by a verb" — i.e. something a model would
-# type as a command. A PATH-QUALIFIED mention (.../skills/lcars-buddy/
-# autopilot.sh) is deliberately still allowed: that one resolves, and it is the
+# type as a command. A PATH-QUALIFIED mention (.../skills/lcars-eeh/
+# ech.sh) is deliberately still allowed: that one resolves, and it is the
 # documented no-PATH fallback.
-D1BARE='(^|[^/[:alnum:]_.-])autopilot\.sh[[:space:]]+[a-z]'
-check "23. AUTOPILOT.md hands the model NO bare \`autopilot.sh <verb>\`" \
+D1BARE='(^|[^/[:alnum:]_.-])ech\.sh[[:space:]]+[a-z]'
+check "23. HOLOGRAM-COMMAND-MODE.md hands the model NO bare \`ech.sh <verb>\`" \
   "! grep -qE \"\$D1BARE\" '$AUTOP277'"
-check "23. SKILL.md hands the model NO bare \`autopilot.sh <verb>\`" \
+check "23. SKILL.md hands the model NO bare \`ech.sh <verb>\`" \
   "! grep -qE \"\$D1BARE\" '$SKILL_MD277'"
-check "23. ORCHESTRATION.md hands the model NO bare \`autopilot.sh <verb>\`" \
+check "23. ORCHESTRATION.md hands the model NO bare \`ech.sh <verb>\`" \
   "! grep -qE \"\$D1BARE\" '$ORCH277'"
 # And no NOTE may stand in for writing the command out — that is the exact
 # mechanism that failed. If a future edit reintroduces a shorthand/alias note,
 # this fails even if the bare form is momentarily absent.
 check "23. no \"shorthand\"/\"is short for\" note stands in for the real command" \
-  "! grep -qiE 'is shorthand for|short for .lcars-autopilot|abbreviation for' '$AUTOP277' '$SKILL_MD277' '$ORCH277'"
+  "! grep -qiE 'is shorthand for|short for .lcars-ech|abbreviation for' '$AUTOP277' '$SKILL_MD277' '$ORCH277'"
 # POSITIVE CONTROLS — the prohibition must not be satisfiable by deleting the
 # commands. The playbook is ~660 lines of runnable driver calls; they are all
 # written out, and the DEEPEST one (the tester reached line 657) is too.
-check "23. CONTROL: AUTOPILOT.md writes \`lcars-autopilot\` out dozens of times" \
-  "[ \"\$(grep -c 'lcars-autopilot ' '$AUTOP277')\" -ge 40 ]"
+check "23. CONTROL: HOLOGRAM-COMMAND-MODE.md writes \`lcars-ech\` out dozens of times" \
+  "[ \"\$(grep -c 'lcars-ech ' '$AUTOP277')\" -ge 40 ]"
+# S301: the token this greps had to change with the rename. It used to be one
+# bare word that appeared in every spelling of the driver's old name, so grepping
+# it caught them all. The driver is `ech` now, and a bare `ech` would also match
+# "check", "mechanism" and "echo" — so the token is the two real driver spellings
+# instead. The assertion itself is unchanged: whichever way the file names the
+# driver LAST, it must be the on-PATH form.
 check "23. CONTROL: the LAST driver mention in the file is the on-PATH form" \
-  "grep -n 'autopilot' '$AUTOP277' | tail -1 | qgrep -q 'lcars-autopilot'"
+  "grep -nE 'ech\\.sh|lcars-ech' '$AUTOP277' | tail -1 | qgrep -q 'lcars-ech'"
 # The three deep sections the tester was dropped into by name, each proved to
 # carry a runnable command on its own, with no reliance on the top of the file.
 check "23. § 8's heartbeat line is runnable where a jumped-to reader finds it" \
-  "grep -qE '^lcars-autopilot heartbeat install' '$AUTOP277'"
+  "grep -qE '^lcars-ech heartbeat install' '$AUTOP277'"
 check "23. § 9's \`ask\` example is runnable where a jumped-to reader finds it" \
-  "grep -qE '^lcars-autopilot ask ' '$AUTOP277'"
+  "grep -qE '^lcars-ech ask ' '$AUTOP277'"
 check "23. \`status\`/\`next\`, the two the driver's own PLAYBOOK sends you to, are runnable" \
-  "grep -qE '^lcars-autopilot status' '$AUTOP277' && grep -qF 'lcars-autopilot next' '$AUTOP277'"
+  "grep -qE '^lcars-ech status' '$AUTOP277' && grep -qF 'lcars-ech next' '$AUTOP277'"
 # The fallback is a FALLBACK: path-qualified, so it cannot be copied as a bare
 # command, and present, so a no-PATH reader is not left with nothing.
 check "23. the no-PATH fallback is named, and only in path-qualified form" \
-  "grep -qF 'skills/lcars-buddy/autopilot.sh' '$AUTOP277'"
+  "grep -qF 'skills/lcars-eeh/ech.sh' '$AUTOP277'"
 
 # --- 24. D2: the DRIVER's own output names a command that resolves --------
-# `lcars-autopilot init` used to end with "record the answers with
-# `autopilot.sh record liveTargets.host <host>`". A real Copilot turn told to
+# `lcars-ech init` used to end with "record the answers with
+# `ech.sh record liveTargets.host <host>`". A real Copilot turn told to
 # follow it ran exactly that, took exit 127, and recorded nothing — the FIRST
 # step after init on a fresh machine. `--help`'s header had the same bug, so the
 # driver misnamed itself to every reader on both CLIs. No note was anywhere near
 # either: these strings are produced at runtime.
-AP277_D2="${LCARS_AUTOPILOT_SCRIPT:-$REPO_ROOT/skills/lcars-buddy/autopilot.sh}"
+AP277_D2="${LCARS_ECH_SCRIPT:-$REPO_ROOT/skills/lcars-eeh/ech.sh}"
 # STRUCTURAL: comments are not output, so they are excluded (and left alone on
 # purpose — they document the file by its real name). Nothing else in the script
 # may carry the literal.
-check "24. no NON-COMMENT line in the driver carries the \`autopilot.sh\` literal" \
-  "[ \"\$(grep -vE '^[[:space:]]*#' '$AP277_D2' | grep -c 'autopilot\.sh')\" -eq 0 ]"
+check "24. no NON-COMMENT line in the driver carries the \`ech.sh\` literal" \
+  "[ \"\$(grep -vE '^[[:space:]]*#' '$AP277_D2' | grep -c 'ech\.sh')\" -eq 0 ]"
 check "24. CONTROL: the comments DO still name the file (nothing was blanket-renamed)" \
-  "[ \"\$(grep -cE '^[[:space:]]*#.*autopilot\.sh' '$AP277_D2')\" -ge 1 ]"
+  "[ \"\$(grep -cE '^[[:space:]]*#.*ech\.sh' '$AP277_D2')\" -ge 1 ]"
 # BEHAVIOURAL: the two surfaces the tester and the brief named, plus the whole
 # of init's closing advice, must name the on-PATH command.
 d24repo="$(mktemp -d "$TMPROOT/d24.XXXX")"
 ( cd "$d24repo" && git init -q 2>/dev/null )
 printf 'M0: a thing\n' >"$d24repo/spec.md"
 d24help="$(bash "$AP277_D2" --help 2>&1 || true)"
-# S300: `</dev/null`, the same hygiene tests/lcars-buddy-autopilot.test.sh's
+# S300: `</dev/null`, the same hygiene tests/lcars-ech.test.sh's
 # `ap()` has always applied. `init` now ends by asking its setup questions on
 # the terminal, and harness.test.sh runs this suite from a pty with stdin OPEN
 # on purpose — so without the redirect this one line borrowed that terminal and
 # took the whole suite from 5.9s to the cage's 120s kill. What is asserted below
 # is unchanged; only the invocation's stdin is.
-d24init="$(LCARS_AUTOPILOT_CWD="$d24repo" bash "$AP277_D2" init --spec "$d24repo/spec.md" --scope M0 2>&1 </dev/null || true)"
+d24init="$(LCARS_ECH_CWD="$d24repo" bash "$AP277_D2" init --spec "$d24repo/spec.md" --scope M0 2>&1 </dev/null || true)"
 d24bare="$(mktemp -d "$TMPROOT/d24b.XXXX")"; ( cd "$d24bare" && git init -q 2>/dev/null )
-d24state="$(LCARS_AUTOPILOT_CWD="$d24bare" bash "$AP277_D2" status 2>&1 || true)"
-d24ask="$(LCARS_AUTOPILOT_CWD="$d24repo" bash "$AP277_D2" ask 2>&1 || true)"
+d24state="$(LCARS_ECH_CWD="$d24bare" bash "$AP277_D2" status 2>&1 || true)"
+d24ask="$(LCARS_ECH_CWD="$d24repo" bash "$AP277_D2" ask 2>&1 || true)"
 check "24. \`--help\` names the driver as the reader must TYPE it" \
-  "printf '%s' \"\$d24help\" | qgrep -qE '^Usage: lcars-autopilot '"
+  "printf '%s' \"\$d24help\" | qgrep -qE '^Usage: lcars-ech '"
 check "24. \`init\`'s closing \"record the answers with\" step is a resolvable command" \
-  "printf '%s' \"\$d24init\" | qgrep -qF 'lcars-autopilot record liveTargets.host'"
-check "24. and init's output carries NO \`autopilot.sh <verb>\` anywhere" \
+  "printf '%s' \"\$d24init\" | qgrep -qF 'lcars-ech record liveTargets.host'"
+check "24. and init's output carries NO \`ech.sh <verb>\` anywhere" \
   "! printf '%s' \"\$d24init\" | qgrep -qE \"\$D1BARE\""
 check "24. the no-state error names a resolvable command" \
-  "printf '%s' \"\$d24state\" | qgrep -qF 'lcars-autopilot init --spec' && ! printf '%s' \"\$d24state\" | qgrep -qE \"\$D1BARE\""
+  "printf '%s' \"\$d24state\" | qgrep -qF 'lcars-ech init --spec' && ! printf '%s' \"\$d24state\" | qgrep -qE \"\$D1BARE\""
 check "24. \`ask\`'s own usage line names a resolvable command" \
-  "printf '%s' \"\$d24ask\" | qgrep -qE '^ *lcars-autopilot ask ' && ! printf '%s' \"\$d24ask\" | qgrep -qE \"\$D1BARE\""
+  "printf '%s' \"\$d24ask\" | qgrep -qE '^ *lcars-ech ask ' && ! printf '%s' \"\$d24ask\" | qgrep -qE \"\$D1BARE\""
 # DERIVED, NOT HARD-CODED: the printed name follows how the process was
 # invoked, so it cannot drift from the front door again. $LCARS_SELF_CMD is the
 # seam that proves the name is a variable and not 20 literals.
@@ -886,11 +892,11 @@ check "24. \`ask\`'s own usage line names a resolvable command" \
 # runs with `pipefail`, so the output is captured FIRST — piping it live would
 # report the PRODUCER's exit code and fail a passing assertion.
 d24help2="$(LCARS_SELF_CMD=zzz-driver bash "$AP277_D2" --help 2>&1 || true)"
-d24state2="$(LCARS_SELF_CMD=zzz-driver LCARS_AUTOPILOT_CWD="$d24bare" bash "$AP277_D2" status 2>&1 || true)"
+d24state2="$(LCARS_SELF_CMD=zzz-driver LCARS_ECH_CWD="$d24bare" bash "$AP277_D2" status 2>&1 || true)"
 check "24. the printed name FOLLOWS the invoked name (it is derived, not a literal)" \
   "printf '%s' \"\$d24help2\" | qgrep -qE '^Usage: zzz-driver ' && printf '%s' \"\$d24state2\" | qgrep -qF 'zzz-driver init --spec'"
 # The python leg writes its own messages; it must follow the same name.
-d24ans="$(LCARS_SELF_CMD=zzz-driver LCARS_AUTOPILOT_CWD="$d24repo" bash "$AP277_D2" answered q-nope "x" 2>&1 || true)"
+d24ans="$(LCARS_SELF_CMD=zzz-driver LCARS_ECH_CWD="$d24repo" bash "$AP277_D2" answered q-nope "x" 2>&1 || true)"
 check "24. even the python leg's messages follow the invoked name" \
   "printf '%s' \"\$d24ans\" | qgrep -qF 'zzz-driver status'"
 
@@ -906,7 +912,7 @@ dest25="$(new_plain_dir)"          # Claude's farm EXISTS and is EMPTY
 cop25="$(new_plain_dir)"; ln -snf "$c25" "$cop25/lcars"   # Copilot points HERE
 claude25="$TMPROOT/claude-stub-25"; printf '#!/bin/sh\nexit 0\n' >"$claude25"; chmod +x "$claude25"
 out25="$TMPROOT/out25.txt"
-LCARS_REPO="$c25" GIT_BIN="$GIT_STUB" LCARS_BUDDY_CWD="$(new_plain_dir)" \
+LCARS_REPO="$c25" GIT_BIN="$GIT_STUB" LCARS_EEH_CWD="$(new_plain_dir)" \
   LCARS_SKILLS_DEST="$dest25" LCARS_COPILOT_PLUGINS_DIR="$cop25" \
   LCARS_CLAUDE_BIN="$claude25" \
   bash "$SCRIPT" >"$out25" 2>&1
@@ -918,12 +924,12 @@ check "25. the warning it DOES print names the farm it is about" \
   "qgrep -qE 'no LCARS skills are linked into Claude Code' '$out25' && qgrep -qF 'install.sh' '$out25'"
 # THE GENERAL RULE, not just this fixture: no line may make an unscoped
 # "not installed" claim about the machine from inside a single farm's branch.
-check "25. no unscoped \"not installed here\" sentence survives in buddy.sh at all" \
+check "25. no unscoped \"not installed here\" sentence survives in eeh.sh at all" \
   "[ \"\$(grep -vE '^[[:space:]]*#' '$SCRIPT' | grep -cF 'LCARS skills are not installed here')\" -eq 0 ]"
 # And the honest-absence case still reports absence — the cure must not have
 # silenced a true warning. Both farms empty, Claude installed: still a fault.
 out25b="$TMPROOT/out25b.txt"
-LCARS_REPO="$c25" GIT_BIN="$GIT_STUB" LCARS_BUDDY_CWD="$(new_plain_dir)" \
+LCARS_REPO="$c25" GIT_BIN="$GIT_STUB" LCARS_EEH_CWD="$(new_plain_dir)" \
   LCARS_SKILLS_DEST="$(new_plain_dir)" LCARS_COPILOT_PLUGINS_DIR="$(new_plain_dir)" \
   LCARS_CLAUDE_BIN="$claude25" \
   bash "$SCRIPT" >"$out25b" 2>&1
@@ -938,7 +944,7 @@ check "25. CONTROL: with NO farm in sync it still warns, and still names install
 # ==========================================================================
 
 # --- 26. D4: no document hands the model a bare `xo.sh <verb>` ------------
-# D1 (§ 23) banned a bare `autopilot.sh <verb>`. `xo.sh` is the identical bug
+# D1 (§ 23) banned a bare `ech.sh <verb>`. `xo.sh` is the identical bug
 # with a different script: § 6 told the reader to read Number One's verdict with
 # a bare `xo.sh report`, which is exit 127 on BOTH CLIs — no LCARS script is
 # ever on PATH under its own name. The cure is the driver's own `exec` seam,
@@ -946,7 +952,7 @@ check "25. CONTROL: with NO farm in sync it still warns, and still names install
 # Same shape as $D1BARE: a path-qualified mention (lcars-xo/xo.sh) is fine,
 # because that one is an `exec` argument and not a command.
 D4BARE='(^|[^/[:alnum:]_.-])xo\.sh[[:space:]]+[a-z]'
-check "26. AUTOPILOT.md hands the model NO bare \`xo.sh <verb>\`" \
+check "26. HOLOGRAM-COMMAND-MODE.md hands the model NO bare \`xo.sh <verb>\`" \
   "! grep -qE \"\$D4BARE\" '$AUTOP277'"
 check "26. SKILL.md hands the model NO bare \`xo.sh <verb>\`" \
   "! grep -qE \"\$D4BARE\" '$SKILL_MD277'"
@@ -954,8 +960,8 @@ check "26. ORCHESTRATION.md hands the model NO bare \`xo.sh <verb>\`" \
   "! grep -qE \"\$D4BARE\" '$ORCH277'"
 # POSITIVE CONTROL — the ban must not be satisfiable by DELETING the
 # instruction. The reader must still be told to read the verdict, via `exec`.
-check "26. CONTROL: AUTOPILOT.md still tells the reader to read the XO report" \
-  "qgrep -qF 'lcars-autopilot exec lcars-xo/xo.sh report' '$AUTOP277'"
+check "26. CONTROL: HOLOGRAM-COMMAND-MODE.md still tells the reader to read the XO report" \
+  "qgrep -qF 'lcars-ech exec lcars-xo/xo.sh report' '$AUTOP277'"
 # And the form it prints must RESOLVE. `exec` refuses an out-of-tree path and
 # dies on a missing script, so the path the doc names has to exist here...
 check "26. the \`exec\` form the doc prints names a script that exists" \
@@ -968,7 +974,7 @@ check "26. the \`exec\` form the doc prints names a script that exists" \
 # before it ever reaches `exec`.
 d26repo="$(mktemp -d "$TMPROOT/d26.XXXX")"
 ( cd "$d26repo" && git init -q 2>/dev/null )
-d26out="$(LCARS_AUTOPILOT_CWD="$d26repo" bash "$AP277_D2" exec lcars-xo/xo.sh report 2>&1 || true)"
+d26out="$(LCARS_ECH_CWD="$d26repo" bash "$AP277_D2" exec lcars-xo/xo.sh report 2>&1 || true)"
 check "26. running that exact form REACHES xo.sh (its OWN report output comes back)" \
   "printf '%s' \"\$d26out\" | qgrep -qE 'Since you last looked|History:'"
 check "26. and it is not a not-found refusal of any kind" \
@@ -977,14 +983,14 @@ check "26. and it is not a not-found refusal of any kind" \
 # does not exist has to be refused by name. The refusal EXITS 1 and this suite
 # runs with `pipefail`, so the output is captured FIRST (see the same note in
 # § 24): piping it live would report the PRODUCER's code, not the grep's.
-d26bog="$(LCARS_AUTOPILOT_CWD="$d26repo" bash "$AP277_D2" exec lcars-xo/nope.sh report 2>&1 || true)"
+d26bog="$(LCARS_ECH_CWD="$d26repo" bash "$AP277_D2" exec lcars-xo/nope.sh report 2>&1 || true)"
 check "26. CONTROL: a BOGUS script in the same form IS refused (the check can fail)" \
   "printf '%s' \"\$d26bog\" | qgrep -qF 'no such script'"
 
 # --- 27. D5: `--help`'s verb list says HOW to run what it lists -----------
 # The block headed "THE VERBS THIS DRIVES" lists tokens like
 # `lcars-file/file.sh --prd <path>`. NONE of them is a runnable command: each
-# runs ONLY as `lcars-autopilot exec <skill>/<script>`. The header never said
+# runs ONLY as `lcars-ech exec <skill>/<script>`. The header never said
 # so, so a model copying a line took exit 127 — this session's whole defect,
 # reproduced inside the driver's own output. The 8 tokens are deliberately NOT
 # rewritten: they are the real paths `exec` expects.
@@ -995,7 +1001,7 @@ check "27. CONTROL: \`--help\` still prints the verb-list header at all" \
 check "27. the header tells the reader the tokens run via \`exec <skill>/<script>\`" \
   "printf '%s' \"\$d27hdr\" | qgrep -qF 'exec <skill>/<script>'"
 check "27. the header names the driver as the reader must TYPE it" \
-  "printf '%s' \"\$d27hdr\" | qgrep -qF 'lcars-autopilot exec'"
+  "printf '%s' \"\$d27hdr\" | qgrep -qF 'lcars-ech exec'"
 # DERIVED, like every other message (§ 24): the prefix follows the invoked name,
 # so it cannot drift from whatever front door a future CLI installs.
 d27help2="$(LCARS_SELF_CMD=zzz-driver bash "$AP277_D2" --help 2>&1 || true)"
@@ -1041,6 +1047,135 @@ d28working='python3 -m unittest discover -s .git/lcars/tmp/<wt>/tests -v > .git/
 check "28. exact refused and working examples appear in the early safety section" \
   "printf '%s\n' \"\$d28rule\" | qgrep -qFx \"\$d28refused\" && printf '%s\n' \"\$d28rule\" | qgrep -qFx \"\$d28working\""
 
+# ==========================================================================
+# S301 — THE EMERGENCY ENGINEERING HOLOGRAM ANNOUNCEMENT
+# ==========================================================================
+# The EEH IS the EEH now. Its brief already opened with a one-line banner on
+# STDOUT (the brief is for a human to read, so stdout is right here), so this is
+# a rename of that line's prose and nothing else: same stream, same position,
+# same single line. The two checks below pin the two halves the captain asked
+# for — the name, and the question — so the banner cannot drift back to a
+# generic title or lose the prompt.
+out301="$TMPROOT/out301.txt"
+LCARS_REPO="$LCARS" GIT_BIN="$GIT_STUB" LCARS_EEH_CWD="$(new_plain_dir)" \
+  LCARS_SKILLS_DEST="$(new_plain_dir)" bash "$SCRIPT" >"$out301" 2>&1
+check "S301. announces itself as the Emergency Engineering Hologram" \
+  "qgrep -q 'Emergency Engineering Hologram' '$out301'"
+check "S301. asks the nature of the engineering emergency" \
+  "qgrep -qi 'nature of the engineering emergency' '$out301'"
+check "S301. the announcement is the FIRST line of the brief" \
+  "head -3 '$out301' | qgrep -q 'Emergency Engineering Hologram'"
+check "S301. the old EEH banner prose is gone" \
+  "! qgrep -q 'ride along, get the detail' '$out301'"
+
+# ==========================================================================
+# S301 fix round 1 — AN OFF SWITCH FOR THE ANNOUNCEMENT
+# ==========================================================================
+# The ECH got both a tty gate and `LCARS_ECH_QUIET`; the EEH's banner had
+# neither. It stays on STDOUT and in place — it was already there before the
+# rename ("LCARS BUDDY — ride along…"), so moving it would be a behaviour
+# change rather than a rename — but a human in a loop can now turn it off.
+#
+# It is a VALUE check, not a presence check, and that is the whole point of
+# cases 2 and 3: `LCARS_EEH_QUIET=0` means "not quiet". A `-z`-style presence
+# test would silence the banner for ANY non-empty value and hand somebody who
+# wrote `=0` the exact opposite of what they asked for. Only the literal `1`
+# is quiet, the same idiom `LCARS_BASE_QUIET` already uses in this repo.
+qout301="$TMPROOT/qout301.txt"
+LCARS_REPO="$LCARS" GIT_BIN="$GIT_STUB" LCARS_EEH_CWD="$(new_plain_dir)" \
+  LCARS_SKILLS_DEST="$(new_plain_dir)" LCARS_EEH_QUIET=1 \
+  bash "$SCRIPT" >"$qout301" 2>&1
+check "S301-fix1. LCARS_EEH_QUIET=1 silences the announcement" \
+  "! qgrep -q 'Emergency Engineering Hologram' '$qout301'"
+check "S301-fix1. LCARS_EEH_QUIET=1 still prints the brief itself" \
+  "qgrep -q 'LCARS REPO:' '$qout301'"
+
+z301="$TMPROOT/z301.txt"
+LCARS_REPO="$LCARS" GIT_BIN="$GIT_STUB" LCARS_EEH_CWD="$(new_plain_dir)" \
+  LCARS_SKILLS_DEST="$(new_plain_dir)" LCARS_EEH_QUIET=0 \
+  bash "$SCRIPT" >"$z301" 2>&1
+check "S301-fix1. LCARS_EEH_QUIET=0 means NOT quiet (a value check, not presence)" \
+  "qgrep -q 'Emergency Engineering Hologram' '$z301'"
+
+y301="$TMPROOT/y301.txt"
+LCARS_REPO="$LCARS" GIT_BIN="$GIT_STUB" LCARS_EEH_CWD="$(new_plain_dir)" \
+  LCARS_SKILLS_DEST="$(new_plain_dir)" LCARS_EEH_QUIET=yes \
+  bash "$SCRIPT" >"$y301" 2>&1
+check "S301-fix1. only the literal 1 is quiet (=yes does not silence it)" \
+  "qgrep -q 'Emergency Engineering Hologram' '$y301'"
+
+# ==========================================================================
+# S301 fix round 1 — THE SKILL DESCRIPTION IS ROUTING, NOT DECORATION
+# ==========================================================================
+# The rename emptied this skill's frontmatter `description:` of every natural-
+# language hook it had: Hologram 0, hologram 0, Emergency 0, Engineering 0,
+# buddy 0 — leaving only the bare acronym `EEH` and the literal `lcars eeh`.
+# Skill routing is driven by that text, so the product announced itself as the
+# Emergency Engineering Hologram on every run while a captain asking for "the
+# engineering hologram" matched nothing. `buddy` matters in particular: that
+# is the word he actually says, and the command rename must not take his
+# phrasing away from him. `ride-along` is the other alias he uses.
+#
+# desc() folds the `>-` block exactly as a CLI does, so these assertions read
+# the string the router sees, not the way the file is wrapped.
+desc() {
+  python3 - "$1" <<'DESCPY'
+import io, re, sys
+fm = io.open(sys.argv[1], encoding='utf-8').read().split('---')[1]
+out, on = [], False
+for ln in fm.splitlines():
+    if re.match(r'^description:\s*>-?\s*$', ln):
+        on = True
+        continue
+    if on:
+        if ln.startswith('  '):
+            out.append(ln.strip())
+        elif ln.strip() == '':
+            continue
+        else:
+            break
+print(' '.join(out))
+DESCPY
+}
+
+# missing_words <text> <word>... — the listed words NOT present in <text>.
+# Case-sensitive on purpose: "Hologram" and "hologram" are different hooks.
+missing_words() {
+  local t="$1"; shift
+  local w out=""
+  for w in "$@"; do
+    case "$t" in *"$w"*) : ;; *) out="$out $w" ;; esac
+  done
+  printf '%s' "$out"
+}
+
+eehd="$(desc "$REPO_ROOT/skills/lcars-eeh/SKILL.md")"
+echd="$(desc "$REPO_ROOT/skills/lcars-ech/SKILL.md")"
+check "S301-fix1. desc() actually read the EEH description (not vacuous)" \
+  "[ \"\${#eehd}\" -gt 300 ]"
+eeh_missing="$(missing_words "$eehd" Emergency Engineering Hologram hologram buddy ride-along 'lcars eeh')"
+check "S301-fix1. the EEH description carries its in-character words and the buddy alias" \
+  "[ -z \"\$eeh_missing\" ] || { echo \"missing:\$eeh_missing\"; false; }"
+check "S301-fix1. the description reads like English, not an acronym in a noun slot" \
+  "! printf '%s' \"\$eehd\" | qgrep -qF 'ride-along EEH' && ! printf '%s' \"\$eehd\" | qgrep -qF 'an EEH around'"
+check "S301-fix1. the folded description stays inside the strict reader's 1024 cap" \
+  "[ \"\${#eehd}\" -le 1024 ]"
+
+# CONTROL 1 — the ECH description, which already carried these words (the
+# tester graded it Hologram x4, Emergency x1). If the predicate below were
+# broken, this would fail too. Its word list is the ECH's own in-character
+# vocabulary, not the EEH's: the ECH spells "Hologram Command Mode" as a
+# proper noun throughout and has no lower-case "hologram" to find.
+ech_missing="$(missing_words "$echd" Emergency Hologram 'Hologram Command Mode' 'lcars ech')"
+check "S301-fix1. CONTROL: the ECH description passes the same predicate" \
+  "[ -z \"\$ech_missing\" ] || { echo \"missing:\$ech_missing\"; false; }"
+# CONTROL 2 — the predicate must go RED on an acronym-only description, so a
+# green run above cannot be a check that matches anything.
+stripped301='Your LCARS ride-along EEH — a companion in ANY repo. Use when the captain runs `lcars eeh`.'
+ctl301="$(missing_words "$stripped301" Emergency Engineering Hologram hologram buddy)"
+check "S301-fix1. CONTROL: the predicate goes RED on an acronym-only description" \
+  "[ -n \"\$ctl301\" ]"
+
 # --- summary --------------------------------------------------------------
-printf '\nlcars buddy: %d passed, %d failed\n' "$pass" "$fail"
+printf '\nlcars eeh: %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

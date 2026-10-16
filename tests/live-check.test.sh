@@ -10,7 +10,7 @@
 # judgement error. These checklists are that hand-work written down.
 #
 # THEY HAVE TWO READERS, and that is the whole reason for this suite:
-#   • the buddy (a session WITH a shell) follows the PROSE;
+#   • the EEH (a session WITH a shell) follows the PROSE;
 #   • the rebuilt Number One (S239, a fenced worker with NO shell) lifts each
 #     item as a DECLARED STEP the harness executes.
 # So every numbered item must carry BOTH forms, and they must agree. A checklist
@@ -211,7 +211,7 @@ check "workflow.md: read the published artifact, not \"deploy succeeded\"" \
   "has '$LCDIR/workflow.md' 'deploy succeeded'"
 check "workflow.md: run it EXACTLY as CI does (the real entrypoint)" \
   "has '$LCDIR/workflow.md' 'exactly as|the real entrypoint'"
-check "workflow.md: names \`autopilot.sh workflow-run\` as the runner" \
+check "workflow.md: names \`ech.sh workflow-run\` as the runner" \
   "grep -qF 'workflow-run' '$LCDIR/workflow.md'"
 check "workflow.md: names the env Actions always sets, all four" \
   "( for v in GITHUB_SERVER_URL GITHUB_REPOSITORY_OWNER GITHUB_EVENT_PATH GITHUB_REPOSITORY; do grep -qF \"\$v\" '$LCDIR/workflow.md' || exit 1; done )"
@@ -362,8 +362,8 @@ done
 # ==========================================================================
 echo "-- 4. README --"
 R="$LCDIR/README.md"
-check "README names BOTH readers (the autopilot/buddy and Number One)" \
-  "has '$R' 'buddy|autopilot' && has '$R' 'number one'"
+check "README names BOTH readers (the ECH/EEH and Number One)" \
+  "has '$R' 'the EEH|the ECH' && has '$R' 'number one'"
 # S261 — THIS ROW USED TO READ: "README says Number One has NO shell". The
 # captain amended that S168 clause on 2026-10-08 (19:33 MDT); the reviewer now
 # has a real shell inside a disposable detached worktree. What the row is FOR is
@@ -381,8 +381,8 @@ check "README documents the NN-*.txt|png filename convention" \
   "has '$R' 'NN-'"
 check "README states the prose/template LOCKSTEP rule" \
   "has '$R' 'lockstep|both forms|same evidence path'"
-check "README points at \`autopilot.sh live-check\` as the setup verb" \
-  "grep -qF 'live-check' '$R' && grep -qF 'autopilot.sh' '$R'"
+check "README points at \`ech.sh live-check\` as the setup verb" \
+  "grep -qF 'live-check' '$R' && grep -qF 'ech.sh' '$R'"
 check "README says the MODEL does the looking and the script owns setup/evidence/record" \
   "has '$R' 'the model does the looking|the script owns'"
 
@@ -390,7 +390,7 @@ check "README says the MODEL does the looking and the script owns setup/evidence
 # THE CONTRACT CONTROL — prove these checks can FAIL
 # ==========================================================================
 # With no control, "PASS: cli.md is installed" against an absent file is the
-# exact false green that let the autopilot suite report 162/0 over an empty
+# exact false green that let the ECH suite report 162/0 over an empty
 # skills dir. Re-run THIS suite against an empty prefix and require red.
 if [ -z "${LCARS_LC_NO_NEST:-}" ]; then
   echo

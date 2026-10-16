@@ -14,13 +14,13 @@ ONE TREE AND ONE HOME FOR THE WHOLE LOOK (S246). `prepare` mints them once,
 `run --worktree … --home …` reuses them for every round, and `teardown` removes
 them at the end of the look. Without that, every `run` minted its own and a
 worker could not file a record in round 1 and read it back in round 2 — which is
-most of what the captain's buddy does by hand. Given no `--worktree/--home`,
+most of what the captain's EEH does by hand. Given no `--worktree/--home`,
 `run` still mints and removes its own, for the callers that really are one
 process long (recheck, and the unit tests that drive this file head-on).
 
 WHY THIS FILE EXISTS — THE MEASUREMENT, NOT A HUNCH.
 On the Canvas weekend (26–29 Sep 2026), same product, 34 runs: Number One filed
-0 of 31 bugs; the captain's buddy found all 31. All 16 of Number One's recorded
+0 of 31 bugs; the captain's EEH found all 31. All 16 of Number One's recorded
 misses (lcars-dev/canvas-weekend-2026-09-26/evidence/number-one-misses.jsonl)
 are REACH errors and not one is a judgement error:
 
@@ -53,10 +53,10 @@ TWO THINGS A STEP MAY NEVER TOUCH, and both are refusals, not warnings:
     written earlier makes a product that cannot be configured look configured.
 
 ONE MACHINERY, NOT TWO. The worktree and the throwaway HOME come from the
-autopilot round's own helper — `autopilot.sh worktree --branch <br>` (wt_prepare)
+ECH round's own helper — `ech.sh worktree --branch <br>` (wt_prepare)
 — because a second implementation of "detach a worktree" is a second thing that
-can be subtly wrong, and the buddy and Number One must be checking the same
-tree. The workflow kind is likewise executed by `autopilot.sh workflow-run`, the
+can be subtly wrong, and the EEH and Number One must be checking the same
+tree. The workflow kind is likewise executed by `ech.sh workflow-run`, the
 minimal step runner S234 built precisely so a package module invoked as a FILE
 still fails the way CI fails it.
 
@@ -79,7 +79,7 @@ stays with the reader". A step with nothing mechanical to check records
 A STEP MAY REACH A REAL HOST, AND ONLY BY THE RECORD'S CONSENT (S249).
 Until this session `step_env` built PATH, LANG, HOME and TMPDIR and nothing else,
 so NO CREDENTIAL HAS EVER REACHED A STEP and a real publish was impossible — 5 of
-the 29 bugs the captain's buddy found on the weekend needed one. That fence was
+the 29 bugs the captain's EEH found on the weekend needed one. That fence was
 "no credentials" BY ACCIDENT and not by record. It is now a record: a `run` step
 may declare
 
@@ -112,7 +112,7 @@ THE REST OF THE FENCE DID NOT MOVE. The argv fence (`_shell_refusal`,
 a consented step asking for a shell is still refused for being a shell.
 
 DEPENDENCIES ARE ENV-INJECTED (the lcars-init pattern) so tests can stub them:
-    LCARS_AUTOPILOT_BIN    autopilot.sh          (default: ../lcars-buddy/)
+    LCARS_ECH_BIN    ech.sh          (default: ../lcars-eeh/)
     LCARS_GIT_BIN          git
     LCARS_GH_BIN           gh                    (the credential lookup, S249)
     LCARS_XO_STEP_TIMEOUT  seconds per step      (default 120)
@@ -130,8 +130,8 @@ import time
 
 SELF_DIR = os.path.dirname(os.path.abspath(__file__))
 SKILLS_DIR = os.path.dirname(SELF_DIR)
-AUTOPILOT = os.environ.get("LCARS_AUTOPILOT_BIN") or os.path.join(
-    SKILLS_DIR, "lcars-buddy", "autopilot.sh")
+ECH = os.environ.get("LCARS_ECH_BIN") or os.path.join(
+    SKILLS_DIR, "lcars-eeh", "ech.sh")
 GIT = os.environ.get("LCARS_GIT_BIN") or "git"
 # The credential lookup, and the ONLY program that is ever asked for a token.
 GH = os.environ.get("LCARS_GH_BIN") or "gh"
@@ -155,7 +155,7 @@ MAX_ACTIONS = int(os.environ.get("LCARS_XO_MAX_ACTIONS") or 12)
 BROWSER_KINDS = ("navigate", "click", "type", "gate", "press", "key", "goto",
                  "scroll", "shot", "screenshot", "wait", "hover", "select",
                  "viewport")
-# The two line prefixes `autopilot.sh workflow-run` prints, and the one place
+# The two line prefixes `ech.sh workflow-run` prints, and the one place
 # this file names them. `  SKIP: ` is its notice that a step was NOT executed
 # (a packaged `uses:` action, a step with no `run:`, a shell it does not drive)
 # and that the step is UNPROVEN, not passed.
@@ -203,7 +203,7 @@ WORKTREE_MARK = "<worktree>"
 HOME_MARK = "<throwaway-home>"
 # A SECOND ACTOR IS A SECOND HOME (S246). The cli checklist's item 4 — "two
 # actors, two HOMEs, two laptops" — was the one item a single HOME could never
-# instantiate, and the buddy does it by hand every time. A step may now declare
+# instantiate, and the EEH does it by hand every time. A step may now declare
 # `<throwaway-home-2>` (or `-3`) and the harness MINTS it, beside the look's
 # first HOME and under the same parent, on first use.
 #
@@ -435,11 +435,11 @@ def load_consent(ldir):
 
     TWO PLACES, IN ONE ORDER, AND NEITHER OF THEM IS THE ENVIRONMENT.
       1  `autopilot.json liveTargets` — what the captain answered at the
-         autopilot's alignment round (`autopilot.sh:606`, `AUTOPILOT.md:75,133`).
-         The buddy has read it since S232; this is the first time the first
+         ECH's alignment round (`ech.sh:606`, `HOLOGRAM-COMMAND-MODE.md:75,133`).
+         The EEH has read it since S232; this is the first time the first
          officer does, which is the whole point of the session.
       2  `config.json numberOne.liveTargets` — the same shape, for a repo with no
-         autopilot run behind it.
+         the ECH run behind it.
     A record with no host, or with no owners, is NOT consent: an empty allow-list
     allows nothing. `source` is carried so a readout can say which file said yes.
     """
@@ -659,24 +659,24 @@ def inside(parent, child):
 
 
 # ===========================================================================
-# THE WORKTREE AND THE THROWAWAY HOME — the autopilot round's own helper
+# THE WORKTREE AND THE THROWAWAY HOME — the ECH round's own helper
 # ===========================================================================
 def prepare(repo, branch):
-    """(worktree, home) from `autopilot.sh worktree --branch <br>`, or (None, why).
+    """(worktree, home) from `ech.sh worktree --branch <br>`, or (None, why).
 
-    NOT A SECOND IMPLEMENTATION. `wt_prepare` in autopilot.sh is the one place
-    that knows how to detach a worktree and mint a throwaway HOME, and the buddy
+    NOT A SECOND IMPLEMENTATION. `wt_prepare` in ech.sh is the one place
+    that knows how to detach a worktree and mint a throwaway HOME, and the EEH
     uses it for the very same checklists. If it cannot, this REFUSES rather than
     quietly falling back to the checked-out tree — which is the failure it
     exists to prevent.
     """
-    if not os.path.exists(AUTOPILOT):
-        return None, ("no autopilot.sh at %s — the worktree helper is the one "
-                      "machinery and there is no second one" % AUTOPILOT)
+    if not os.path.exists(ECH):
+        return None, ("no ech.sh at %s — the worktree helper is the one "
+                      "machinery and there is no second one" % ECH)
     env = dict(os.environ)
-    env["LCARS_AUTOPILOT_CWD"] = repo
+    env["LCARS_ECH_CWD"] = repo
     try:
-        p = subprocess.run(["bash", AUTOPILOT, "worktree", "--branch", branch],
+        p = subprocess.run(["bash", ECH, "worktree", "--branch", branch],
                            cwd=repo, env=env, capture_output=True, text=True,
                            timeout=STEP_TIMEOUT)
     except Exception as exc:
@@ -1290,13 +1290,13 @@ def do_workflow(step, worktree, home, outdir, mission_dir):
     wf = resolve(step.get("file") or "", worktree, home)
     if not os.path.isabs(wf):
         wf = os.path.join(worktree, wf)
-    argv = ["bash", AUTOPILOT, "workflow-run", "-", wf, "--root", worktree,
+    argv = ["bash", ECH, "workflow-run", "-", wf, "--root", worktree,
             "--evidence-dir", outdir,
             "--evidence", os.path.basename(step.get("evidence") or "02-workflow-run.txt")]
     if step.get("job"):
         argv += ["--job", str(step["job"])]
     env = step_env({}, home)
-    env["LCARS_AUTOPILOT_CWD"] = worktree
+    env["LCARS_ECH_CWD"] = worktree
     rc, out, err, hung = run_cmd(argv, worktree, env, STEP_TIMEOUT)
     first = ""
     # ── WHAT THE LOCAL RUNNER DID NOT RUN, WRITTEN DOWN (S250 fix round 1, D1)
@@ -1538,7 +1538,7 @@ def cmd_run(opt):
 # prepare / teardown — the LOOK's own tree and HOME, minted ONCE (S246)
 # ===========================================================================
 # WHY THESE ARE SUBCOMMANDS AND NOT A SECOND HELPER IN xo.sh. `prepare()` above
-# is the ONE road to `autopilot.sh worktree` and `teardown()` is the ONE road
+# is the ONE road to `ech.sh worktree` and `teardown()` is the ONE road
 # back; a look that minted its tree with its own shell would be the second
 # implementation this file's header refuses. So `xo.sh evaluate` calls these.
 def cmd_prepare(opt):
@@ -1553,7 +1553,7 @@ def cmd_prepare(opt):
         sys.stderr.write("xo-run.py prepare: %s\n" % why)
         return 3
     worktree, home = pair
-    # The SAME two lines `autopilot.sh worktree` prints, so there is one shape to
+    # The SAME two lines `ech.sh worktree` prints, so there is one shape to
     # parse wherever a caller reads this back.
     say("WORKTREE: %s" % worktree)
     say("HOME: %s" % home)

@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 #
-# autopilot.sh — the TOKEN-FREE driver behind `lcars buddy`'s autopilot mode
+# ech.sh — the TOKEN-FREE driver behind `lcars eeh`'s Hologram Command Mode
 # ("run it for me"). The judgement in that mode is prose the MODEL follows
-# (AUTOPILOT.md); everything SEQUENCEABLE is here, and spends nothing.
+# (HOLOGRAM-COMMAND-MODE.md); everything SEQUENCEABLE is here, and spends nothing.
 #
 # IT DRIVES THE EXISTING VERBS. Every action below is an LCARS verb that an
 # earlier round already proved: `run.sh drive --mission`, `approve.sh
@@ -27,28 +27,28 @@
 # a human also writes. `stalled` (what the heartbeat calls) decides purely from
 # recorded pids for exactly that reason.
 #
-#   autopilot.sh init --spec <path|url> [--scope M0,M1] [--engine copilot]
+#   ech.sh init --spec <path|url> [--scope M0,M1] [--engine copilot]
 #                     [--deadline <iso>] [--force]
-#   autopilot.sh status
-#   autopilot.sh next [--all]
-#   autopilot.sh drive <mission>
-#   autopilot.sh stalled
-#   autopilot.sh land <mission>
-#   autopilot.sh push-gated
-#   autopilot.sh worktree <mission> | worktree --branch <branch>
-#   autopilot.sh live-check <mission> --type cli|web|workflow[,…]
-#   autopilot.sh live-check done <mission> --verdict pass|bugs
-#   autopilot.sh workflow-run <mission> <workflow.yml> [--evidence-dir <dir>]
-#   autopilot.sh file-bug --parent <mission> --prd <bug-prd.md>
-#   autopilot.sh policy --verdict high|medium|low [--reason product|infrastructure]
+#   ech.sh status
+#   ech.sh next [--all]
+#   ech.sh drive <mission>
+#   ech.sh stalled
+#   ech.sh land <mission>
+#   ech.sh push-gated
+#   ech.sh worktree <mission> | worktree --branch <branch>
+#   ech.sh live-check <mission> --type cli|web|workflow[,…]
+#   ech.sh live-check done <mission> --verdict pass|bugs
+#   ech.sh workflow-run <mission> <workflow.yml> [--evidence-dir <dir>]
+#   ech.sh file-bug --parent <mission> --prd <bug-prd.md>
+#   ech.sh policy --verdict high|medium|low [--reason product|infrastructure]
 #                       --live-check pass|bugs [--mission <m>] [--evidence <path>]
-#   autopilot.sh report [--out <path>]
-#   autopilot.sh ledger feedback|overrides|decisions '<json>'
-#   autopilot.sh heartbeat install|remove|status
-#   autopilot.sh record <dotted.key> <value>
-#   autopilot.sh answered <question-id|mission> ["<his answer>"]
-#   autopilot.sh ask "<what>" --mission <m> [--why …] [--command …] [--rollback …]
-#   autopilot.sh playbook
+#   ech.sh report [--out <path>]
+#   ech.sh ledger feedback|overrides|decisions '<json>'
+#   ech.sh heartbeat install|remove|status
+#   ech.sh record <dotted.key> <value>
+#   ech.sh answered <question-id|mission> ["<his answer>"]
+#   ech.sh ask "<what>" --mission <m> [--why …] [--command …] [--rollback …]
+#   ech.sh playbook
 #
 # EXIT CODES that mean something:
 #   0   done
@@ -59,7 +59,7 @@
 #   1   usage / a bad argument.
 #
 # DEPENDENCIES ARE ENV-INJECTED (the lcars-init pattern) so tests stub them:
-#   LCARS_AUTOPILOT_CWD   the repo to operate on       (default $PWD)
+#   LCARS_ECH_CWD   the repo to operate on       (default $PWD)
 #   LCARS_GIT_BIN         git                          (default git)
 #   LCARS_PYTHON_BIN      python3                      (default python3)
 #   LCARS_CRONTAB_BIN     crontab                      (default crontab)
@@ -68,7 +68,7 @@
 #   LCARS_ESTABLISH_VISION_BIN                         (sibling skills)
 #   LCARS_NOTIFY          the walk-away ping           (lcars-run/notify.sh)
 #   LCARS_SELF_CMD        the name this driver calls itself in its own output
-#                         (default: derived from $0, else `lcars-autopilot`)
+#                         (default: derived from $0, else `lcars-ech`)
 #
 # BASH 3.2 ONLY. macOS ships 3.2.57 and this runs on the captain's laptop, so
 # nothing from bash 4 may appear here: no associative arrays, no line-slurping
@@ -86,13 +86,13 @@ SKILLS_DIR="$(cd "$SELF_DIR/.." && pwd)"
 # THE NAME THIS DRIVER CALLS ITSELF IN ITS OWN OUTPUT (S277)
 # ==========================================================================
 # WHY THIS EXISTS. Every message below that tells a human or a model to run
-# something used to spell it `autopilot.sh <verb>` — the FILE's name, which is
+# something used to spell it `ech.sh <verb>` — the FILE's name, which is
 # not a command anywhere. `init` ended with "record the answers with
-# `autopilot.sh record liveTargets.host <host>`" and a real Copilot turn told to
+# `ech.sh record liveTargets.host <host>`" and a real Copilot turn told to
 # follow it ran exactly that, took exit 127, stopped, and recorded nothing — on
 # the very first step after `init`. `--help`'s usage header had the same bug, so
-# the driver misnamed itself to everyone on both CLIs. The prose fix (AUTOPILOT.md
-# naming `lcars-autopilot`) does not reach these: they are produced at runtime,
+# the driver misnamed itself to everyone on both CLIs. The prose fix (HOLOGRAM-COMMAND-MODE.md
+# naming `lcars-ech`) does not reach these: they are produced at runtime,
 # with no note anywhere near them.
 #
 # WHY DERIVED, NOT HARD-CODED. A literal would drift the moment the launcher is
@@ -100,9 +100,9 @@ SKILLS_DIR="$(cd "$SELF_DIR/.." && pwd)"
 # only falls back to the on-PATH name install.sh generates.
 #
 # MEASURED CAVEAT — the derivation cannot see the launcher's name today.
-# install.sh's generated wrapper is `exec bash "<abs>/autopilot.sh" "$@"`, which
-# REPLACES $0 with the script's own path, so `basename "$0"` is `autopilot.sh`
-# (the wrong name) and never `lcars-autopilot`. That is exactly the case the
+# install.sh's generated wrapper is `exec bash "<abs>/ech.sh" "$@"`, which
+# REPLACES $0 with the script's own path, so `basename "$0"` is `ech.sh`
+# (the wrong name) and never `lcars-ech`. That is exactly the case the
 # fallback below is for, and it is why the effective value is the PATH command.
 # $LCARS_SELF_CMD is the seam: a future front door (or a test) can declare the
 # name it was invoked as, and every message follows it with no string edits.
@@ -111,7 +111,7 @@ if [ -z "$SELF_CMD" ]; then
   SELF_CMD="$(basename -- "${0:-}" 2>/dev/null)"
   case "$SELF_CMD" in
     # the raw script, a shell, or nothing to go on -> the command install.sh makes
-    *.sh|''|-*|bash|sh|dash|zsh|ksh) SELF_CMD="lcars-autopilot" ;;
+    *.sh|''|-*|bash|sh|dash|zsh|ksh) SELF_CMD="lcars-ech" ;;
   esac
 fi
 
@@ -129,7 +129,7 @@ RESPOND_SCRIPT="${LCARS_RESPOND_SCRIPT:-$SKILLS_DIR/lcars-respond/respond.sh}"
 LOG_SCRIPT="${LCARS_LOG_SCRIPT:-$SKILLS_DIR/lcars-log/log.sh}"
 NOTIFY_BIN="${LCARS_NOTIFY:-$SKILLS_DIR/lcars-run/notify.sh}"
 
-die()  { printf 'lcars autopilot: %s\n' "$1" >&2; exit "${2:-1}"; }
+die()  { printf 'lcars ech: %s\n' "$1" >&2; exit "${2:-1}"; }
 say()  { printf '%s\n' "$1"; }
 
 # The cheat sheet. The modelled run's two biggest token sinks were reading LCARS
@@ -140,7 +140,7 @@ usage() {
   # can name itself as the reader must type it ($SELF_CMD). The heredoc stays
   # single-quoted on purpose: its body is full of backticks and `$`-looking
   # examples that must print literally, and a suite check proves that.
-  printf 'Usage: %s <subcommand> [args]   (playbook: AUTOPILOT.md — print it with `lcars-buddy docs autopilot`)\n' "$SELF_CMD" >&2
+  printf 'Usage: %s <subcommand> [args]   (playbook: HOLOGRAM-COMMAND-MODE.md — print it with `lcars-eeh docs ech`)\n' "$SELF_CMD" >&2
   cat >&2 <<'USAGE'
 
   init --spec <path|url> [--scope M0,M1] [--engine <e>] [--deadline <iso>] [--force]
@@ -152,7 +152,7 @@ usage() {
                        proceeds on, or stops deliberately (exit 10) on the one
                        prerequisite nobody can default — nowhere to push
   status               one screen: scope, stages, gates, slots, EVERY open question, next action
-  next [--all]         the ONE next mechanical step, and the AUTOPILOT.md heading for it
+  next [--all]         the ONE next mechanical step, and the HOLOGRAM-COMMAND-MODE.md heading for it
   playbook             the action -> heading table the contract test locks
   record <k.k> <v>     write one key (JSON value if it parses; empty value deletes)
   answered <id> "<a>"  close ONE open question (ids come from `status`); never deletes it
@@ -167,7 +167,7 @@ usage() {
   push-gated           run the recorded testCommand, push ONLY on exit 0
   worktree <mission> | worktree --branch <br>
                        git worktree add --detach + a throwaway HOME; prints both.
-                       --branch needs no autopilot record (Number One passes it)
+                       --branch needs no ECH record (Number One passes it)
   live-check <mission> --type cli|web|workflow[,…]
                        the detached worktree + throwaway HOME + the evidence dir, and the
                        CHECKLIST(S) to follow. The MODEL does the looking.
@@ -215,11 +215,11 @@ USAGE
 }
 
 # --- where we are ---------------------------------------------------------
-CWD="${LCARS_AUTOPILOT_CWD:-$PWD}"
+CWD="${LCARS_ECH_CWD:-$PWD}"
 [ -d "$CWD" ] || die "no such directory: $CWD"
 CWD="$(cd "$CWD" && pwd)"
 GITDIR="$CWD/.git"
-[ -e "$GITDIR" ] || die "$CWD is not a git repository — the autopilot operates on a repo."
+[ -e "$GITDIR" ] || die "$CWD is not a git repository — the ECH operates on a repo."
 LCARS_DIR="$GITDIR/lcars"
 MISSIONS="$LCARS_DIR/missions"
 CFG="$LCARS_DIR/config.json"
@@ -369,7 +369,7 @@ try:
 except FileNotFoundError:
     d = {}
 except Exception:
-    sys.stderr.write("autopilot: %s exists but is NOT valid JSON - refusing to overwrite it\n" % f)
+    sys.stderr.write("the ECH: %s exists but is NOT valid JSON - refusing to overwrite it\n" % f)
     sys.exit(2)
 parts = path.split(".")
 cur = d
@@ -402,7 +402,7 @@ PY
 # ==========================================================================
 # ONE HOME, ENFORCED BY CONSTRUCTION. `.pending` used to be BOTH a derived
 # mirror (on the raise path) and the SOLE STORAGE for a question the model wrote
-# by hand — the old AUTOPILOT.md § 9 instructed exactly that — with nothing
+# by hand — the old HOLOGRAM-COMMAND-MODE.md § 9 instructed exactly that — with nothing
 # declaring which. That single ambiguity produced FIVE separate defects over
 # five rounds of testing, each one a different function disagreeing about it:
 #   1. a second question deleted the first (the mirror was overwritten);
@@ -416,7 +416,7 @@ PY
 #      on without him.
 # Every one of those was a reader coping with the orphan slightly differently,
 # so a sixth careful reader was never the cure. A question is now RAISED with a
-# verb — `autopilot.sh ask`, or `write_pending` from inside the driver — and
+# verb — `ech.sh ask`, or `write_pending` from inside the driver — and
 # lands in `questions` with a real id; `.pending` is ONLY ever the derived
 # mirror of the oldest open question. There is no code path left that reads a
 # question OUT of `.pending`.
@@ -556,9 +556,9 @@ slots_in_use() {
 }
 
 # ==========================================================================
-# THE PLAYBOOK TABLE — the contract between this script and AUTOPILOT.md.
+# THE PLAYBOOK TABLE — the contract between this script and HOLOGRAM-COMMAND-MODE.md.
 # `next` emits one of these actions and cites its heading; the suite asserts
-# every heading exists VERBATIM in the installed AUTOPILOT.md. Rename a heading
+# every heading exists VERBATIM in the installed HOLOGRAM-COMMAND-MODE.md. Rename a heading
 # and the suite fails; add an action with no prose behind it and it fails too.
 # ==========================================================================
 PB_align='## 1. The alignment round — one batch of questions, then walk away'
@@ -633,7 +633,7 @@ cmd_playbook() {
 #      is our own `pgid`. Only the foreground group may READ the terminal.
 #
 # THE THIRD ONE IS THE ONE THAT MATTERED, AND IT WAS MEASURED. With 1 and 2
-# alone, `bash autopilot.sh init … &` from a terminal — a plain `&`, which is
+# alone, `bash ech.sh init … &` from a terminal — a plain `&`, which is
 # the `nohup`/detached-tmux shape AND the shape ORCHESTRATION.md tells the
 # captain to use — printed question 1, was stopped by SIGTTIN, and sat in
 # process state `T` for the full 60s of observation: no output, no progress, no
@@ -651,7 +651,7 @@ cmd_playbook() {
 # BOTH OF THE FIRST TWO, AND THE SECOND ONE WAS LEARNED THE HARD WAY. The first
 # cut of this used /dev/tty ALONE, on the reasoning that `init | tee` has a human
 # right there. tests/harness.test.sh runs every suite from a pty with stdin OPEN
-# on purpose, `tests/lcars-buddy.test.sh` invokes `init`, and that suite went
+# on purpose, `tests/lcars-eeh.test.sh` invokes `init`, and that suite went
 # from 5.9s to ELAPSED 120.0s — exactly the read bound — and was killed by the
 # cage. A BOUNDED read turns a hang into a long hang; it does not stop it being
 # one. This repo's standing convention is that a command run with stdin closed
@@ -665,12 +665,12 @@ cmd_playbook() {
 # WHAT IT STILL GETS WRONG. A detached session that KEEPS its terminal and is
 # its own foreground group — `setsid` with a tty handed to it, a tmux pane the
 # captain left attached and walked away from — reads as attended, which is why
-# every read is BOUNDED ($LCARS_AUTOPILOT_ASK_TIMEOUT, default 120s) and one
+# every read is BOUNDED ($LCARS_ECH_ASK_TIMEOUT, default 120s) and one
 # unanswered question settles the whole block as "nobody is here". The other
 # direction: `init < answers.txt` reads as unattended although a human wrote
 # that file, and a CI runner reads as unattended, which is the right call here
 # but is NOT the same thing as a detached daemon.
-ASK_TIMEOUT="${LCARS_AUTOPILOT_ASK_TIMEOUT:-120}"
+ASK_TIMEOUT="${LCARS_ECH_ASK_TIMEOUT:-120}"
 PF_TTY=0
 PF_VALUE=""
 PF_YES_TO_ALL=0
@@ -689,7 +689,7 @@ PF_SETTLED_ID=""
 # can hang is worse than no reachability check: it becomes the exact failure it
 # was added to detect. There is no portable `timeout(1)` on macOS (this box has
 # none), so `pf_bounded` below is the bound.
-PROBE_TIMEOUT="${LCARS_AUTOPILOT_PROBE_TIMEOUT:-15}"
+PROBE_TIMEOUT="${LCARS_ECH_PROBE_TIMEOUT:-15}"
 
 # THE SENTINEL for question 2's default. It is a PHRASE, never a command, and it
 # is never written to `testCommand`: `push-gated` eval's that string, and a
@@ -753,7 +753,7 @@ PF_Q_NO_LAUNCH_DIR='there is nowhere to make the launch copies: no writable dire
 # outliving it — the second orphan nobody had attributed.
 #
 # AND THE SUBSHELL'S STDERR IS CLOSED ON PURPOSE (S300 fix4). MEASURED: bash's
-# job-control notification — `autopilot.sh: line 740: 93081 Killed: 9 "$@" >
+# job-control notification — `ech.sh: line 740: 93081 Killed: 9 "$@" >
 # /dev/null 2>&1 < /dev/null` — landed in the middle of the captain's report,
 # between items 3 and 3b, exposing an internal line number and a raw `"$@"` and
 # reading like a crash to a human at 03:00. The notification is printed by the
@@ -979,7 +979,7 @@ pf_withdraw_say() {
 # same note: a `$(…)` caller would run the whole thing in a subshell and lose
 # the id every time.
 #
-# THE ESCAPE HATCH THE TOOL PRINTS HAS TO WORK. preflight and AUTOPILOT.md both
+# THE ESCAPE HATCH THE TOOL PRINTS HAS TO WORK. preflight and HOLOGRAM-COMMAND-MODE.md both
 # promise "settle it with `answered <id> …`, or fix the cause". Measured: the
 # answer was recorded and then NOTHING READ IT, so the next preflight minted a
 # byte-identical clone — `write_pending`'s dedupe is over the OPEN set only, by
@@ -1486,10 +1486,10 @@ pf_check_reachable() {
     say "    cannot retire itself, because a slow remote stays slow: it will keep"
     say "    stopping here until you settle it or widen the bound."
     say "    Either:  $SELF_CMD answered <id> \"it's just slow\"   # clears it for good"
-    say "    or:      LCARS_AUTOPILOT_PROBE_TIMEOUT=60 $SELF_CMD preflight"
+    say "    or:      LCARS_ECH_PROBE_TIMEOUT=60 $SELF_CMD preflight"
     pf_stop "$qkey" \
       "the probe hit its ${PROBE_TIMEOUT}s DEADLINE before origin answered (rc 124) — a deadline, not a refusal: git never said no. It may simply be slow (a cold VPN handshake, a monorepo's huge ref advertisement, a loaded forge) and be perfectly healthy; nothing here says the URL or the auth is wrong. Only you can tell slow from dead: $url" \
-      "cd $CWD && $GIT_BIN ls-remote origin   # time it by hand: if it answers, it is just slow — then: $SELF_CMD answered <id> \"it's just slow\" (or run preflight with LCARS_AUTOPILOT_PROBE_TIMEOUT=60)" \
+      "cd $CWD && $GIT_BIN ls-remote origin   # time it by hand: if it answers, it is just slow — then: $SELF_CMD answered <id> \"it's just slow\" (or run preflight with LCARS_ECH_PROBE_TIMEOUT=60)" \
       "nothing has run, so there is nothing to undo."
     return 0
   fi
@@ -1575,7 +1575,7 @@ pf_q_forge_login() {
 
 # --- question 5: the engine's unattended permission ------------------------
 # THE BIGGEST GAP OF THE FOUR DEAD NIGHTS, and the subject of this playbook's
-# OPENING SECTION: with COPILOT_ALLOW_ALL unset, a measured buddy round was
+# OPENING SECTION: with COPILOT_ALLOW_ALL unset, a measured EEH round was
 # refused on every command — including read-only ones — with "Permission denied
 # because no interactive user response was available", after four rounds had
 # worked. From outside, that blocked run and a healthy idle one are identical,
@@ -1800,7 +1800,7 @@ PY
   say "Next: answer the alignment round, then record the answers with"
   say "  $SELF_CMD record liveTargets.host <host>"
   say "  $SELF_CMD record captainOnlySteps '[{\"what\":\"…\",\"instructions\":\"…\",\"neededBy\":\"…\",\"done\":false}]'"
-  say "then follow $SKILLS_DIR/lcars-buddy/AUTOPILOT.md."
+  say "then follow $SKILLS_DIR/lcars-eeh/HOLOGRAM-COMMAND-MODE.md."
   say ""
   # THE SWEEP RUNS WHILE HE IS STILL HERE. `init` is the one moment a human is
   # reliably present, so the setup questions are asked here and not discovered
@@ -1996,7 +1996,7 @@ EOF
     # `--mission -` is how a question says it belongs to no milestone, and every
     # preflight stop is exactly that: nowhere to push, no login, no engine
     # permission. No other milestone works around a missing remote, and
-    # AUTOPILOT.md says plainly not to drive a milestone past a preflight stop —
+    # HOLOGRAM-COMMAND-MODE.md says plainly not to drive a milestone past a preflight stop —
     # so printing `ALSO RUNNABLE: foundation` beside one was the driver
     # contradicting the playbook, in the one place a model reads for its next
     # move. § 9's rule is untouched: a question filed against a MILESTONE still
@@ -2038,7 +2038,7 @@ EOF
 cmd_status() {
   require_state
   local used; used="$(slots_in_use)"
-  say "AUTOPILOT — $CWD"
+  say "ECH — $CWD"
   say "  spec:     $(ap_j spec)"
   say "  engine:   $(ap_j engine)"
   say "  deadline: $(ap_j deadline)    last forecast: $(ap_j lastForecast)"
@@ -2182,7 +2182,7 @@ cmd_waiter() {
     ap_set "drivers.$m.failures" "$fails"
     if [ "$fails" -ge "$MAX_DRIVE_FAILURES" ]; then
       write_pending "$m" \
-        "$m has failed $fails drives in a row (last exit $rc) and the autopilot has stopped retrying it." \
+        "$m has failed $fails drives in a row (last exit $rc) and the ECH has stopped retrying it." \
         "Repeating a failure that never changes is an LCARS bug with no verb-level workaround — one of the four things that may reach you. A fourth attempt would spin until morning and achieve nothing." \
         "LCARS_GATE_TIMEOUT=$gt bash $RUN_SCRIPT drive --mission $m   # in the FOREGROUND; its last log is $log" \
         "nothing was merged and nothing to undo. Once the cause is fixed, \`$SELF_CMD answered <id>\` clears the counter and the mode resumes."
@@ -2193,7 +2193,7 @@ cmd_waiter() {
   ap_set "drivers.$m.pid" ""
   # NO PING FOR A ROUTINE STOP. `notify … drive-stopped` used to fire on EVERY
   # drive exit, exit 0 included — three pings from three routine stage stops in
-  # one tester run. AUTOPILOT.md § 9 promises exactly four things reach the
+  # one tester run. HOLOGRAM-COMMAND-MODE.md § 9 promises exactly four things reach the
   # captain; a stage stop the mode handles itself is not one of them, so the only
   # notification left on this path is the one write_pending sends when the
   # failure cap turns into a question.
@@ -2277,7 +2277,7 @@ if not isinstance(qs, dict):
 # notification, and the open question keeps its ORIGINAL raisedAt. Without
 # this, re-running `land` on a mission still blocked by the same bug child
 # appended q3, q4, q5 byte-identical and pushed the captain three times for
-# one problem - the interrupt-budget violation AUTOPILOT.md section 9
+# one problem - the interrupt-budget violation HOLOGRAM-COMMAND-MODE.md section 9
 # forbids. The pair is the key, NOT the mission: a drive-failure-cap question
 # and a land question on one mission are two DIFFERENT problems and must stay
 # two questions. An ANSWERED question never suppresses a new one - a problem
@@ -2339,7 +2339,7 @@ PY
 # ==========================================================================
 # ask — the ONE supported way for the MODEL to raise a question by hand
 # ==========================================================================
-# WHY A VERB AND NOT A FIELD. AUTOPILOT.md § 9 used to tell the model to write
+# WHY A VERB AND NOT A FIELD. HOLOGRAM-COMMAND-MODE.md § 9 used to tell the model to write
 # its own question — a product call, a scope change, a standing-rule conflict
 # including a permission denial — straight into `autopilot.json.pending`. That
 # instruction is what made `.pending` load-bearing STORAGE on one path while it
@@ -2404,8 +2404,8 @@ cmd_answered() {
 import json, os, sys
 f, want, answer, ts = sys.argv[1:5]
 # The name the caller must TYPE, handed in by the shell (S277). A literal here
-# would print `autopilot.sh status`, which is not a command on any PATH.
-selfcmd = os.environ.get("LCARS_SELF_CMD") or "lcars-autopilot"
+# would print `ech.sh status`, which is not a command on any PATH.
+selfcmd = os.environ.get("LCARS_SELF_CMD") or "lcars-ech"
 try:
     d = json.load(open(f))
 except Exception:
@@ -2660,7 +2660,7 @@ cmd_push_gated() {
 # landing a green fix for an hour. And exploring a CLI needs a throwaway HOME:
 # a `draft --help` once created a junk draft on the real machine.
 cmd_worktree() {
-  # `worktree <mission>` resolves the branch from the autopilot record;
+  # `worktree <mission>` resolves the branch from the ECH record;
   # `worktree --branch <br>` is handed it (S239 — see wt_prepare). With an
   # explicit branch there is nothing to look up, so neither autopilot.json nor
   # a mission is required: the branch IS the record for this call.
@@ -2703,10 +2703,10 @@ f, body, ts = sys.argv[1], sys.argv[2], sys.argv[3]
 try:
     d = json.loads(body)
 except Exception as e:
-    sys.stderr.write("lcars autopilot: ledger: not valid JSON (%s)\n" % e)
+    sys.stderr.write("lcars ech: ledger: not valid JSON (%s)\n" % e)
     sys.exit(1)
 if not isinstance(d, dict):
-    sys.stderr.write("lcars autopilot: ledger: the entry must be a JSON object\n")
+    sys.stderr.write("lcars ech: ledger: the entry must be a JSON object\n")
     sys.exit(1)
 d.setdefault("ts", int(ts))
 with open(f, "a") as fh:
@@ -2725,12 +2725,12 @@ cmd_ledger() {
 # ==========================================================================
 # WHY crontab AND NOT A HARNESS TOOL. The weekend's heartbeat was a Claude Code
 # cron tool, and the design notes still say so. LCARS ships to people who are
-# not inside Claude Code — a harness-only tool cannot be the autopilot's
+# not inside Claude Code — a harness-only tool cannot be the ECH's
 # heartbeat, because on their machine it does not exist. `crontab` is on every
 # POSIX box, it survives the session dying, and the captain can read and delete
 # the line himself. The mode owns exactly ONE line, tagged so `remove` can find
 # it without touching anything else in his crontab.
-HB_MARK="# LCARS-AUTOPILOT"
+HB_MARK="# LCARS-ECH"
 hb_line() {
   printf '17 * * * * cd %s && bash %s stalled >> %s/heartbeat.log 2>&1 %s %s\n' \
     "$CWD" "$SELF" "$APDIR" "$HB_MARK" "$CWD"
@@ -2807,7 +2807,7 @@ cmd_heartbeat() {
 # checklist(s) for the product type, and records the verdict. It judges nothing.
 #
 # THE CHECKLISTS LIVE IN lcars-run/, NOT HERE, because the rebuilt Number One
-# reads the same files. One source, two readers: the buddy follows the prose,
+# reads the same files. One source, two readers: the EEH follows the prose,
 # the fenced worker lifts each item's `run:`/`workflow:`/`read:` template.
 LIVE_CHECK_DIR="${LCARS_LIVE_CHECK_DIR:-$SKILLS_DIR/lcars-run/live-check}"
 LIVE_CHECK_TYPES="cli web workflow"
@@ -2827,7 +2827,7 @@ wt_prepare() {
   local m="$1" br="${2:-}"
   # S239: THE BRANCH MAY BE NAMED OUTRIGHT. Number One's harness (xo-run.py)
   # reuses THIS helper — one machinery, because a second "detach a worktree" is
-  # a second thing that can be subtly wrong and the buddy and the first officer
+  # a second thing that can be subtly wrong and the EEH and the first officer
   # must check the same tree. It holds the branch already (from the mission's
   # own state.json, read by xo.sh) and has no autopilot.json, so it passes the
   # branch rather than asking this script to look the mission up.
@@ -2918,7 +2918,7 @@ cmd_live_check() {
     say ""
   done
   say "WHEN DONE:  $SELF live-check done $m --verdict pass|bugs"
-  say "A BUG:      $SELF file-bug --parent $m --prd <bug-prd.md>   (template: $SKILLS_DIR/lcars-buddy/bug-prd.md)"
+  say "A BUG:      $SELF file-bug --parent $m --prd <bug-prd.md>   (template: $SKILLS_DIR/lcars-eeh/bug-prd.md)"
 }
 
 cmd_live_check_done() {
@@ -3010,7 +3010,7 @@ cmd_workflow_run() {
   # S239: Number One's harness runs this very runner for a `workflow` step and
   # writes its transcript BESIDE THE BROWSER SHOTS, under xo/shots/<look>/, so
   # the First Officer's report serves it with no new surface anywhere. With the
-  # evidence directory named there is nothing to look up in the autopilot record
+  # evidence directory named there is nothing to look up in the ECH record
   # — so a mission (and autopilot.json) is not required for that call.
   if [ -z "$evdirarg" ]; then
     require_state
@@ -3019,7 +3019,7 @@ cmd_workflow_run() {
   [ -f "$wf" ] || die "workflow-run: no workflow file at $wf"
   wf="$(cd "$(dirname "$wf")" && pwd)/$(basename "$wf")"
   # The repo root is the one the workflow's own paths are relative to — the
-  # directory holding .github/, not whatever cwd the buddy happens to be in.
+  # directory holding .github/, not whatever cwd the EEH happens to be in.
   if [ -z "$root" ]; then
     case "$wf" in
       */.github/workflows/*) root="${wf%/.github/workflows/*}" ;;
@@ -3354,7 +3354,7 @@ cmd_file_bug() {
   done
   require_state
   [ -n "$parent" ] || die "file-bug: --parent <mission> is required — a logged bug is always a CHILD of the mission it was found in, and grounding needs the parent's code."
-  [ "$n" -gt 0 ] || die "file-bug: --prd <file> is required (once per bug). The template is $SKILLS_DIR/lcars-buddy/bug-prd.md."
+  [ "$n" -gt 0 ] || die "file-bug: --prd <file> is required (once per bug). The template is $SKILLS_DIR/lcars-eeh/bug-prd.md."
   mexists "$parent" || die "file-bug: no parent mission $parent in $MISSIONS"
   [ -x "$LOG_SCRIPT" ] || [ -f "$LOG_SCRIPT" ] || die "file-bug: no lcars log at $LOG_SCRIPT"
 
@@ -3365,9 +3365,9 @@ cmd_file_bug() {
     p="${PRDS[$i]}"
     [ -f "$p" ] || die "file-bug: no PRD at $p"
     if ! msg="$(bug_prd_problems "$p")"; then
-      printf 'lcars autopilot: file-bug: %s is not an evidence-first bug PRD.\n' "$p" >&2
+      printf 'lcars ech: file-bug: %s is not an evidence-first bug PRD.\n' "$p" >&2
       printf '%s\n' "$msg" >&2
-      printf 'Nothing was filed. The template is %s/lcars-buddy/bug-prd.md.\n' "$SKILLS_DIR" >&2
+      printf 'Nothing was filed. The template is %s/lcars-eeh/bug-prd.md.\n' "$SKILLS_DIR" >&2
       exit 1
     fi
     i=$((i + 1))
@@ -3495,7 +3495,7 @@ PY
 #
 # Number One scored every CLI or integration milestone `low` for reasons it
 # could not reach, so the live check decided every merge. THE MERGE IS STILL THE
-# BUDDY'S CALL: this prints the recommendation and the commands; the buddy
+# EEH'S CALL: this prints the recommendation and the commands; the EEH
 # decides, and every override is written down.
 POLICY_ACTIONS='merge merge+follow-ups send-back override'
 
@@ -3643,7 +3643,7 @@ policy_table() {
   say ""
   say "  The live check decides: Number One scored every CLI or integration milestone"
   say "  low for reasons it could not reach, so a \`bugs\` live check sends back a high."
-  say "  THE MERGE IS THE BUDDY'S CALL — this is the recommendation, and every"
+  say "  THE MERGE IS THE EEH'S CALL — this is the recommendation, and every"
   say "  override lands in autopilot-overrides.jsonl with the evidence path."
 }
 
@@ -3790,7 +3790,7 @@ def ul(uid, items):
 html = """<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Autopilot progress</title>
+<title>ECH progress</title>
 <style>
   body { font-family: -apple-system, system-ui, sans-serif; margin: 2rem; max-width: 60rem; }
   table { border-collapse: collapse; width: 100%%; }
@@ -3800,7 +3800,7 @@ html = """<!doctype html>
   @media (max-width: 500px) { body { margin: .75rem; } }
 </style></head>
 <body>
-<h1 id="report-title">Autopilot progress</h1>
+<h1 id="report-title">ECH progress</h1>
 <p id="report-meta">spec: %(spec)s &middot; started: %(started)s</p>
 <table id="report-milestones">
 <thead><tr><th>Milestone</th><th>Mission</th><th>Stage</th><th>Number One</th><th>Live check</th><th>Shots</th><th>Bugs filed</th><th>Bugs fixed</th></tr></thead>
@@ -3836,7 +3836,7 @@ PY
 # ==========================================================================
 # exec — run a SIBLING skill's script, resolved from THIS clone (S277)
 # ==========================================================================
-# WHY THIS EXISTS. AUTOPILOT.md names four scripts that belong to other skills
+# WHY THIS EXISTS. HOLOGRAM-COMMAND-MODE.md names four scripts that belong to other skills
 # (lcars-init/establish-vision.sh, lcars-file/file.sh,
 # lcars-resolve-logs/resolve-logs.sh, lcars-respond/respond.sh). It used to name
 # them as `bash ~/.claude/skills/<skill>/<script>`, which is Claude Code's
@@ -3850,8 +3850,8 @@ PY
 # the playbook already uses on every line exposes them, resolved relative to its
 # OWN physical location ($SKILLS_DIR), which is correct under either mount:
 #
-#   lcars-autopilot exec lcars-file/file.sh --prd <path> --engine copilot
-#   lcars-autopilot exec lcars-file file.sh  --prd <path> --engine copilot
+#   lcars-ech exec lcars-file/file.sh --prd <path> --engine copilot
+#   lcars-ech exec lcars-file file.sh  --prd <path> --engine copilot
 #
 # It adds NO stage logic: it resolves a path and hands over with `exec`.
 cmd_exec() {
@@ -3871,6 +3871,42 @@ cmd_exec() {
   [ -f "$target" ] || die "exec: no such script in this LCARS clone: $target"
   exec bash "$target" "$@"
 }
+
+# ==========================================================================
+# the announcement
+# ==========================================================================
+# THE ECH SAYS WHO IT IS — WITHOUT EVER TOUCHING THE DATA PATH.
+#
+# This program is the Emergency Command Hologram, and it says so. But it is also
+# the thing the chain, xo-run.py and the suites call dozens of times a run and
+# PARSE. Its verbs emit line-oriented machine records on STDOUT: `playbook`
+# prints a bare TAB-SEPARATED table with no prefix at all, `next` prints
+# `NEXT:`/`WHY:`/`PLAYBOOK:` lines asserted with a `^` anchor, and `worktree`
+# prints `WORKTREE:`/`HOME:` lines that xo-run.py scans by prefix — reporting a
+# refusal by reading the LAST line of the output. A banner anywhere on stdout is
+# therefore indistinguishable from data: at the top it corrupts a first-line
+# reader, at the bottom it corrupts xo-run.py's error path. There is no safe
+# position on stdout, so the banner is not on stdout.
+#
+# It goes to STDERR, and only when stdout is a REAL TTY — i.e. a human is
+# looking. Command substitution, a pipe and subprocess capture_output are all
+# not a tty, so every captured call is silent and stdout stays BYTE-IDENTICAL
+# to before the rename. `LCARS_ECH_QUIET=1` is the explicit off switch for a
+# human who is in a loop and tired of reading it.
+#
+# It is a VALUE check, not a presence check, and deliberately: `=0` has to mean
+# "not quiet". A `-z` test silences the banner for ANY non-empty value, so
+# somebody writing `LCARS_ECH_QUIET=0` to say "leave it on" would get the
+# opposite of what they asked for. `[ "${X:-0}" != "1" ]` is the same idiom
+# `LCARS_BASE_QUIET` and every other boolean switch in this repo already uses.
+#
+# NOT "ONCE PER SESSION", DELIBERATELY. Each `lcars-ech <verb>` is its own
+# short-lived process, so "only the first time this session" would need new
+# persisted state in autopilot.json — new behaviour, which a rename may not add.
+# The tty test needs no state and costs nothing.
+if [ -t 1 ] && [ "${LCARS_ECH_QUIET:-0}" != "1" ]; then
+  printf '%s\n' "LCARS ECH — the Emergency Command Hologram. Please state the nature of the command emergency." >&2
+fi
 
 # ==========================================================================
 # dispatch
@@ -3901,5 +3937,5 @@ case "$SUB" in
   heartbeat)   cmd_heartbeat "$@" ;;
   exec)        cmd_exec "$@" ;;
   ''|-h|--help|help) usage ;;
-  *)           printf 'lcars autopilot: unknown subcommand %s\n' "$SUB" >&2; usage ;;
+  *)           printf 'lcars ech: unknown subcommand %s\n' "$SUB" >&2; usage ;;
 esac

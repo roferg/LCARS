@@ -9,7 +9,7 @@
 #   ✖ The following skills failed to load:
 #     • skills/lcars-adopt/SKILL.md:      … at line 2 column 306
 #     • skills/lcars-approve/SKILL.md:    … at line 2 column 312
-#     • skills/lcars-buddy/SKILL.md:      … at line 2 column 244
+#     • skills/lcars-eeh/SKILL.md:      … at line 2 column 244
 #     • skills/lcars-pause/SKILL.md:      … at line 2 column 167
 #     • skills/lcars-run/SKILL.md:        description must be at most 1024 chars
 #     • skills/lcars-update/SKILL.md:     … at line 2 column 636
@@ -128,7 +128,7 @@ check "1a. and is reported OK" "printf '%s' \"\$out\" | qgrep -q '^OK   '"
 # --- 1b: a plain one-liner containing ": " is REJECTED -------------------
 d="$TMPROOT/colonspace"
 mkskill "$d" 'name: colonspace' \
-  'description: Your ride-along buddy — extra detail the normal surfaces do not show: where the source sits. Use when the user asks.'
+  'description: Your ride-along EEH — extra detail the normal surfaces do not show: where the source sits. Use when the user asks.'
 out="$(python3 "$CHECK" "$d" 2>&1)"; rc=$?
 check "1b. a plain one-line description containing \": \" is REJECTED (rc=1)" "[ $rc -eq 1 ]"
 check "1b. the refusal names rule R4" "printf '%s' \"\$out\" | qgrep -q 'FAIL .*: R4 '"
@@ -266,7 +266,7 @@ done <<EOF
 $(find "$REPO_ROOT/skills" -mindepth 1 -maxdepth 1 -type d | LC_ALL=C sort)
 EOF
 n_skills="${#SKILL_DIRS[@]}"
-check "2. there are 19 skill directories (found $n_skills)" "[ $n_skills -eq 19 ]"
+check "2. there are 20 skill directories (found $n_skills)" "[ $n_skills -eq 20 ]"
 
 out="$(python3 "$CHECK" "${SKILL_DIRS[@]}" 2>&1)"; rc=$?
 if [ "$rc" -eq 0 ]; then
@@ -337,8 +337,8 @@ check "3. the tracked manifest exists" "[ -f \"$MANIFEST\" ]"
 LCARS_PLUGIN_OUT="$TMPROOT/plugin.json" bash "$GEN" >/dev/null 2>&1
 check "3. regenerating the manifest produces a byte-identical file" \
   "cmp -s \"$MANIFEST\" \"$TMPROOT/plugin.json\""
-check "3. and it lists all 19 skills" \
-  "[ \"\$(qgrep -c '\"./skills/' \"$MANIFEST\")\" -eq 19 ]"
+check "3. and it lists all 20 skills" \
+  "[ \"\$(qgrep -c '\"./skills/' \"$MANIFEST\")\" -eq 20 ]"
 
 echo
 echo "== section 4: the LIVE probe — the real copilot binary =="

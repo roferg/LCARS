@@ -392,7 +392,7 @@ OPENOUT="$(LCARS_WEB_DIR="$WEB_DIR" LCARS_PYTHON_BIN="$PYSTUB" LCARS_GH_BIN="$GH
 check "launcher forwards --open to the daemon" \
   "printf '%s' \"\$OPENOUT\" | qgrep -q -- '--open'"
 
-# --- BUG (lcars-buddy): a QUEUED card must not render a live Start button -------
+# --- BUG (lcars-eeh): a QUEUED card must not render a live Start button -------
 # A logged bug SCHEDULED in a resolve-logs batch carries state.json.queued:true; the
 # board derives runState→"queued" and shows a "QUEUED · WAITING" pill. But the card's
 # action control (cardControls) branched only on paused/pausing/running and otherwise

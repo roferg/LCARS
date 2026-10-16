@@ -111,11 +111,11 @@ check "1b. CONTROL: stdin CLOSED hides the same hang (why </dev/null proves noth
   "! timed_out \"\$ctrl_dn\""
 
 # --- 2. Real suites terminate from a pty with stdin OPEN -------------------
-# lcars-pause and lcars-buddy were MEASURED hanging from a pty before the cure
+# lcars-pause and lcars-eeh were MEASURED hanging from a pty before the cure
 # (30.0s and 25.0s, both killed by the cage; 5.6s and 5.9s after). run-runner is
 # a fast canary. Check 2 asserts TERMINATION only — lcars-pause has a red
 # assertion of its own, ledgered, and that is not this suite's business.
-for s in lcars-pause lcars-buddy run-runner; do
+for s in lcars-pause lcars-eeh run-runner; do
   [ -f "$DIR/$s.test.sh" ] || { bad "2. $s.test.sh missing"; continue; }
   out="$(run_pty "$HANG_SECS" bash "$DIR/$s.test.sh")"
   el="$(elapsed "$out")"

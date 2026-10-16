@@ -125,7 +125,7 @@ gh_label() { # "--add-label X" | "--remove-label X"  (verb + label as one string
 # A mission assigned to SOMEONE ELSE on GitHub is READ-ONLY to this laptop's
 # write verbs. `lcars pause` and `lcars resume` both REWRITE state.json and move
 # the `lcars:paused` label on someone's issue, so they consult the lock; the READ
-# verbs (status, buddy, the viewscreen's reads) never do. The remedy is
+# verbs (status, the EEH, the viewscreen's reads) never do. The remedy is
 # deliberately a HUMAN act on GitHub — the solo protocol's premise is that the
 # captain moves ownership where both laptops can see it, and LCARS never takes a
 # mission off anyone.

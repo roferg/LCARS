@@ -313,7 +313,7 @@ sys.exit(0 if any('PLAN RULE:' in l for l in lines[start:end]) else 1)
 PY"
 
 # IDEMPOTENT: a PRD whose Constraints ALREADY carry the rule (the captain pasted
-# it, or an autopilot injected it) must not grow a second copy.
+# it, or an ECH injected it) must not grow a second copy.
 FR2="$(file_repo)"; PRD_IN2="$FR2/prd-in.md"
 RULE_PASTED="- PLAN RULE: every criterion of a screen-changing ticket carries drawnAt (board-grid, board-title, empty-hint, person-grid, person-name, request-card, request-created, request-text, v-board, v-empty, v-person) or notDrawn: \"<reason>\""
 write_prd_in "$PRD_IN2" "$RULE_PASTED"
@@ -486,7 +486,7 @@ section "H. THE WALK-AWAY PROMISE — the parked question renders ON THE DRIVER"
 # `grep -oE '^[[:space:]]*"[^"]*"...'`. `"[^"]*"` CANNOT span a string carrying
 # an escaped quote — and S237's own park question carries them BY CONSTRUCTION
 # (it offers `notDrawn ("<why …>")`). So on the UNATTENDED surface — `lcars
-# run`, the autopilot, night-watch — the captain saw a heading, an EMPTY list
+# run`, the ECH, night-watch — the captain saw a heading, an EMPTY list
 # and a hint, while the question sat in pending.json the whole time.
 #
 # This is the THIRD human-facing surface in one day to lose text to a

@@ -187,7 +187,7 @@ The order is the contract:
    so) and, per criterion, `reachVia` — `cli | browser | workflow | test |
    none`. **A CLI criterion is reached by RUNNING the CLI, not by looking for it
    on a page.** The live-check checklists (`skills/lcars-run/live-check/<type>.md`
-   — the SAME files the buddy follows in prose) are handed to the worker WHOLE,
+   — the SAME files the EEH follows in prose) are handed to the worker WHOLE,
    for the product types the contract recorded, as **advice the worker reads**:
    every `run:` block in them is an EXAMPLE of a shape, with the values left out
    on purpose, and the worker invents the values a human would. **There is ONE
@@ -197,10 +197,10 @@ The order is the contract:
    before the look.
 
    Three kinds: `run` (argv/cwd/env/expect/for), `workflow` (executed by
-   `autopilot.sh workflow-run`, the runner that names the first failing step)
+   `ech.sh workflow-run`, the runner that names the first failing step)
    and `read` (an artifact read rather than assumed). `xo-run.py` executes them
    in a **worktree detached from the mission's branch with a throwaway HOME**
-   (`autopilot.sh worktree --branch` — ONE machinery, the buddy's own), minted
+   (`ech.sh worktree --branch` — ONE machinery, the EEH's own), minted
    ONCE for the whole look so a record filed in one round can be read back in the
    next, caged per step, writing a transcript + a `.json` readout per step beside
    the browser shots under `xo/shots/<look>/`. Each row records `checkedBy`.

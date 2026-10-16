@@ -1641,7 +1641,7 @@ check "B10d. it says so out loud too" \
 #
 # AND THEN IT BECAME OPT-IN (captain's ruling, 2026-10-04; S246). *A look has no
 # clock.* With `$LCARS_XO_MAX_ROUNDS` unset there is NO ceiling: the loop runs
-# until the worker writes its verdict, because the captain's buddy — following
+# until the worker writes its verdict, because the captain's EEH — following
 # the same checklists by hand — ran for hours while Number One was cut off at
 # roughly five minutes and so could never seed in one round and read the effect
 # in the next. **That default is proven in `tests/lcars-xo-drives.test.sh` §3.**

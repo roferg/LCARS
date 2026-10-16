@@ -1,6 +1,6 @@
 <!DOCTYPE html>
 <!-- lcars-docs-src: README.md sha256:a6d66d70534fd6641c8e4b405e373b42129e6d93cf9027417cacc1916da7a1c9 -->
-<!-- lcars-docs-src: vision.md sha256:8c844c676bd7b9cbae978a14fdb75876ecd0285874aaea3908622b62685add34 -->
+<!-- lcars-docs-src: vision.md sha256:47e72d57920148ce26dfd168416acb81b20d517ca26f7da8c5df81e029bb02ba -->
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
@@ -211,8 +211,8 @@ cd LCARS
       <strong><code>lcars-viewscreen</code></strong> (alias
       <strong><code>lcars-serve</code></strong>) opens the board,
       <strong><code>lcars-launch</code></strong> runs a Mission's app, and
-      <strong><code>lcars-buddy</code></strong> and
-      <strong><code>lcars-autopilot</code></strong> are the companion and the
+      <strong><code>lcars-eeh</code></strong> and
+      <strong><code>lcars-ech</code></strong> are the companion and the
       hand-over-the-loop mode. If <code>~/.local/bin</code> is not on your
       <code>PATH</code>, the installer says so loudly and prints the exact line
       to add to your shell profile.</p>
@@ -310,7 +310,7 @@ lcars init          # one-time: per-repo state + the GitHub labels</pre>
             <li><code>lcars pause</code> / <code>lcars resume</code> — stop at the next safe boundary, and go again.</li>
             <li><code>lcars adopt &lt;issue&gt;</code> — take a Mission over on this machine from its issue alone.</li>
             <li><code>lcars xo</code> — engage or stand down Number One, and read his report.</li>
-            <li><code>lcars-buddy</code> / <code>lcars-autopilot</code> — the ride-along, and handing it the loop.</li>
+            <li><code>lcars-eeh</code> / <code>lcars-ech</code> — the ride-along, and handing it the loop.</li>
             <li><code>lcars update</code> / <code>lcars version</code> — absorb a <code>git pull</code>, and say where you are.</li>
           </ul>
         </div>
@@ -380,10 +380,10 @@ lcars init          # one-time: per-repo state + the GitHub labels</pre>
         <figcaption>One gate for all of them: the fixes folded back onto the parent's branch, with a live launch before you accept.</figcaption>
       </figure>
 
-      <h3>Autopilot — handing over the loop</h3>
+      <h3>The ECH — handing over the loop</h3>
       <p>A <strong>software factory</strong> is the shape this pipeline already
       has: signals in, triaged into planned changes, built, tested, reviewed, out
-      as merged pull requests. Autopilot is what lets you hand the
+      as merged pull requests. The ECH is what lets you hand the
       <em>running</em> of it over. You give it a goal, it holds one alignment
       round with you to agree what to build, and then it works milestone after
       milestone, coming back only when it genuinely needs you.</p>
@@ -391,7 +391,7 @@ lcars init          # one-time: per-repo state + the GitHub labels</pre>
       <p>The hard part of running a factory is not making the change — it is
       <strong>believing</strong> it. Producing a change is the cheap half now;
       verifying one you did not write is the expensive half, and that cost does
-      not fall because the suite came back green. So autopilot does not ask to be
+      not fall because the suite came back green. So the ECH does not ask to be
       trusted: it <em>uses</em> what it built, records what it saw, files what it
       finds with a reproduction quoting the real output, re-proves each fix on
       deliberately different data, writes down every decision it made alone, and
@@ -406,8 +406,8 @@ lcars init          # one-time: per-repo state + the GitHub labels</pre>
       </div>
 
       <figure class="screenshot">
-        <img src="assets/autopilot-status.png" alt="Autopilot's own status in a terminal: the spec it is working to, the missions in scope with their stages and gates, the parallel slots in use, and the one question it has parked for you." />
-        <figcaption>Autopilot's own status: the spec, the Missions in scope, the slots in use, and the one question it has parked for you.</figcaption>
+        <img src="assets/ech-status.png" alt="The ECH's own status in a terminal: the spec it is working to, the missions in scope with their stages and gates, the parallel slots in use, and the one question it has parked for you." />
+        <figcaption>The ECH's own status: the spec, the Missions in scope, the slots in use, and the one question it has parked for you.</figcaption>
       </figure>
 
       <h3>Knowing the cost before you spend it</h3>
@@ -443,7 +443,7 @@ lcars init          # one-time: per-repo state + the GitHub labels</pre>
           <ul>
             <li><strong>The whole pipeline, idea → PR</strong> — both.</li>
             <li><strong>Every LCARS command</strong> — both.</li>
-            <li><strong>Autopilot and Number One</strong> — both.</li>
+            <li><strong>The ECH and Number One</strong> — both.</li>
             <li><strong>Cost shown before you spend</strong> — in dollars on
             Claude; in GitHub AI Credits on Copilot, with your plan's included
             allowance netted off.</li>

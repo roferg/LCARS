@@ -382,7 +382,7 @@ $(grep -oE "[[:space:]]id=[\"'][^\"']*[\"']" "$f" \
 # lcars_prd_inject_constraint <prd-path> <line> -> adds <line> as a bullet of
 # the PRD's Constraints section, ONCE. IDEMPOTENT on the line's own leading
 # token, so a PRD whose Constraints already carry the rule (the captain pasted
-# it, an autopilot injected it, or this ran before) never grows a second copy.
+# it, an ECH injected it, or this ran before) never grows a second copy.
 # Returns 0 whether or not it wrote: a PRD that cannot be read is left alone.
 lcars_prd_inject_constraint() { # prd-path line
   [ -f "$1" ] || return 0

@@ -5,7 +5,7 @@ WHY THIS EXISTS (measured, 2026-10-11). `copilot skill list` loaded 11 of
 LCARS's 19 skills and refused 8 of them:
 
     ✖ The following skills failed to load:
-      • skills/lcars-buddy/SKILL.md: failed to parse YAML frontmatter:
+      • skills/lcars-eeh/SKILL.md: failed to parse YAML frontmatter:
         mapping values are not allowed in this context at line 2 column 244
       • skills/lcars-run/SKILL.md: Skill description must be at most 1024
         characters

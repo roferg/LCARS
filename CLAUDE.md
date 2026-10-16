@@ -79,9 +79,9 @@ Files left only in `~/.claude/` do not count — they don't ship.
 Sessions and fixes are not run freehand: one orchestrator spawns an implementor
 sub-agent (TDD) and a **fresh** tester at a declared proof surface, loops fixes
 with a regression guard, and **stops hard at three rounds**. Those rules live in
-ONE file — `skills/lcars-buddy/ORCHESTRATION.md`, installed (and readable from
-any cwd) at `~/.claude/skills/lcars-buddy/ORCHESTRATION.md`. It is shared by
-`lcars buddy`, `run-session` and `night-watch` so the loop cannot drift between
+ONE file — `skills/lcars-eeh/ORCHESTRATION.md`, installed (and readable from
+any cwd) at `~/.claude/skills/lcars-eeh/ORCHESTRATION.md`. It is shared by
+`lcars eeh`, `run-session` and `night-watch` so the loop cannot drift between
 them, and it **wins over any restatement**. Read it before orchestrating
 anything; this section points at it rather than repeating it.
 

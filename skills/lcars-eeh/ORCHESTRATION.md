@@ -37,16 +37,16 @@ Three consumers, one file:
   session-plan doc.
 - **`night-watch`** (lcars-dev) — chains sessions unattended; adds its own rules
   *on top of* this file.
-- **`lcars buddy`** (this skill) — orchestrates one **fix** to LCARS, driven from
+- **`lcars eeh`** (this skill) — orchestrates one **fix** to LCARS, driven from
   whatever foreign repo the captain happens to be in.
 
 Read it with the command `install.sh` puts on your PATH. It resolves this file
-beside whichever copy of `buddy.sh` ran, so it is stable from any cwd and under
+beside whichever copy of `eeh.sh` ran, so it is stable from any cwd and under
 either install symlink farm (`~/.claude/skills/` for Claude Code, `~/.copilot/installed-plugins/_direct/lcars` for Copilot):
 
 ```bash
-lcars-buddy docs orchestration          # prints this file
-lcars-buddy docs --path orchestration   # just its absolute path
+lcars-eeh docs orchestration          # prints this file
+lcars-eeh docs --path orchestration   # just its absolute path
 ```
 
 **This file wins over any restatement.** If a skill, a doc, or a script says
@@ -54,7 +54,7 @@ something different about the loop, the pre-flight, the fix rounds, the branch,
 the trailer or the readout, this file is right and that text is a stale copy —
 fix the copy by deleting it and pointing here. Each consumer keeps only what is
 genuinely its own (run-session keeps roadmap resolution and its briefing;
-night-watch keeps its unattended additions; buddy keeps its own refusal rule).
+night-watch keeps its unattended additions; the EEH keeps its own refusal rule).
 
 ---
 
@@ -122,7 +122,7 @@ Run these **after** the go-ahead and **before** any sub-agent.
 
 ## The loop
 
-The orchestrator half spawns sub-agents and is run from Claude Code today; the ride-along brief and the autopilot run from either CLI.
+The orchestrator half spawns sub-agents and is run from Claude Code today; the ride-along brief and the ECH run from either CLI.
 
 Each piece of work is driven by ONE **orchestrator**. **The orchestrator writes
 no production code itself** — it spawns sub-agents and runs this loop:
@@ -160,7 +160,7 @@ no production code itself** — it spawns sub-agents and runs this loop:
    *Readout*. No PR unless asked.
 
 **An invariant touch is a STOP.** Honour every invariant the work declares (a
-session doc's *What we are NOT changing*; for a buddy fix, the protected
+session doc's *What we are NOT changing*; for an EEH fix, the protected
 machinery: the Implement proof gates (flip-flop, declared test-edits,
 quality floor), the ≤3-sessions-then-park bound, env-injected/stubbable CLIs). If
 a change would touch one, **STOP and
@@ -173,7 +173,7 @@ report** rather than papering over it.
 Before any harness-driven testing, the tester's first action is to use the thing
 the way the captain would and confirm **it works at all**. On a viewscreen
 session that means: start the daemon, open it in real headed Chrome, take a
-screenshot, and look at it. On a buddy fix it means: re-collect the brief (or
+screenshot, and look at it. On an EEH fix it means: re-collect the brief (or
 re-drive the failing verb) from the foreign repo and read it. Only then go
 hunting for the specific behaviours.
 
@@ -490,7 +490,7 @@ blind spots; the journey carries the experience.
 ## Guardrails
 
 - **Briefing-before-work is unconditional** — even for "run session NN" with an
-  explicit number, even mid-round; and for a buddy fix, before the branch is cut.
+  explicit number, even mid-round; and for an EEH fix, before the branch is cut.
 - **Never fake the layer the work changes.** If pre-flight finds that, nothing
   starts until the harness is fixed or the scope changes.
 - **Never spend Claude without asking, and never quietly skip a Claude drive the

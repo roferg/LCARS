@@ -6,8 +6,8 @@
 # 2026-10-12, a pre-flight snapshot found ALL FIVE of his `lcars-*` commands
 # exiting 127:
 #
-#   lcars-buddy      -> .../lcars-wt/s278/skills/lcars-buddy/buddy.sh       MISSING
-#   lcars-autopilot  -> .../lcars-wt/s278/skills/lcars-buddy/autopilot.sh   MISSING
+#   lcars-eeh      -> .../lcars-wt/s278/skills/lcars-eeh/eeh.sh       MISSING
+#   lcars-ech  -> .../lcars-wt/s278/skills/lcars-eeh/ech.sh   MISSING
 #   lcars-viewscreen -> .../lcars-wt/s278/skills/lcars-viewscreen/...       MISSING
 #   lcars-launch     -> .../lcars-wt/s278/skills/lcars-launch/launch.sh     MISSING
 #   lcars-serve      -> .../lcars-wt/s278/skills/lcars-viewscreen/serve.sh  MISSING
@@ -18,7 +18,7 @@
 # executable, and `exec bash`-ed a file that was not there.
 #
 # Repairing it measured the second half: `./install.sh` from `main` fixed only
-# THREE of the five. `main` cannot reclaim `lcars-buddy`/`lcars-autopilot`
+# THREE of the five. `main` cannot reclaim `lcars-eeh`/`lcars-ech`
 # because `main` does not itself generate those names. A reinstall is therefore
 # not a repair, and the defect REGENERATES on every worktree install.
 #
@@ -65,18 +65,18 @@ check(){ if eval "$2"; then ok "$1"; else bad "$1 ($2)"; fi; }
 make_checkout() {
   local dir="$1" small="${2:-}"
   mkdir -p "$dir/skills/lcars-viewscreen" "$dir/skills/lcars-launch" \
-           "$dir/skills/lcars-buddy" "$dir/.claude-plugin"
+           "$dir/skills/lcars-eeh" "$dir/.claude-plugin"
   cp "$REPO_ROOT/gen-copilot-plugin.sh" "$dir/gen-copilot-plugin.sh"
   if [ -n "$small" ]; then
-    grep -v 'install_launcher "lcars-buddy"' "$INSTALL" \
-      | grep -v 'install_launcher "lcars-autopilot"' >"$dir/install.sh"
+    grep -v 'install_launcher "lcars-eeh"' "$INSTALL" \
+      | grep -v 'install_launcher "lcars-ech"' >"$dir/install.sh"
   else
     cp "$INSTALL" "$dir/install.sh"
   fi
   local tag; tag="$(basename "$dir")"
   local s
   for s in lcars-viewscreen/viewscreen.sh lcars-viewscreen/serve.sh \
-           lcars-launch/launch.sh lcars-buddy/buddy.sh lcars-buddy/autopilot.sh; do
+           lcars-launch/launch.sh lcars-eeh/eeh.sh lcars-eeh/ech.sh; do
     printf '#!/usr/bin/env bash\necho "FAKE %s from %s"\n' "$(basename "$s")" "$tag" \
       >"$dir/skills/$s"
     chmod +x "$dir/skills/$s"
@@ -123,26 +123,26 @@ check "1. the manifest lists every launcher name it created" \
   "grep -qx 'lcars-viewscreen' '$b1/$MANIFEST_NAME' \
    && grep -qx 'lcars-serve'    '$b1/$MANIFEST_NAME' \
    && grep -qx 'lcars-launch'   '$b1/$MANIFEST_NAME' \
-   && grep -qx 'lcars-buddy'    '$b1/$MANIFEST_NAME' \
-   && grep -qx 'lcars-autopilot' '$b1/$MANIFEST_NAME'"
+   && grep -qx 'lcars-eeh'    '$b1/$MANIFEST_NAME' \
+   && grep -qx 'lcars-ech' '$b1/$MANIFEST_NAME'"
 
 # a foreign project's launcher (the real nine cf-* commands) and a user's own
 # script that happens to share an LCARS name — both UNMARKED.
 printf '#!/bin/sh\necho cf-plan is not lcars\n' >"$b1/cf-plan"; chmod +x "$b1/cf-plan"
-printf '#!/bin/sh\necho my own autopilot\n'     >"$b1/lcars-autopilot.user"
+printf '#!/bin/sh\necho my own ECH\n'     >"$b1/lcars-ech.user"
 cf_sha="$(shasum -a 256 "$b1/cf-plan" | awk '{print $1}')"
 
 run_install "$CK_SMALL" "$p1" "$p1/out1b.txt"
 
 check "1. (a) a marked launcher no longer in the current set is REMOVED" \
-  "[ ! -e '$b1/lcars-buddy' ] && [ ! -e '$b1/lcars-autopilot' ]"
+  "[ ! -e '$b1/lcars-eeh' ] && [ ! -e '$b1/lcars-ech' ]"
 check "1. (a) the install SAYS which stale launchers it removed" \
-  "grep -q 'lcars-buddy' '$p1/out1b.txt' && grep -qi 'removed' '$p1/out1b.txt'"
+  "grep -q 'lcars-eeh' '$p1/out1b.txt' && grep -qi 'removed' '$p1/out1b.txt'"
 check "1. (a) the launchers still in the set survive and point at the new checkout" \
   "grep -q '$CK_SMALL/skills/lcars-viewscreen/viewscreen.sh' '$b1/lcars-viewscreen' \
    && [ -x '$b1/lcars-serve' ] && [ -x '$b1/lcars-launch' ]"
 check "1. (a) the manifest now lists exactly the three current names" \
-  "[ \"\$(grep -c . '$b1/$MANIFEST_NAME')\" -eq 3 ] && ! grep -qx 'lcars-buddy' '$b1/$MANIFEST_NAME'"
+  "[ \"\$(grep -c . '$b1/$MANIFEST_NAME')\" -eq 3 ] && ! grep -qx 'lcars-eeh' '$b1/$MANIFEST_NAME'"
 check "1. (a) the foreign cf-plan launcher is byte-for-byte untouched" \
   "[ \"\$(shasum -a 256 '$b1/cf-plan' | awk '{print \$1}')\" = '$cf_sha' ]"
 
@@ -152,15 +152,15 @@ check "1. (a) the foreign cf-plan launcher is byte-for-byte untouched" \
 # ==========================================================================
 p2="$(new_prefix)"; b2="$p2/inst/bin"
 run_install "$CK_A" "$p2" "$p2/out2a.txt"
-printf '#!/bin/sh\necho MINE not lcars\n' >"$b2/lcars-autopilot"; chmod +x "$b2/lcars-autopilot"
-mine_sha="$(shasum -a 256 "$b2/lcars-autopilot" | awk '{print $1}')"
+printf '#!/bin/sh\necho MINE not lcars\n' >"$b2/lcars-ech"; chmod +x "$b2/lcars-ech"
+mine_sha="$(shasum -a 256 "$b2/lcars-ech" | awk '{print $1}')"
 run_install "$CK_SMALL" "$p2" "$p2/out2b.txt"
 
 check "2. an UNMARKED script with an LCARS name survives reconciliation" \
-  "[ -f '$b2/lcars-autopilot' ] && unmarked '$b2/lcars-autopilot' \
-   && [ \"\$(shasum -a 256 '$b2/lcars-autopilot' | awk '{print \$1}')\" = '$mine_sha' ]"
+  "[ -f '$b2/lcars-ech' ] && unmarked '$b2/lcars-ech' \
+   && [ \"\$(shasum -a 256 '$b2/lcars-ech' | awk '{print \$1}')\" = '$mine_sha' ]"
 check "2. ...and reconciliation says it left the unmarked file alone" \
-  "grep -q 'lcars-autopilot' '$p2/out2b.txt' && grep -qi 'not an LCARS launcher\|left alone\|not ours' '$p2/out2b.txt'"
+  "grep -q 'lcars-ech' '$p2/out2b.txt' && grep -qi 'not an LCARS launcher\|left alone\|not ours' '$p2/out2b.txt'"
 
 # ==========================================================================
 # Behaviour 3 — the PATH problem. Loud block with BOTH routes when the bin dir
@@ -171,7 +171,7 @@ run_install "$CK_A" "$p3" "$p3/out3.txt"
 check "3. off PATH: the message names the exact export line" \
   "grep -qF 'export PATH=\"$b3:\$PATH\"' '$p3/out3.txt'"
 check "3. off PATH: the message gives the no-PATH fallback as an absolute bash command" \
-  "grep -qF 'bash $CK_A/skills/lcars-buddy/buddy.sh' '$p3/out3.txt'"
+  "grep -qF 'bash $CK_A/skills/lcars-eeh/eeh.sh' '$p3/out3.txt'"
 check "3. off PATH: the block is impossible to miss (ACTION NEEDED banner)" \
   "grep -qi 'ACTION NEEDED' '$p3/out3.txt'"
 
@@ -182,21 +182,21 @@ check "3. on PATH: no add-to-PATH block at all" \
 
 # ==========================================================================
 # Behaviour 4 — the fallback command, copied VERBATIM out of the message,
-# actually runs the buddy. (Extracted by grep, not retyped.)
+# actually runs the EEH. (Extracted by grep, not retyped.)
 # ==========================================================================
-fallback="$(grep -oE "bash $CK_A/skills/lcars-buddy/buddy\.sh" "$p3/out3.txt" | head -1)"
+fallback="$(grep -oE "bash $CK_A/skills/lcars-eeh/eeh\.sh" "$p3/out3.txt" | head -1)"
 fb_repo="$TMPROOT/fbrepo"; mkdir -p "$fb_repo"; ( cd "$fb_repo" && git init -q 2>/dev/null )
-fb_out="$( LCARS_REPO="$CK_A" LCARS_BUDDY_CWD="$fb_repo" eval "$fallback" 2>&1 )"
-check "4. the no-PATH fallback command from the message runs the buddy" \
-  "[ -n '$fallback' ] && printf '%s' \"\$fb_out\" | grep -q 'FAKE buddy.sh from checkoutA'"
+fb_out="$( LCARS_REPO="$CK_A" LCARS_EEH_CWD="$fb_repo" eval "$fallback" 2>&1 )"
+check "4. the no-PATH fallback command from the message runs the EEH" \
+  "[ -n '$fallback' ] && printf '%s' \"\$fb_out\" | grep -q 'FAKE eeh.sh from checkoutA'"
 
 # the same fallback shape against the REAL repo, so the printed path is the real
-# buddy and not only a stub: a known-good control for the check above.
-real_fb_out="$( LCARS_REPO="$REPO_ROOT" LCARS_BUDDY_CWD="$fb_repo" \
+# the EEH and not only a stub: a known-good control for the check above.
+real_fb_out="$( LCARS_REPO="$REPO_ROOT" LCARS_EEH_CWD="$fb_repo" \
                 LCARS_SKILLS_DEST="$TMPROOT/nonexistent-skills" \
-                bash "$REPO_ROOT/skills/lcars-buddy/buddy.sh" 2>&1 )"
-check "4. CONTROL: the same command shape runs the REAL buddy from this repo" \
-  "printf '%s' \"\$real_fb_out\" | grep -q 'LCARS BUDDY — ride along'"
+                bash "$REPO_ROOT/skills/lcars-eeh/eeh.sh" 2>&1 )"
+check "4. CONTROL: the same command shape runs the REAL EEH from this repo" \
+  "printf '%s' \"\$real_fb_out\" | grep -q 'LCARS EEH — the Emergency Engineering Hologram'"
 
 # ==========================================================================
 # Behaviour 7 — THE LIVE FAILURE, as a regression test. A marked launcher whose
@@ -206,21 +206,21 @@ check "4. CONTROL: the same command shape runs the REAL buddy from this repo" \
 p7="$(new_prefix)"; b7="$p7/inst/bin"
 run_install "$CK_DOOMED" "$p7" "$p7/out7a.txt"
 check "7. pre-condition: the launcher ran from the doomed checkout" \
-  "[ \"\$('$b7/lcars-buddy' 2>&1)\" = 'FAKE buddy.sh from checkoutDoomed' ]"
+  "[ \"\$('$b7/lcars-eeh' 2>&1)\" = 'FAKE eeh.sh from checkoutDoomed' ]"
 
 rm -rf "$CK_DOOMED"
-dangling_out="$("$b7/lcars-buddy" 2>&1)"; dangling_rc=$?
+dangling_out="$("$b7/lcars-eeh" 2>&1)"; dangling_rc=$?
 check "7. a launcher whose checkout is gone fails with WORDS, not a bare 127" \
   "[ $dangling_rc -ne 0 ] \
-   && printf '%s' \"\$dangling_out\" | grep -q 'lcars-buddy' \
+   && printf '%s' \"\$dangling_out\" | grep -q 'lcars-eeh' \
    && printf '%s' \"\$dangling_out\" | grep -qi 'no longer exists\|does not exist' \
    && printf '%s' \"\$dangling_out\" | grep -qi 'install.sh'"
 
 run_install "$CK_A" "$p7" "$p7/out7b.txt"
 check "7. (b) the next install REPOINTS it at the installing checkout" \
-  "grep -q '$CK_A/skills/lcars-buddy/buddy.sh' '$b7/lcars-buddy'"
+  "grep -q '$CK_A/skills/lcars-eeh/eeh.sh' '$b7/lcars-eeh'"
 check "7. (b) ...and the repointed launcher actually RUNS" \
-  "[ \"\$('$b7/lcars-buddy' 2>&1)\" = 'FAKE buddy.sh from checkoutA' ]"
+  "[ \"\$('$b7/lcars-eeh' 2>&1)\" = 'FAKE eeh.sh from checkoutA' ]"
 check "7. (b) ...and the install SAID it repointed a launcher whose checkout was gone" \
   "grep -qi 'no longer exists' '$p7/out7b.txt' && grep -qi 'repoint' '$p7/out7b.txt'"
 
@@ -261,12 +261,12 @@ check "9. with the bin dir OFF PATH the verdict is NOT READY and names the cure"
 # our launcher with a foreign script. A verdict that merely asserts would say
 # READY; one that resolves and runs must say NOT READY and name the shadow.
 shadow="$TMPROOT/shadowbin"; mkdir -p "$shadow"
-printf '#!/bin/sh\necho not lcars at all\nexit 3\n' >"$shadow/lcars-buddy"
-chmod +x "$shadow/lcars-buddy"
+printf '#!/bin/sh\necho not lcars at all\nexit 3\n' >"$shadow/lcars-eeh"
+chmod +x "$shadow/lcars-eeh"
 p9c="$(new_prefix)"
 run_install "$CK_A" "$p9c" "$p9c/out9c.txt" "$shadow:$p9c/inst/bin"
 check "9. CONTROL: a shadowed launcher reads NOT READY and names the shadow" \
-  "grep -q 'NOT READY' '$p9c/out9c.txt' && grep -q '$shadow/lcars-buddy' '$p9c/out9c.txt'"
+  "grep -q 'NOT READY' '$p9c/out9c.txt' && grep -q '$shadow/lcars-eeh' '$p9c/out9c.txt'"
 
 # ==========================================================================
 # Behaviour 5 — uninstall. Removes exactly the marked launchers + both skill
@@ -289,8 +289,8 @@ run_install "$CK_A" "$p5" "$p5/out5b.txt" "" uninstall; rc5=$?
 check "5. uninstall exits 0" "[ $rc5 -eq 0 ]"
 check "5. uninstall removed every marked launcher and the manifest" \
   "[ ! -e '$b5/lcars-viewscreen' ] && [ ! -e '$b5/lcars-serve' ] \
-   && [ ! -e '$b5/lcars-launch' ] && [ ! -e '$b5/lcars-buddy' ] \
-   && [ ! -e '$b5/lcars-autopilot' ] && [ ! -e '$b5/$MANIFEST_NAME' ]"
+   && [ ! -e '$b5/lcars-launch' ] && [ ! -e '$b5/lcars-eeh' ] \
+   && [ ! -e '$b5/lcars-ech' ] && [ ! -e '$b5/$MANIFEST_NAME' ]"
 check "5. uninstall left the UNMARKED foreign launcher byte-identical" \
   "[ \"\$(shasum -a 256 '$b5/cf-review' | awk '{print \$1}')\" = '$cfr_sha' ]"
 check "5. uninstall removed the Claude skill farm's lcars symlinks" \
@@ -625,7 +625,7 @@ CAGE="$REPO_ROOT/tests/lib/cage.py"
 # Behaviour 10 — D1, THE HANG. install.sh writes the launcher through an
 # EXPANDING heredoc, so a backtick in the source is a backtick in the generated
 # file and bash COMMAND-SUBSTITUTES it. The dangling-target guard said
-#     echo "lcars: `lcars-buddy` points at …"
+#     echo "lcars: `lcars-eeh` points at …"
 # so running a launcher whose checkout was gone RAN THE LAUNCHER AGAIN.
 # Measured before the fix: with the bin dir on PATH (the shipped configuration)
 # a caged run exited 124 at 20 s having re-entered to depth 6 and climbing; and
@@ -641,7 +641,7 @@ CK_D1="$TMPROOT/checkoutD1"; make_checkout "$CK_D1"
 run_install "$CK_D1" "$p10" "$p10/out10a.txt" "$p10/inst/bin"
 
 check "10. the GENERATED launcher contains NO backtick at all (D1 invariant)" \
-  "[ \"\$(grep -c '\`' '$b10/lcars-buddy')\" -eq 0 ]"
+  "[ \"\$(grep -c '\`' '$b10/lcars-eeh')\" -eq 0 ]"
 check "10. ...and that holds for EVERY launcher it generated" \
   "[ \"\$(grep -l '\`' '$b10'/lcars-* 2>/dev/null | wc -l | tr -d ' ')\" -eq 0 ]"
 
@@ -649,7 +649,7 @@ check "10. ...and that holds for EVERY launcher it generated" \
 # the launcher by NAME under a cage. Pre-fix this never returned.
 rm -rf "$CK_D1"
 d1_out="$(env -i PATH="$b10:/usr/bin:/bin" HOME="$p10/fakehome" \
-            python3 "$CAGE" 8 lcars-buddy 2>&1)"; d1_rc=$?
+            python3 "$CAGE" 8 lcars-eeh 2>&1)"; d1_rc=$?
 check "10. a launcher whose target is gone, WITH the bin dir on PATH, TERMINATES rather than hitting the 8s cage deadline (exit $d1_rc)" \
   "[ $d1_rc -ne 124 ]"
 check "10. ...and it exits 127, fast, under the cage" \
@@ -657,7 +657,7 @@ check "10. ...and it exits 127, fast, under the cage" \
 check "10. ...and the cage reports it in well under a second (no recursion)" \
   "printf '%s' \"\$d1_out\" | grep -qE 'ELAPSED 0\.[0-9]+s'"
 check "10. ...and the message NAMES the command (the blank-name bug)" \
-  "printf '%s' \"\$d1_out\" | grep -qF \"lcars: 'lcars-buddy' points at\""
+  "printf '%s' \"\$d1_out\" | grep -qF \"lcars: 'lcars-eeh' points at\""
 check "10. ...and it never printed the name blank" \
   "! printf '%s' \"\$d1_out\" | grep -q 'lcars:  points at'"
 check "10. ...and it said it only ONCE (one message, not a recursion trace)" \
@@ -665,9 +665,9 @@ check "10. ...and it said it only ONCE (one message, not a recursion trace)" \
 
 # Same thing with the bin dir OFF PATH: the other half of the measured bug.
 d1b_out="$(env -i PATH=/usr/bin:/bin HOME="$p10/fakehome" \
-             python3 "$CAGE" 8 "$b10/lcars-buddy" 2>&1)"; d1b_rc=$?
+             python3 "$CAGE" 8 "$b10/lcars-eeh" 2>&1)"; d1b_rc=$?
 check "10. off PATH too: exits 127 and still NAMES the command (rc=$d1b_rc)" \
-  "[ $d1b_rc -eq 127 ] && printf '%s' \"\$d1b_out\" | grep -qF \"'lcars-buddy'\" \
+  "[ $d1b_rc -eq 127 ] && printf '%s' \"\$d1b_out\" | grep -qF \"'lcars-eeh'\" \
    && ! printf '%s' \"\$d1b_out\" | grep -qi 'command not found'"
 
 # D1(b): install.sh's OWN READY probe must not inherit the hang. A checkout
@@ -691,21 +691,21 @@ check "10. ...and it reaches a verdict at all (pre-fix: grep -c READY was 0)" \
 # dangling guard. Pre-fix, with the bin dir on PATH, that recursed and the whole
 # installer never returned: caged exit 124, `grep -c READY` = 0, no verdict.
 p10c="$(new_prefix)"
-CK_NOBUDDY="$TMPROOT/checkoutNoBuddy"; make_checkout "$CK_NOBUDDY"
-rm -f "$CK_NOBUDDY/skills/lcars-buddy/buddy.sh"
+CK_NOEEH="$TMPROOT/checkoutNoEeh"; make_checkout "$CK_NOEEH"
+rm -f "$CK_NOEEH/skills/lcars-eeh/eeh.sh"
 mkdir -p "$p10c/inst/bin" "$p10c/fakehome"
 env -i PATH="$p10c/inst/bin:/usr/bin:/bin:/usr/sbin:/sbin" HOME="$p10c/fakehome" \
     LCARS_INSTALL_PREFIX="$p10c/inst" LCARS_COPILOT_BIN=/usr/bin/true \
-    python3 "$CAGE" 25 bash "$CK_NOBUDDY/install.sh" >"$p10c/out.txt" 2>&1
+    python3 "$CAGE" 25 bash "$CK_NOEEH/install.sh" >"$p10c/out.txt" 2>&1
 rc10c=$?
 check "10. install.sh TERMINATES when its own PROBE launcher's target is missing (rc=$rc10c)" \
   "[ $rc10c -ne 124 ]"
 check "10. ...and still reaches a verdict (pre-fix there was none)" \
   "grep -qE 'READY|PARTIAL' '$p10c/out.txt'"
 check "10. ...which is NOT READY, naming the launcher that was not installed" \
-  "grep -q 'NOT READY' '$p10c/out.txt' && grep -q 'lcars-buddy' '$p10c/out.txt'"
+  "grep -q 'NOT READY' '$p10c/out.txt' && grep -q 'lcars-eeh' '$p10c/out.txt'"
 check "10. ...and no launcher was left behind for the missing script" \
-  "[ ! -e '$p10c/inst/bin/lcars-buddy' ]"
+  "[ ! -e '$p10c/inst/bin/lcars-eeh' ]"
 
 # ==========================================================================
 # Behaviour 11 — D2. The launcher set is a hardcoded list, not derived from
@@ -724,7 +724,7 @@ check "11. ...and the closing verdict REFUSES to say plain READY" \
 check "11. ...it says PARTIAL and names what did not install" \
   "grep -q 'PARTIAL' '$p10b/out.txt' && grep -q 'not installed: lcars-launch' '$p10b/out.txt'"
 check "11. ...the launchers that COULD be installed still were" \
-  "[ -x '$p10b/inst/bin/lcars-viewscreen' ] && [ -x '$p10b/inst/bin/lcars-buddy' ]"
+  "[ -x '$p10b/inst/bin/lcars-viewscreen' ] && [ -x '$p10b/inst/bin/lcars-eeh' ]"
 
 # ==========================================================================
 # Behaviour 12 — D3. The verdict compared `command -v`'s output as a STRING,
@@ -741,7 +741,7 @@ run_install "$CK_A" "$p12" "$p12/out12sym.txt" "$sym12"
 check "12. (i) a SYMLINKED PATH entry reads READY, not a false shadow" \
   "grep -q '✓ READY' '$p12/out12sym.txt' && ! grep -q 'NOT READY' '$p12/out12sym.txt'"
 check "12. (i) CONTROL: the command really does work through that symlink" \
-  "[ -n \"\$(env -i PATH='$sym12:/usr/bin:/bin' lcars-buddy --lcars-launcher-selftest)\" ]"
+  "[ -n \"\$(env -i PATH='$sym12:/usr/bin:/bin' lcars-eeh --lcars-launcher-selftest)\" ]"
 
 # (ii) PATH entry is RELATIVE. Built by hand (run_install always passes an
 # absolute PATH), from a cwd the relative entry is relative to.
@@ -757,12 +757,12 @@ check "12. (ii) a RELATIVE PATH entry reads READY, not a false shadow" \
 
 # (iii) a GENUINE shadow — a DIFFERENT file earlier on PATH — must stay caught.
 shadow12="$TMPROOT/shadow12"; mkdir -p "$shadow12"
-printf '#!/bin/sh\necho not lcars\nexit 3\n' >"$shadow12/lcars-buddy"
-chmod +x "$shadow12/lcars-buddy"
+printf '#!/bin/sh\necho not lcars\nexit 3\n' >"$shadow12/lcars-eeh"
+chmod +x "$shadow12/lcars-eeh"
 p12s="$(new_prefix)"
 run_install "$CK_A" "$p12s" "$p12s/out.txt" "$shadow12:$p12s/inst/bin"
 check "12. (iii) a REAL shadow is still caught as NOT READY and named" \
-  "grep -q 'NOT READY' '$p12s/out.txt' && grep -qF '$shadow12/lcars-buddy' '$p12s/out.txt'"
+  "grep -q 'NOT READY' '$p12s/out.txt' && grep -qF '$shadow12/lcars-eeh' '$p12s/out.txt'"
 
 # (iv) and the remedy may never tell the reader to delete a file.
 for f in "$p12s/out.txt" "$p12/out12sym.txt" "$p12r/out.txt"; do
@@ -883,9 +883,9 @@ check "16. (D11) --help still prints the usage it is for" \
 # The launcher's guard and its self-test both proved the baked target was
 # PRESENT. Neither proved it was RUNNABLE. Measured, with a control:
 #
-#   target readable:   selftest exit 0, `lcars-buddy --help` exit 0     (correct)
+#   target readable:   selftest exit 0, `lcars-eeh --help` exit 0     (correct)
 #   target chmod 000:  selftest exit 0, install.sh printed "✓ READY"
-#                      `lcars-buddy --help` -> "Permission denied", exit 126
+#                      `lcars-eeh --help` -> "Permission denied", exit 126
 #
 # `[ -f ]` said PRESENT; `[ -r ]` said NOT READABLE, and `exec bash FILE` fails
 # precisely when FILE is not readable. So the cure is a `[ -r ]` guard ABOVE the
@@ -898,7 +898,7 @@ check "16. (D11) --help still prints the usage it is for" \
 # test so it cannot go green by always failing.
 # ==========================================================================
 CK_RO="$TMPROOT/checkoutUnreadable"; make_checkout "$CK_RO"
-RO_TGT="$CK_RO/skills/lcars-buddy/buddy.sh"
+RO_TGT="$CK_RO/skills/lcars-eeh/eeh.sh"
 
 # CONTROL first, from the very same checkout while the target is still readable.
 p17c="$(new_prefix)"
@@ -906,12 +906,12 @@ run_install "$CK_RO" "$p17c" "$p17c/out.txt" "$p17c/inst/bin"
 check "17. CONTROL: with the target READABLE the install reads READY" \
   "grep -q '✓ READY' '$p17c/out.txt' && ! grep -q 'NOT READY' '$p17c/out.txt'"
 ro_ctl_out="$(env -i PATH="$p17c/inst/bin:/usr/bin:/bin" HOME="$p17c/fakehome" \
-                python3 "$CAGE" 8 lcars-buddy --lcars-launcher-selftest 2>&1)"
+                python3 "$CAGE" 8 lcars-eeh --lcars-launcher-selftest 2>&1)"
 ro_ctl_rc=$?
 check "17. CONTROL: ...and the launcher's self-test exits 0 (exit $ro_ctl_rc)" \
   "[ $ro_ctl_rc -eq 0 ]"
 ro_ctl_run="$(env -i PATH="$p17c/inst/bin:/usr/bin:/bin" HOME="$p17c/fakehome" \
-                python3 "$CAGE" 8 lcars-buddy 2>&1)"; ro_ctl_run_rc=$?
+                python3 "$CAGE" 8 lcars-eeh 2>&1)"; ro_ctl_run_rc=$?
 check "17. CONTROL: ...and running it for real exits 0 (exit $ro_ctl_run_rc)" \
   "[ $ro_ctl_run_rc -eq 0 ]"
 
@@ -920,10 +920,10 @@ chmod 000 "$RO_TGT"
 p17="$(new_prefix)"
 run_install "$CK_RO" "$p17" "$p17/out.txt" "$p17/inst/bin"
 ro_run="$(env -i PATH="$p17/inst/bin:/usr/bin:/bin" HOME="$p17/fakehome" \
-            python3 "$CAGE" 8 lcars-buddy --help 2>&1)"; ro_rc=$?
+            python3 "$CAGE" 8 lcars-eeh --help 2>&1)"; ro_rc=$?
 ro_self_rc=0
 env -i PATH="$p17/inst/bin:/usr/bin:/bin" HOME="$p17/fakehome" \
-    python3 "$CAGE" 8 lcars-buddy --lcars-launcher-selftest >/dev/null 2>&1 \
+    python3 "$CAGE" 8 lcars-eeh --lcars-launcher-selftest >/dev/null 2>&1 \
     || ro_self_rc=$?
 chmod 644 "$RO_TGT"
 
@@ -936,7 +936,7 @@ check "17. ...and install.sh quotes the launcher's own reason (run-it-and-quote-
 check "17. ...the self-test FAILS too, so it can no longer vouch for a dead command (exit $ro_self_rc)" \
   "[ $ro_self_rc -ne 0 ]"
 check "17. running the launcher names the cause rather than bash's bare diagnostic (exit $ro_rc)" \
-  "printf '%s' \"\$ro_run\" | grep -qF \"lcars: 'lcars-buddy' points at a file it cannot read\""
+  "printf '%s' \"\$ro_run\" | grep -qF \"lcars: 'lcars-eeh' points at a file it cannot read\""
 check "17. ...and exits 126, which is what an unreadable program means" \
   "[ $ro_rc -eq 126 ]"
 check "17. ...it does NOT blame a missing checkout — different cause, different cure" \
@@ -946,7 +946,7 @@ check "17. ...and the message names the file and says how to cure it" \
    && printf '%s' \"\$ro_run\" | grep -qi 'chmod'"
 # the MISSING-file message must keep working: two causes, two messages.
 check "17. CONTROL: a MISSING target still gets the 'no longer exists' message, exit 127" \
-  "printf '%s' \"\$d1_out\" | grep -qF \"lcars: 'lcars-buddy' points at an LCARS checkout that no longer exists\" \
+  "printf '%s' \"\$d1_out\" | grep -qF \"lcars: 'lcars-eeh' points at an LCARS checkout that no longer exists\" \
    && [ $d1_rc -eq 127 ] && ! printf '%s' \"\$d1_out\" | grep -qi 'cannot read'"
 
 # ==========================================================================
@@ -981,16 +981,16 @@ for hname in 'back`tick' 'dol$lar' 'sub$(id)' "quo'te" 'dou"ble' 'sp ace' \
   fi
   hck="$hroot/$hname"
   make_checkout "$hck"
-  cat >"$hck/skills/lcars-buddy/buddy.sh" <<'STUB'
+  cat >"$hck/skills/lcars-eeh/eeh.sh" <<'STUB'
 #!/usr/bin/env bash
 printf 'ARGS'
 for a in "$@"; do printf '[%s]' "$a"; done
 printf '\n'
 STUB
-  chmod +x "$hck/skills/lcars-buddy/buddy.sh"
+  chmod +x "$hck/skills/lcars-eeh/eeh.sh"
   ph="$(new_prefix)"
   run_install "$hck" "$ph" "$ph/out.txt"
-  L18="$ph/inst/bin/lcars-buddy"
+  L18="$ph/inst/bin/lcars-eeh"
   if [ ! -f "$L18" ]; then
     check "18. [$lbl] a launcher was generated at all" "false"
     continue
@@ -1008,7 +1008,7 @@ STUB
   dout18="$(env -i PATH=/usr/bin:/bin HOME="$ph/fakehome" python3 "$CAGE" 8 \
               "$L18" 2>&1)"; drc18=$?
   check "18. [$lbl] with the checkout gone it exits 127 and NAMES the command (exit $drc18)" \
-    "[ $drc18 -eq 127 ] && printf '%s' \"\$dout18\" | grep -qF \"lcars: 'lcars-buddy' points at\""
+    "[ $drc18 -eq 127 ] && printf '%s' \"\$dout18\" | grep -qF \"lcars: 'lcars-eeh' points at\""
   # NB: the hostile string goes through a VARIABLE, never into the eval'd
   # expression — a path containing a single quote would close the quoting.
   hfirst18="$(printf '%s' "$hname" | head -1)"

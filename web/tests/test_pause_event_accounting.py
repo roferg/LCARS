@@ -17,7 +17,7 @@ from lcars_serve.server import make_server
 ROOT = Path(__file__).resolve().parents[2]
 PAUSE = ROOT / "skills/lcars-pause/pause.sh"
 XO = ROOT / "skills/lcars-xo/xo.sh"
-AUTOPILOT = ROOT / "skills/lcars-buddy/autopilot.sh"
+ECH = ROOT / "skills/lcars-eeh/ech.sh"
 
 
 class MissionFixture(unittest.TestCase):
@@ -218,19 +218,19 @@ class PauseShellAccounting(MissionFixture):
                 self.append(mid, "stage_done", 7340)
                 self.assertEqual(active_seconds(self.events(mid), now=8400), 40)
 
-    def test_a_autopilot_land_hygiene_emits_pause(self):
+    def test_a_ech_land_hygiene_emits_pause(self):
         for mid in (self.parent, self.child):
             state = self.state(mid)
             state["stage"] = "done"
             self.write_json(self.missions / mid / "state.json", state)
-        self.run_skill(AUTOPILOT, "init", "--spec", "fixture")
+        self.run_skill(ECH, "init", "--spec", "fixture")
         self.env["LCARS_APPROVE_SCRIPT"] = str(self.stub.resolve())
         self.env["LCARS_XO_SCRIPT"] = str(XO)
-        output = self.run_skill(AUTOPILOT, "land", self.parent)
+        output = self.run_skill(ECH, "land", self.parent)
         self.assertIn(f"releasing folded child {self.child} (xo off)", output)
         self.assertTrue(self.state(self.child)["paused"])
         events = [e for e in self.events(self.child) if e["type"] == "paused"]
-        self.assertEqual(len(events), 1, "autopilot hygiene: missing paused event")
+        self.assertEqual(len(events), 1, "the ECH hygiene: missing paused event")
         self.assertEqual((events[0]["ts"], events[0]["stage"]), (120, "done"))
         self.assertEqual(active_seconds(self.events(self.child), now=8400), 20)
         self.run_skill(XO, "on", self.child, ts=7320)

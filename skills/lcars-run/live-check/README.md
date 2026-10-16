@@ -1,6 +1,6 @@
 # `live-check/` — the checks that actually found the bugs
 
-Over the weekend of 26–29 Sep 2026 a buddy drove LCARS to build a real product.
+Over the weekend of 26–29 Sep 2026 an EEH drove LCARS to build a real product.
 **Number One filed 0 of the 31 bugs. All 31 came from the checks in this
 directory**, performed by hand: running the real CLI, two actors, following one
 record end to end, checking the host of every outbound call, reading the
@@ -15,7 +15,7 @@ exist to remove the reach problem. They are not advice; they are the steps.
 
 | Reader | What it uses | How |
 |---|---|---|
-| **The buddy / autopilot** (`lcars buddy` → AUTOPILOT.md § 6) | the **prose** | a session with a shell: it runs the command, looks at the output, judges |
+| **The EEH / the ECH** (`lcars eeh` → HOLOGRAM-COMMAND-MODE.md § 6) | the **prose** | a session with a shell: it runs the command, looks at the output, judges |
 | **Number One** (`lcars xo`, the rebuilt verifier) | **the whole file**, as **advice the worker reads** | the checklists are catted into its prompt whole, it chooses its own steps and invents its own values. Since **S261** it has a **real shell inside a disposable detached worktree** and does the items itself; it may still DECLARE a `run`/`workflow`/`read` step for the harness to execute (S246/S247 — LCARS no longer lifts the templates itself) |
 
 That is why every numbered item carries **both forms**, and why they must stay
@@ -30,7 +30,7 @@ pair or a non-default host (`cli#4-8`, `web#4-6`) went unbuilt on **every health
 mission**, and the captain read that refusal on every look. That mechanism is
 deleted. The whole file now goes to the worker as **advice the worker reads**,
 with the values deliberately left out, because the values are the reader's to
-invent — which is exactly what the buddy did when it found all 31.
+invent — which is exactly what the EEH did when it found all 31.
 
 **The model does the looking. The script owns the setup, the evidence paths and
 the record.** No checklist item is "verify that X works" — each is an action
@@ -41,11 +41,11 @@ plus the evidence to capture plus what counts as a defect.
 ```bash
 # setup: a DETACHED worktree of the mission branch + a THROWAWAY HOME,
 # the evidence dir, and the checklist(s) to follow
-autopilot.sh live-check <mission> --type cli,web,workflow
+ech.sh live-check <mission> --type cli,web,workflow
 
 # ... do the looking, writing evidence as each item says ...
 
-autopilot.sh live-check done <mission> --verdict pass|bugs
+ech.sh live-check done <mission> --verdict pass|bugs
 ```
 
 Never check from the checked-out branch: on the modelled weekend a whole round
@@ -76,7 +76,7 @@ Everything lands under the mission's own state, which git never tracks:
   `tests/live-check.test.sh` asserts the whole set of evidence paths across the
   three files is unique, so a new item cannot reintroduce the collision.
 - A transcript holds **the command, then its exact output** — the bug PRD's
-  AC #1 quotes it verbatim (`skills/lcars-buddy/bug-prd.md`).
+  AC #1 quotes it verbatim (`skills/lcars-eeh/bug-prd.md`).
 - A screenshot is **looked at**, not merely produced. "The shot was taken" is
   the `deploy succeeded` of the web checklist.
 - Re-verification after a fix round writes a **new** numbered file with the
@@ -88,7 +88,7 @@ Everything lands under the mission's own state, which git never tracks:
 | Kind | Shape | For |
 |---|---|---|
 | `run:` | `{"argv": [...], "cwd": ..., "env": {...}, "evidence": ..., "expect": {...}}` | execute a command and judge its output |
-| `workflow:` | `{"file": ..., "expect": {...}, "evidence": ...}` | run a CI workflow's own steps locally, exactly as CI runs them (`autopilot.sh workflow-run`) |
+| `workflow:` | `{"file": ..., "expect": {...}, "evidence": ...}` | run a CI workflow's own steps locally, exactly as CI runs them (`ech.sh workflow-run`) |
 | `read:` | `{"path": ..., "expect": {...}, "evidence": ...}` | read a produced or deployed artifact and judge its content |
 
 `argv[0]` is always a `<placeholder>` for the product's own entrypoint: these

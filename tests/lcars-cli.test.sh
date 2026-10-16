@@ -138,7 +138,7 @@ class CliTests(unittest.TestCase):
 
     def test_installer_shell_contract(self):
         expected = {"lcars-viewscreen", "lcars-serve", "lcars-launch",
-                    "lcars-buddy", "lcars-autopilot"}
+                    "lcars-eeh", "lcars-ech"}
         manifest = (self.prefix / "bin/.lcars-launchers").read_text().splitlines()
         self.assertEqual(set(manifest), expected)
         self.assertFalse((self.prefix / "bin/lcars").exists())

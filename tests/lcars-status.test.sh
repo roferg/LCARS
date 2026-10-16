@@ -975,17 +975,17 @@ check "R5. the double-glyph row still carries both glyphs and its title" \
   "qgrep -qE '⏸❓ +Zero issue' '$repoR/outR.txt'"
 
 # R3. `json_str` cannot tell UNSET from EMPTY, so a `"testCommand": null` config
-# printed a bare label and a blank value in the buddy readout — indistinguishable
+# printed a bare label and a blank value in the EEH readout — indistinguishable
 # from a testCommand set to the empty string, and unreadable either way.
-BUDDY="$REPO_ROOT/skills/lcars-buddy/buddy.sh"
+EEH="$REPO_ROOT/skills/lcars-eeh/eeh.sh"
 repoB="$(new_init_repo)"
 printf '{\n  "model": "claude-sonnet",\n  "testCommand": null,\n  "stack": "python"\n}\n' \
   >"$repoB/.git/lcars/config.json"
-( cd "$repoB" && bash "$BUDDY" >outB.txt 2>&1 )
+( cd "$repoB" && bash "$EEH" >outB.txt 2>&1 )
 check "R3. an unset testCommand SAYS it is unset, not a blank line" \
   "qgrep -qE 'testCommand: +\(unset\)' '$repoB/outB.txt'"
 check "R3. a SET testCommand still prints its value" \
-  "printf '{\"model\": \"claude-sonnet\", \"testCommand\": \"pytest -q\"}\n' >'$repoB/.git/lcars/config.json'; ( cd '$repoB' && bash '$BUDDY' >outB2.txt 2>&1 ); qgrep -q 'pytest -q' '$repoB/outB2.txt'"
+  "printf '{\"model\": \"claude-sonnet\", \"testCommand\": \"pytest -q\"}\n' >'$repoB/.git/lcars/config.json'; ( cd '$repoB' && bash '$EEH' >outB2.txt 2>&1 ); qgrep -q 'pytest -q' '$repoB/outB2.txt'"
 
 # ==========================================================================
 echo

@@ -1,22 +1,24 @@
 ---
-name: lcars-buddy
+name: lcars-eeh
 description: >-
-  Your LCARS ride-along buddy — a companion you keep with you in ANY repo
-  while you use LCARS, useful from day one and at every point after. Run it
-  anytime (it's read-only and safe) to get extra detail the normal surfaces
-  don't show: where the LCARS source sits and its git state, whether the
-  installed skills actually match that checkout, and a live snapshot of the
-  current repo's Mission(s) — stage, status, and recent events. Use when the
-  captain runs `lcars buddy`, wants a closer look / more detail on what
-  LCARS is doing, is keeping a buddy around while driving a Mission
-  elsewhere, says "run it for me" / "drive this for me" / "autopilot" / "run
-  while I sleep" / "continue" on an autopilot run, or hits something that
-  needs debugging or fixing in LCARS from another repo.
+  Your LCARS ride-along buddy — the Emergency Engineering Hologram (EEH), a
+  companion you keep with you in ANY repo while you use LCARS, useful from
+  day one and at every point after. Run it anytime (it's read-only and safe)
+  to get extra detail the normal surfaces don't show: where the LCARS source
+  sits and its git state, whether the installed skills actually match that
+  checkout, and a live snapshot of the current repo's Mission(s) — stage,
+  status, and recent events. Use when the captain runs `lcars eeh`, asks for
+  the engineering hologram / the EEH / his LCARS buddy, wants a closer look
+  or more detail on what LCARS is doing, is keeping the ride-along buddy
+  around while driving a Mission elsewhere, says "run it for me" / "drive
+  this for me" / "the ECH" / "run while I sleep" / "continue" on an ECH run,
+  or hits something that needs debugging or fixing in LCARS from another
+  repo.
 ---
 
-# lcars buddy
+# lcars eeh
 
-`lcars buddy` is the companion you **bring with you and keep running** while you
+`lcars eeh` is the companion you **bring with you and keep running** while you
 use LCARS in your other repos. It's not a break-glass tool — it's a ride-along
 that's useful from the very first mission and stays useful as things evolve:
 
@@ -31,13 +33,17 @@ that's useful from the very first mission and stays useful as things evolve:
   fresh tester, and land the cure under LCARS's own contract — the same loop a
   session runs (§ 2).
 
-It works from anywhere because `install.sh` installs it globally into the install symlink farm your CLI uses (`~/.claude/skills/` for Claude Code, `~/.copilot/installed-plugins/_direct/lcars` for Copilot), and puts the `lcars-buddy` and `lcars-autopilot` commands on your PATH.
+It works from anywhere because `install.sh` installs it globally into the install symlink farm your CLI uses (`~/.claude/skills/` for Claude Code, `~/.copilot/installed-plugins/_direct/lcars` for Copilot), and puts the `lcars-eeh` and `lcars-ech` commands on your PATH.
 
-The orchestrator half spawns sub-agents and is run from Claude Code today; the ride-along brief and the autopilot run from either CLI.
+The orchestrator half spawns sub-agents and is run from Claude Code today; the ride-along brief and the ECH run from either CLI.
+
+The brief opens by announcing itself as the Emergency Engineering Hologram.
+`LCARS_EEH_QUIET=1` turns that one line off (and `LCARS_ECH_QUIET=1` does the
+same for the ECH's); every other value, including `0`, leaves it on.
 
 ## Unattended Copilot setup: trust the working directory before launch
 
-For an unattended Copilot buddy or autopilot run, set **`COPILOT_ALLOW_ALL=true`
+For an unattended Copilot EEH or ECH run, set **`COPILOT_ALLOW_ALL=true`
 in the launching environment, with exactly the string `true`**:
 
 ```bash
@@ -56,7 +62,7 @@ Trusting a directory also loads its skills, plugins, MCP servers and hooks,
 whose provenance you control. It is **not acceptable in a repository of unknown
 provenance**; do not use this blanket trust there.
 
-**Measured 2026-10-13:** with `--allow-all-tools` already set, a buddy round was
+**Measured 2026-10-13:** with `--allow-all-tools` already set, an EEH round was
 refused on every command, including read-only commands, with
 `Permission denied because no interactive user response was available.` Four
 rounds had worked before the fifth failed without warning. From outside, a
@@ -82,30 +88,30 @@ partner the moment something's off — diagnosing and fixing the LCARS source
 under LCARS's own build contract (author in skills/, TDD, ./install.sh, fast
 scoped tests).
 
-It also has an AUTOPILOT mode: say "run it for me <spec>" and it runs LCARS
+It also has an ECH mode: say "run it for me <spec>" and it runs LCARS
 FOR you — one alignment round, then it files, drives, verifies and lands each
 milestone through LCARS's own verbs, keeping durable state in
 .git/lcars/autopilot.json and contacting you only for a product call, a scope
 change, a standing-rule conflict, or an LCARS bug with no workaround (see
-AUTOPILOT.md).
+HOLOGRAM-COMMAND-MODE.md).
 
 ## 1. Run the diagnostic collector and show it verbatim
 
 ```bash
-lcars-buddy
+lcars-eeh
 ```
 
 If LCARS lives somewhere non-standard (auto-resolve through the install symlink
 should normally find it), pass it explicitly:
 
 ```bash
-LCARS_REPO=~/Projects/LCARS lcars-buddy
+LCARS_REPO=~/Projects/LCARS lcars-eeh
 ```
 
-`install.sh` puts `lcars-buddy` in `~/.local/bin`, which is **not** on the PATH
+`install.sh` puts `lcars-eeh` in `~/.local/bin`, which is **not** on the PATH
 by default on macOS — if the shell answers `command not found`, either add that
 directory to PATH (`install.sh` prints the line) or run the script by its
-absolute path in the LCARS checkout: `bash <lcars>/skills/lcars-buddy/buddy.sh`.
+absolute path in the LCARS checkout: `bash <lcars>/skills/lcars-eeh/eeh.sh`.
 
 The brief reports, in order:
 - **LCARS REPO** — where the source lives + its branch / HEAD / dirty state / recent
@@ -133,12 +139,12 @@ A fix to LCARS is run the **same way a session is run**: you become the
 ONE file, shared with `run-session` and `night-watch` so the three cannot drift:
 
 ```bash
-lcars-buddy docs orchestration          # prints ORCHESTRATION.md — the rules file
-lcars-buddy docs --path orchestration   # just its path, to open it yourself
+lcars-eeh docs orchestration          # prints ORCHESTRATION.md — the rules file
+lcars-eeh docs --path orchestration   # just its path, to open it yourself
 ```
 
 **Read it now, before anything else.** It is the source; everything below is the
-buddy-shaped wrapper around it. Where the two appear to disagree, that file wins.
+EEH-shaped wrapper around it. Where the two appear to disagree, that file wins.
 
 `$REPO` below is the **LCARS REPO** the brief reported — the checkout the install
 symlinks actually point at. That is where the fix lands, always: never a second
@@ -155,7 +161,7 @@ the same shape `run-session` uses for a session, but for one defect:
    you theorize.
 3. **The proof surface for THIS fix** — what must be real to prove it, and what a
    fake there could not see. Usually: re-collect the brief
-   (`bash $REPO/skills/lcars-buddy/buddy.sh`) or re-drive the failing verb against
+   (`bash $REPO/skills/lcars-eeh/eeh.sh`) or re-drive the failing verb against
    the repo that produced the breadcrumb. Apply ORCHESTRATION.md § Pre-flight's
    proof-surface check: **if the fix changes a layer its harness fakes, say so and
    do not start.**
@@ -167,10 +173,10 @@ the same shape `run-session` uses for a session, but for one defect:
 
 Then **ask and wait**. "y / fix it" proceeds; anything else is feedback.
 
-### b. PRE-FLIGHT — and buddy's own refusal
+### b. PRE-FLIGHT — and the EEH's own refusal
 
 Run ORCHESTRATION.md § Pre-flight (proof surface, infer-vs-record, PATH-shim
-pinning for both CLIs, engine auth, **never the full suite**). Then buddy's own
+pinning for both CLIs, engine auth, **never the full suite**). Then the EEH's own
 rule, because the captain is usually mid-round in that very checkout:
 
 **`$REPO` must be clean and on `main`.** Check
@@ -179,7 +185,7 @@ rule, because the captain is usually mid-round in that very checkout:
 and stop**, with exactly this sentence:
 
 > LCARS at \<path\> is \<dirty|on \<branch\>\> — finish or stash that round first;
-> buddy will not stack a fix onto it.
+> the EEH will not stack a fix onto it.
 
 A fix stacked onto someone's in-flight round is unreviewable and unshippable
 separately. On a clean `main`:
@@ -192,7 +198,7 @@ git -C "$REPO" switch -c fix/<slug>
 
 Implementor sub-agent (TDD) → **fresh** tester at the proof surface → fix rounds
 with the regression guard → **hard stop at three rounds** → teardown → commit →
-readout. Buddy-specific instructions for the sub-agents:
+readout. EEH-specific instructions for the sub-agents:
 
 - **Implementor:** author only under `$REPO/skills/` and `$REPO/tests/` (never
   an install farm); failing `tests/<name>.test.sh` case FIRST; verify with the **fast
@@ -220,15 +226,15 @@ ledgered items — and add one line:
 
 > ship it with `ship-it` when you are ready.
 
-## 3. When you want it run FOR you — the autopilot
+## 3. When you want it run FOR you — the ECH
 
-The third thing buddy does is **run LCARS for the captain while he is away**.
+The third thing the EEH does is **run LCARS for the captain while he is away**.
 
 **Trigger phrases** (any of these, with or without a spec):
 
-> "run it for me", "run it for me &lt;spec&gt;", "drive this for me", "autopilot",
+> "run it for me", "run it for me &lt;spec&gt;", "drive this for me", "the ECH",
 > "take this and build it", "run while I sleep", "keep going and wake me if you
-> need me", "continue" (resuming an autopilot run)
+> need me", "continue" (resuming an ECH run)
 
 **What happens.** You become the orchestrator of his *build* (not of a fix):
 **ONE** round of 3–5 questions, then you file, drive, verify and land each
@@ -238,15 +244,15 @@ change, a standing-rule conflict, or an LCARS bug with no workaround.
 **The full playbook is ONE file** — read it before you ask him anything:
 
 ```bash
-lcars-buddy docs autopilot              # prints AUTOPILOT.md — the full playbook
+lcars-eeh docs ech              # prints HOLOGRAM-COMMAND-MODE.md — the full playbook
 ```
 
 The token-free driver that sequences it (and spends nothing) sits beside it:
 
 ```bash
-lcars-autopilot next      # the ONE next step
-lcars-autopilot status    # the one screen
-lcars-autopilot playbook  # action → AUTOPILOT.md heading
+lcars-ech next      # the ONE next step
+lcars-ech status    # the one screen
+lcars-ech playbook  # action → HOLOGRAM-COMMAND-MODE.md heading
 ```
 
 ### The first 20 minutes
@@ -259,13 +265,13 @@ lcars-autopilot playbook  # action → AUTOPILOT.md heading
 4. **One batch of 3–5 questions**, each with a recommended option: scope, live
    targets, where it deploys, what to do if LCARS itself breaks — plus the
    captain-only steps (tokens, secrets, SSO, renames) and the
-   pre-authorisations. AUTOPILOT.md §§ 1–2 has the exact list.
-5. `lcars-autopilot init --spec … --scope …`, record every answer, then
-   `lcars-autopilot heartbeat install`. **Durable state is
+   pre-authorisations. HOLOGRAM-COMMAND-MODE.md §§ 1–2 has the exact list.
+5. `lcars-ech init --spec … --scope …`, record every answer, then
+   `lcars-ech heartbeat install`. **Durable state is
    `.git/lcars/autopilot.json`, never the transcript** — after a context
    compaction, re-read it first.
 
-Then loop on `lcars-autopilot next` and follow the heading it names.
+Then loop on `lcars-ech next` and follow the heading it names.
 
 **It never edits LCARS.** An LCARS bug is ledgered and worked around with
 another verb, or it becomes a question for the captain. If he wants LCARS
@@ -276,7 +282,7 @@ another verb, or it becomes a question for the captain. If he wants LCARS
 It does **not** write product code and it never merges by hand. It is three
 things: the **read-only collector** of §1, the **orchestrator of one fix** in
 §2 — which spawns sub-agents and commits to a `fix/<slug>` branch, but never
-opens a PR and never merges — and the **autopilot** of §3, which drives the
+opens a PR and never merges — and the **ECH** of §3, which drives the
 captain's build through LCARS's own verbs and stops at every gate LCARS refuses.
 To board a Mission by hand use `lcars` / `lcars run` / `lcars viewscreen`; to
 land a fix use `ship-it`.

@@ -356,7 +356,7 @@ echo "8. S265 — THE NEAR MISS IS A CONCRETE TABLE, NOT AN ABSTRACTION"
 # so the prose route works. It then rated `t-001-ac4` ("with a name already
 # registered") MET, its own note saying it "broke the rule both ways", having
 # only ever offered the SAME string twice. `habit add "Exercise"` then
-# `habit add "exercise"` registers two habits, and the buddy filed it as #151.
+# `habit add "exercise"` registers two habits, and the EEH filed it as #151.
 # Nothing in the machinery blocked that row: filing was open, the criterion
 # existed, the row was reachable. It simply did not think of the case variant.
 # So the cure is not a gate (that was the cut S259, measured at 0 declarations

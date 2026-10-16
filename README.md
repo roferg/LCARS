@@ -79,8 +79,8 @@ cd LCARS
 registers this clone as a Copilot CLI plugin too when Copilot is installed. It
 also puts five real programs on your `PATH` at `~/.local/bin`:
 **`lcars-viewscreen`** (alias **`lcars-serve`**) opens the board,
-**`lcars-launch`** runs a Mission's app, and **`lcars-buddy`** and
-**`lcars-autopilot`** are the companion and the hand-over-the-loop mode. If
+**`lcars-launch`** runs a Mission's app, and **`lcars-eeh`** and
+**`lcars-ech`** are the companion and the hand-over-the-loop mode. If
 `~/.local/bin` is not on your `PATH`, the installer says so loudly and prints the
 exact line to add to your shell profile.
 
@@ -201,7 +201,7 @@ skills you ask your AI CLI for, inside the repo.
 - `lcars pause` / `lcars resume` — stop at the next safe boundary, and go again.
 - `lcars adopt <issue>` — take a Mission over on this machine from its issue alone.
 - `lcars xo` — engage or stand down Number One, and read his report.
-- `lcars-buddy` / `lcars-autopilot` — the ride-along, and handing it the loop.
+- `lcars-eeh` / `lcars-ech` — the ride-along, and handing it the loop.
 - `lcars update` / `lcars version` — absorb a `git pull`, and say where you are.
 
 ---
@@ -256,11 +256,11 @@ Fix them all and you get **one** re-verify gate rather than one per bug.
 
 ![The consolidated re-verify gate: one dialog saying the logged bugs were fixed and folded onto the parent's branch, with a live launch control and accept-the-fixes or send-back buttons.](docs/assets/reverify-gate.png)
 
-### Autopilot — handing over the loop
+### The ECH — handing over the loop
 
 A **software factory** is the shape this pipeline already has: signals in,
 triaged into planned changes, built, tested, reviewed, out as merged pull
-requests. Autopilot is what lets you hand the *running* of it over. You give it
+requests. The ECH is what lets you hand the *running* of it over. You give it
 a goal, it holds one alignment round with you to agree what to build, and then
 it works milestone after milestone, coming back only when it genuinely needs
 you.
@@ -268,7 +268,7 @@ you.
 The hard part of running a factory is not making the change — it is **believing**
 it. Producing a change is the cheap half now; verifying one you did not write is
 the expensive half, and that cost does not fall because the suite came back
-green. So autopilot does not ask to be trusted: it *uses* what it built, records
+green. So the ECH does not ask to be trusted: it *uses* what it built, records
 what it saw, files what it finds with a reproduction quoting the real output,
 re-proves each fix on deliberately different data, writes down every decision it
 made alone, and says so plainly when a check found nothing.
@@ -279,7 +279,7 @@ alignment round), and **found two real bugs a fully green suite had passed**. A
 human still ran the final landing — it is not claimed to ship a round with
 nobody there.
 
-![Autopilot's own status in a terminal: the spec it is working to, the missions in scope with their stages and gates, the parallel slots in use, and the one question it has parked for you.](docs/assets/autopilot-status.png)
+![The ECH's own status in a terminal: the spec it is working to, the missions in scope with their stages and gates, the parallel slots in use, and the one question it has parked for you.](docs/assets/ech-status.png)
 
 ### Knowing the cost before you spend it
 
@@ -305,7 +305,7 @@ later.
 |---|---|---|
 | The whole pipeline, idea → PR | ✅ | ✅ |
 | Every LCARS command | ✅ | ✅ |
-| Autopilot and Number One | ✅ | ✅ |
+| The ECH and Number One | ✅ | ✅ |
 | Cost shown before you spend | in dollars | in GitHub AI Credits, with your plan's included allowance netted off |
 | Maturity | the original path, heavily used | newer — proven idea → PR, fewer miles |
 

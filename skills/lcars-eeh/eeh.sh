@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 #
-# lcars buddy — the diagnostic collector behind the global "spin up an LCARS
-# debugging buddy anywhere" skill.
+# lcars eeh — the diagnostic collector behind the global "spin up an LCARS
+# debugging EEH anywhere" skill.
 #
 # The captain is OFF in some other repo (groutwork, a game, …) driving a Mission,
-# and LCARS itself misbehaves. They run `lcars buddy` right there. This script
+# and LCARS itself misbehaves. They run `lcars eeh` right there. This script
 # prints ONE brief that orients a fresh debugging session:
 #
 #   1. WHERE the LCARS source lives + its git state — the code we will fix.
@@ -12,17 +12,17 @@
 #      the captain makes is the code that actually runs (the #1 live-debug trap).
 #   3. The CURRENT repo's Mission state — config + each mission's stage, status,
 #      and the last few events (the failing breadcrumb that triggered this).
-#   4. Pointers to the source-of-truth docs + the build contract the buddy obeys.
+#   4. Pointers to the source-of-truth docs + the build contract the EEH obeys.
 #
 # It is READ-ONLY: it scans and prints, changing nothing. SKILL.md tells the
-# buddy what to do with the brief.
+# EEH what to do with the brief.
 #
 # Dependencies are env-injected so tests can stub them and never touch the real
 # home dirs:
 #   LCARS_REPO          the LCARS checkout to debug (default: resolved from this
 #                       script's real path — works through the install symlink)
 #   GIT_BIN             git binary                  (default: git)
-#   LCARS_BUDDY_CWD     repo to inspect for missions (default: $PWD)
+#   LCARS_EEH_CWD     repo to inspect for missions (default: $PWD)
 #   LCARS_SKILLS_DEST   Claude Code's skill farm     (default: $HOME/.claude/skills)
 #   LCARS_COPILOT_PLUGINS_DIR  Copilot's plugin farm (default:
 #                       $HOME/.copilot/installed-plugins/_direct)
@@ -37,7 +37,7 @@
 set -uo pipefail
 
 GIT_BIN="${GIT_BIN:-git}"
-CWD="${LCARS_BUDDY_CWD:-$PWD}"
+CWD="${LCARS_EEH_CWD:-$PWD}"
 # Remember whether the caller NAMED a farm before defaulting: an explicitly set
 # dest is a farm the caller wants judged, installed CLI or not.
 SKILLS_DEST_EXPLICIT=0; [ -n "${LCARS_SKILLS_DEST:-}" ] && SKILLS_DEST_EXPLICIT=1
@@ -47,8 +47,8 @@ CLAUDE_BIN="${LCARS_CLAUDE_BIN:-claude}"
 COPILOT_BIN="${LCARS_COPILOT_BIN:-copilot}"
 
 # --- locate the LCARS checkout --------------------------------------------
-# This script ships at <repo>/skills/lcars-buddy/buddy.sh but is invoked through
-# the install symlink (~/.claude/skills/lcars-buddy -> <repo>/skills/lcars-buddy).
+# This script ships at <repo>/skills/lcars-eeh/eeh.sh but is invoked through
+# the install symlink (~/.claude/skills/lcars-eeh -> <repo>/skills/lcars-eeh).
 # `pwd -P` resolves that symlinked dir to its PHYSICAL path, so ../.. lands on
 # the real checkout no matter how it was called. An explicit LCARS_REPO wins.
 SELF="${BASH_SOURCE[0]}"
@@ -56,17 +56,17 @@ SCRIPT_DIR="$(cd "$(dirname "$SELF")" && pwd -P)"
 DEFAULT_REPO="$(cd "$SCRIPT_DIR/../.." 2>/dev/null && pwd -P)"
 REPO="${LCARS_REPO:-$DEFAULT_REPO}"
 
-# --- `lcars-buddy docs <name>` --------------------------------------------
+# --- `lcars-eeh docs <name>` --------------------------------------------
 # A PATH launcher cannot be read, and the two CLIs mount this skill at different
-# absolute paths (~/.claude/skills/lcars-buddy for Claude Code,
-# ~/.copilot/installed-plugins/_direct/lcars/skills/lcars-buddy for Copilot), so
+# absolute paths (~/.claude/skills/lcars-eeh for Claude Code,
+# ~/.copilot/installed-plugins/_direct/lcars/skills/lcars-eeh for Copilot), so
 # NO literal path can be written in the prose that resolves on both machines.
 # This subcommand is the mount-independent way to reach the documents the prose
 # tells the model to READ: it resolves them beside this script, whichever mount
 # the script was invoked through (SCRIPT_DIR is already the PHYSICAL dir).
-#   lcars-buddy docs                 list the documents
-#   lcars-buddy docs orchestration   print ORCHESTRATION.md
-#   lcars-buddy docs --path autopilot    print its absolute path only
+#   lcars-eeh docs                 list the documents
+#   lcars-eeh docs orchestration   print ORCHESTRATION.md
+#   lcars-eeh docs --path ech        print its absolute path only
 if [ "${1:-}" = "docs" ]; then
   shift
   want_path=0
@@ -75,15 +75,15 @@ if [ "${1:-}" = "docs" ]; then
   resolve_doc() { # <name> -> filename beside this script, or empty
     case "$1" in
       orchestration|ORCHESTRATION|ORCHESTRATION.md) printf 'ORCHESTRATION.md\n' ;;
-      autopilot|AUTOPILOT|AUTOPILOT.md)             printf 'AUTOPILOT.md\n' ;;
+      ech|ECH|HOLOGRAM-COMMAND-MODE.md)             printf 'HOLOGRAM-COMMAND-MODE.md\n' ;;
       skill|SKILL|SKILL.md)                         printf 'SKILL.md\n' ;;
       bug-prd|bug-prd.md)                           printf 'bug-prd.md\n' ;;
       *) printf '\n' ;;
     esac
   }
   if [ -z "$name" ]; then
-    echo "lcars-buddy docs <name> — print one of this skill's documents."
-    echo "  names: orchestration | autopilot | skill | bug-prd"
+    echo "lcars-eeh docs <name> — print one of this skill's documents."
+    echo "  names: orchestration | ech | skill | bug-prd"
     echo "  --path prints the resolved absolute path instead of the contents."
     echo "  resolved from: $SCRIPT_DIR"
     exit 0
@@ -91,8 +91,8 @@ if [ "${1:-}" = "docs" ]; then
   file="$(resolve_doc "$name")"
   if [ -z "$file" ] || [ ! -f "$SCRIPT_DIR/$file" ]; then
     {
-      echo "lcars buddy: no such document '$name'."
-      echo "  names: orchestration | autopilot | skill | bug-prd"
+      echo "lcars eeh: no such document '$name'."
+      echo "  names: orchestration | ech | skill | bug-prd"
     } >&2
     exit 1
   fi
@@ -100,13 +100,13 @@ if [ "${1:-}" = "docs" ]; then
   exit 0
 fi
 
-# Validate it really is an LCARS checkout before we point a buddy at it.
+# Validate it really is an LCARS checkout before we point an EEH at it.
 is_lcars_checkout() { [ -f "$1/vision.md" ] && [ -f "$1/install.sh" ] && [ -d "$1/skills" ]; }
 if ! is_lcars_checkout "$REPO"; then
   {
-    echo "lcars buddy: '$REPO' is not an LCARS checkout (no vision.md / install.sh / skills/)."
+    echo "lcars eeh: '$REPO' is not an LCARS checkout (no vision.md / install.sh / skills/)."
     echo "  Set LCARS_REPO to your LCARS clone, e.g.:"
-    echo "      LCARS_REPO=~/Projects/LCARS lcars buddy"
+    echo "      LCARS_REPO=~/Projects/LCARS lcars eeh"
   } >&2
   exit 1
 fi
@@ -115,10 +115,10 @@ fi
 # json_str reads the string body up to the closing quote, treating a
 # backslash-escaped quote (\") as part of the value rather than its end, and
 # decodes the common JSON escapes on the way out. This is not a corner case for
-# buddy: S148 makes every testCommand LCARS seeds QUOTE its $LCARS_TESTS_DIR
+# the EEH: S148 makes every testCommand LCARS seeds QUOTE its $LCARS_TESTS_DIR
 # scope, so a correctly-configured config.json ALWAYS carries \" — and the old
 # naive [^"]* sed reader printed a TRUNCATED command, i.e. it misreported the
-# one value a captain runs buddy to check. A mission title containing a quote
+# one value a captain runs the EEH to check. A mission title containing a quote
 # truncated the same way. POSIX awk only (no jq, no GNU-isms) so it runs on BSD
 # awk; kept byte-identical to skills/lcars-status/status.sh so the two readers
 # can never disagree — which is what this comment claimed all along.
@@ -129,7 +129,7 @@ fi
 #     testCommand:
 #
 # a bare label with nothing after it, which reads as a rendering bug rather than
-# as the answer to the question the buddy is here to answer (why does this repo
+# as the answer to the question the EEH is here to answer (why does this repo
 # have no test command?). The distinction that matters to a reader is
 # "configured" vs "not configured", so that is what it prints. json_str itself
 # is untouched: it is a value reader, and this is a RENDERING decision.
@@ -173,8 +173,16 @@ hr() { printf -- '────────────────────�
 # ==========================================================================
 # 1) THE LCARS SOURCE — what we will read and fix
 # ==========================================================================
-hr
-echo "LCARS BUDDY — ride along, get the detail, live-debug if it comes to that"
+# The announcement. It is on STDOUT and stays there: this banner was already on
+# stdout before the rename (it read "LCARS BUDDY — ride along…"), so moving it to
+# stderr would be a behaviour change, not a rename. What it lacked was the ECH's
+# courtesy — an off switch — so `LCARS_EEH_QUIET=1` now silences it for a human
+# in a loop who is tired of reading it. A VALUE check, not a presence check:
+# `=0` means "not quiet", the same idiom `LCARS_BASE_QUIET` uses.
+if [ "${LCARS_EEH_QUIET:-0}" != "1" ]; then
+  hr
+  echo "LCARS EEH — the Emergency Engineering Hologram. Please state the nature of the engineering emergency."
+fi
 hr
 echo "LCARS REPO: $REPO"
 branch="$("$GIT_BIN" -C "$REPO" rev-parse --abbrev-ref HEAD 2>/dev/null)"
@@ -200,9 +208,9 @@ echo "INSTALL SYNC — is the code you would edit the code that runs?"
 # case-SENSITIVE `case "$target" in "$REPO"/*)` string glob, and that is wrong on
 # this machine: APFS is case-insensitive but `pwd -P` preserves the case you
 # TYPED, so the install symlink reads /Users/…/Projects/LCARS/… while
-# `LCARS_REPO=~/Projects/lcars` (or a buddy invoked through a lowercase path)
+# `LCARS_REPO=~/Projects/lcars` (or an EEH invoked through a lowercase path)
 # resolves to /Users/…/Projects/lcars — the SAME directory, reported as STALE.
-# This is the one line a captain runs buddy in order to trust, so a false STALE
+# This is the one line a captain runs the EEH in order to trust, so a false STALE
 # sends them to re-install a perfectly good checkout, or teaches them to ignore
 # the brief. Resolving both sides through `cd … && pwd -P` also collapses /tmp vs
 # /private/tmp and any other symlinked ancestor; lowercasing then makes LCARS vs
@@ -228,7 +236,7 @@ fi
 # Judge the verdict on EVERY installed skill, not one probe symlink. The old
 # check read `lcars-run` ALONE, so a PARTIAL install — lcars-run linked here
 # while the rest still point at another checkout — printed a confident "in sync".
-# That is the one line a captain runs buddy in order to trust before they start
+# That is the one line a captain runs the EEH in order to trust before they start
 # editing, and half a checkout running the old code is worse than all of it
 # running the old code, because only some of their fixes take effect. So: IN SYNC
 # only when every installed skill AGREES; when they disagree, say so and NAME one.
@@ -425,7 +433,7 @@ else
 fi
 
 # ==========================================================================
-# 4) THE CONTRACT — how the buddy works on LCARS
+# 4) THE CONTRACT — how the EEH works on LCARS
 # ==========================================================================
 echo
 echo "READ FIRST (source of truth, in $REPO):"
@@ -433,12 +441,12 @@ echo "  - CLAUDE.md   the build contract: skills live in skills/<name>/, TDD,"
 echo "                ./install.sh symlinks them, fast scoped tests/<name>.test.sh."
 echo "  - vision.md   the product design.    - CONTEXT.md  the domain glossary."
 echo
-# NOT A PATH. This line used to print `~/.claude/skills/lcars-buddy/
+# NOT A PATH. This line used to print `~/.claude/skills/lcars-eeh/
 # ORCHESTRATION.md`, which is Claude Code's mount and does not exist on a
 # Copilot-only machine — and the S277 spike proved a model obeys the path it is
 # handed and stops at the error. The command below resolves the file from
 # whichever mount this script was invoked through.
 echo "HOW A FIX IS RUN: this skill's SKILL.md § 2, which follows ORCHESTRATION.md —"
-echo "  print it with \`lcars-buddy docs orchestration\` (or \`bash $REPO/skills/lcars-buddy/buddy.sh docs orchestration\`)."
+echo "  print it with \`lcars-eeh docs orchestration\` (or \`bash $REPO/skills/lcars-eeh/eeh.sh docs orchestration\`)."
 hr
 exit 0

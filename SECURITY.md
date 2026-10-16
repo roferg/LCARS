@@ -55,5 +55,5 @@ provenance and executable configuration you control. Tool approval alone is
 not directory trust. In Copilot, `--allow-all-tools` only approves tools, while
 `COPILOT_ALLOW_ALL=true` (exactly `true`) also trusts the directory. Do not set
 blanket trust for an unfamiliar checkout. See the
-[unattended setup contract](skills/lcars-buddy/AUTOPILOT.md#unattended-copilot-setup-trust-the-working-directory-before-launch)
+[unattended setup contract](skills/lcars-eeh/HOLOGRAM-COMMAND-MODE.md#unattended-copilot-setup-trust-the-working-directory-before-launch)
 before launching without supervision.

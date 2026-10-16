@@ -37,7 +37,7 @@
 # `lcars_owner_lock_reason` is the one place the lock is decided. It is a LIGHT
 # lock on purpose:
 #   * only the WRITE verbs consult it (run / respond / approve / feedback / log)
-#     — the READ verbs (status, buddy, the viewscreen's reads) are NEVER blocked;
+#     — the READ verbs (status, the EEH, the viewscreen's reads) are NEVER blocked;
 #   * an UNASSIGNED mission is never locked (empty is "unowned", not an error);
 #   * an UNRESOLVABLE identity is never locked — if we cannot say who we are, we
 #     do not get to tell the captain he is someone else;
