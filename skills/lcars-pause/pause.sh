@@ -23,6 +23,8 @@
 #   LCARS_GH_BIN     the gh binary                 (default: gh)
 #   LCARS_RUN_SCRIPT run.sh, for resume's re-entry  (default: ../lcars-run/run.sh)
 #   LCARS_NOW        unix stamp for the event       (default: now)
+#   LCARS_PAUSE_RESUME=0 skips driver re-entry for the viewscreen, which spawns
+#                      it separately after the short resume action succeeds.
 #
 set -uo pipefail
 
@@ -95,8 +97,11 @@ emit_event() { # type stage detail
   }
   type="$(json_escape "${1:-}")"; stage="$(json_escape "${2:-}")"
   detail="$(json_escape "${3:-}")"; mid="$(json_escape "${MISSION_ID:-}")"
-  printf '{"ts":%s,"mission":"%s","stage":"%s","type":"%s","detail":"%s"}\n' \
-    "$ts" "$mid" "$stage" "$type" "$detail" >>"$MISSION_DIR/events.jsonl"
+  local event
+  printf -v event '{"ts":%s,"mission":"%s","stage":"%s","type":"%s","detail":"%s"}' \
+    "$ts" "$mid" "$stage" "$type" "$detail"
+  lcars_operator_write "$MISSION_DIR/events.jsonl" lcars_operator_append "$event" \
+    || die "could not record the $DIE_VERB event."
 }
 
 # --- gh relabel, best-effort (same tolerant spirit as run.sh's gh_relabel) --
@@ -120,7 +125,7 @@ gh_label() { # "--add-label X" | "--remove-label X"  (verb + label as one string
 # A mission assigned to SOMEONE ELSE on GitHub is READ-ONLY to this laptop's
 # write verbs. `lcars pause` and `lcars resume` both REWRITE state.json and move
 # the `lcars:paused` label on someone's issue, so they consult the lock; the READ
-# verbs (status, buddy, the viewscreen's reads) never do. The remedy is
+# verbs (status, the EEH, the viewscreen's reads) never do. The remedy is
 # deliberately a HUMAN act on GitHub — the solo protocol's premise is that the
 # captain moves ownership where both laptops can see it, and LCARS never takes a
 # mission off anyone.
@@ -213,6 +218,7 @@ xo_stop_holder() {
 
 # === subcommand: pause ======================================================
 cmd_pause() {
+  local _LCARS_OPERATOR_CONTROL=pause
   locate_mission "$MISSION_ID"
   # S196: the light lock, before a single field is touched. Pausing someone
   # else's mission is a write to their work.
@@ -248,6 +254,7 @@ cmd_pause() {
 
 # === subcommand: resume =====================================================
 cmd_resume() {
+  local _LCARS_OPERATOR_CONTROL=resume
   locate_mission "$MISSION_ID"
   # S196: resuming somebody else's parked mission starts a driver on their work
   # — the board 403s it, so the CLI refuses it, with the same sentence.
@@ -284,6 +291,7 @@ cmd_resume() {
   # Re-enter the driver from the recorded stage. The driver itself no longer sees
   # paused=true, so it advances normally. (If gh/run is stubbed in a test, this is
   # the delegation under assertion.)
+  [ "${LCARS_PAUSE_RESUME:-1}" = "0" ] && exit 0
   exec bash "$RUN_SCRIPT" drive --mission "$MISSION_ID"
 }
 

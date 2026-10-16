@@ -6,10 +6,10 @@
 # THE MEASURED PROBLEM. `step_env` (xo-run.py) BUILDS the env — PATH, LANG, HOME,
 # TMPDIR plus the step's declared keys — so no credential has ever reached a
 # step. A real `publish` was therefore impossible, and 5 of the 29 bugs the
-# buddy's weekend found needed one. Nothing blocked the network either: the fence
+# EEH's weekend found needed one. Nothing blocked the network either: the fence
 # was "no credentials" BY ACCIDENT, not by record. Meanwhile the consent record
 # the captain actually wrote — `autopilot.json liveTargets {host, owners}` — was
-# read by the buddy and by nothing in `skills/lcars-xo/`.
+# read by the EEH and by nothing in `skills/lcars-xo/`.
 #
 # WHAT THIS FILE DRIVES:
 #   1  NO CONSENT RECORD → a `live:` step is REFUSED with the sentence
@@ -217,11 +217,11 @@ printf '{\n  "numberOne": {"enabled": true}\n}\n' >"$LCARS/config.json"
 HOST="forge.local"
 OWNER="roferg"
 
-# consent_none / consent_autopilot / consent_config — the RECORD, written three
+# consent_none / consent_ech / consent_config — the RECORD, written three
 # ways, because where consent is read from is half of what this session builds.
 consent_none()      { rm -f "$LCARS/autopilot.json"
                       printf '{\n  "numberOne": {"enabled": true}\n}\n' >"$LCARS/config.json"; }
-consent_autopilot() { printf '{"liveTargets": {"host": "%s", "owners": ["%s"]}}\n' \
+consent_ech() { printf '{"liveTargets": {"host": "%s", "owners": ["%s"]}}\n' \
                         "$1" "$2" >"$LCARS/autopilot.json"; }
 consent_config()    { rm -f "$LCARS/autopilot.json"
                       printf '{"numberOne": {"enabled": true, "liveTargets": {"host": "%s", "owners": ["%s"]}}}\n' \
@@ -411,7 +411,7 @@ P'
 # ===========================================================================
 echo ""
 echo "2. CONSENT, from autopilot.json — the step runs and the credential travels"
-consent_autopilot "$HOST" "$OWNER"
+consent_ech "$HOST" "$OWNER"
 : >"$FORGE_LOG"; : >"$GH_CALLS"
 M2="$(mission m-consented)"
 cat >"$TMPROOT/j2.json" <<JSON
@@ -461,7 +461,7 @@ check "2g. the TRANSCRIPT shows GH_TOKEN=<redacted>" \
 check "2h. the READOUT shows GH_TOKEN=<redacted>" \
   'readout "$M2" 01-publish "\"GH_TOKEN=<redacted>\" in json.dumps(d)"'
 check "2i. the readout records WHICH consent allowed it, and from where" \
-  'readout "$M2" 01-publish "(d.get(\"live\") or {}).get(\"host\") == \"'"$HOST"'\" and (d.get(\"live\") or {}).get(\"owner\") == \"'"$OWNER"'\" and \"autopilot\" in ((d.get(\"live\") or {}).get(\"consentedBy\") or \"\")"'
+  'readout "$M2" 01-publish "(d.get(\"live\") or {}).get(\"host\") == \"'"$HOST"'\" and (d.get(\"live\") or {}).get(\"owner\") == \"'"$OWNER"'\" and \"the ECH\" in ((d.get(\"live\") or {}).get(\"consentedBy\") or \"\")"'
 check "2j. A STEP NAMING ANOTHER OWNER IS REFUSED, by name" \
   'readout "$M2" 02-other-owner "d.get(\"refused\") is True and \"needs a live target: '"$HOST"'/nemesis is not in liveTargets\" in (d.get(\"why\") or \"\")"'
 check "2k. LCARS_XO_LIVE=1 is set on a consented step" \
@@ -680,7 +680,7 @@ check "6b3. CONTROL — and the rest of the prompt is still there either way" \
 # AND THE CONSENT READER THE SHELL USES IS THE FILE THAT WILL REFUSE THE STEP.
 consent_says() { ( cd "$PROD" && "$PY" "$XORUN" consent --repo "$PROD" \
                      --lcars-dir "$LCARS" ) 2>&1; }
-consent_autopilot "$HOST" "$OWNER"
+consent_ech "$HOST" "$OWNER"
 check "6b4. xo-run.py consent reports the record the harness will judge by" \
   '[ "$(consent_says | sed -n "s/^HOST: //p")" = "'"$HOST"'" ] && \
    [ "$(consent_says | sed -n "s/^OWNERS: //p")" = "'"$OWNER"'" ] && \
@@ -688,7 +688,7 @@ check "6b4. xo-run.py consent reports the record the harness will judge by" \
 consent_none
 check "6b5. CONTROL — with no record it says NOTHING at all, which is no consent" \
   '[ -z "$(consent_says)" ]'
-consent_autopilot "$HOST" "$OWNER"
+consent_ech "$HOST" "$OWNER"
 check "6c. evaluate.md is NOT where it went — still under its 689-line ceiling" \
   '[ "$(grep -c "" "$REPO_ROOT/skills/lcars-xo/prompts/evaluate.md")" -lt 689 ]'
 check "6d. xo.sh hands the consent to the spawn (read from the record, by xo-run.py)" \
@@ -764,8 +764,8 @@ consent_none
 MMUT="$(mission m-mutant)"
 sed "s|m-noconsent|m-mutant|" "$TMPROOT/j1.json" >"$TMPROOT/j-mut.json"
 # The copy sits outside skills/, so it is told where the ONE worktree helper is —
-# otherwise it would refuse for want of autopilot.sh and prove nothing.
-LCARS_AUTOPILOT_BIN="$REPO_ROOT/skills/lcars-buddy/autopilot.sh" \
+# otherwise it would refuse for want of ech.sh and prove nothing.
+LCARS_ECH_BIN="$REPO_ROOT/skills/lcars-eeh/ech.sh" \
   "$PY" "$CAGE" 180 "$PY" "$MUT" run --journey "$TMPROOT/j-mut.json" --repo "$PROD" \
   --branch feat/relay --out "$MMUT/xo/shots/look-1" --mission-dir "$MMUT" \
   >"$MMUT/run.out" 2>&1
@@ -780,7 +780,7 @@ check "7d. the scrub holds even on the mutant's artifacts" \
   '! token_anywhere_under "$MMUT"'
 check "7e. and across EVERY mission this suite drove, after everything" \
   '! token_anywhere_under "$LCARS/missions"'
-consent_autopilot "$HOST" "$OWNER"
+consent_ech "$HOST" "$OWNER"
 
 
 # ===========================================================================
@@ -793,7 +793,7 @@ consent_autopilot "$HOST" "$OWNER"
 # landed, in order, in the saved transcript under `xo/`.
 echo ""
 echo "9. a credential WRAPPED across lines is redacted too (and the count survives)"
-consent_autopilot "$HOST" "$OWNER"
+consent_ech "$HOST" "$OWNER"
 : >"$FORGE_LOG"; : >"$GH_CALLS"
 
 # A SECOND CARELESS PRODUCT, committed onto the branch the look detaches from, so
@@ -1014,7 +1014,7 @@ check "10j. REGRESSION — a repo outside the allow-list is refused as it always
   'readout "$M10" 03-other-repo "d.get(\"refused\") is True and \"whose repos are\" in (d.get(\"why\") or \"\")"'
 check "10k. no token under this mission either" \
   '! token_wrapped_under "$M10"'
-consent_autopilot "$HOST" "$OWNER"
+consent_ech "$HOST" "$OWNER"
 # ===========================================================================
 # 11. THE WORKER IS TOLD ABOUT repos[] — CARRIED THROUGH, AND IN THE EXAMPLE
 # ===========================================================================
@@ -1048,7 +1048,7 @@ live_targets_says() {
 printf '{"liveTargets": {"host": "%s", "owners": ["%s"], "repos": ["ok-*", "widgets"]}}\n' \
   "$HOST" "$OWNER" >"$LCARS/autopilot.json"
 WITH_REPOS="$(live_targets_says)"
-consent_autopilot "$HOST" "$OWNER"
+consent_ech "$HOST" "$OWNER"
 NO_REPOS="$(live_targets_says)"
 
 check "11b. THE CARRY — with repos recorded, the reader hands the repo list on" \
@@ -1081,7 +1081,7 @@ check "11l. CONTROL — the rest of the prompt is there either way" \
    grep -q "Your output file" "$PR/norepos.txt" && \
    grep -q "Declare .liveEffects. on every live step" "$PR/repos.txt" && \
    grep -q "Declare .liveEffects. on every live step" "$PR/norepos.txt"'
-consent_autopilot "$HOST" "$OWNER"
+consent_ech "$HOST" "$OWNER"
 
 # ===========================================================================
 # 12. S250 FIX ROUND 1 — A LOCAL STAND-IN CANNOT SETTLE THE STEP IT SKIPPED,

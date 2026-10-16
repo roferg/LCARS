@@ -11,9 +11,9 @@
 #   Monthly included AI-credit allotment per plan (credits ×$0.01 = USD):
 #     pro 1000 ($10) · proPlus 3900 ($39) · business 1900 ($19) · enterprise 3900 ($39)
 #
-# Usage-based cost is computed by the SAME math as the Claude branch (Σ stage
-# tokens × tier rate, 0.8/0.2 input/output split), then the plan's monthly
-# allotment is netted off. Legacy stays Σ(requests × multiplier) verbatim.
+# Usage cost uses the larger of token-priced and measured invocation workload
+# bands per stage, plus estimator overhead, then nets the monthly allotment.
+# Legacy stays Σ(requests × multiplier) verbatim.
 #
 # We never call a real model — we hand-place a fixture estimate.json and assert
 # the cost numbers exactly via `run.sh cost --mission <id>`.
@@ -96,8 +96,9 @@ echo "copilot-usage — usage-based AI-Credit billing + legacy preserve (S64)"
 # being BILLED at sonnet rates. That understated band is a live-observed defect:
 # a copilot mission estimated $0.42–$1.25 came in at $2.99 gross. Costing now
 # follows effective_tier_for_cli, so every stage bills opus:
-#   LOW  tokens 100000+50000+50000+50000+200000+20000 = 470000 *9/1e6 = 4.23
-#   HIGH (2x): 940000 *9/1e6 = 8.46
+#   Workload-adjusted stage LOW: .9 + .45 + .575 + .45 + 6.6 + .18
+#   HIGH: 7.1 + 3.95 + 14.15 + 4.25 + 214 + .36
+#   Estimator overhead .275/.6 gives gross 9.43/244.41.
 # The OLD mixed figures (3.618/7.236) priced sonnet legs this engine never runs.
 # Claude's own cost test still asserts 3.618/7.236 — its tiers round-trip.
 EST='{
@@ -128,17 +129,17 @@ EST='{
 
 # === Behavior 1: copilot + usage ⇒ token dollars, billing=usage ================
 # DEFAULT config (no copilotBilling key) ⇒ usage. Default plan = pro (1000cr=$10).
-# usd low 4.23 / high 8.46 (all-opus, see hand-calc) ; includedCreditsUsd 10 ;
-# netUsd both 0 (still under the pro plan's $10).
+# usd low 9.43 / high 244.41 (see hand-calc); includedCreditsUsd 10;
+# netUsd low 0 / high 234.41.
 r1="$(new_repo "$EST")"
 out1="$(cost_run "$r1" COPILOT_RUN_APP=1 LCARS_WORKER_CLI=copilot)"
 check "1a. copilot cli field" "printf '%s' \"\$out1\" | grep -q '\"cli\": *\"copilot\"'"
 check "1b. unit=usd"          "printf '%s' \"\$out1\" | grep -q '\"unit\": *\"usd\"'"
 check "1c. billing=usage"     "printf '%s' \"\$out1\" | grep -q '\"billing\": *\"usage\"'"
 ulo1="$(printf '%s' "$out1" | sed -En 's/.*"usd"[^}]*"low"[[:space:]]*:[[:space:]]*([0-9.]+).*/\1/p' | head -1)"
-check "1d. usage usd.low ≈ 4.23 (all stages bill opus)" "awk -v v='$ulo1' 'BEGIN{exit !(v>4.2 && v<4.26)}'"
+check "1d. usage usd.low ≈ 9.43 (workload floors, opus)" "awk -v v='$ulo1' 'BEGIN{exit !(v>9.429 && v<9.431)}'"
 uhi1="$(printf '%s' "$out1" | sed -En 's/.*"usd"[^}]*"high"[[:space:]]*:[[:space:]]*([0-9.]+).*/\1/p' | head -1)"
-check "1e. usage usd.high ≈ 8.46 (all stages bill opus)" "awk -v v='$uhi1' 'BEGIN{exit !(v>8.43 && v<8.49)}'"
+check "1e. usage usd.high ≈ 244.41 (workload floors, opus)" "awk -v v='$uhi1' 'BEGIN{exit !(v>244.409 && v<244.411)}'"
 check "1f. includedCreditsUsd present" "printf '%s' \"\$out1\" | grep -q 'includedCreditsUsd'"
 
 # === Behavior 6: DEFAULT selection (no copilotBilling key) ⇒ usage, NOT legacy ==
@@ -146,14 +147,14 @@ check "6a. default copilot ⇒ usage (not premiumRequests)" \
   "! printf '%s' \"\$out1\" | grep -q 'premiumRequests'"
 
 # === Behavior 5: allotment netting ============================================
-# pro = $10 included. mission usd 4.23–8.46 fully under it ⇒ netUsd 0/0.
+# pro = $10 included. Gross 9.43–244.41 ⇒ netUsd 0/234.41.
 nlo1="$(printf '%s' "$out1" | sed -En 's/.*"netUsd"[^}]*"low"[[:space:]]*:[[:space:]]*([0-9.]+).*/\1/p' | head -1)"
 nhi1="$(printf '%s' "$out1" | sed -En 's/.*"netUsd"[^}]*"high"[[:space:]]*:[[:space:]]*([0-9.]+).*/\1/p' | head -1)"
 check "5a. sub-allotment ⇒ netUsd.low 0"  "awk -v v='$nlo1' 'BEGIN{exit !(v==0)}'"
-check "5b. sub-allotment ⇒ netUsd.high 0" "awk -v v='$nhi1' 'BEGIN{exit !(v==0)}'"
+check "5b. high above allotment ⇒ netUsd.high 234.41" "awk -v v='$nhi1' 'BEGIN{exit !(v>234.409 && v<234.411)}'"
 
 # Over-allotment: a tiny plan via config so the mission cost exceeds it. Use a
-# pricing override whose pro allotment is 100 credits ($1), so 4.23/8.46 > $1.
+# pricing override whose pro allotment is 100 credits ($1), so both bounds exceed it.
 PRICING_SMALL="$TMPROOT/pricing-small.json"
 cat >"$PRICING_SMALL" <<'EOF'
 {
@@ -168,11 +169,11 @@ cat >"$PRICING_SMALL" <<'EOF'
 EOF
 r5="$(new_repo "$EST")"
 out5="$(cost_run "$r5" COPILOT_RUN_APP=1 LCARS_WORKER_CLI=copilot LCARS_PRICING="$PRICING_SMALL")"
-# included $1 ; netUsd.low = 4.23-1 = 3.23 ; netUsd.high = 8.46-1 = 7.46
+# included $1; netUsd.low = 9.43-1 = 8.43; netUsd.high = 244.41-1 = 243.41
 n5lo="$(printf '%s' "$out5" | sed -En 's/.*"netUsd"[^}]*"low"[[:space:]]*:[[:space:]]*([0-9.]+).*/\1/p' | head -1)"
 n5hi="$(printf '%s' "$out5" | sed -En 's/.*"netUsd"[^}]*"high"[[:space:]]*:[[:space:]]*([0-9.]+).*/\1/p' | head -1)"
-check "5c. over-allotment netUsd.low ≈ 3.23"  "awk -v v='$n5lo' 'BEGIN{exit !(v>3.2 && v<3.26)}'"
-check "5d. over-allotment netUsd.high ≈ 7.46" "awk -v v='$n5hi' 'BEGIN{exit !(v>7.43 && v<7.49)}'"
+check "5c. over-allotment netUsd.low ≈ 8.43"  "awk -v v='$n5lo' 'BEGIN{exit !(v>8.429 && v<8.431)}'"
+check "5d. over-allotment netUsd.high ≈ 243.41" "awk -v v='$n5hi' 'BEGIN{exit !(v>243.409 && v<243.411)}'"
 
 # === Behavior 2: copilot + legacy ⇒ S60 premium-request figure BYTE-FOR-BYTE ===
 # config copilotBilling=legacy. Same hand-calc as cost.test.sh:
@@ -284,13 +285,13 @@ check "d2-f. cli readout shows \$3.59"  "printf '%s' \"\$rcli\" | grep -q '\\\$3
 
 # Copilot usage USD also 2dp on the surfaces. This assertion is about the 2dp
 # RENDER, not the magnitude — and the magnitude moved with S147 DEFECT-3: the
-# all-sonnet fixture bills opus on copilot (88333 tok * 9/1e6 = 0.794997), so the
-# rounded figure is $0.79 where claude's same fixture stays $0.48 (d2-a above).
+# all-sonnet fixture bills opus and includes invocation workload floors, giving
+# 3.867497/44.507003; Claude's same fixture stays $0.48 (d2-a above).
 rdc="$(new_repo "$EST_RAGGED")"
 rissc="$(render_run "$rdc" issue COPILOT_RUN_APP=1 LCARS_WORKER_CLI=copilot)"
-check "d2-g. copilot usage issue shows \$0.79 (2dp)" "printf '%s' \"\$rissc\" | grep -q '\\\$0.79'"
-check "d2-h. copilot usage issue does NOT show the ragged 0.794997" \
-  "! printf '%s' \"\$rissc\" | grep -q '0.7949'"
+check "d2-g. copilot usage issue shows \$3.87 (2dp)" "printf '%s' \"\$rissc\" | grep -q '\\\$3.87'"
+check "d2-h. copilot usage issue does NOT show the ragged 3.867497" \
+  "! printf '%s' \"\$rissc\" | grep -q '3.8674'"
 check "d2-h. copilot usage issue no ragged 0.477"    "! printf '%s' \"\$rissc\" | grep -q '0.477'"
 
 # === schemaVersion 3 canonicalization =========================================

@@ -1,6 +1,6 @@
 # Design basis — LedgerBook redesign
 
-What the holodeck found by reading /Users/roganferguson/Projects/lcars-s169-capstone, read-only. Correct anything wrong here: it is what the mockup is built from.
+What the holodeck found by reading <fixture-project>, read-only. Correct anything wrong here: it is what the mockup is built from.
 
 I'll explore the repository to document its existing design language. Let me start by understanding the structure.
 

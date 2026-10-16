@@ -698,8 +698,23 @@ switch (cfg.act) {
     out.shownForDone = counts.DONE;
     break;
   }
+/* S275 — WHICH CLIs THIS MACHINE HAS, as the dialog reads it: the board
+ * payload board.js already holds (`LAST_BOARD.meta`), which is where the ◈ and
+ * Adopt pickers read the very same detector answer. ABSENT leaves `LAST_BOARD`
+ * null, which is a daemon that never answered — the dialog exactly as it was
+ * before S275. */
+function seedEngineList(cfg) {
+  if (cfg.enginesHere === undefined && cfg.engineDefault === undefined) return;
+  sandbox.LAST_BOARD = { columns: {}, missions: [], meta: {
+    repo: "acme/groutwork", adapter: "local",
+    enginesHere: cfg.enginesHere,
+    engineDefault: cfg.engineDefault === undefined ? null : cfg.engineDefault,
+  } };
+}
+
   case "newProgram": {
     sandbox.writesActive = true;
+    seedEngineList(cfg);
     if (cfg.engineName !== undefined) sandbox.HOLO.engineName = cfg.engineName;
     /* `engineBin` and not `engine`: in these acts `engine` already names the
      * option to CLICK, and the daemon's own binary is a different fact. */
@@ -728,6 +743,20 @@ switch (cfg.act) {
     out.enginePressed = opts.map((o) => o.getAttribute("aria-pressed"));
     out.engineRoles = opts.map((o) => o.getAttribute("role"));
     out.engineTabIndex = opts.map((o) => o.getAttribute("tabindex"));
+    /* S275 — the house lock treatment on an engine this machine does not
+     * have: `disabled`, the `locked` class, and the tooltip that says why. */
+    out.engineDisabled = opts.map((o) => !!o.disabled);
+    out.engineTitles = opts.map((o) => o.title || "");
+    out.engineCls = opts.map((o) => clsList(o).join(" "));
+    out.engineNote = many(body, ".engine-none").map(txt);
+    /* S275 — ⬡ Run Program itself. With no CLI on the machine the daemon
+     * cannot start a program at all, so the control must say so rather than
+     * accept the press and 502. */
+    const runCtl = many(REGISTRY.overlay, "[data-ctl]")
+      .concat(many(docRoot, "[data-ctl]"))
+      .find((n) => /run program/i.test(n.getAttribute("data-ctl") || ""));
+    out.runDisabled = runCtl ? !!runCtl.disabled : null;
+    out.runTitle = runCtl ? (runCtl.title || "") : null;
     break;
   }
   /* S127 (FL-001) — the footer sentence, over a SEQUENCE of selections. The
@@ -737,6 +766,7 @@ switch (cfg.act) {
    * can assert it CHANGED rather than assert one flattering wording. */
   case "newProgramFoot": {
     sandbox.writesActive = true;
+    seedEngineList(cfg);
     if (cfg.engineName !== undefined) sandbox.HOLO.engineName = cfg.engineName;
     /* `engineBin` and not `engine`: in these acts `engine` already names the
      * option to CLICK, and the daemon's own binary is a different fact. */
@@ -766,6 +796,7 @@ switch (cfg.act) {
   }
   case "newProgramSubmit": {
     sandbox.writesActive = true;
+    seedEngineList(cfg);
     FETCHES.length = 0;
     if (cfg.engineName !== undefined) sandbox.HOLO.engineName = cfg.engineName;
     if (cfg.engineBin !== undefined) sandbox.HOLO.engine = cfg.engineBin;

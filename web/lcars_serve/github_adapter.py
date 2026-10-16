@@ -297,8 +297,8 @@ def _first_assignee(issue):
     """The issue's single standing assignee login, or "" when nobody holds it.
 
     GitHub returns an empty ARRAY for "nobody" — never null, never a missing key
-    — on both the `--json assignees` and the REST paths (recorded against real gh
-    2.96.0 in ADOPT-RESOLUTION-SPIKE.md). So "unowned" is an EMPTY LIST, a valid
+    — on both the `--json assignees` and the REST paths (measured with gh
+    2.96.0; covered by tests/ownership.test.sh). So "unowned" is an EMPTY LIST, a valid
     answer, and never an error. Crash-proof against a payload that is not the
     shape we expect: this adapter reads a forge, and a forge is not a promise.
     """

@@ -453,7 +453,7 @@ check "N9. copilot argv carries NO --disallowedTools (no such flag on copilot)" 
 # EVERY ROW ABOVE IS ABOUT `number-one`, AND STAYS TRUE OF IT. That role is now
 # the PAPER-GATE posture — `answer` and `recheck`, which judge off the record and
 # have nothing to run. The captain amended the S168 clause on 2026-10-08 at
-# 19:33 MDT, after three of the six failures measured against his buddy that
+# 19:33 MDT, after three of the six failures measured against his EEH that
 # morning turned out to be the fence rather than the prompt: the VERIFY LOOK gets
 # a real shell, under the separate role `number-one-live`, issued by
 # `run.sh spawn_number_one` only when a disposable detached worktree is standing,

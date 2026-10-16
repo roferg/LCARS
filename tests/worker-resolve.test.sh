@@ -7,7 +7,9 @@
 #
 #   worker bin   : $LCARS_WORKER_BIN  >  the MISSION's recorded workerBin
 #                  >  config.json workerBin
-#                  >  host-CLI auto-detect (env marker)  >  claude (default)
+#                  >  host-CLI auto-detect (env marker)
+#                  >  S274: the engine that is actually INSTALLED here
+#                     (lcars_default_engine) — NEVER the literal `claude`
 #   worker model : $LCARS_WORKER_MODEL >  config.json workerModel  >  unset
 #
 # S196 A3 — THE MISSION NOW OUTRANKS config.json, and that is a REVERSAL. Until
@@ -386,13 +388,109 @@ out3mn="$(resolve_mission_in "$r3mn" m-nopin COPILOT_RUN_APP=1)"
 check "3l. a mission with no pin still falls through to host detection" \
   "printf '%s' \"\$out3mn\" | qgrep -q 'binsrc=detected'"
 
-# --- 4. nothing at all → claude default (NO marker set) -----------------------
+# --- 4. nothing in env/config/marker → THE ENGINE THAT IS INSTALLED (S274) ----
+# Until this session the last rung was the LITERAL `claude`: run.sh printed
+# "no host-CLI marker — defaulting to claude" and recorded the source as
+# `default`. On a laptop that has only the GitHub Copilot CLI that is a guess
+# which cannot run — the Stage then died at require_worker naming an engine the
+# captain never had, while a perfectly good CLI sat on his PATH.
+#
+# The last rung is now the SHARED detector (`lcars_default_engine` over
+# `lcars_available_engines`, skills/lcars-init/lcars-common.sh) — the same
+# answer `lcars init`, the File console's engine picker, `lcars xo` and the
+# board already give. So it can only ever name an engine that is HERE, and with
+# NEITHER installed it names none at all rather than inventing one.
+#
+# The engines are faked through the LCARS_*_BIN seams, never through $PATH, so
+# every assertion below measures the fixture and not the tester's laptop.
+ENGBIN="$(mktemp -d "$TMPROOT/engines.XXXX")"
+for _e in claude copilot; do
+  printf '#!/bin/sh\nexit 0\n' >"$ENGBIN/$_e"; chmod +x "$ENGBIN/$_e"
+done
+NOENG="$ENGBIN/definitely-not-installed"
+
 r4="$(make_repo)"
-out4="$(resolve_in "$r4")"   # CLAUDECODE/COPILOT_CLI scrubbed by resolve_in
-check "4a. no env, no config, no marker ⇒ claude" \
+out4="$(resolve_in "$r4" LCARS_CLAUDE_BIN="$ENGBIN/claude" LCARS_COPILOT_BIN="$NOENG")"
+check "4a. no env, no config, no marker, claude-only ⇒ claude" \
   "printf '%s' \"\$out4\" | qgrep -q 'bin=claude'"
-check "4b. fallback source = default" \
-  "printf '%s' \"\$out4\" | qgrep -q 'binsrc=default'"
+check "4b. and the source is \`detected\` — it was found, not assumed" \
+  "printf '%s' \"\$out4\" | qgrep -q 'binsrc=detected'"
+
+# S274 behaviour 7 — THE COPILOT-ONLY LAPTOP. This is the case the old literal
+# got wrong, and the one `lcars init` has accepted since S207.
+r4co="$(make_repo)"
+out4co="$(resolve_in "$r4co" LCARS_CLAUDE_BIN="$NOENG" LCARS_COPILOT_BIN="$ENGBIN/copilot")"
+check "4c. no env, no config, no marker, copilot-only ⇒ copilot" \
+  "printf '%s' \"\$out4co\" | qgrep -q 'bin=copilot'"
+check "4d. …and the source is \`detected\`" \
+  "printf '%s' \"\$out4co\" | qgrep -q 'binsrc=detected'"
+check "4e. …and it NEVER names claude on a laptop that has no claude" \
+  "! printf '%s' \"\$out4co\" | qgrep -q 'bin=claude'"
+check "4f. …and the old \"defaulting to claude\" line is gone" \
+  "! printf '%s' \"\$out4co\" | qgrep -qi 'defaulting to claude'"
+check "4g. …and no surface still reports the \`default\` source" \
+  "! printf '%s' \"\$out4co\" | qgrep -q 'binsrc=default'"
+
+# BOTH installed: claude still wins — the historical front-door default, kept
+# deliberately (lcars_default_engine's own precedence), so nothing about a
+# two-engine laptop changes this session.
+r4b="$(make_repo)"
+out4b="$(resolve_in "$r4b" LCARS_CLAUDE_BIN="$ENGBIN/claude" LCARS_COPILOT_BIN="$ENGBIN/copilot")"
+check "4h. BOTH installed ⇒ claude, unchanged" \
+  "printf '%s' \"\$out4b\" | qgrep -q 'bin=claude'"
+
+# NEITHER installed: the resolver does NOT guess, and does NOT die either — it
+# is a read surface. It reports `none` and leaves the loud stop to
+# require_worker, which is the ONE place a Stage refuses to run inline.
+r4n="$(make_repo)"
+out4n="$(resolve_in "$r4n" LCARS_CLAUDE_BIN="$NOENG" LCARS_COPILOT_BIN="$NOENG")"
+check "4i. NEITHER installed ⇒ the source is \`none\`" \
+  "printf '%s' \"\$out4n\" | qgrep -q 'binsrc=none'"
+check "4j. …and it does not claim an engine it could not find" \
+  "! printf '%s' \"\$out4n\" | qgrep -q 'bin=claude'"
+check "4k. …and it says what it looked for, naming BOTH CLIs" \
+  "printf '%s' \"\$out4n\" | qgrep -qi 'claude code' && printf '%s' \"\$out4n\" | qgrep -qi 'copilot'"
+
+# S274 behaviour 8 — require_worker, the Stage's loud stop, on a laptop with
+# NEITHER CLI. `context-source` is the cheapest real caller: it reaches
+# require_worker before it would spawn anything, so this costs nothing.
+r8="$(make_repo)"
+# $PATH IS NARROWED TO THE SYSTEM DIRS ON PURPOSE, and it is the one place in
+# this suite that matters: `require_worker` ends in `command -v "$WORKER_BIN"`,
+# so a WORKER_BIN of `claude` (which is what the pre-S274 literal produced)
+# would RESOLVE on a laptop that has claude on PATH, and the context-pack path
+# would then spawn a REAL, BILLED worker from a unit test. Narrowing PATH makes
+# the "neither CLI is here" fixture true for the PATH lookup as well as for the
+# LCARS_*_BIN seams, so this assertion can never spend money — before or after
+# the fix. (/usr/bin:/bin carry the git/sed/awk run.sh itself needs.)
+out8="$( cd "$r8" && env -u CLAUDECODE -u COPILOT_CLI -u COPILOT_RUN_APP \
+          -u COPILOT_CLI_BINARY_VERSION -u LCARS_WORKER_BIN -u LCARS_WORKER_CLI \
+          -u LCARS_WORKER_BIN_INTERNAL PATH=/usr/bin:/bin \
+          LCARS_CLAUDE_BIN="$NOENG" LCARS_COPILOT_BIN="$NOENG" \
+          bash "$RUN" context-source 2>&1 )"; rc8=$?
+check "8a. with NEITHER CLI, require_worker refuses the Stage (non-zero)" \
+  "[ '$rc8' -ne 0 ]"
+check "8b. the refusal names Claude Code" \
+  "printf '%s' \"\$out8\" | qgrep -qi 'claude code'"
+check "8c. the refusal names the GitHub Copilot CLI" \
+  "printf '%s' \"\$out8\" | qgrep -qi 'copilot cli'"
+check "8d. it names the Claude Code install URL" \
+  "printf '%s' \"\$out8\" | qgrep -q 'claude.com/claude-code'"
+check "8e. it names the Copilot CLI install URL" \
+  "printf '%s' \"\$out8\" | qgrep -q 'github.com/features/copilot/cli'"
+# `claude` is ONE OF TWO OPTIONS, never the single example. The pre-S274
+# sentence read "set \$LCARS_WORKER_BIN to your CLI (e.g. \`claude\`)" — one
+# engine named, and the only one, on a machine that may well want the other.
+check "8f. the \"e.g. \\\`claude\\\`\" single-example wording is GONE" \
+  "! printf '%s' \"\$out8\" | qgrep -q 'e.g. .claude'"
+# The two engines are offered SYMMETRICALLY: the bin LCARS looked for is quoted
+# exactly once each. (The raw word 'claude' legitimately recurs inside the
+# install URL, which is why the count is of the quoted bin, not of the word.)
+refusal8="$(printf '%s' "$out8" | grep 'refusing to run this Stage inline')"
+check "8g. each engine's binary is quoted exactly once in the refusal — a symmetric offer" \
+  "[ \"\$(printf '%s' \"\$refusal8\" | grep -o \"'\$NOENG'\" | wc -l | tr -d ' ')\" = 2 ]"
+check "8h. the old 'LCARS_WORKER_BIN=' not-isolated line no longer blames a variable that is not the fix" \
+  "! printf '%s' \"\$out8\" | qgrep -q 'no cold-worker binary on PATH (LCARS_WORKER_BIN='"
 
 # --- 5. workerModel: env > config > unset; unset ⇒ adapter emits NO --model ----
 r5e="$(make_repo '{"workerModel": "config-model"}')"
@@ -415,14 +513,18 @@ check "5e. no model anywhere ⇒ model unset (printed as -)" \
   "printf '%s' \"\$out5u\" | qgrep -q 'model=- '"
 
 # Adapter regression lock: with NO model env, claude argv is byte-for-byte the
-# session-18 five lines (no --model).
+# session-18 eight lines (no --model).
+# S168 added the --disallowedTools pair and the headless --dangerously-skip-permissions flag.
 A_NOMODEL="$(env -u LCARS_WORKER_MODEL bash "$ADAPTER" argv claude repo-read "$TMPROOT")"
 EXPECT_NOMODEL='-p
 --allowedTools
 Read,Grep,Glob,Write
+--disallowedTools
+Edit,Bash,NotebookEdit,WebSearch,WebFetch
 --output-format
-text'
-check "5f. adapter: unset model ⇒ exactly the session-18 5 lines (no --model)" \
+text
+--dangerously-skip-permissions'
+check "5f. adapter: unset model ⇒ exactly the session-18 8 lines (no --model)" \
   "[ \"\$A_NOMODEL\" = \"\$EXPECT_NOMODEL\" ]"
 
 # With a model env set, the adapter appends --model <m> for claude.
@@ -432,7 +534,7 @@ check "5g. adapter: set model ⇒ argv appends '--model'" \
 check "5h. adapter: set model ⇒ argv appends the model value" \
   "printf '%s' \"\$A_MODEL\" | qgrep -qx 'opus-x'"
 check "5i. adapter: --model is the LAST flag pair (appended, not reordered)" \
-  "[ \"\$(printf '%s' \"\$A_MODEL\" | sed -n '6p')\" = '--model' ] && [ \"\$(printf '%s' \"\$A_MODEL\" | sed -n '7p')\" = 'opus-x' ]"
+  "[ \"\$(printf '%s\n' \"\$A_MODEL\" | tail -2)\" = \"\$(printf '%s\n' '--model' 'opus-x')\" ]"
 
 # --- 6. the resolution log line names the winning SOURCE for a human ----------
 check "6a. log line names env source" \
@@ -441,8 +543,8 @@ check "6b. log line names config source" \
   "printf '%s' \"\$out2\" | qgrep -qi 'config'"
 check "6c. log line names detected source" \
   "printf '%s' \"\$out3c\" | qgrep -qi 'detect'"
-check "6d. log line names default source" \
-  "printf '%s' \"\$out4\" | qgrep -qi 'default'"
+check "6d. log line names the detected source on a single-engine laptop" \
+  "printf '%s' \"\$out4co\" | qgrep -qi 'detect'"
 
 echo "worker-resolve: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

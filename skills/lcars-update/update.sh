@@ -266,7 +266,8 @@ set_test_command() {
 
 # run_discovery — spawn ONE read-only test-discovery worker (the lcars-launch
 # discovery pattern: the worker INSPECTS and proposes; this skill executes).
-# Engine: $LCARS_WORKER_BIN → config workerBin → claude. Toolset role `launch`
+# Engine: $LCARS_WORKER_BIN → config workerBin → the engine INSTALLED here
+# (lcars_default_engine; S274). Toolset role `launch`
 # (Read/Grep/Glob/Bash — NO Write/Edit, the read fence) via the worker-adapter;
 # the worker writes its {testCommand, rationale, status, message} proposal to
 # $LCARS_DISCOVERY_JSON and nothing else. Sets DISC_CMD / DISC_RATIONALE /
@@ -277,7 +278,22 @@ run_discovery() {
   DISC_CMD=""; DISC_RATIONALE=""; DISC_MSG=""
   local wb="${LCARS_WORKER_BIN:-}"
   [ -n "$wb" ] || wb="$(lcars_config_get "$CONFIG" workerBin)"
-  [ -n "$wb" ] || wb="claude"
+  # S274 — THE LAST RUNG IS WHAT IS INSTALLED, never the literal `claude`. This
+  # read `[ -n "$wb" ] || wb="claude"`, so on a copilot-only laptop with no
+  # config pin `lcars update --fix-tests` spawned a claude that is not there and
+  # the discovery produced nothing. lcars-common.sh is already sourced at the
+  # top of this file, so the shared detector — the same one `lcars init`, the
+  # engine pickers, run.sh and launch.sh read — is right here.
+  if [ -z "$wb" ]; then
+    local _eng; _eng="$(lcars_default_engine "$CONFIG")"
+    [ -n "$_eng" ] && wb="$(lcars_engine_bin "$_eng")"
+  fi
+  # NEITHER CLI IS HERE: say so in one sentence naming both, rather than
+  # spawning a binary that is not there and reporting "the crew found nothing".
+  if [ -z "$wb" ]; then
+    DISC_MSG="no worker CLI found — LCARS drives missions with Claude Code (looked for '$(lcars_engine_bin claude)') or the GitHub Copilot CLI (looked for '$(lcars_engine_bin copilot)'), and neither is on this machine. Install either one and re-run: https://claude.com/claude-code or https://github.com/features/copilot/cli."
+    return 1
+  fi
   local cli; cli="$(basename "$wb")"
   local outdir="$LCARS_DIR/.fixtests-work"
   mkdir -p "$outdir"
@@ -346,7 +362,7 @@ if [ -n "$VERB" ]; then
       run_probe "$TC"
       report_probe
       [ "$PROBE_OUTCOME" = "pass" ] && exit 0
-      exit 1
+      die "test probe reported $PROBE_OUTCOME; test systems are not verified."
       ;;
 
     fix)
@@ -355,6 +371,10 @@ if [ -n "$VERB" ]; then
       # S183 fix round 1 (D3): the SECOND axis, captured beside the first — the
       # one that can tell a `git init` from a tested monorepo.
       ORIG_FOUNDATION="${LCARS_TESTREADY_FOUNDATION:-}"
+      # S299 fix round 2: and the THIRD fact, captured the same way and for the
+      # same reason — a verdict read after `run_discovery` has run is a verdict
+      # about whatever the crew left behind, not the repo this report is about.
+      ORIG_INERT_WHY="${LCARS_TESTREADY_INERT_WHY:-}"
       if [ "$ORIG_STATUS" = "ready" ]; then
         echo "  ✓ TEST SYSTEMS ONLINE — nothing to repair (testCommand: $LCARS_TESTREADY_TESTCMD)."
         exit 0
@@ -447,6 +467,31 @@ AMB_EOF
               echo "    name it yourself: lcars update --test-command '<command>'"
               exit 0 ;;
             unknown:unconfigured)
+              # S299 fix round 2 — THE THIRD SURFACE CARRYING ROUND 1'S
+              # CONTRADICTION. The sentence below asserts "this repo HAS a test
+              # system" on the strength of the FOUNDATION axis, which claims one
+              # from the mere PRESENCE of an artifact (it feeds the filing gate,
+              # where a false negative kills a mission before it starts). When
+              # the detector has PROVED that same artifact runs nothing — a
+              # `test:` target with no recipe, an empty tests/run.sh, npm's
+              # placeholder script — this told the captain the opposite of what
+              # `lcars status` and the board had just told him, and prescribed
+              # `--test-command`, which is how round 1's measured captain got a
+              # green "TEST SYSTEMS ONLINE" over a command that runs nothing.
+              #
+              # Same words as the CLI readiness line (lcars_readiness_line in
+              # lcars-common.sh) — ONE wording across every surface. The EXIT
+              # CODE, the "config untouched" promise and the escape hatch are
+              # unchanged: this is the message, not the behaviour.
+              if [ -n "${ORIG_INERT_WHY:-}" ]; then
+                echo "  ✗ REPAIR INCOMPLETE — the test configuration at the repo root cannot run:"
+                echo "    ${ORIG_INERT_WHY}."
+                echo "    Discovery could not name a command that runs either: $DISC_MSG."
+                echo "    Config untouched. Establish a test runner that actually runs — or, if one"
+                echo "    is already here that LCARS missed, name it yourself:"
+                echo "    lcars update --test-command '<cmd>'"
+                exit 1
+              fi
               # This repo HAS a test system — LCARS just has no command for it,
               # and discovery could not name one either. That is a repair that
               # did not land, never a greenfield repo.

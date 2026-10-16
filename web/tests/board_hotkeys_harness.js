@@ -328,6 +328,11 @@ mk("div", "conn", "conn", topbar);
 const content = mk("div", null, "frame-content", frame);
 mk("div", "versionBanner", "version-banner", content);
 mk("div", "readinessBanner", "readiness-banner", content);
+/* S275 — the "no engine on this machine" band. Same host shape and the same
+   `.version-banner` wrapper index.html gives it, so the projection below reads
+   the real thing rather than a stand-in. */
+const engineBannerHost = mk("div", "engineBanner", "version-banner", content);
+engineBannerHost.hidden = true;
 /* S196 B5 — the ownership filter strip. Its own row in frame-content, above the
    board, exactly where index.html puts it. Present-but-empty here, as it is on a
    cold page: renderOwnerFilter fills it (or hides it) on every render. */
@@ -370,7 +375,10 @@ Object.defineProperty(documentStub, "activeElement", {
 });
 
 function fetchStub(url, opts) {
-  FETCHES.push({ url: String(url), method: (opts && opts.method) || "GET" });
+  /* `body` is ADDITIVE (S275): the File console's whole defect was the engine
+     it POSTs, and a projection that records only the URL cannot see it. */
+  FETCHES.push({ url: String(url), method: (opts && opts.method) || "GET",
+                 body: (opts && opts.body) || null });
   const p = { then() { return p; }, catch() { return p; } };
   return p;
 }
@@ -554,6 +562,56 @@ const prevented = [];
   catch (e) { runErrors.push("key " + k.key + ": " + (e && e.message ? e.message : e)); prevented.push(null); }
 });
 
+/* ══════════════════ S275 — the File console's engine picker ══════════════
+ * Clicking an engine and then SUBMITTING is the only way to see the value the
+ * daemon is actually handed, which is where this session's defect lived: the
+ * console looked fine and posted `claude` on a machine that had no claude.
+ * Run after the keys so a keyboard-driven pick can be submitted too. */
+function consoleOpt(name) {
+  return overlayEl.querySelectorAll(".choice .opt").filter(function (o) {
+    return String(o.textContent || "").toLowerCase().indexOf(name) !== -1;
+  })[0] || null;
+}
+function footBtn(re) {
+  return overlayEl.querySelectorAll("button").filter(function (b) {
+    return re.test(String(b.textContent || ""));
+  })[0] || null;
+}
+let filePost = null;
+/* CAPTURED BEFORE THE SUBMIT, deliberately: pressing ◇ File to Backlog ▸
+ * rewrites its own label to "Filing…", so a report that re-finds it by text
+ * afterwards finds nothing and projects `submit: null`. */
+const submitNode = footBtn(/File to Backlog/);
+const alignNode = footBtn(/Begin Alignment/);
+if (spec.clickEngine) {
+  const opt = consoleOpt(String(spec.clickEngine).toLowerCase());
+  if (!opt) runErrors.push("clickEngine matched no option: " + spec.clickEngine);
+  else opt.click();
+}
+if (spec.keyEngine) {
+  const opt = consoleOpt(String(spec.keyEngine).toLowerCase());
+  if (!opt) runErrors.push("keyEngine matched no option: " + spec.keyEngine);
+  else {
+    // the keydown path only — role/tabindex are a promise the KEY has to keep
+    fire(opt, "keydown", { key: spec.keyEngineKey || "Enter" });
+  }
+}
+if (spec.submitFile) {
+  FETCHES.length = 0;
+  const b = spec.submitFile === "align"
+    ? footBtn(/Begin Alignment/) : footBtn(/File to Backlog/);
+  if (!b) runErrors.push("submitFile found no button: " + spec.submitFile);
+  else {
+    const ta = overlayEl.querySelector("textarea");
+    if (ta) { ta.value = spec.idea || "ship the thing"; }
+    b.click();
+  }
+  const post = FETCHES.filter(function (f) { return f.method === "POST"; })[0];
+  filePost = post
+    ? { url: post.url, body: post.body ? JSON.parse(post.body) : null }
+    : null;
+}
+
 /* ══════════════════ report ══════════════════ */
 
 function projectCard(card) {
@@ -608,6 +666,11 @@ function projectControl(n) {
     role: n.getAttribute("role"),
     tabindex: n.getAttribute("tabindex"),
     ariaPressed: n.getAttribute("aria-pressed"),
+    // S275 — the lock treatment: `disabled`, the `locked` class markLocked
+    // writes, and the tooltip that says WHY.
+    disabled: !!n.disabled,
+    title: n.title || "",
+    engine: n.getAttribute("data-engine"),
   };
 }
 const consoleOpts = overlayEl.querySelectorAll(".choice .opt").map(projectControl);
@@ -615,6 +678,25 @@ const fileConsole = {
   opts: consoleOpts,
   chipRemoves: overlayEl.querySelectorAll(".img-chip-x").map(projectControl),
   chips: overlayEl.querySelectorAll(".img-chip").length,
+  // S275 — the submit, its lock state, and the sentence that explains it.
+  submit: submitNode
+    ? { text: submitNode.textContent, disabled: !!submitNode.disabled,
+        title: submitNode.title || "" } : null,
+  align: alignNode
+    ? { text: alignNode.textContent, disabled: !!alignNode.disabled,
+        title: alignNode.title || "" } : null,
+  engineNote: overlayEl.querySelectorAll(".engine-none").map(function (n) {
+    return n.textContent;
+  }),
+  post: filePost,
+};
+/* S275 — the band a machine with NO LCARS-capable CLI gets. `bands` is a COUNT,
+   not a boolean: "shown once" is the contract, and a render loop that stacks
+   three of them passes every present/absent assertion. */
+const engineBanner = {
+  hidden: !!engineBannerHost.hidden,
+  bands: engineBannerHost.querySelectorAll(".vb-band").length,
+  text: engineBannerHost.textContent,
 };
 // The Align grill console renders its answer options through the very same
 // `.choice .opt` idiom; `freeValue` is the free-form box that overrides a pick.
@@ -659,4 +741,5 @@ process.stdout.write(JSON.stringify({
   cardStructure: firstCardStructure,
   fileConsole: fileConsole,
   alignConsole: alignConsole,
+  engineBanner: engineBanner,
 }));

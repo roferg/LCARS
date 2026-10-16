@@ -254,9 +254,9 @@ class GitHubAdapterTest(unittest.TestCase):
 
     # ── S70-A: board-level meta on the github adapter ──
     def test_board_meta_repo_and_adapter(self):
-        board = GitHubAdapter(gh_bin=self.stub, repo="roferg/lcars-sandbox").board()
+        board = GitHubAdapter(gh_bin=self.stub, repo="acme/widget").board()
         self.assertIn("meta", board)
-        self.assertEqual(board["meta"]["repo"], "roferg/lcars-sandbox")
+        self.assertEqual(board["meta"]["repo"], "acme/widget")
         self.assertEqual(board["meta"]["adapter"], "github")
         # the github adapter is always view-only (no write layer)
         self.assertEqual(board["meta"]["mode"], "read-only")

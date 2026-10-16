@@ -1,6 +1,21 @@
 ---
 name: lcars-launch
-description: Get an LCARS Mission's app running locally so the captain can view it during Verify. `lcars launch <mission> [hint]` checks the mission's branch out into a disposable DETACHED git worktree, spawns a `launch`-role cold worker that DISCOVERS how to start the app (it never starts it itself), then the skill launches that command detached — owning the whole process group — writes a launch.json record both the CLI and the viewscreen daemon read, and prints an LCARS-voice readout naming the target, URL, and how to stop it. `lcars launch <mission> --stop` kills the process group and prunes the worktree. `lcars launch --main [hint]` deploys the LOCAL default-branch HEAD (whatever is already merged — no fetch) through the same pipeline, with `--main --stop` to tear it down. Failures are plain English, never a raw stack trace. Use when the captain runs `lcars launch`, asks to run / open / preview / see a mission's app while reviewing it, wants to deploy/run local main, or wants to stop a launched app.
+description: >-
+  Get an LCARS Mission's app running locally so the captain can view it
+  during Verify. `lcars launch <mission> [hint]` checks the mission's branch
+  out into a disposable DETACHED git worktree, spawns a `launch`-role cold
+  worker that DISCOVERS how to start the app (it never starts it itself),
+  then the skill launches that command detached — owning the whole process
+  group — writes a launch.json record both the CLI and the viewscreen daemon
+  read, and prints an LCARS-voice readout naming the target, URL, and how to
+  stop it. `lcars launch <mission> --stop` kills the process group and
+  prunes the worktree. `lcars launch --main [hint]` deploys the LOCAL
+  default-branch HEAD (whatever is already merged — no fetch) through the
+  same pipeline, with `--main --stop` to tear it down. Failures are plain
+  English, never a raw stack trace. Use when the captain runs `lcars
+  launch`, asks to run / open / preview / see a mission's app while
+  reviewing it, wants to deploy/run local main, or wants to stop a launched
+  app.
 ---
 
 # lcars launch
@@ -24,6 +39,10 @@ lcars launch --main --stop                        # stop the main deploy + clean
 # everything after it is your words even when a word starts with a dash:
 lcars launch --main -- "the browser build (npx vite --config vite.config.ts)"
 ```
+
+From a plain shell, use the installed `lcars-launch` executable with the same
+arguments. `lcars-launch --help` (or `-h`) prints usage without discovering or
+starting an app. Help flags after `--` remain literal hint words.
 
 ## `--main` — deploy what's already merged
 
@@ -86,6 +105,29 @@ directory (a repo can host more than one), pass that as the free-form **hint**.
 `--stop` kills the whole **process group** (so a dev server's child processes die
 too), flips `status` to `stopped`, and prunes the launch worktree. It is
 idempotent, and a fresh `lcars launch` after a stop works again.
+`--stop --keep-worktree` stops the same process group but retains the checkout
+and records its path. Number One uses this to run declared tests with the app's
+default port free, then relaunches before its browser walk. A later ordinary
+`--stop` still prunes the checkout. `--keep-worktree` requires `--stop`.
+
+### Occupied ports
+
+Before spawning, the launcher checks whether the predicted port already has a
+TCP listener. It never kills that listener. For literal single commands it
+chooses an OS-assigned free port and adapts matching `--port N`, `--port=N`,
+`-p N`, `PORT=N`, or `python3 -m http.server N` selectors; otherwise it supplies
+`PORT` for apps that honor that environment variable. Unrelated arguments and
+explicit ports that disagree with the prediction are preserved. Discovery should
+expose a supported port selector when the app offers one.
+
+This is best-effort: commands containing shell metacharacters are left untouched
+(even when quoted), apps with hard-coded ports that ignore `PORT` cannot be
+adapted, and another process can race the later bind. Missing Python or
+socket-inspection tools also leave the command unchanged. The normal liveness
+gate still catches failure. On success the final
+`url` always comes from the launched process group's observed socket, **not**
+the free-port suggestion; `predictedUrl` retains the inspector's original URL,
+including its path, query and fragment.
 
 ## The hint matters
 

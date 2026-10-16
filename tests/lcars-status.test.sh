@@ -47,7 +47,8 @@ SCRIPT="${LCARS_STATUS_SCRIPT:-$REPO_ROOT/skills/lcars-status/status.sh}"
 
 pass=0
 fail=0
-TMPROOT="$(mktemp -d)"
+TMPROOT="$(mktemp -d "${TMPDIR:-.}/lcars-status.XXXXXX")"
+TMPROOT="$(cd "$TMPROOT" && pwd)"
 trap 'rm -rf "$TMPROOT"' EXIT
 
 ok()   { printf '  \033[32mPASS\033[0m %s\n' "$1"; pass=$((pass + 1)); }
@@ -161,6 +162,59 @@ write_mission "$repo4d" "lcars-20260530-001" "implement" "42" \
 ( cd "$repo4d" && bash "$SCRIPT" >out.txt 2>&1 )
 check "4. legend IS shown once a glyph is rendered" \
   "grep -qi 'paused' '$repo4d/out.txt' && grep -qi 'awaiting your input' '$repo4d/out.txt'"
+
+# Terminal pause history must not look live, even when a gate overrides the
+# displayed stage. Drive the same CLI with done-only, mixed and gated boards.
+for scenario in done-only mixed gated-done gated-mixed; do
+  pause_repo="$(new_init_repo)"
+  write_mission "$pause_repo" "pause-done" "done" "42" \
+    "2026-05-30T10:00:00Z" "Finished mission" "true"
+  if [ "$scenario" != "done-only" ] && [ "$scenario" != "gated-done" ]; then
+    write_mission "$pause_repo" "pause-active" "implement" "43" \
+      "2026-05-30T11:00:00Z" "Working mission" "true"
+  fi
+  case "$scenario" in
+    gated-*)
+      for state in "$pause_repo"/.git/lcars/missions/*/state.json; do
+        python3 - "$state" <<'PY'
+import json, sys
+path = sys.argv[1]
+with open(path) as f:
+    state = json.load(f)
+state.update(awaitingHuman=True, pendingQuestion="Keep this question visible?")
+with open(path, "w") as f:
+    json.dump(state, f)
+with open(path.replace("state.json", "pending.json"), "w") as f:
+    json.dump({"stage": "research" if state["stage"] == "done" else "done"}, f)
+PY
+      done ;;
+  esac
+  for state in "$pause_repo"/.git/lcars/missions/*/state.json; do
+    cp "$state" "$state.before"
+    [ ! -f "${state%state.json}pending.json" ] || \
+      cp "${state%state.json}pending.json" "${state%state.json}pending.json.before"
+  done
+  ( cd "$pause_repo" && bash "$SCRIPT" >out.txt 2>&1 )
+  check "4-terminal $scenario. done row is visible without a live pause glyph" \
+    "grep -q '^pause-done ' '$pause_repo/out.txt' && ! grep -q '^pause-done .*⏸' '$pause_repo/out.txt'"
+  case "$scenario" in
+    done-only|gated-done)
+      check "4-terminal $scenario. no pause legend without a rendered paused row" \
+        "! grep -q '⏸\\|paused' '$pause_repo/out.txt'" ;;
+    *)
+      check "4-terminal $scenario. nonterminal row and pause legend stay paused" \
+        "grep -q '^pause-active .*⏸' '$pause_repo/out.txt' && grep -q '^Legend: .*⏸ paused' '$pause_repo/out.txt'" ;;
+  esac
+  case "$scenario" in
+    gated-*)
+      check "4-terminal $scenario. done gate keeps displayed stage and input glyph" \
+        "grep -q '^pause-done .*research.*❓' '$pause_repo/out.txt' && grep -q 'Keep this question visible?' '$pause_repo/out.txt' && grep -q '^Legend: .*❓ awaiting your input' '$pause_repo/out.txt'" ;;
+  esac
+  for before in "$pause_repo"/.git/lcars/missions/*/*.before; do
+    check "4-terminal $scenario. recorded ${before##*/} is unchanged" \
+      "cmp -s '$before' '${before%.before}'"
+  done
+done
 
 # --- Behaviour 5: awaiting-human indicator + question ---------------------
 repo5="$(new_init_repo)"
@@ -921,17 +975,17 @@ check "R5. the double-glyph row still carries both glyphs and its title" \
   "qgrep -qE '⏸❓ +Zero issue' '$repoR/outR.txt'"
 
 # R3. `json_str` cannot tell UNSET from EMPTY, so a `"testCommand": null` config
-# printed a bare label and a blank value in the buddy readout — indistinguishable
+# printed a bare label and a blank value in the EEH readout — indistinguishable
 # from a testCommand set to the empty string, and unreadable either way.
-BUDDY="$REPO_ROOT/skills/lcars-buddy/buddy.sh"
+EEH="$REPO_ROOT/skills/lcars-eeh/eeh.sh"
 repoB="$(new_init_repo)"
 printf '{\n  "model": "claude-sonnet",\n  "testCommand": null,\n  "stack": "python"\n}\n' \
   >"$repoB/.git/lcars/config.json"
-( cd "$repoB" && bash "$BUDDY" >outB.txt 2>&1 )
+( cd "$repoB" && bash "$EEH" >outB.txt 2>&1 )
 check "R3. an unset testCommand SAYS it is unset, not a blank line" \
   "qgrep -qE 'testCommand: +\(unset\)' '$repoB/outB.txt'"
 check "R3. a SET testCommand still prints its value" \
-  "printf '{\"model\": \"claude-sonnet\", \"testCommand\": \"pytest -q\"}\n' >'$repoB/.git/lcars/config.json'; ( cd '$repoB' && bash '$BUDDY' >outB2.txt 2>&1 ); qgrep -q 'pytest -q' '$repoB/outB2.txt'"
+  "printf '{\"model\": \"claude-sonnet\", \"testCommand\": \"pytest -q\"}\n' >'$repoB/.git/lcars/config.json'; ( cd '$repoB' && bash '$EEH' >outB2.txt 2>&1 ); qgrep -q 'pytest -q' '$repoB/outB2.txt'"
 
 # ==========================================================================
 echo

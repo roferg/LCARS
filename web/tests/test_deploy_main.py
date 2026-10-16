@@ -540,10 +540,38 @@ class MainLaunchMetaTest(unittest.TestCase):
                                     git_url_reader=lambda r: "git@x:acme/repo.git")
 
     def test_meta_byte_identical_without_a_deploy(self):
-        meta = self.adapter.board()["meta"]
+        """No deploy ⇒ no `mainLaunch` key, and nothing else sneaks in.
+
+        S274 added THREE keys to this shape, on every board: `enginesHere`
+        (which CLIs this laptop has — a list, and `[]` is an answer) and
+        `engineSource` (where the daemon's worker engine came from). They used
+        to be published only for a repo that had run `lcars xo`, which meant a
+        board could not say which engines were installed unless Number One was
+        configured. The engines are pinned to "neither installed" through the
+        LCARS_*_BIN seams here so this exact-equality assertion measures the
+        fixture rather than the tester's laptop — `engineDefault` and
+        `workerEngine` are then null, and a null meta key lands absent.
+        """
+        old = {k: os.environ.get(k)
+               for k in ("LCARS_CLAUDE_BIN", "LCARS_COPILOT_BIN")}
+
+        def restore():
+            for k, v in old.items():
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
+        self.addCleanup(restore)
+        nope = os.path.join(self.tmp, "no-such-cli")
+        os.environ["LCARS_CLAUDE_BIN"] = nope
+        os.environ["LCARS_COPILOT_BIN"] = nope
+        meta = LocalAdapter(
+            self.tmp, git_url_reader=lambda r: "git@x:acme/repo.git"
+        ).board()["meta"]
         self.assertNotIn("mainLaunch", meta)
         self.assertEqual(meta, {"repo": "acme/repo", "adapter": "local",
-                                "mode": "read-write"})
+                                "mode": "read-write",
+                                "enginesHere": [], "engineSource": "none"})
 
     def test_meta_gains_main_launch_with_a_running_record(self):
         _plant_main_launch(self.tmp, status="running", branch="main",

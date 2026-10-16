@@ -105,6 +105,70 @@ class HelpBase(unittest.TestCase):
         return self.run_board(**spec)
 
 
+@unittest.skipUnless(NODE, "node is required for the board.js vm harness")
+class VerifyMergeLockTest(HelpBase):
+    REASON = "No open PR to merge yet — re-run the mission so Verify opens one."
+
+    def verify(self, review):
+        mi = dict(VERIFY_DETAIL, review=review)
+        out = self.run_board(board({"verify": [mi]}), missionDetail=mi,
+                             consoleFirst={"kind": "verify", "mid": mi["id"]})
+        stage = out["stageBeforeHelp"]
+        merges = [a for a in stage["acts"] if a["act"] == "merge"]
+        self.assertEqual(len(merges), 1)
+        self.assertFalse(stage["hidden"])
+        return stage, merges[0]
+
+    def assert_enabled(self, review):
+        stage, merge = self.verify(review)
+        self.assertFalse(merge["disabled"])
+        self.assertNotIn("locked", merge["cls"].split())
+        self.assertEqual(merge["text"], "✓ Merge PR")
+        self.assertTrue(merge["clickable"])
+        self.assertIn("In review — PR open · ", stage["text"])
+        self.assertIn({"text": "PR #1", "href": VERIFY_DETAIL["prUrl"]}, stage["links"])
+        self.assertNotIn(self.REASON, stage["text"])
+        self.assertNotEqual(merge["title"], self.REASON)
+
+    def test_open_review_enables_merge(self):
+        self.assert_enabled("open")
+
+    def test_null_review_enables_merge(self):
+        self.assert_enabled(None)
+
+    def test_in_review_pr_row_is_truthful_and_keeps_link(self):
+        stage, merge = self.verify("in-review")
+        self.assertNotIn("PR open", stage["text"])
+        self.assertIn("No open PR to merge — PR · ", stage["text"])
+        self.assertIn({"text": "PR #1", "href": VERIFY_DETAIL["prUrl"]}, stage["links"])
+        self.assertTrue(merge["disabled"])
+        self.assertIn(self.REASON, stage["text"])
+
+    def test_reconcile_wordings_are_unchanged(self):
+        for status, wording in (
+                ("escalated", "Awaiting your design call — PR · "),
+                ("healing", "Merge heal in progress — PR · ")):
+            with self.subTest(reconcileStatus=status):
+                mi = dict(VERIFY_DETAIL, review="in-review", reconcileStatus=status)
+                out = self.run_board(board({"verify": [mi]}), missionDetail=mi,
+                                     consoleFirst={"kind": "verify", "mid": mi["id"]})
+                stage = out["stageBeforeHelp"]
+                self.assertFalse(stage["hidden"])
+                self.assertIn(wording, stage["text"])
+                self.assertNotIn("PR open", stage["text"])
+                self.assertNotIn("No open PR to merge — PR · ", stage["text"])
+                self.assertIn({"text": "PR #1", "href": VERIFY_DETAIL["prUrl"]},
+                              stage["links"])
+
+    def test_in_review_disables_merge_with_visible_lock_and_reason(self):
+        stage, merge = self.verify("in-review")
+        self.assertTrue(merge["disabled"])
+        self.assertIn("locked", merge["cls"].split())
+        self.assertEqual(merge["text"], "⊘ Merge PR")
+        self.assertEqual(merge["title"], self.REASON)
+        self.assertIn(self.REASON, stage["text"])
+
+
 # ══════════ 1. two ways in, one console; Esc is the way out ══════════
 
 @unittest.skipUnless(NODE, "node is required for the board.js vm harness")

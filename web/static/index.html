@@ -4,6 +4,11 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>LCARS — Kanban Board</title>
+<!-- S288 (D5): the board's own icon. Without this line a browser asks for
+     /favicon.ico on EVERY page view and logs a 404 in the console every
+     time; declared, it asks for this instead and the console stays clean.
+     Served by the daemon's static handler like board.css/board.js. -->
+<link rel="icon" type="image/svg+xml" href="/favicon.svg">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Antonio:wght@400;500;600;700&family=Oxanium:wght@400;600;700&display=swap" rel="stylesheet">
@@ -110,6 +115,14 @@
          there is something to put on it"). Hidden, and the board byte-identical
          to its pre-S184 self, on every repo that has a foundation. -->
     <div class="front-door" id="frontDoor" hidden></div>
+
+    <!-- S275 no-engine band: filled by board.js when board.meta.enginesHere is
+         an EMPTY LIST (the detector asked and found nothing) — never when the
+         key is absent, which only means the daemon could not answer. It uses
+         the version banner's own `.version-banner` / `.vb-band` furniture, so
+         it adds no second banner idiom and no colour. Sits under the front
+         door so a day-zero repo with no CLI gets it too. -->
+    <div class="version-banner" id="engineBanner" hidden></div>
 
     <!-- S196 B5 ownership filter: its OWN row above the board (the version-
          banner placement idiom — never inside the topbar button cluster, whose

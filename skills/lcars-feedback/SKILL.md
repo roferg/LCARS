@@ -1,6 +1,14 @@
 ---
 name: lcars-feedback
-description: Send an LCARS Mission back to Align with the captain's feedback — the Verify feedback loop. Appends the note to the Mission's feedback.md (a durable, accumulating history), resets the stage to `align`, and moves the GitHub label to `lcars:align`, while deleting none of the prior artifacts (PRD, research, validated/approved plans) so the next `lcars run` re-enters Align with the full history. Use when the captain runs `lcars feedback <mission-id> "<feedback>"`, or asks to send a Mission back / reject it with changes / re-align it after reviewing it in Verify.
+description: >-
+  Send an LCARS Mission back to Align with the captain's feedback — the
+  Verify feedback loop. Appends the note to the Mission's feedback.md (a
+  durable, accumulating history), resets the stage to `align`, and moves the
+  GitHub label to `lcars:align`, while deleting none of the prior artifacts
+  (PRD, research, validated/approved plans) so the next `lcars run`
+  re-enters Align with the full history. Use when the captain runs `lcars
+  feedback <mission-id> "<feedback>"`, or asks to send a Mission back /
+  reject it with changes / re-align it after reviewing it in Verify.
 ---
 
 # lcars feedback

@@ -15,9 +15,9 @@
 # issue: on GitHub.
 #
 # --- IDENTITY IS THE (host, login) PAIR — NEVER THE NUMERIC ID ----------------
-# Measured against real gh 2.96.0 (skills/lcars-run/ADOPT-RESOLUTION-SPIKE.md,
-# A.5): the SAME login `roferg` has `.id` 40493721 on github.com and 97261 on
-# the enterprise host. An id is meaningless across forges, `.name` is nullable,
+# Measured against real gh 2.96.0; covered by tests/ownership.test.sh:
+# the SAME login can have different numeric ids on github.com and an
+# enterprise host. An id is meaningless across forges, `.name` is nullable,
 # and the same user's `.avatar_url` differs in its query string between the
 # `user` payload and an issue payload. `.login` is the ONLY thing that is both
 # stable and the string the assignee API takes. Everything here therefore keys
@@ -37,7 +37,7 @@
 # `lcars_owner_lock_reason` is the one place the lock is decided. It is a LIGHT
 # lock on purpose:
 #   * only the WRITE verbs consult it (run / respond / approve / feedback / log)
-#     — the READ verbs (status, buddy, the viewscreen's reads) are NEVER blocked;
+#     — the READ verbs (status, the EEH, the viewscreen's reads) are NEVER blocked;
 #   * an UNASSIGNED mission is never locked (empty is "unowned", not an error);
 #   * an UNRESOLVABLE identity is never locked — if we cannot say who we are, we
 #     do not get to tell the captain he is someone else;

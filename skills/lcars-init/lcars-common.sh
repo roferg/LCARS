@@ -382,7 +382,7 @@ $(grep -oE "[[:space:]]id=[\"'][^\"']*[\"']" "$f" \
 # lcars_prd_inject_constraint <prd-path> <line> -> adds <line> as a bullet of
 # the PRD's Constraints section, ONCE. IDEMPOTENT on the line's own leading
 # token, so a PRD whose Constraints already carry the rule (the captain pasted
-# it, an autopilot injected it, or this ran before) never grows a second copy.
+# it, an ECH injected it, or this ran before) never grows a second copy.
 # Returns 0 whether or not it wrote: a PRD that cannot be read is left alone.
 lcars_prd_inject_constraint() { # prd-path line
   [ -f "$1" ] || return 0
@@ -2423,8 +2423,9 @@ _lcars_config_insert_head_key() {
   mv "$tmp" "$config"
 }
 
-# lcars_clone_id <config-path> — this clone's durable 32-hex identity.
+# lcars_clone_id <config-path> [--dry-run] — this clone's durable 32-hex identity.
 #
+# With --dry-run, resolve the same identity without persisting it.
 # Read it, or mint and PERSIST it. The canonical home is `cloneId` in the
 # clone's config.json (a NEW key, inserted at the TOP of the object per the
 # house rule). When there is no config.json yet — a repo mid-setup, or a clone
@@ -2447,6 +2448,10 @@ lcars_clone_id() {
     _lcars_valid_clone_id "$fromside" && cid="$fromside"
   fi
   [ -n "$cid" ] || cid="$(_lcars_new_clone_id)"
+  if [ "${2:-}" = "--dry-run" ]; then
+    printf '%s' "$cid"
+    return 0
+  fi
 
   if [ ! -f "$config" ]; then
     [ -d "$dir" ] && { printf '%s\n' "$cid" >"$side" 2>/dev/null || true; }
@@ -2510,6 +2515,7 @@ lcars_mint_mission_id() {
 #   $2  newline-separated "key=jsonvalue" desired pairs, in the canonical key
 #       order. Each jsonvalue is already JSON-formatted (quoted string, number,
 #       null) by the caller.
+#   $3  optional --dry-run: emit the merged JSON to stdout without writing.
 #
 # For each desired key: if the existing config already has it, the EXISTING raw
 # JSON value is preserved; otherwise the supplied default jsonvalue is written.
@@ -2548,7 +2554,11 @@ lcars_config_merge() {
 $desired
 EOF
 
-  printf '{\n%s\n}\n' "$body" >"$config"
+  if [ "${3:-}" = "--dry-run" ]; then
+    printf '{\n%s\n}\n' "$body"
+  else
+    printf '{\n%s\n}\n' "$body" >"$config"
+  fi
 }
 
 # ---------------------------------------------------------------------------
@@ -2790,6 +2800,320 @@ DN_MARK
 # distinction is what lets dotnet-with-no-test-project fall THROUGH to the
 # generic Makefile / tests/run.sh fallbacks it always used to reach.
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# THE INERT-DECLARATION FILTER (S299)
+# ---------------------------------------------------------------------------
+# MEASURED, 2026-10-15: an implementor bounced by the post-hoc gate for "no test
+# command LCARS can detect at the repo root" came back having written a
+# `tox.ini` whose entire contents were `[tox]` and an empty `envlist =`. It runs
+# nothing. That particular file detects nothing here either (measured: a lone
+# inert tox.ini has always returned EMPTY, because the python arm claims a
+# RUNNER and not a marker), but it named the class: an arm can claim a repo on
+# an artifact that merely LOOKS like test configuration, and three of them did.
+#
+# THE RULE IS THE DOTNET AND PYTHON ARMS' RULE, ONE STEP FURTHER ON. Those arms
+# stopped claiming on the mere PRESENCE of a marker; these helpers stop claiming
+# on an artifact whose own runnable content is EMPTY. Nothing else changes: an
+# arm that would have emitted a command still emits exactly that command.
+#
+# THE DIRECTION EVERY CHECK ERRS IN IS *ACCEPT*, DELIBERATELY AND WITHOUT
+# EXCEPTION. A false negative here is strictly worse than the decoy it would
+# catch: a legitimate repo whose runner LCARS stops finding is refused at the
+# filing gate and a real mission dies, where a decoy that slips through is
+# caught downstream by the probe's zero-collected outcome and by the flip-flop
+# gate. So each helper answers "is this artifact PROVABLY a no-op?" and returns
+# "no" — accept — for everything it cannot settle: anything naming a runner,
+# anything whose commands it does not recognise, anything it cannot read, and
+# any file shape that could be hiding a recipe (a Makefile with an `include`,
+# a pattern rule, a `.DEFAULT`).
+#
+# NOT EXECUTED, BY CHOICE. `make -n test` would ask make itself (and agrees:
+# "Nothing to be done for `test'"), but `-n` still RUNS sub-makes and evaluates
+# `$(shell …)`, and detection must stay side-effect-free and work on a machine
+# where the runner is not installed — the same determinism the python arm's
+# comment argues for. These are narrow STRUCTURAL reads of the one inert shape
+# each, on syntax the tool itself defines.
+#
+# WHAT THEY CANNOT SEE: a recipe that runs a real command which happens to do
+# nothing (`test:` → `@echo ok`, a `tests/run.sh` that loops over an empty
+# directory, `npm test` → a script that exits before collecting); a runner
+# installed but mis-wired; a suite that collects zero tests. Those are the
+# PROBE's question (run_probe's `zero-collected`), not detection's, and this
+# filter deliberately does not reach for them.
+
+# The shell no-ops. A segment whose first word is one of these runs no tests;
+# ANY other first word means we cannot tell, and the artifact is accepted.
+#
+# S299 fix round 1 — `set` and `cd` joined the list. Both were already treated
+# as no-ops by the run.sh arm (which DELETED `set` lines before looking) and
+# neither can run a test on its own; and because a segment list is only
+# "provably inert" when EVERY segment is a no-op, adding them can only matter
+# where nothing else runs either. `set -e; ./suite.sh` still ACCEPTS on
+# `./suite.sh`; `cd src && go test ./...` accepts on the runner token.
+_DTC_NOOP_WORDS='echo printf true false : exit set cd'
+
+# ---------------------------------------------------------------------------
+# _dtc_noop_only — THE ONE JUDGEMENT, shared by all three arms (S299 fix 1)
+# ---------------------------------------------------------------------------
+# 0 when <body> — a package.json `test` script, a Makefile `test:` recipe, or a
+# `tests/run.sh` body — PROVABLY runs no commands that could run a test. 1
+# (ACCEPT) for everything it cannot settle.
+#
+# WHY IT IS ONE FUNCTION. It shipped as the npm arm's private logic and the
+# other two arms asked a weaker question ("is there any command at all?"), so
+# the SAME string got two verdicts: `"test": "true"` was refused while a
+# Makefile recipe of `true` was accepted. Three copies could not help diverging
+# again, so there is exactly one copy and the three arms differ only in how they
+# EXTRACT a body and how they WORD the refusal. Any future rule lands here and
+# lands on all three at once.
+#
+# THE DIRECTION IT ERRS IN IS ACCEPT, at every branch:
+#   * a RUNNER TOKEN anywhere is a full stop — accept, whatever else is there;
+#   * a command substitution or a backtick can run a command this read cannot
+#     see (`: $(./suite.sh)` really does run the suite) — accept;
+#   * a process substitution (`>(…)`, `<(…)`) likewise — accept;
+#   * any segment whose first word is not on the tiny no-op list — accept.
+# Only a body in which EVERY segment is a known no-op is refused.
+#
+# PLAIN REDIRECTION IS NOT A REASON TO ACCEPT, and that is the one tightening
+# this round makes to the shared rule. The npm arm bailed on any `>` or `<` on
+# the grounds that "a redirection can put a command where this cannot see it" —
+# which is true of `>(…)` and of `$(…)`, and false of `>&2`, `2>&1`, `> out.log`
+# and `< fixture.txt`: a redirection TARGET is a file or a descriptor, never a
+# command. Keeping the blanket bail meant `echo "no tests configured" >&2` was
+# accepted while the identical line without `>&2` was refused. So the two
+# process-substitution forms still bail, and a descriptor redirection is merely
+# NEUTRALISED before splitting — `>&2` carries an `&` that is not a command
+# separator, and splitting on it invented a phantom segment (`2`) whose first
+# word is unknown, which is exactly how the decoy got in.
+#
+# IT IS NOT ASKED "is the body empty?" — an empty body is each arm's own
+# question, because each one has a better sentence for it.
+_dtc_noop_only() { # body → 0 provably inert, 1 accept
+  local body="$1"
+  printf '%s' "$body" | grep -qE "$LCARS_TEST_RUNNER_TOKENS" && return 1
+  case "$body" in *'$('*|*'`'*|*'>('*|*'<('*) return 1 ;; esac
+  # EVERY segment must be a known no-op. The split is on `;`, `|` and `&`, which
+  # covers `&&` and `||` too (they yield an empty middle segment, skipped) — and
+  # it must happen in awk rather than in a shell loop fed by a heredoc, because
+  # an unquoted heredoc eats the backslash-newlines a multiline `sed` script
+  # needs and silently deletes the separators instead of splitting on them. That
+  # bug called `echo x | node t.js` a no-op; `node` is now seen.
+  printf '%s\n' "$body" | awk -v noops="$_DTC_NOOP_WORDS" '
+    BEGIN { n = split(noops, w, " "); for (i = 1; i <= n; i++) ok[w[i]] = 1 }
+    {
+      line = $0
+      # `>&2`, `2>&1`, `1>&-` — a descriptor redirection, not a separator.
+      gsub(/[0-9]*[<>]+&[0-9-]*/, " ", line)
+      m = split(line, seg, /[;|&]/)
+      for (i = 1; i <= m; i++) {
+        cmd = seg[i]; sub(/^[ \t]+/, "", cmd); sub(/[ \t].*$/, "", cmd)
+        if (cmd != "" && !(cmd in ok)) live = 1
+      }
+    }
+    END { exit live ? 1 : 0 }
+  '
+}
+
+# _dtc_first_cmd — the first non-blank line of <body>, trimmed and clipped, so a
+# refusal can QUOTE what it found instead of describing it in the abstract.
+_dtc_first_cmd() {
+  printf '%s\n' "$1" | awk '
+    /[^ \t]/ { sub(/^[ \t]+/, ""); sub(/[ \t]+$/, "")
+               if (length($0) > 60) $0 = substr($0, 1, 57) "..."
+               printf "%s", $0; exit }'
+}
+
+# _dtc_inert_npm_test — the root package.json's `test` script provably runs
+# nothing. Prints the reason and returns 0; silent 1 otherwise.
+_dtc_inert_npm_test() {
+  local pj="$TOPLEVEL/package.json" raw body
+  [ -f "$pj" ] && [ -r "$pj" ] || return 1
+  # The value WITH its escapes intact — `[^"\]|\\.` so a `\"` inside the script
+  # cannot truncate it. A truncated body is how a lazy read calls
+  # `echo "x" && jest` a no-op.
+  raw="$(grep -Eo '"test"[[:space:]]*:[[:space:]]*"([^"\]|\\.)*"' "$pj" 2>/dev/null | head -1)"
+  [ -n "$raw" ] || return 1
+  body="${raw#*:}"
+  body="${body#"${body%%[^[:space:]]*}"}"
+  body="${body#\"}"; body="${body%\"}"
+  body="$(printf '%s' "$body" | sed 's/\\"/"/g; s/\\\\/\\/g')"
+  if [ -z "$(printf '%s' "$body" | tr -d '[:space:]')" ]; then
+    printf 'a package.json `test` script that is EMPTY — `npm test` runs no tests and exits 0'
+    return 0
+  fi
+  _dtc_noop_only "$body" || return 1
+  printf 'a package.json `test` script that names no test runner and only runs shell no-ops (`%s`) — it runs no tests' "$body"
+}
+
+# _dtc_make_recipe_prefix — the character that introduces a recipe line in
+# <makefile>. A TAB unless the file sets `.RECIPEPREFIX` (GNU Make >= 3.82),
+# which is a legal, working Makefile this detector used to misread as having no
+# recipe at all — it looked for tabs and nothing else, so a `>`-prefixed recipe
+# was invisible and a real runner was refused. The last assignment wins, which
+# is make's own rule for a simple variable read top-to-bottom.
+#
+# Prints the character, or EMPTY for "a tab" (also what an explicitly empty
+# `.RECIPEPREFIX =` means to make: the default comes back).
+_dtc_make_recipe_prefix() {
+  awk '
+    /^[ \t]*\.RECIPEPREFIX[ \t]*[:+?]?=/ {
+      v = $0
+      sub(/^[ \t]*\.RECIPEPREFIX[ \t]*[:+?]?=/, "", v)
+      sub(/^[ \t]+/, "", v)
+      p = substr(v, 1, 1)
+    }
+    END { printf "%s", p }
+  ' "$1" 2>/dev/null
+}
+
+# _dtc_inert_make_test — the Makefile's `test:` target cannot run a test.
+# Prints the reason and returns 0; silent 1 (ACCEPT) otherwise.
+#
+# THREE SHAPES, THREE SENTENCES (S299 fix round 1 — the message used to claim
+# "no recipe" about two files that plainly had one):
+#   norecipe  no recipe and no prerequisites → `make test` prints "Nothing to be
+#             done for `test'." and exits 0 (verified by running it).
+#   spaces    a recipe indented with SPACES instead of a tab → real make refuses
+#             the file outright: "*** missing separator (did you mean TAB
+#             instead of 8 spaces?). Stop." Refusing is right; saying "no
+#             recipe" was not, because the fix is one keystroke and naming it
+#             is the whole value of the message.
+#   noop      a recipe that runs only shell no-ops (`@echo "no tests yet"`,
+#             `true`, `:`, `exit 0`) → judged by `_dtc_noop_only`, the SAME
+#             function that judges the npm script, so the same string can no
+#             longer get two verdicts.
+# Prerequisites, or any recipe line this read cannot prove inert, ACCEPT.
+_dtc_inert_make_test() {
+  local mf="$TOPLEVEL/Makefile" pfx kind cmds out
+  [ -f "$mf" ] && [ -r "$mf" ] || return 1
+  grep -q '^test:' "$mf" || return 1   # the generic arm's own gate, unchanged
+  # A file that pulls rules in, matches any target, or has a default rule may
+  # hold a recipe this read cannot see — accept.
+  grep -qE '^[[:space:]]*[-s]?include[[:space:]]' "$mf" && return 1
+  grep -qE '^(\.DEFAULT|\.DEFAULT_GOAL|[^:[:space:]]*%[^:[:space:]]*):' "$mf" && return 1
+  # S299 fix round 1 — a GENERATED rule is also out of sight. A `define` block or
+  # an `$(eval …)` can declare `test:` with a recipe this structural read would
+  # attribute to the wrong place (the `test:` line inside a `define` body looks
+  # exactly like a real target), so the whole file is accepted rather than
+  # guessed at. Same family as the `include` bail above, same direction.
+  grep -qE '^[[:space:]]*define[[:space:]]|\$\(eval' "$mf" && return 1
+  pfx="$(_dtc_make_recipe_prefix "$mf")"
+  # A `#` prefix would collide with this read's comment stripping — accept
+  # rather than guess.
+  [ "$pfx" = '#' ] && return 1
+  [ -n "$pfx" ] || pfx="$(printf '\t')"
+  out="$(awk -v pfx="$pfx" '
+    BEGIN { tab = "\t" }
+    /^test[ \t]*::?/ {
+      found = 1; inrec = 1
+      rest = $0; sub(/^test[ \t]*::?/, "", rest); sub(/#.*$/, "", rest)
+      if (rest ~ /[^ \t]/) prereq = 1   # prerequisites, or an inline `; recipe`
+      next
+    }
+    inrec {
+      c = substr($0, 1, 1)
+      if (c == pfx || c == tab) {       # a recipe line, by make'"'"'s own syntax
+        body = $0
+        while (substr(body, 1, 1) == pfx || substr(body, 1, 1) == tab) body = substr(body, 2)
+        sub(/^[-@+]+/, "", body); sub(/#.*$/, "", body)
+        if (body ~ /[^ \t]/) { recipe = 1; cmds = cmds body "\n" }
+        next
+      }
+      if ($0 ~ /^[ \t]*(#|$)/) next     # blanks and comments decide nothing
+      # A SPACE-indented line that reads as a command, not as an assignment, a
+      # rule or a make directive: this is the "missing separator" file.
+      if ($0 ~ /^ +[^ \t]/ && $0 !~ /[:=]/ \
+          && $0 !~ /^ +(include|-include|sinclude|ifeq|ifneq|ifdef|ifndef|else|endif|define|endef|export|unexport|override|vpath|undefine)([ \t]|$)/) {
+        spaced = 1; next
+      }
+      inrec = 0
+    }
+    END {
+      if (!found)  { print "accept";  exit 0 }
+      if (prereq)  { print "accept";  exit 0 }
+      if (recipe)  { printf "noop\n%s", cmds; exit 0 }
+      if (spaced)  { print "spaces";  exit 0 }
+      print "norecipe"
+    }
+  ' "$mf" 2>/dev/null)"
+  kind="${out%%
+*}"
+  cmds="${out#*
+}"; [ "$cmds" = "$out" ] && cmds=""
+  case "$kind" in
+    accept)   return 1 ;;
+    norecipe) printf 'a Makefile `test:` target with no recipe and no prerequisites — `make test` prints "Nothing to be done" and runs no tests'; return 0 ;;
+    spaces)   printf 'a Makefile `test:` target whose recipe is indented with SPACES, not a tab — make refuses the whole file ("missing separator"), so `make test` runs no tests'; return 0 ;;
+    noop)
+      _dtc_noop_only "$cmds" || return 1
+      printf 'a Makefile `test:` target whose recipe names no test runner and only runs shell no-ops (`%s`) — `make test` runs no tests' "$(_dtc_first_cmd "$cmds")"
+      return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# _dtc_inert_run_sh — tests/run.sh exists but cannot run a test: it holds no
+# command at all (only a shebang, comments and blank lines), or every command in
+# it is a shell no-op (`true`, `:`, `exit 0`, an `echo` and nothing else).
+# Verified by running both shapes: exit 0, nothing run.
+#
+# S299 fix round 1 — the second half is new, and it is `_dtc_noop_only`, the
+# same judgement the npm script gets. `set` lines are no longer DELETED here;
+# `set` is on the shared no-op list instead, which is the same answer reached
+# in one place rather than two. Prints the reason and returns 0.
+_dtc_inert_run_sh() {
+  local f="$TOPLEVEL/tests/run.sh" body
+  [ -f "$f" ] && [ -r "$f" ] || return 1
+  body="$(sed -e '1{/^#!/d
+}' -e 's/#.*$//' "$f" 2>/dev/null)"
+  if [ -z "$(printf '%s' "$body" | tr -d '[:space:]')" ]; then
+    printf 'a tests/run.sh with no commands in it — the file is there but runs no tests'
+    return 0
+  fi
+  _dtc_noop_only "$body" || return 1
+  printf 'a tests/run.sh that names no test runner and only runs shell no-ops (`%s`) — it runs no tests' "$(_dtc_first_cmd "$body")"
+}
+
+# _dtc_inert_tox — a tox.ini that declares no environment: an empty/absent
+# `envlist` AND no `[testenv…]` section, so `tox` has nothing to launch. This is
+# the artifact that named the class.
+#
+# MESSAGE-ONLY, BY CONSTRUCTION: `_dtc_python` does NOT consult it. tox.ini is
+# that arm's MARKER, never its command, and a repo carrying an inert tox.ini
+# beside a real pytest/unittest layout detects a REAL runner — demoting the
+# marker would refuse that repo, which is exactly the false negative this
+# session must not ship. So this helper can only change the WORDING of a
+# refusal that had already happened.
+_dtc_inert_tox() {
+  local f="$TOPLEVEL/tox.ini"
+  [ -f "$f" ] && [ -r "$f" ] || return 1
+  grep -qE '^[[:space:]]*\[testenv' "$f" && return 1
+  grep -qE '^[[:space:]]*envlist[[:space:]]*=[[:space:]]*[^[:space:]]' "$f" && return 1
+  # tox.ini doubles as a config file for other tools; a `[pytest]` table there
+  # is a real declaration and the python arm already reads it.
+  grep -qE '^[[:space:]]*\[(pytest|tool:pytest|flake8|coverage)' "$f" && return 1
+  printf 'a tox.ini that declares no environment to run — an empty `envlist` and no `[testenv]` section, so `tox` has nothing to launch'
+}
+
+# detect_inert_test_config — WHY the repo root's test configuration, such as it
+# is, cannot be run. Prints one phrase per inert artifact found (joined with
+# "; ") and returns 0; silent 1 when there is nothing to explain.
+#
+# This is the MESSAGE half of the filter, kept as its own entry point rather
+# than as a global the arms set: `detect_test_cmd` is called in a command
+# substitution everywhere, so a global could never reach its caller. The gate
+# asks this second, once detection has come back empty — see
+# `greenfield_inert_why` in skills/lcars-run/run.sh.
+detect_inert_test_config() {
+  local out="" leg r
+  for leg in npm_test make_test run_sh tox; do
+    if r="$("_dtc_inert_$leg")"; then out="${out:+$out; }$r"; fi
+  done
+  [ -n "$out" ] || return 1
+  printf '%s' "$out"
+}
+
 _dtc_js() {
   [ -f "$TOPLEVEL/package.json" ] && grep -q '"test"[[:space:]]*:' "$TOPLEVEL/package.json" || return 1
     # Monorepo (a pnpm workspace, or a "workspaces" field): a bare `npm test` /
@@ -2812,7 +3136,7 @@ _dtc_js() {
             vitest) echo "$VITEST_RELATIVIZING_CMD";            return ;;
             jest)   echo 'npx jest ${LCARS_TESTS_DIR:+"${LCARS_TESTS_DIR}"}';       return ;;
             mocha)  echo 'npx mocha ${LCARS_TESTS_DIR:+"${LCARS_TESTS_DIR}"}';      return ;;
-            *)      echo 'npm test -- ${LCARS_TESTS_DIR:+"${LCARS_TESTS_DIR}"}';    return ;;
+            *)      _dtc_js_npm_fallback;                                           return ;;
           esac ;;
       esac
     fi
@@ -2822,7 +3146,23 @@ _dtc_js() {
     case "$(grep -Eo '"test"[[:space:]]*:[[:space:]]*"[^"]*"' "$TOPLEVEL/package.json" | head -1)" in
       *vitest*) echo "$VITEST_RELATIVIZING_CMD"; return ;;
     esac
-    echo 'npm test -- ${LCARS_TESTS_DIR:+"${LCARS_TESTS_DIR}"}'; return 0
+    _dtc_js_npm_fallback; return
+}
+
+# The bare `npm test --` default — UNCHANGED, except that it is not emitted for a
+# `test` script the inert filter can PROVE runs nothing (an empty script, npm's
+# own generated `echo … && exit 1` placeholder, an `echo`-only stand-in). It is
+# reached only AFTER the vitest/jest/mocha and workspace-runner branches have
+# declined, so no repo that names a runner anywhere can land here.
+#
+# A refusal here RETURNS 1 so `_dtc_js` FALLS THROUGH to the generic arm, rather
+# than claiming the repo with an empty answer. That is S147's recorded lesson in
+# the dotnet comment above — a cure must never take an existing arm's answer
+# away — and it means a repo with npm's placeholder plus a real Makefile `test:`
+# target now gets `make test` instead of a command that runs nothing.
+_dtc_js_npm_fallback() {
+  _dtc_inert_npm_test >/dev/null && return 1
+  echo 'npm test -- ${LCARS_TESTS_DIR:+"${LCARS_TESTS_DIR}"}'
 }
 
 # python (S2xx) — the arm claims a RUNNER, never a MARKER. `pyproject.toml` /
@@ -2977,10 +3317,19 @@ _dtc_ruby() {
 # runner (LCARS dogfoods its own tests/run.sh) already resolves a positional dir
 # / $LCARS_TESTS_DIR (BUG-009), so scope it to the quarantined tests when the var
 # is set, else the whole `tests` dir for a human.
+#
+# S299: each of the two runners is skipped when the inert filter can PROVE that
+# artifact runs nothing — a `test:` target with no recipe and no prerequisites,
+# a tests/run.sh holding no command. A skip FALLS THROUGH to the next check (and
+# then out of the arm), so a repo with a no-op Makefile target beside a real
+# tests/run.sh still gets the runner that works. Everything else is untouched:
+# one recipe line, one prerequisite, or one command in the script and the answer
+# is byte-identical to what it has always been.
 _dtc_generic() {
-  if [ -f "$TOPLEVEL/Makefile" ] && grep -q '^test:' "$TOPLEVEL/Makefile"; then
+  if [ -f "$TOPLEVEL/Makefile" ] && grep -q '^test:' "$TOPLEVEL/Makefile" \
+      && ! _dtc_inert_make_test >/dev/null; then
     echo "make test"; return 0; fi
-  if [ -f "$TOPLEVEL/tests/run.sh" ]; then
+  if [ -f "$TOPLEVEL/tests/run.sh" ] && ! _dtc_inert_run_sh >/dev/null; then
     echo 'bash tests/run.sh "${LCARS_TESTS_DIR:-tests}"'; return 0; fi
   return 1
 }
@@ -3199,6 +3548,15 @@ report_probe() {
 #   LCARS_TESTREADY_CANDIDATES  one candidate COMMAND per line, so the captain
 #                               can PICK instead of hiring a discovery worker
 #                               ("" unless status=ambiguous)
+#   LCARS_TESTREADY_INERT_WHY   (S299) the inert-declaration reason, when the
+#                               repo root HOLDS test configuration that provably
+#                               runs nothing — a recipe-less `test:` target, an
+#                               empty tests/run.sh, an npm placeholder script.
+#                               Set only for status=unknown, because that is the
+#                               one verdict that means "detection found no
+#                               command" and so the one that can be explained by
+#                               naming the file that is nevertheless sitting
+#                               there. "" everywhere else.
 lcars_test_readiness_status() {
   local config="$1"
   LCARS_TESTREADY_STATUS=""
@@ -3207,6 +3565,7 @@ lcars_test_readiness_status() {
   LCARS_TESTREADY_STACKS=""
   LCARS_TESTREADY_CANDIDATES=""
   LCARS_TESTREADY_BROKEN_WHY=""
+  LCARS_TESTREADY_INERT_WHY=""
 
   local tc=""
   [ -f "$config" ] && tc="$(lcars_config_get "$config" testCommand)"
@@ -3289,6 +3648,14 @@ EOF2
     return 0
   fi
   LCARS_TESTREADY_STATUS="unknown"
+  # S299 fix round 1 — `unknown` means DETECTION FOUND NO COMMAND, and until now
+  # that is all any surface could say. But a repo can reach `unknown` while
+  # holding a file the captain (or a worker) deliberately put there to be the
+  # test system — a `test:` target with no recipe, a tests/run.sh that only
+  # echoes, npm's generated placeholder. Naming it is what makes the refusal
+  # actionable, and it is the ONLY thing this reason does: it is a string for the
+  # readiness line, never an input to a verdict, so it cannot move a gate.
+  LCARS_TESTREADY_INERT_WHY="$(detect_inert_test_config 2>/dev/null | head -1)"
   return 0
 }
 
@@ -3834,11 +4201,42 @@ lcars_readiness_line() {
       # is UNCHANGED and still shipped — for the repo it is actually true of.
       case "${LCARS_TESTREADY_FOUNDATION:-greenfield}" in
         unconfigured)
+          # S299 fix round 1 — THIS LINE USED TO ASSERT THE OPPOSITE OF WHAT THE
+          # DETECTOR HAD JUST DECIDED. The foundation axis claims a test system
+          # from the mere PRESENCE of an artifact (deliberately, and ledgered:
+          # it feeds the FILING gate, where a false negative kills a mission
+          # before it starts). So a repo whose only test declaration is a
+          # recipe-less `test:` target reached this branch and was told it HAS a
+          # test system — the exact claim the inert filter exists to deny — and
+          # was then handed `--test-command` as the repair. MEASURED: a captain
+          # who followed that prescription got `✓ TEST SYSTEMS ONLINE` and a
+          # passing probe for a `make test` that runs nothing. The product's own
+          # advice walked him back into the bug.
+          #
+          # The right words already existed one function away. Nothing about the
+          # ROUTE changes here (filing is still allowed, and the escape hatch is
+          # still there for someone who knows a runner LCARS missed) — only what
+          # the captain is told he has.
+          if [ -n "${LCARS_TESTREADY_INERT_WHY:-}" ]; then
+            printf '⚠ TEST SYSTEMS OFFLINE — the test configuration at the repo root cannot run: %s; missions cannot be proof-gated. Repair: establish a test runner that actually runs (or, if one is already here that LCARS missed, name it: lcars update --test-command '"'"'<command>'"'"').\n' \
+              "$LCARS_TESTREADY_INERT_WHY"
+            return 0
+          fi
           printf '⚠ TEST SYSTEMS OFFLINE — this repo HAS a test system (%s) but no test command is configured; missions cannot be proof-gated. Repair: lcars update --test-command '"'"'<command>'"'"'\n' \
             "${LCARS_TESTREADY_FOUNDATION_WHY:-detected}"
           ;;
         untested)
-          printf '◇ NO TEST SYSTEM FOUND — this repo has code and nothing to prove it with; LCARS establishes the foundation before a normal mission runs (see Establish Vision).\n'
+          # S299 fix round 1 — THE RESTORED CLAUSE. Before the inert filter, a
+          # repo carrying npm's generated placeholder detected a CANDIDATE, so
+          # it landed in `missing` above and read "(the `test` script here names
+          # no test runner)". The filter stopped emitting that candidate, which
+          # is right, and the repo fell through to `unknown` — where the same
+          # sentence had no parenthetical at all, and the captain lost the one
+          # clause that told him which file was the problem. It is the same
+          # phrase, now sourced from the filter rather than hard-coded, so it
+          # names whichever artifact was actually refused.
+          printf '◇ NO TEST SYSTEM FOUND — this repo has code and nothing to prove it with%s; LCARS establishes the foundation before a normal mission runs (see Establish Vision).\n' \
+            "${LCARS_TESTREADY_INERT_WHY:+ ($LCARS_TESTREADY_INERT_WHY)}"
           ;;
         *)
           # S183 KEPT THE VOICE AND FIXED THE PROMISE. The old line ended "the
@@ -3980,7 +4378,8 @@ lcars_config_get_raw() {
 # ONE list: the reader below stops a heading-form value scan at any of them, so
 # a labelled-but-EMPTY section can never silently absorb the next section's
 # heading as its value. (SKILL.md's template spells the same six.)
-LCARS_PRD_LABELS='Mission|Type|Goal|Acceptance Criteria|Out of Scope|Constraints'
+# "Mission title" is an alias of "Mission" for both validation and extraction.
+LCARS_PRD_LABELS='Mission|Mission title|Type|Goal|Acceptance Criteria|Out of Scope|Constraints'
 
 # _lcars_prd_read <prd-path> <label> <has|value>
 #   has   -> exit 0 when the PRD declares the label in EITHER shape
@@ -3996,7 +4395,7 @@ try:
 except OSError:
     sys.exit(1)
 lines = text.replace("\r\n", "\n").split("\n")
-lab = re.escape(label)
+lab = r"Mission(?: title)?" if label.lower() in ("mission", "mission title") else re.escape(label)
 
 # SHAPE 1 — the bold inline label, matched where the old greps matched it
 # (anywhere on the line), so every PRD that filed yesterday files today.

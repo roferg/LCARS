@@ -1,6 +1,19 @@
 ---
 name: lcars-resolve-logs
-description: Resolve every bug logged against a parent Mission in one batch — the Mission Log resolver. Takes a parent Mission that has N linked bug Missions (filed via `lcars log` during the parent's Verify), decides a sensible resolution order, drives each bug one-by-one to its Verify gate by delegating to the existing `lcars run` driver, and then raises EXACTLY ONE consolidated re-verify human gate plus ONE notification on the parent — instead of N scattered Verify gates. If a bug escalates mid-batch (a cap-exhausted ticket, a scope change, etc.) the batch pauses at that bug, surfaces its question in the `lcars answer` inbox, and resumes from the remaining bugs once you have answered. Adds no new stage logic. Use when the captain runs `lcars resolve-logs <parent>`, asks to resolve / clear / work through the bugs logged against a Mission, or wants the logged bugs of a Mission driven to a single re-verify gate.
+description: >-
+  Resolve every bug logged against a parent Mission in one batch — the
+  Mission Log resolver. Takes a parent Mission that has N linked bug
+  Missions (filed via `lcars log` during the parent's Verify), decides a
+  sensible resolution order, drives each bug one-by-one to its Verify gate
+  by delegating to the existing `lcars run` driver, and then raises EXACTLY
+  ONE consolidated re-verify human gate plus ONE notification on the parent
+  — instead of N scattered Verify gates. If a bug escalates mid-batch (a
+  cap-exhausted ticket, a scope change, etc.) the batch pauses at that bug,
+  surfaces its question in the `lcars answer` inbox, and resumes from the
+  remaining bugs once you have answered. Adds no new stage logic. Use when
+  the captain runs `lcars resolve-logs <parent>`, asks to resolve / clear /
+  work through the bugs logged against a Mission, or wants the logged bugs
+  of a Mission driven to a single re-verify gate.
 ---
 
 # lcars resolve-logs

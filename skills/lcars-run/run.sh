@@ -8709,6 +8709,16 @@ red_gate_env_failure() { # runner-output → 0 if the runner could not execute
   return 1
 }
 
+# LCARS's own missing-initialization diagnostic, captured from `lcars update
+# --probe-tests` in a git repo without .git/lcars. `lcars xo` emits the same
+# diagnostic. Anchor to the CLI prefix so quoted assertion messages do not match.
+red_gate_configuration_failure() { # runner-output → 0 if LCARS configuration is absent
+  local out="$1"
+  printf '%s' "$out" | grep -Eq '^lcars (update|xo): this repo is not initialized for LCARS' \
+    && return 0
+  return 1
+}
+
 # --- S96: actionable failure classification --------------------------------
 # When an Implement (or retest) attempt STOPS, name ONE root-cause CATEGORY so the
 # failure event + awaiting-human gate say WHY, instead of the generic "no usable
@@ -9327,6 +9337,321 @@ greenfield_detect_cmd() { # root → the detected command, or ""
   detect_test_cmd 2>/dev/null | head -1
 }
 
+# S299 — WHY THE ROOT HAS NO RUNNER, when the answer above came back empty. A
+# worker bounced for "no test command LCARS can detect at the repo root" wrote
+# an inert `tox.ini` next time (`[tox]` + an empty `envlist =`), which tells us
+# the refusal was not actionable: it reported an absence over a repo where the
+# worker had just put a FILE. `detect_inert_test_config` names the artifact it
+# found and says why it is not enough. Advisory only — it can never turn an
+# empty detection into a command, so it cannot weaken the gate.
+greenfield_inert_why() { # root → the inert-config reason, or ""
+  # Sourced on demand exactly as greenfield_detect_cmd does it — that call runs
+  # in a command substitution, so its subshell's `.` never reaches this one.
+  if ! command -v detect_inert_test_config >/dev/null 2>&1; then
+    local lib="${LCARS_COMMON_LIB:-$SKILL_DIR/../lcars-init/lcars-common.sh}"
+    # shellcheck source=../lcars-init/lcars-common.sh
+    [ -f "$lib" ] && . "$lib"
+  fi
+  command -v detect_inert_test_config >/dev/null 2>&1 || return 0
+  local TOPLEVEL="$1"
+  detect_inert_test_config 2>/dev/null | head -1
+}
+
+# ---------------------------------------------------------------------------
+# THE FOUNDATION'S .gitignore (S298)
+# ---------------------------------------------------------------------------
+# MEASURED, clean room 2026-10-15: a greenfield mission built a working Python
+# CLI from an empty folder, and its DELIVERED COMMIT carried two
+# `__pycache__/*.pyc` files — because the foundation had written no `.gitignore`
+# at all. The quality floor judges the CODE, not the tree, so it passed it. A
+# newcomer's first delivered commit should not contain build litter, and a
+# repo's ignore file is foundation work in exactly the way its test runner is.
+#
+# ONE ROW PER ARM, keyed by `detect_stack`'s vocabulary and nothing else — the
+# S147 stamp, the same shape as `setup_install_allow_re` above. A second stack
+# taxonomy is how two detectors start disagreeing about what a repo is.
+#
+# The rows are deliberately SHORT. This is the floor a first commit needs, not a
+# curated github/gitignore mirror: each row names the litter that stack's own
+# build and test commands drop, and nothing a human might legitimately want
+# committed (Cargo.lock and go's vendor/ are a project's own call; `.vscode/`
+# is a team's).
+#
+# EVERY ROOT-LEVEL OUTPUT DIRECTORY IS ANCHORED WITH A LEADING `/` (S298 fix
+# round 2). MEASURED: a fresh tester asked `git check-ignore` about the delivered
+# tree of a repo LCARS had just set up, and `tools/build/gen.py`,
+# `docs/build/conf.py`, `src/dist/index.js`, `pkg/dist/README.md` and
+# `scripts/venv/setup.sh` all came back IGNORED. A bare `build/` in a .gitignore
+# is UNANCHORED and matches at every depth, so hand-written source under any
+# directory that happens to be named `build`, `dist`, `venv`, `log`, `tmp` or
+# `target` silently never commits — and nothing reports its absence. That is the
+# worst failure mode this file has. LCARS knows this repo is BRAND NEW and that
+# its build output lands at the root, so anchoring those rows loses nothing real.
+#
+# THE JUDGEMENT IS PER PATTERN, NOT A BLIND PREFIX. A pattern stays unanchored
+# when the directory it names GENUINELY RECURS at depth, because anchoring it
+# would put the original measured defect (litter in the first commit) straight
+# back:
+#   node_modules/   a workspace repo really does carry packages/<pkg>/node_modules/
+#   __pycache__/    python writes one beside every package, at every depth
+#   *.egg-info/     lands wherever setup runs, including a src/ layout
+#   .pytest_cache/  .mypy_cache/  written into whatever directory the tool ran in
+#   .gradle/        a multi-project gradle build writes one per subproject
+#   .bundle/        bundler's per-directory config
+#   [Bb]in/ [Oo]bj/ MSBuild owns these names and writes one PER PROJECT directory
+#                   (src/App/bin/Debug/), so the nesting is structural to the
+#                   ecosystem, exactly like node_modules — and `bin`/`obj` are
+#                   reserved by convention there, so no human source is at risk
+#   TestResults/    `dotnet test` writes it into the project directory, same shape
+# A file glob (`*.pyc`, `*.class`, `*.swp`, `.DS_Store`) is not a directory and
+# is meant to match at every depth, so none of them are touched either. The
+# dot-directories above are a tool's own state: nobody hand-writes source inside
+# one, so an unanchored match cannot hide a human's file.
+greenfield_gitignore_body() { # stack arm id → the ignore body for that arm, or ""
+  case "${1:-}" in
+    js)     printf 'node_modules/\n/dist/\n/build/\n/coverage/\n*.tsbuildinfo\nnpm-debug.log*\n' ;;
+    python) printf '__pycache__/\n*.py[cod]\n/.venv/\n/venv/\n*.egg-info/\n.pytest_cache/\n.mypy_cache/\n/dist/\n/build/\n' ;;
+    rust)   printf '/target/\n**/*.rs.bk\n' ;;
+    go)     printf '/bin/\n*.test\n*.out\ngo.work.sum\n' ;;
+    dotnet) printf '[Bb]in/\n[Oo]bj/\nTestResults/\n*.user\n' ;;
+    jvm)    printf '/target/\n/build/\n.gradle/\n*.class\n' ;;
+    ruby)   printf '.bundle/\n/vendor/bundle/\n/coverage/\n*.gem\n/log/\n/tmp/\n' ;;
+    # NOTHING RESOLVED. The union is the right answer for the INSTALL allowlist
+    # (refusing there strands the captain); it is the WRONG answer here, because
+    # every line is a claim about what this repo builds. An unattributable repo
+    # gets the stack-agnostic litter below and no guess at an ecosystem.
+    *)      printf '' ;;
+  esac
+}
+
+# Litter that is litter on every stack, so it is not a per-arm claim: OS and
+# editor droppings, and the dotenv file whose whole point is to stay local.
+#
+# NOTHING HERE IS ANCHORED, and the S298-round-2 judgement above is why: every
+# row is a FILE, not a directory, and each one is litter at every depth — a
+# `.DS_Store` three directories down is still a .DS_Store, and a nested `.env`
+# is still a secret that must not be committed. Anchoring any of them would
+# narrow a correct rule for no gain.
+greenfield_gitignore_common() {
+  printf '.DS_Store\nThumbs.db\n*.swp\n.env\n.env.local\n'
+}
+
+# SEED A REPO THAT HAS NONE; APPEND, EVIDENCE-GATED, TO A REPO THAT HAS ONE.
+#
+# S298 FIX ROUND 1 — THE DECISION ABOVE WAS REVERSED BY MEASUREMENT. This path
+# used to leave ANY pre-existing `.gitignore` exactly as it found it, on the
+# reasoning that such a file carries a human's opinion and is read as a whole (a
+# later `!keep.log` can un-ignore an earlier line), so appending is not additive
+# the way adding a new file is. The reasoning is sound and the consequence was a
+# known-broken common path: a live run on a repo whose ONLY pre-existing file was
+# a three-line hand-written `.gitignore` delivered four `__pycache__/*.pyc` files
+# — the original defect, silently, with a `gitignore_kept` line as its only
+# trace. A ZERO-BYTE `.gitignore` did the same. The common real shapes that hit
+# this are `git init` plus a starter file and
+# `gh repo create --gitignore=<wrong template>`. "A file exists" is not "a human
+# has an opinion about __pycache__".
+#
+# So: APPEND A CLEARLY-MARKED BLOCK, AND ONLY THE PATTERNS THIS REPO IS PROVEN
+# NOT TO COVER ALREADY. The safeguard that removes the guesswork is that the
+# coverage question is put to GIT, not to a grep of the file — `git check-ignore`
+# is the producer of the decision "is this path ignored in this repo", and it
+# knows the whole chain: every `.gitignore` at every depth, `.git/info/exclude`,
+# core.excludesFile, and the `!` negations that are exactly what a text match
+# gets backwards. Inferring coverage from the file's text would be inventing a
+# second, worse answer to a question something else already answers
+# (ORCHESTRATION.md's infer-vs-record rule).
+#
+# The guarantees, in order of how much they would cost to break:
+#   1. The human's bytes are a PREFIX of the result. Nothing is reordered,
+#      rewritten, de-duplicated or removed — the write is `>>`, never `>`.
+#   2. A repo that already covers everything comes out BYTE-IDENTICAL, with
+#      nothing appended at all, and is still recorded as kept.
+#   3. The block says LCARS wrote it and that it may be deleted, so the next
+#      human can tell our lines from their own and knows they own them.
+#   4. If git cannot answer, nothing is written. A coverage question we could not
+#      put to the authority is not one we answer ourselves.
+# A zero-byte or whitespace-only file needs no special case: it covers nothing,
+# so every pattern is uncovered and the whole block lands.
+#
+# The ARM is PASSED IN, never re-derived here: `apply_declared_setup` has already
+# resolved it for the install allowlist, from the tree, the declaration and the
+# repo's recorded stack. Re-reading the tree a second time at this point would be
+# asking the same question of a tree the setup has since changed, and inventing a
+# chance for the two answers to differ. The unattributable arm still contributes
+# no ecosystem patterns (`greenfield_gitignore_body`'s `*)` row), here as there.
+
+# A PROBE PATH for one ignore pattern: a concrete path whose being-ignored is
+# the same question as the pattern being covered, so `git check-ignore` can be
+# asked about it. Pure syntax, no tree access.
+# S298 ROUND 2 — ANCHORING DOES NOT DISTURB THIS. The `${p#/}` strip below means
+# `/build/` and `build/` derive the IDENTICAL probe (`build/lcars-probe`), so
+# anchoring the body changed no probe path and no coverage verdict. It also makes
+# the probe EXACTLY the question the anchored pattern asks: `/build/` is a claim
+# about the root-level `build/` only, and `build/lcars-probe` is precisely a
+# root-level path inside it.
+greenfield_gitignore_probe_path() { # ignore-pattern → a path git can judge
+  local p="${1:-}" pre rest cls post
+  [ -n "$p" ] || return 0
+  p="${p#/}"        # a rooted pattern is still just that path from the root
+  p="${p#\*\*/}"    # `**/x` matches a bare `x` at the root too
+  # A character class is ONE OF its members; take the first so the probe is a
+  # concrete name (`[Oo]bj/` → `Obj/`, `*.py[cod]` → `*.pyc`).
+  while :; do
+    case "$p" in *\[*\]*) ;; *) break ;; esac
+    pre="${p%%\[*}"; rest="${p#*\[}"; cls="${rest%%\]*}"; post="${rest#*\]}"
+    p="$pre${cls:0:1}$post"
+  done
+  p="${p//\*/x}"    # `*` stands for characters; `x` is a character
+  # A trailing slash means "the directory", and what git judges is a path
+  # INSIDE it — a bare `dir/` is not a path check-ignore can be asked about.
+  case "$p" in */) p="${p}lcars-probe" ;; esac
+  printf '%s' "$p"
+}
+
+# ASK GIT, the producer of this decision, whether this repo ALREADY ignores a
+# path. yes / no / unknown — never a guess from the file's text.
+greenfield_gitignore_covers() { # probe-path → prints yes|no|unknown
+  local rc=0
+  "${GIT_BIN:-git}" -C "${REPO_ROOT:-$PWD}" check-ignore --no-index -q -- "$1" \
+    </dev/null >/dev/null 2>&1 || rc=$?
+  case "$rc" in
+    0) printf 'yes' ;;      # already ignored, by whatever rule
+    1) printf 'no' ;;       # not ignored — ours would be the first rule for it
+    *) printf 'unknown' ;;  # git could not answer (no work tree, broken repo)
+  esac
+}
+
+# The separator that puts our block on its own line without disturbing the last
+# byte of his: nothing before an empty file, a terminator first if his last line
+# has none, and a blank line between in both of the non-empty cases.
+greenfield_gitignore_sep() { # file → prints the bytes to write before the block
+  local f="$1"
+  [ -s "$f" ] || return 0
+  if [ "$(tail -c1 "$f" | od -An -c | tr -d ' ')" = '\n' ]; then printf '\n'
+  else printf '\n\n'; fi
+}
+
+# THE HEADER IS THE PERMANENT COPY (S298 fix round 3). Round 2 made the SCREEN
+# line honest; this header is the one that lives in the captain's repo forever,
+# so it is the more important of the two. It used to say "your own lines above
+# were not touched" — true of the bytes, and false of what a reader hears, which
+# is "nothing about your file's behaviour changed". Git applies the LAST matching
+# pattern, so a rule in this block CAN override one of his above it. The header
+# now states the two guarantees (his lines kept verbatim, and deleting the block
+# undoes ours) and names the one thing that is not guaranteed. It also dates
+# itself plainly instead of in LCARS vocabulary — "when this repo's test
+# foundation was established" means nothing to a stranger reading the file in six
+# months, and carried no date at all.
+greenfield_gitignore_header() { # arm → the block's marked, attributed header
+  # The same $LCARS_NOW_ISO-overridable clock the rest of the script reads (see
+  # `usage_capture`), cut to its day, so a test can pin it.
+  local day; day="${LCARS_NOW_ISO:-$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null)}"
+  day="${day%%T*}"
+  [ -n "$day" ] || day="$(date +%Y-%m-%d)"
+  printf '# ---- Added by LCARS on %s: ignore rules for a %s project'"'"'s build\n' "$day" "$1"
+  printf '# output. Only the patterns this repo did not already ignore were added.\n'
+  printf '# Your own lines above are kept exactly as you wrote them. Note that git applies\n'
+  printf '# the LAST pattern that matches a path, so a rule in this block can override one\n'
+  printf '# of yours above it; delete this block, down to the end marker, to undo that.\n'
+}
+
+# THE BLOCK'S BOTTOM (S298 fix round 2). The header marked where our lines START
+# and nothing marked where they STOP, so the moment a human adds a line of their
+# own underneath, nobody — them included — can tell which lines were ours. The
+# header promises the block is "yours to delete or edit freely", and that promise
+# is only actionable if its extent is visible: with both markers it is one
+# gesture (delete from the `Added by` line to the `end` line) instead of a guess.
+greenfield_gitignore_footer() { # → the block's matching end marker
+  printf '# ---- end LCARS block\n'
+}
+
+greenfield_seed_gitignore() { # arm → 0 wrote something, 1 left alone
+  local arm="${1:-unknown}" gi="${REPO_ROOT:-$PWD}/.gitignore"
+  if [ -e "$gi" ]; then
+    greenfield_append_gitignore "$arm" "$gi"
+    return $?
+  fi
+  {
+    printf '# Seeded by LCARS when this repo'"'"'s test foundation was established.\n'
+    printf '# Stack: %s. Yours now — add to it freely; LCARS only ever APPENDS to\n' "$arm"
+    printf '# an existing .gitignore, in a marked block, and never rewrites one.\n'
+    greenfield_gitignore_common
+    # `$(…)` strips trailing newlines, so the final \n is printed back on —
+    # a file that does not end in one is a file whose last entry a later
+    # `>>` append would silently glue itself to.
+    local body; body="$(greenfield_gitignore_body "$arm")"
+    # An `if`, NOT `[ -n "$body" ] && printf …`: the group's exit status is its
+    # LAST command's, and on the unattributable arm the body is empty, so the
+    # `&&` form made the whole write report FAILURE — the file was written, the
+    # function said it was not, and no event was logged. A group whose status is
+    # read must not end in a test that can be false.
+    if [ -n "$body" ]; then printf '\n# %s\n%s\n' "$arm" "$body"; fi
+  } >"$gi" 2>/dev/null || return 1
+  emit_event gitignore_seeded implement \
+    "no .gitignore at the repo root — seeded one for the detected stack ($arm) so the first delivered commit carries no build litter" \
+    "ticket=${TICKET:-}" "stack=$arm"
+  # ON SCREEN, not only in events.jsonl. The live defect's worst half was the
+  # SILENCE: litter shipped, the mission advanced, and nothing said a word.
+  printf '  ✓ .gitignore SEEDED at the repo root for the %s stack (the repo had none)\n' "$arm" >&2
+  return 0
+}
+
+# APPEND the uncovered patterns, in a marked block, to a file we leave otherwise
+# byte-for-byte alone. Writes nothing when every pattern is already covered.
+greenfield_append_gitignore() { # arm  gitignore-path → 0 appended, 1 left alone
+  local arm="$1" gi="$2" pat probe uncovered="" n=0 u=0 cov
+  while IFS= read -r pat; do
+    case "$pat" in ''|'#'*) continue ;; esac
+    probe="$(greenfield_gitignore_probe_path "$pat")"
+    [ -n "$probe" ] || continue
+    n=$((n + 1))
+    cov="$(greenfield_gitignore_covers "$probe")"
+    if [ "$cov" = unknown ]; then
+      # The authority could not answer, so we do not answer for it.
+      emit_event gitignore_kept implement \
+        "this repo already has a .gitignore and git could not be asked what it ignores (check-ignore failed on '$probe') — left exactly as it was found rather than appending on a guess" \
+        "ticket=${TICKET:-}" "stack=$arm"
+      printf '  ⚠ .gitignore left UNTOUCHED — git could not say what this repo ignores, so nothing was appended\n' >&2
+      return 1
+    fi
+    [ "$cov" = no ] || continue
+    uncovered="$uncovered$pat
+"
+    u=$((u + 1))
+  done <<EOF
+$(greenfield_gitignore_common; greenfield_gitignore_body "$arm")
+EOF
+  if [ "$u" -eq 0 ]; then
+    emit_event gitignore_kept implement \
+      "this repo's existing .gitignore already ignores every pattern the $arm foundation would add ($n/$n covered, per git check-ignore) — left byte-identical, nothing appended" \
+      "ticket=${TICKET:-}" "stack=$arm"
+    printf '  ✓ .gitignore left BYTE-IDENTICAL — it already ignores all %d %s litter pattern(s)\n' "$n" "$arm" >&2
+    return 1
+  fi
+  {
+    greenfield_gitignore_sep "$gi"
+    greenfield_gitignore_header "$arm"
+    printf '%s' "$uncovered"
+    greenfield_gitignore_footer
+  } >>"$gi" 2>/dev/null || return 1
+  emit_event gitignore_appended implement \
+    "this repo's existing .gitignore did not ignore $u of the $n pattern(s) the $arm foundation needs (per git check-ignore) — appended those $u in a marked LCARS block; every existing line is untouched and still the file's prefix" \
+    "ticket=${TICKET:-}" "stack=$arm" "appended=$u" "covered=$((n - u))"
+  # HONEST ABOUT WHAT IS AND IS NOT GUARANTEED (S298 fix round 2). This line used
+  # to end "your own lines untouched". Literally true — no line of his is ever
+  # edited — but it reads as "nothing about your file's behaviour changed", and
+  # the tester built the case where that is false: a .gitignore whose line 5 is
+  # `!dist/manifest.json` gains `/dist/` below it, and because git takes the LAST
+  # matching pattern, the manifest he deliberately un-ignored is now ignored. His
+  # bytes survived and his intent did not. The message must not assert the
+  # stronger claim, so it states the two things that ARE guaranteed (his lines are
+  # preserved verbatim and still the file's prefix) and names the one that is not.
+  printf '  ✓ .gitignore APPENDED to — %d of %d %s litter pattern(s) were not ignored yet; added in a marked LCARS block below your own lines, which are preserved exactly\n' \
+    "$u" "$n" "$arm" >&2
+  printf '    git takes the LAST matching pattern, so an added line can override one of yours above it — delete the marked block to undo it\n' >&2
+  return 0
+}
+
 # Record the established command mission-locally and adopt it for this process.
 greenfield_record_cmd() { # cmd
   local cmd="$1" rec; rec="$(greenfield_cmd_record)"
@@ -9874,11 +10199,20 @@ apply_declared_setup() { # manifest-file  setup-dir  pkg-rel → 0 applied, 1 re
   if [ -n "${LCARS_SETUP_GREENFIELD:-}" ]; then
     local gcmd; gcmd="$(greenfield_detect_cmd "$REPO_ROOT")"
     if [ -z "$gcmd" ]; then
-      SETUP_NOTE="the declared setup leaves no test command LCARS can detect at the repo root — a runner nothing can invoke is not an established test system"
+      # S299: name what IS there, when something is. The leading clause is
+      # unchanged — it is what the pending-question and refusal-record tests
+      # match on, and what a reader of the board already recognises.
+      local gwhy; gwhy="$(greenfield_inert_why "$REPO_ROOT")"
+      SETUP_NOTE="the declared setup leaves no test command LCARS can detect at the repo root — a runner nothing can invoke is not an established test system${gwhy:+. What IS there: $gwhy}"
       setup_rollback_copied "$__as_copied"
       return 1
     fi
     TEST_CMD_ENV="$gcmd"
+    # S298 — THE FOUNDATION'S .gitignore. Last of the scaffold arm's work, after
+    # the final refusal above it, so a rejected declaration leaves no litter of
+    # our own behind. `$arm` is the one the allowlist already resolved — the fact
+    # this path recorded, not a second reading of a tree the setup just changed.
+    greenfield_seed_gitignore "$arm" || :
   fi
   local irc=0
   if [ -n "$icmd" ]; then
@@ -11485,8 +11819,8 @@ proof_missing_python_modules() { # runner-output → distinct module names, one 
 
 # The parent-leg RED's KIND, for legibility — the same S96 detector arms
 # classify_impl_failure routes through, in the same precedence. A red caused by
-# the change's NEW SYMBOLS (compile / resolution) COUNTS as proof; only an env
-# failure (the runner could not start in the scratch) is not proof at all.
+# the change's NEW SYMBOLS (compile / resolution) COUNTS as proof; an env failure
+# or absent LCARS configuration in the scratch is not proof at all.
 proof_parent_red_kind() { # runner-out files-written [parent-sha tip-worktree] → kind token
   local out="$1" files="$2" parent="${3:-}" wt="${4:-}"
   if red_gate_env_failure "$out"; then
@@ -11508,6 +11842,11 @@ proof_parent_red_kind() { # runner-out files-written [parent-sha tip-worktree] �
     return 0
   fi
   if red_gate_compile_failure "$out"; then printf 'compile-failure'; return 0; fi
+  # Keep the more specific env/compile/resolution kinds above this guard.
+  # Missing LCARS setup is not evidence that the ticket's behavior was absent.
+  if red_gate_configuration_failure "$out"; then
+    printf 'configuration-red'; return 0
+  fi
   # S157 (live-drive fidelity nit): a parent leg that died at IMPORT/collection —
   # the file threw before registering a test — was recorded as `assertion-red`,
   # because a runner reporting "1 failed" for the FILE matches the assertion
@@ -11515,8 +11854,8 @@ proof_parent_red_kind() { # runner-out files-written [parent-sha tip-worktree] �
   # already collected: a red leg that EXECUTED ZERO tests is a collection
   # failure. Placed AFTER compile/resolution so those keep precedence (they are
   # more specific about the same zero-execution situation), and it changes only
-  # the recorded KIND — the verdict is unaffected, since only `env-failure`
-  # changes a verdict.
+  # the recorded KIND — the verdict is unaffected here; `env-failure` and
+  # `configuration-red` above change a verdict.
   local _ec; _ec="$(proof_executed_count "$out")"
   if [ -n "$_ec" ] && [ "${_ec##* }" = 0 ]; then
     printf 'collection-red'; return 0
@@ -12098,9 +12437,13 @@ $FF_PAR_REFUSED"
   # GIT question — is the module python could not import a file this ticket ADDS?
   # — instead of deciding on the phrase. See proof_fail_first_missing_module.
   FF_PAR_KIND="$(proof_parent_red_kind "$par_out" "$changed_src" "$parent" "$wt")"
-  if [ "$FF_PAR_KIND" = env-failure ]; then
+  if [ "$FF_PAR_KIND" = env-failure ] || [ "$FF_PAR_KIND" = configuration-red ]; then
+    local redreason="the PARENT leg's runner could not start in the scratch worktree (env failure, exit $FF_PAR_RC) — a dead runner is not a red"
+    if [ "$FF_PAR_KIND" = configuration-red ]; then
+      redreason="the PARENT leg failed because LCARS configuration was absent in the scratch worktree (configuration-red, exit $FF_PAR_RC) — missing LCARS setup is not proof of missing behavior"
+    fi
     _ff_finish "$t" "$parent" "$ffj" inconclusive \
-      "the PARENT leg's runner could not start in the scratch worktree (env failure, exit $FF_PAR_RC) — a dead runner is not a red" "$rels"
+      "$redreason" "$rels"
     return $?
   fi
   # S157: THE ONE ANTI-GUTTING CHECK. Both legs have now run, so ask the two
@@ -14227,7 +14570,7 @@ EOF
     local act_c; act_c="$(usage_actual_compact "$usage_f")"
     if [ -n "$act_c" ]; then
       local cli; cli="$(json_scoped_str "$est_f" "cost.cli")"
-      [ -n "$cli" ] || cli="${LCARS_WORKER_CLI:-$(basename "${WORKER_BIN:-claude}")}"
+      [ -n "$cli" ] || cli="${LCARS_WORKER_CLI:-$(basename "${WORKER_BIN:-}")}"
       echo "  Cost: EST $(render_cost_compact "$est_f" "$cli") → ACTUAL $act_c"
     fi
   fi
@@ -15444,6 +15787,49 @@ lcars_prefer_real_worker_bin() {
   fi
 }
 
+# --- S274: WHICH ENGINE IS ACTUALLY ON THIS MACHINE ------------------------
+# ONE answer to that question, and it is not this file's. `lcars init`, the File
+# console's engine picker, `lcars xo`, `lcars adopt` and the viewscreen's board
+# all read the shared detector in skills/lcars-init/lcars-common.sh
+# (`lcars_available_engines` / `lcars_default_engine` / `lcars_engine_bin`), and
+# the last rung of this resolver now reads the same one. Re-implementing
+# `command -v claude` here would be the S168 scar again: two answers to one
+# question, and a Stage refusing an engine `lcars init` had already accepted.
+#
+# IN A SUBSHELL, DELIBERATELY. lcars-common.sh is a large library and this file
+# has its own `json_str`, `die` and friends; sourcing it into this process could
+# silently redefine one of them. A subshell makes the read a pure question with
+# no possible side effect, and it is asked at most once per process.
+_lcars_common_lib() {
+  printf '%s' "${LCARS_COMMON_LIB:-$SKILL_DIR/../lcars-init/lcars-common.sh}"
+}
+# The engine a laptop with no env/config/marker should run: the repo's own pin
+# when it is installed > the single installed engine > claude when claude is
+# among them > EMPTY when neither CLI is here. Empty is the honest answer, and
+# require_worker is what turns it into the Stage's loud stop.
+installed_engine() { # [config] → engine name (may be EMPTY)
+  local lib; lib="$(_lcars_common_lib)"
+  [ -f "$lib" ] || return 0
+  ( . "$lib" >/dev/null 2>&1 || exit 0; lcars_default_engine "${1:-}" )
+}
+# The BINARY an engine name means — `$LCARS_COPILOT_BIN`/`$LCARS_CLAUDE_BIN`
+# when the operator pointed those at a real CLI, else the bare name. Identity
+# when the library is missing, so a broken install degrades to today's names.
+installed_engine_bin() { # engine → bin
+  local lib; lib="$(_lcars_common_lib)"
+  [ -f "$lib" ] || { printf '%s' "${1:-}"; return 0; }
+  ( . "$lib" >/dev/null 2>&1 || { printf '%s' "${1:-}"; exit 0; }
+    lcars_engine_bin "${1:-}" || printf '%s' "${1:-}" )
+}
+# The ONE sentence that says what LCARS looked for. Reused by the resolver's
+# log line and by require_worker's refusal, so they can never disagree — and it
+# names BOTH engines, because either one cures the situation (init.sh:72's
+# wording, which has said this since S207).
+no_engine_sentence() {
+  printf "LCARS drives missions with Claude Code (looked for '%s') or the GitHub Copilot CLI (looked for '%s'), and neither is on this machine" \
+    "$(installed_engine_bin claude)" "$(installed_engine_bin copilot)"
+}
+
 resolve_worker_bin() {
   # --- IS THIS $LCARS_WORKER_BIN AN OPERATOR ACT, OR LCARS'S OWN RE-PIN? -----
   # `lcars approve` exports $LCARS_WORKER_BIN before handing its reconcile leg to
@@ -15581,9 +15967,25 @@ resolve_worker_bin() {
   if [ -n "$detected" ]; then
     WORKER_BIN="$detected"; WORKER_BIN_SRC="detected"; return 0
   fi
-  # No env, no config, no host marker — never guess the CLI.
-  printf 'lcars run: no host-CLI marker — defaulting to claude\n' >&2
-  WORKER_BIN="claude"; WORKER_BIN_SRC="default"
+  # No env, no config, no host marker — ASK WHAT IS INSTALLED, never guess.
+  #
+  # S274. This rung used to be the literal `claude`, announced as "no host-CLI
+  # marker — defaulting to claude" and recorded as the `default` source. On a
+  # laptop that has only the GitHub Copilot CLI that is a guess which cannot
+  # run: require_worker then stopped the Stage naming an engine the captain
+  # never had, while a working CLI sat on his PATH and `lcars init` had already
+  # set the repo up on it (S207). The answer now comes from the shared detector,
+  # so it can only ever name an engine that is HERE.
+  local found; found="$(installed_engine "${LCARS_CFG:-}")"
+  if [ -n "$found" ]; then
+    WORKER_BIN="$(installed_engine_bin "$found")"
+    WORKER_BIN_SRC="detected"; return 0
+  fi
+  # NEITHER CLI IS HERE. The resolver does not die — it is also a read surface
+  # (`run.sh resolve-worker`, the board's provenance) — it reports `none` and
+  # says what it looked for. require_worker owns the loud stop.
+  printf 'lcars run: no worker CLI found — %s.\n' "$(no_engine_sentence)" >&2
+  WORKER_BIN=""; WORKER_BIN_SRC="none"
 }
 
 # Resolve WORKER_MODEL + WORKER_MODEL_SRC by the precedence above. Unset model
@@ -15846,7 +16248,7 @@ resolve_stage_model() { # stage-key → flag string (stdout; may be empty)
   local key="$1"
   # (a) global env pin — wins for every stage, verbatim.
   if [ -n "${LCARS_WORKER_MODEL:-}" ]; then printf '%s' "$LCARS_WORKER_MODEL"; return 0; fi
-  local cli; cli="${LCARS_WORKER_CLI:-$(basename "${WORKER_BIN:-claude}")}"
+  local cli; cli="${LCARS_WORKER_CLI:-$(basename "${WORKER_BIN:-}")}"
   # (a1) S202 — the captain's own pin for HIS first officer. `numberOne.model` is
   # written by `lcars xo on --model <m>` onto the SAME one-line config block as
   # the engine, so the officer he chose and the model he chose are one record.
@@ -16318,7 +16720,9 @@ EOF
 # One `name<TAB>fingerprint` line per watched file; ABSENT for one not there, so
 # a worker CREATING a judge-critical artifact is caught as surely as a rewrite.
 # Then, when the Stage is standing in one, the front-half worktree's porcelain.
+# Producer records travel with the snapshot under the same short-lived lock.
 worker_fence_snapshot() {
+  lcars_operator_lock "$MISSION_DIR" || return 1
   local f
   while IFS= read -r f; do
     [ -n "$f" ] || continue
@@ -16331,6 +16735,25 @@ worker_fence_snapshot() {
 $WORKER_FENCE_WATCH
 EOF
   worker_fence_wt_snapshot
+  if [ -f "$MISSION_DIR/operator-writes.tsv" ]; then
+    awk '{printf "operator-write:%d\t%s\n", NR, $0}' "$MISSION_DIR/operator-writes.tsv"
+  fi
+  rmdir "$MISSION_DIR/.operator-write-lock"
+}
+
+# Reconcile only NEW producer records, with an unbroken chain from the turn's
+# input fingerprint to its output. An extra worker write breaks that chain.
+worker_fence_operator_covers() { # name before-hash after-hash before-snapshot after-snapshot
+  local name="$1" b="$2" a="$3" before="$4" after="$5" cursor
+  cursor="$(printf '%s\n' "$before" | awk -F'\t' '/^operator-write:/{n++} END{print n+0}')"
+  printf '%s\n' "$after" | awk -F'\t' -v name="$name" -v b="$b" -v a="$a" -v cursor="$cursor" '
+    /^operator-write:/ {
+      n=substr($1,16)+0
+      if (n<=cursor || $2!=name) next
+      if (NF!=5 || $3!=b || $5!~/^(pause|resume|xo-on|xo-off)$/) bad=1
+      b=$4; seen=1
+    }
+    END {exit !(seen && !bad && b==a)}'
 }
 
 # Compare a pre-turn snapshot with the tree now. Clean → 0 and NOT ONE BYTE
@@ -16343,7 +16766,7 @@ EOF
 # carried. That is a write too, and the reverse pass catches it.
 worker_fence_check() { # role  before-snapshot  stage-key
   local role="$1" before="$2" stage="${3:-}" after
-  after="$(worker_fence_snapshot)"
+  after="$(worker_fence_snapshot)" || die "could not snapshot the worker fence — the Stage is stopped."
   [ "$after" = "$before" ] && return 0
   # Bucketed as newline lists while accumulating — never split on spaces later,
   # because a git-quoted path ("a b.txt") would be torn in half by that.
@@ -16352,9 +16775,14 @@ worker_fence_check() { # role  before-snapshot  stage-key
   while IFS= read -r line; do
     [ -n "$line" ] || continue
     name="${line%%	*}"
+    case "$name" in operator-write:*) continue ;; esac
     b="$(printf '%s\n' "$before" | awk -F'\t' -v n="$name" '$1==n{print $2; exit}')"
     a="${line#*	}"
     [ "$a" = "$b" ] && continue
+    case "$name" in
+      state.json|events.jsonl)
+        worker_fence_operator_covers "$name" "$b" "$a" "$before" "$after" && continue ;;
+    esac
     case "$name" in
       wt:*) hit_code="${hit_code}${hit_code:+
 }${name#wt:}" ;;
@@ -16488,7 +16916,10 @@ worker_spawn() { # role outdir prompt
   # turn (see the block above for why the window has to be exactly this tight).
   local fence_before=""
   local fence_on=0
-  if worker_fence_active "$role"; then fence_on=1; fence_before="$(worker_fence_snapshot)"; fi
+  if worker_fence_active "$role"; then
+    fence_on=1
+    fence_before="$(worker_fence_snapshot)" || die "could not snapshot the worker fence — no worker was started."
+  fi
   LCARS_WORKER_BIN="$WORKER_BIN" LCARS_WORKER_MODEL="$stage_model" \
     LCARS_WORKER_SESSION_ID="$usage_sid" \
     LCARS_LIVENESS_STAGE="$stage_key" \
@@ -16547,8 +16978,17 @@ require_worker() {
   fi
   command -v "$WORKER_BIN" >/dev/null 2>&1 && return 0
   [ -x "$WORKER_BIN" ] && return 0
+  # S274 — TWO DIFFERENT SITUATIONS, TWO DIFFERENT SENTENCES. A laptop with
+  # NEITHER CLI cannot be cured by a variable, so telling the captain to set one
+  # (and offering `claude` as the single example) sends him to install the one
+  # engine he may have deliberately not got. Name BOTH, with both install URLs,
+  # and let him pick.
+  if [ -z "$WORKER_BIN" ] || [ "${WORKER_BIN_SRC:-}" = "none" ]; then
+    printf '  ⚠ NOT ISOLATED — no LCARS-capable CLI on this machine.\n' >&2
+    die "refusing to run this Stage inline — no worker CLI found. $(no_engine_sentence). Install either one and re-run: https://claude.com/claude-code or https://github.com/features/copilot/cli."
+  fi
   printf '  ⚠ NOT ISOLATED — no cold-worker binary on PATH (LCARS_WORKER_BIN=%s).\n' "$WORKER_BIN" >&2
-  die "refusing to run this Stage inline — set \$LCARS_WORKER_BIN to your CLI (e.g. \`claude\`) so the Stage runs in a cold worker."
+  die "refusing to run this Stage inline — \"$WORKER_BIN\" is not a CLI on this machine. Set \$LCARS_WORKER_BIN to one you have (\`claude\` or \`copilot\`) so the Stage runs in a cold worker."
 }
 
 # --- the marker proving a Stage ran in a cold worker ------------------------
@@ -16665,7 +17105,7 @@ exactly as specified above, in the scratch output directory, and nowhere else.$p
 # why a look does not happen.
 LIVE_CHECK_DIR="${LCARS_LIVE_CHECK_DIR:-$SKILL_DIR/live-check}"
 
-number_one_checklists() { # <input-dir> — the whole checklists, as the buddy gets them
+number_one_checklists() { # <input-dir> — the whole checklists, as the EEH gets them
   local indir="${1:-}" crit="" types="" kind f
   [ -d "$LIVE_CHECK_DIR" ] || return 0
   crit="$indir/criteria.json"
@@ -17107,7 +17547,7 @@ saying rather than grading the empty one."
   #
   # WHAT WAS MEASURED. S262: a reviewer with a real shell settled 54 of 65 rows
   # by its own action, ran a real mutation test — and FILED NOTHING, while the
-  # captain's human buddy filed three on the same build. Two of those three had
+  # captain's human EEH filed three on the same build. Two of those three had
   # no criterion and `volunteered` was their only route. The lane was plumbed
   # and the prompt made it sound optional: "you do NOT have to throw it away",
   # then three separate sentences on what it can never do. A careful model reads
@@ -17291,7 +17731,7 @@ readout that proved it. Name a different one, or say so by declaring none."
   # === WHAT IS CONSENTED TO BE TOUCHED FOR REAL (S249) =====================
   #
   # WHY THE WORKER IS TOLD AT ALL. Five of the twenty-nine bugs the captain's
-  # buddy found on the weekend needed a REAL publish against a REAL host — and a
+  # the EEH found on the weekend needed a REAL publish against a REAL host — and a
   # worker that does not know a live target exists cannot ask for one. So when the
   # record names a host and an owner, the round says so, in the one place a fact
   # about THIS round's inputs belongs (and not in `evaluate.md`, which is one line
@@ -17314,7 +17754,7 @@ readout that proved it. Name a different one, or say so by declaring none."
   # book was refused. So the field goes in the example, and the rule gets one
   # plain sentence — BOTH only when the line `xo.sh` handed us names repos, which
   # it writes as "; repos: a, b" inside the same parenthetical. With no repos
-  # recorded (the default shape, and what the autopilot writes) the round says
+  # recorded (the default shape, and what the ECH writes) the round says
   # nothing about them at all: a prompt is not the place to describe a constraint
   # this repo does not have.
   local live_line="" live_decl="" repo_rule=""
@@ -17366,8 +17806,8 @@ two honest ways to settle one: take the hop with a \`live:\` step, or rate it
 
   # === THE LIVE-CHECK CHECKLISTS, HANDED OVER WHOLE (S246) ==================
   #
-  # WHY WHOLE, AND WHY HERE. These are the files the captain's buddy reads — the
-  # same ones, byte for byte — and the buddy found all 31 bugs on the weekend
+  # WHY WHOLE, AND WHY HERE. These are the files the captain's EEH reads — the
+  # same ones, byte for byte — and the EEH found all 31 bugs on the weekend
   # Number One found none. What it had that Number One did not was not a better
   # model: it was the whole checklist, in front of it, with permission to INVENT
   # the values a human would. LCARS used to lift fenced templates out of these
@@ -17390,8 +17830,8 @@ two honest ways to settle one: take the hop with a \`live:\` step, or rate it
   # === THE DISPOSABLE COPY — AND THE SHELL THAT COMES WITH IT (S261) ========
   #
   # WHY THIS EXISTS, MEASURED. On 2026-10-08 the reviewer was run beside the
-  # captain's buddy on three milestones of a real product: it found 0 real
-  # defects and filed 0, the buddy found 4 and filed 4, and it handed a HIGH to
+  # captain's EEH on three milestones of a real product: it found 0 real
+  # defects and filed 0, the EEH found 4 and filed 4, and it handed a HIGH to
   # code that crashed on null records. THREE of its six recorded failures were
   # the S168 fence — 10 of 13 drawn parts unreachable, a HOME store read fenced
   # out, a shell action fenced out — and a fourth was that it could not run a
@@ -17416,7 +17856,7 @@ two honest ways to settle one: take the hop with a \`live:\` step, or rate it
   # even if a worktree happens to be in the environment.
   #
   # WHO MINTS IT: nobody here. `xo.sh` mints ONE tree and ONE throwaway HOME per
-  # look through the buddy's single helper (`autopilot.sh worktree`, reached via
+  # look through the EEH's single helper (`ech.sh worktree`, reached via
   # `xo-run.py prepare`) and exports both. A second "detach a worktree" in this
   # file would be a second thing that can be subtly wrong.
   #
@@ -18301,7 +18741,7 @@ estimate_validate_and_write() { # src-json
   # from the worker. We write the file once WITHOUT cost, compute against it, then
   # write the final file with the computed cost block embedded.
   local devs; devs="$(estimate_extract_deviations "$src")"
-  local cli; cli="${LCARS_WORKER_CLI:-$(basename "${WORKER_BIN:-claude}")}"
+  local cli; cli="${LCARS_WORKER_CLI:-$(basename "${WORKER_BIN:-}")}"
   local out="$MISSION_DIR/estimate.json"
   _estimate_emit() { # cost-block-or-empty
     local cost="$1"
@@ -18416,7 +18856,7 @@ cmd_estimate() {
   local cfg_tier=""
   [ -n "${LCARS_CFG:-}" ] && [ -f "${LCARS_CFG:-}" ] && cfg_tier="$(json_str "$LCARS_CFG" estimatorModel)"
   [ -n "$cfg_tier" ] && est_tier="$cfg_tier"
-  local cli; cli="${LCARS_WORKER_CLI:-$(basename "${WORKER_BIN:-claude}")}"
+  local cli; cli="${LCARS_WORKER_CLI:-$(basename "${WORKER_BIN:-}")}"
   local est_model; est_model="$(alias_for_tier "$cli" "$est_tier")"
 
   local extra="## Read these artifacts (your inputs)
@@ -18477,6 +18917,8 @@ estimatorModel = \"$est_tier\" — echo this verbatim into the estimate.json fie
 # is input-heavy). Per stage, per bound b∈{low,high}:
 #   stage_usd(b) = tokens(b) * (0.8*inputPerMTok[tier] + 0.2*outputPerMTok[tier]) / 1e6
 # cost.usd.{low,high} = Σ over the six stages.
+# Copilot usage additionally applies measured per-invocation workload floors
+# (including controller work) and adds the estimator invocation; see below.
 #
 # COPILOT billing model (unit "premiumRequests"): each stage invocation is a
 # premium request weighted by its tier multiplier (pricing.json). Per bound:
@@ -18531,6 +18973,14 @@ estimate_active_stages() { # estimate-json → space-separated stage keys (in or
   printf '%s' "${out# }"
 }
 
+# Copilot workload floors use measured input/output tokens per cold invocation,
+# not a multiplier on dollars or mission size. Input includes cache reads/writes
+# at full input price (usage.json already includes them; NEVER add them again).
+# The envelope is the outward-rounded min/max of mission stage averages; implement
+# pools numberOne tokens with implement tokens per implementation invocation.
+# These numbers are fitted to one project's seven missions and are not calibrated beyond it.
+# The worker's token band remains a floor too, so a larger explicit workload wins.
+# Verify had no measured worker records: retain its worker-provided token band.
 cost_token_usd() { # estimate-json pricing-scope → "low high" | ""
   local est="$1" scope="$2"
   local stages; stages="$(estimate_active_stages "$est")"
@@ -18554,8 +19004,53 @@ cost_token_usd() { # estimate-json pricing-scope → "low high" | ""
     usd_high="$(awk -v a="$usd_high" -v t="$thi" -v ir="$inr" -v or="$outr" \
       -v si="$COST_INPUT_SPLIT" -v so="$COST_OUTPUT_SPLIT" \
       'BEGIN{printf "%.6f", a + t*(si*ir + so*or)/1000000}')"
+    if [ "$scope" = "copilot.usage" ]; then
+      local ilo=0 ihi=0 olo=0 ohi=0 rlo rhi
+      case "$k" in
+        research)   ilo=65000;  ihi=300000;  olo=1400; ohi=11000 ;;
+        validate)   ilo=45000;  ihi=320000;  olo=3500; ohi=15000 ;;
+        plan)       ilo=90000;  ihi=1250000; olo=5000; ohi=33000 ;;
+        planReview) ilo=45000;  ihi=350000;  olo=1400; ohi=15000 ;;
+        implement)  ilo=300000; ihi=4900000; olo=6000; ohi=90000 ;;
+      esac
+      rlo="$(json_scoped_num "$est" "requestEstimates.$k.low")";  [ -n "$rlo" ] || rlo=0
+      rhi="$(json_scoped_num "$est" "requestEstimates.$k.high")"; [ -n "$rhi" ] || rhi=0
+      # Add only the workload shortfall above the token-priced baseline.
+      usd_low="$(awk -v a="$usd_low" -v t="$tlo" -v r="$rlo" -v i="$ilo" -v o="$olo" \
+        -v ir="$inr" -v or="$outr" -v si="$COST_INPUT_SPLIT" -v so="$COST_OUTPUT_SPLIT" \
+        'BEGIN{d=(r*(i*ir+o*or)-t*(si*ir+so*or))/1000000; printf "%.6f", a+(d>0?d:0)}')"
+      usd_high="$(awk -v a="$usd_high" -v t="$thi" -v r="$rhi" -v i="$ihi" -v o="$ohi" \
+        -v ir="$inr" -v or="$outr" -v si="$COST_INPUT_SPLIT" -v so="$COST_OUTPUT_SPLIT" \
+        'BEGIN{d=(r*(i*ir+o*or)-t*(si*ir+so*or))/1000000; printf "%.6f", a+(d>0?d:0)}')"
+    fi
   done
+  if [ "$scope" = "copilot.usage" ] && [ -n "$stages" ]; then
+    # One estimator invocation (the corpus's empty-stage usage record), billed
+    # at its actual Copilot tier, outside the six downstream stages.
+    inr="$(json_scoped_num "$PRICING_FILE" "$scope.opus.inputPerMTok")"
+    outr="$(json_scoped_num "$PRICING_FILE" "$scope.opus.outputPerMTok")"
+    [ -n "$inr" ] && [ -n "$outr" ] || return 1
+    usd_low="$(awk -v a="$usd_low" -v ir="$inr" -v or="$outr" \
+      'BEGIN{printf "%.6f", a+(45000*ir+2000*or)/1000000}')"
+    usd_high="$(awk -v a="$usd_high" -v ir="$inr" -v or="$outr" \
+      'BEGIN{printf "%.6f", a+(100000*ir+4000*or)/1000000}')"
+  fi
   printf '%s %s' "$usd_low" "$usd_high"
+}
+
+cost_cluster_band() { # estimate-json → "low high band" | "" for unfitted missions
+  python3 - "$1" <<'PY'
+import json, sys
+
+with open(sys.argv[1]) as source:
+    estimate = json.load(source)
+tokens = sum(stage.get("high", 0) or 0 for stage in estimate.get("tokenEstimates", {}).values())
+requests = sum(stage.get("high", 0) or 0 for stage in estimate.get("requestEstimates", {}).values())
+if 155000 <= tokens <= 254000 and 9 <= requests <= 24:
+    print("4.00 9.00 small")
+elif 1075000 <= tokens <= 3275000 and 34 <= requests <= 42:
+    print("71.00 155.00 large")
+PY
 }
 
 # Compute and print the canonical "cost" JSON block (the value of the estimate's
@@ -18573,6 +19068,8 @@ cost_compute() { # estimate-json cli → prints the cost JSON block to stdout
     # Bill tokens EXACTLY like the Claude branch against copilot.usage rates,
     # then net the plan's monthly included AI-credit allotment (credits ×
     # creditUsd = USD). Unset rates ⇒ unavailable (never a wrong number).
+    # Copilot-only invocation floors and estimator overhead are applied by
+    # cost_token_usd before this gross-to-net conversion.
     local pair; pair="$(cost_token_usd "$est" "copilot.usage")" || {
       printf '{\n'
       printf '    "cli": "copilot",\n'
@@ -18583,6 +19080,15 @@ cost_compute() { # estimate-json cli → prints the cost JSON block to stdout
       return 0
     }
     local usd_low="${pair%% *}" usd_high="${pair##* }"
+    # n=7, ONE project, three small and four large; the clusters may be an artifact
+    # of that project; which is exactly why an unfitted mission keeps the wide range
+    # instead of being forced into a band.
+    # Copilot usage dollars are not evidence about Claude pricing; leave Claude unchanged.
+    local fit band=""
+    fit="$(cost_cluster_band "$est")"
+    if [ -n "$fit" ]; then
+      read -r usd_low usd_high band <<<"$fit"
+    fi
     local plan; plan="$(copilot_plan)"
     local credits; credits="$(json_scoped_num "$pricing" "copilot.usage.creditAllotmentByPlan.$plan")"
     [ -n "$credits" ] || credits=0
@@ -18599,6 +19105,7 @@ cost_compute() { # estimate-json cli → prints the cost JSON block to stdout
     printf '    "unit": "usd",\n'
     printf '    "billing": "usage",\n'
     printf '    "usd": { "low": %s, "high": %s },\n' "$usd_low" "$usd_high"
+    [ -z "$band" ] || printf '    "band": "%s",\n' "$band"
     printf '    "includedCreditsUsd": %s,\n' "$included"
     printf '    "netUsd": { "low": %s, "high": %s }\n' "$net_low" "$net_high"
     printf '  }'
@@ -18690,7 +19197,7 @@ cmd_cost() {
     [ -n "${MISSION_ID:-}" ] && MISSION_DIR="$gitdir/lcars/missions/$MISSION_ID"
   fi
   resolve_worker_bin
-  local cli; cli="${LCARS_WORKER_CLI:-$(basename "${WORKER_BIN:-claude}")}"
+  local cli; cli="${LCARS_WORKER_CLI:-$(basename "${WORKER_BIN:-}")}"
   local est="$MISSION_DIR/estimate.json"
   [ -f "$est" ] || die "no estimate.json for mission ${MISSION_ID:-?}."
   local block; block="$(cost_compute "$est" "$cli")"
@@ -18994,7 +19501,7 @@ cmd_render_estimate() { # --surface in $SURFACE
     [ -n "${MISSION_ID:-}" ] && MISSION_DIR="$gitdir/lcars/missions/$MISSION_ID"
   fi
   resolve_worker_bin
-  local cli; cli="${LCARS_WORKER_CLI:-$(basename "${WORKER_BIN:-claude}")}"
+  local cli; cli="${LCARS_WORKER_CLI:-$(basename "${WORKER_BIN:-}")}"
   local est="$MISSION_DIR/estimate.json"
   [ -f "$est" ] || exit 1   # absent ⇒ no output, non-zero (file.sh degradation)
   # COMPUTE the cost fresh from cost_compute (never trust a possibly-stale `cost`
@@ -20613,7 +21120,7 @@ notify_gate() { # gate-type  one-line-decision-ready-summary
 
 # --- print pending.json's questions, one bare string per line ----------------
 #
-# THIS IS THE WALK-AWAY PROMISE. `lcars run` / the autopilot / night-watch is
+# THIS IS THE WALK-AWAY PROMISE. `lcars run` / the ECH / night-watch is
 # the UNATTENDED surface: when a Stage parks, the question reaching the captain
 # HERE is the whole difference between a gate he can answer and a Stage that
 # looks dead. It read pending.json with
@@ -20933,6 +21440,11 @@ drive_mark_done() {
   gh_relabel "lcars:done" "lcars:verify lcars:awaiting-human"
   set_stage "done"
   lcars_state_set_string "$STATE" review "merged"
+  . "$SKILL_DIR/../lcars-xo/release-stop.sh" \
+    && lcars_xo_release_completed_stop "$MISSION_DIR" || {
+      printf 'LCARS: PR merged, but Number One'\''s stop could not be released; check %s/xo-stop.\n' "$MISSION_DIR" >&2
+      return 1
+    }
   emit_event stage_done verify "PR merged — Mission shipped"
 }
 
@@ -21013,7 +21525,7 @@ drive_verify() { # accumulated-summary
     http*|*/pull/*)
       # A PR exists — has it merged (here or on GitHub)?
       if drive_pr_merged; then
-        drive_mark_done
+        drive_mark_done || return 1
         drive_line_done_inline="$(printf 'verify       ✓  PR merged — Mission shipped')"
         printf '%s\n' "$drive_line_done_inline"
         DRIVE_VERIFY_DONE=1
@@ -21047,12 +21559,22 @@ drive_verify() { # accumulated-summary
        drive_print_summary "$summary"
        printf '⏹ stopped at: verify  (could not open the PR)\n'
        printf '%s\n' "$out"
-       printf 'Fix the cause (push/auth/gh), then retry the open with:\n  %s\n' "$(drive_hint)"
+       local pr_lib="${LCARS_PR_LIB:-$SKILL_DIR/../lcars-approve/pr-lib.sh}" origin_guidance=""
+       if [ -f "$pr_lib" ]; then
+         # shellcheck source=skills/lcars-approve/pr-lib.sh
+         . "$pr_lib"
+         origin_guidance="$(pr_origin_guidance)" || origin_guidance=""
+       fi
+       if [ -n "$origin_guidance" ]; then
+         printf '%s\n' "$origin_guidance"
+       else
+         printf 'Fix the cause (push/auth/gh), then retry the open with:\n  %s\n' "$(drive_hint)"
+       fi
        if [ "$(json_str "$STATE" verifyDegradedNotified)" != "1" ]; then
          notify_gate verify "Mission parked at verify — review needed (PR could not be opened automatically)"
          lcars_state_set_string "$STATE" verifyDegradedNotified "1"
        fi
-       return 0 ;;
+       return 1 ;;
   esac
 
   # PR opened — fire the ONE notification and halt "in review".
@@ -21095,6 +21617,10 @@ drive_halt_awaiting() { # stage
 }
 
 drive_halt_paused() { # stage
+  if [ "$1" = done ]; then
+    printf '⏹ stopped at: done  (Mission shipped — the PR is merged)\n'
+    return 0
+  fi
   printf '⏸ paused at: %s  (paused by the captain — halted at a safe boundary)\n' "$1"
   printf 'The Mission is paused; no Stage will advance until you resume it.\n'
   printf 'Resume with `lcars resume %s`.\n' "$MISSION_ID"
@@ -21595,9 +22121,12 @@ drive_xo_repo_engine() {
 # work actually starts — and so a mission the captain opted out of, or stood
 # down, stays his however many times he re-runs it.
 drive_engage_number_one() {
+  # A terminal mission has no new work to delegate, even with the repo switch on.
+  [ "$(json_str "$STATE" stage)" = "done" ] && return 0
   drive_xo_repo_on || return 0
   case "$(drive_xo_block)" in *'"optOut"'*true*) return 0 ;; esac
   local status; status="$(drive_xo_field status)"
+  [ "$status" = "finished" ] && return 0    # completed review evidence survives a re-drive
   [ "$status" = "engaged" ] && return 0     # already holding the conn — leave `since` alone
   [ "$status" = "stood-down" ] && return 0  # the captain took it back; only `lcars xo on <id>` re-offers it
   # ESCALATED IS NOT OVERWRITTEN WHILE THE GATE IS STILL UP (S202 fix round 1,
@@ -21894,6 +22423,14 @@ cmd_drive() {
     # is spawned, no worker is killed mid-step (none is running). It stays put
     # until `lcars resume` clears the flag.
     if [ "$paused" = "true" ]; then
+      # A pause prevents new work, not recording a merge that already happened.
+      if [ "$stage" = verify ] && [ -n "$(json_str "$STATE" prUrl)" ] \
+         && drive_pr_merged; then
+        drive_mark_done || return 1
+        drive_print_summary "$summary"
+        printf 'verify       ✓  PR merged — Mission shipped\n'
+        return 0
+      fi
       emit_event paused "$stage" "paused by the captain — halted at the $stage boundary"
       mirror_comments || true
       drive_print_summary "$summary"; drive_halt_paused "$stage"; return 0
@@ -21931,7 +22468,7 @@ cmd_drive() {
               # review or a hard open failure) or non-empty $DRIVE_VERIFY_DONE to
               # signal "merged → continue the loop" (the next pass sees stage=done).
               DRIVE_VERIFY_DONE=""
-              drive_verify "$summary"
+              drive_verify "$summary" || return 1
               [ -n "$DRIVE_VERIFY_DONE" ] && continue
               return 0 ;;
       done)   emit_event gate done "Mission shipped — the PR is merged"
@@ -22085,7 +22622,7 @@ cmd_drive() {
           # Stepping INTO verify auto-opens the PR (same path as auto mode), then
           # parks in review. drive_verify prints its own summary + banner.
           DRIVE_VERIFY_DONE=""
-          drive_verify "$summary"
+          drive_verify "$summary" || return 1
         else
           drive_print_summary "$summary"
           printf '⏹ stepped one Stage → now at: %s\n' "$new_stage"
@@ -22862,6 +23399,8 @@ FSG_EOF
   # install: detection alone gets ticket 2 a real gate) is exactly this call.
   greenfield-detect-cmd-test)
     printf 'DETECTED=%s\n' "$(greenfield_detect_cmd "${LCARS_GP_ROOT:-$PWD}")"
+    # S299: and the reason the gate's refusal quotes when that came back empty.
+    printf 'INERT=%s\n' "$(greenfield_inert_why "${LCARS_GP_ROOT:-$PWD}")"
     exit 0 ;;
   # The mission's FIRST ticket, derived from the plan/wave ORDERING.
   init-first-ticket-test)

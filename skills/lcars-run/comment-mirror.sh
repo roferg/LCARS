@@ -627,8 +627,9 @@ cm_render_number_one() {
   engine="$(cm_jl_field "$blk" engine)"
   note="$(cm_jl_field "$blk" note)"
   last="$(cm_jl_field "$blk" lastAction)"
-  [ -f "$jl" ] || [ -n "$status" ] || return 1
-  [ -s "$jl" ] || [ -n "$status" ] || return 1
+  [ -s "$jl" ] || [ -n "$status" ] \
+    || [ -s "$MISSION_DIR/xo/report.md" ] \
+    || [ -s "$MISSION_DIR/xo/partial-report.md" ] || return 1
 
   printf '## ◈ Number One'"'"'s report\n\n'
   printf 'Your first officer has the conn on this Mission. It reads the record and\n'
@@ -658,6 +659,10 @@ cm_render_number_one() {
   if [ -s "$MISSION_DIR/xo/report.md" ]; then
     printf '\n### What I saw when I looked at the build\n\n'
     cat "$MISSION_DIR/xo/report.md"
+    printf '\n'
+  elif [ -s "$MISSION_DIR/xo/partial-report.md" ]; then
+    printf '\n### INTERRUPTED — partial report (not a verdict)\n\n'
+    cat "$MISSION_DIR/xo/partial-report.md"
     printf '\n'
   fi
 

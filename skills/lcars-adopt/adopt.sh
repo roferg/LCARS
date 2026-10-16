@@ -357,6 +357,22 @@ EOF
 # --- THE v1 BOUNDARY ------------------------------------------------------
 case "$STAGE" in
   align|verify) : ;;
+  done)
+    # S278 — A FINISHED MISSION IS NOT "MID-PIPELINE".
+    #
+    # `lcars approve` relabels the issue `lcars:done` at the ship, so a mission
+    # that MERGED carries a stage label this check reads as a stage and then
+    # refused with the sentence below — which was wrong twice over. Nothing
+    # about a merged mission is mid-pipeline; and "watch it from the board, or
+    # wait for it to reach Verify" is advice about a mission that reached
+    # Verify, shipped and closed, possibly months ago.
+    #
+    # It also withheld the one thing the captain wants to hear, which is that
+    # there is nothing to do: the viewscreen now draws every closed `lcars:done`
+    # mission issue as a read-only Done card, straight from GitHub, so a fresh
+    # clone can SEE it without adopting anything. Still non-zero — adopt did not
+    # do what was asked and must not exit 0 — and still creating nothing.
+    die "issue #$ISSUE is a mission that is finished — it shipped and its issue is closed. It is shown in the board's Done column from GitHub and has nothing left to adopt. Nothing was created." ;;
   *)
     die "mission is mid-pipeline at $STAGE; portable ends are Align and Verify. The stages between them keep their working artifacts (research findings, the plan, ticket state) on the laptop that is driving them — those are deliberately not on the issue, so a rebuild here would be a mission with its middle missing. Watch it from the board, or wait for it to reach Verify. Nothing was created." ;;
 esac

@@ -1,0 +1,1 @@
+The answer inbox: one list of every decision LCARS is waiting on, each in plain English with the exact command to approve it, send it back, or answer it — copy the line and run it.

@@ -69,8 +69,8 @@ class DetailViewOnGitHubTest(unittest.TestCase):
     """Call site 1: the detail header's "↗ View on GitHub" button."""
 
     def test_the_enterprise_host_reaches_the_link(self):
-        d = _drive(_meta(ghHost="github.ghe.com"), "detail", MISSION)
-        self.assertIn("https://github.ghe.com/acme/widget/issues/4101",
+        d = _drive(_meta(ghHost="enterprise.example.com"), "detail", MISSION)
+        self.assertIn("https://enterprise.example.com/acme/widget/issues/4101",
                       _issue_links(d))
 
     def test_github_com_is_unchanged_when_no_host_is_sent(self):
@@ -105,10 +105,10 @@ class LogBugBadgeTest(unittest.TestCase):
     """Call site 2: the "⊗ BUG · child of #<parent>" badge on a logged bug."""
 
     def test_the_enterprise_host_reaches_the_badge_link(self):
-        d = _drive(_meta(ghHost="github.ghe.com"), "logbug", BUG, cards=[MISSION, BUG])
+        d = _drive(_meta(ghHost="enterprise.example.com"), "logbug", BUG, cards=[MISSION, BUG])
         self.assertEqual(d["badgeTag"], "a")
         self.assertEqual(d["badgeHref"],
-                         "https://github.ghe.com/acme/widget/issues/4101")
+                         "https://enterprise.example.com/acme/widget/issues/4101")
 
     def test_github_com_is_unchanged(self):
         d = _drive(_meta(), "logbug", BUG, cards=[MISSION, BUG])
@@ -117,7 +117,7 @@ class LogBugBadgeTest(unittest.TestCase):
 
     def test_a_bug_with_no_resolvable_parent_still_renders_a_plain_badge(self):
         orphan = dict(BUG, parentMission=None, parentIssue=None)
-        d = _drive(_meta(ghHost="github.ghe.com"), "logbug", orphan, cards=[MISSION, orphan])
+        d = _drive(_meta(ghHost="enterprise.example.com"), "logbug", orphan, cards=[MISSION, orphan])
         self.assertEqual(d["badgeTag"], "span")
         self.assertIsNone(d["badgeHref"])
 

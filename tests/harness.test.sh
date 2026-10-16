@@ -111,11 +111,11 @@ check "1b. CONTROL: stdin CLOSED hides the same hang (why </dev/null proves noth
   "! timed_out \"\$ctrl_dn\""
 
 # --- 2. Real suites terminate from a pty with stdin OPEN -------------------
-# lcars-pause and lcars-buddy were MEASURED hanging from a pty before the cure
+# lcars-pause and lcars-eeh were MEASURED hanging from a pty before the cure
 # (30.0s and 25.0s, both killed by the cage; 5.6s and 5.9s after). run-runner is
 # a fast canary. Check 2 asserts TERMINATION only — lcars-pause has a red
 # assertion of its own, ledgered, and that is not this suite's business.
-for s in lcars-pause lcars-buddy run-runner; do
+for s in lcars-pause lcars-eeh run-runner; do
   [ -f "$DIR/$s.test.sh" ] || { bad "2. $s.test.sh missing"; continue; }
   out="$(run_pty "$HANG_SECS" bash "$DIR/$s.test.sh")"
   el="$(elapsed "$out")"
@@ -304,6 +304,101 @@ check "6d-control — a DIFFERENT cage reports ITS own deadline, not 4s" \
 # elapsed() reads it with `sed -n 1s`. Honesty must not cost the contract.
 check "6e. the timeout line still starts with the parseable ELAPSED field" \
   "[ -n \"\$(elapsed \"\$noisy\")\" ]"
+
+# ---- 6f. THE CAGE TELLS A CALLER THE TRUTH, NOT ONLY A READER (S289) ------
+# It printed `EXIT 7` and then exited 0 ITSELF. So `cage … && <next step>` read
+# a RED suite as a pass, and unattended is exactly the context where nobody
+# reads the printed line: an overnight chain structurally could not see a
+# failure. It nearly fooled the 2026-10-11 orchestrator, which took a
+# background job's exit 0 for the verdict when the verdict was only in the text.
+# The cure is the PROCESS STATUS ONLY. The first line is a contract several
+# readers parse (`sed -n 1p`), so every probe below asserts it byte-for-byte
+# with the measured seconds — the one part that legitimately varies —
+# normalised out. GOLD_* are transcripts of the pre-change output.
+GOLD_FAIL='ELAPSED <n>s EXIT 7'
+GOLD_PASS='ELAPSED <n>s EXIT 0'
+GOLD_TIMEOUT='ELAPSED <n>s *** TIMED OUT — exceeded the 2s deadline (group killed). A timeout is not a verdict: this cage cannot tell SLOW from STUCK. If the deadline was the wrong budget, raise it; otherwise read the caged output below for where it stopped. ***'
+# The seconds are the measurement; everything else is the contract.
+contract_line() { sed -n '1s/^ELAPSED [0-9][0-9.]*s/ELAPSED <n>s/p' <<<"$1"; }
+
+f_out="$(python3 "$CAGE" 30 bash -c 'echo CHILD-SPOKE-ON-FAILURE; exit 7' 2>&1)"; f_rc=$?
+check "6f. a caged suite that FAILS exits the cage with the child's status (7)" \
+  "[ \"\$f_rc\" -eq 7 ]"
+check "6f-contract — …and its first line is byte-identical to the pre-change one" \
+  "[ \"\$(contract_line \"\$f_out\")\" = \"\$GOLD_FAIL\" ]"
+check "6f-control — the failing child's own output still follows the line" \
+  "grep -q 'CHILD-SPOKE-ON-FAILURE' <<<\"\$f_out\""
+
+p_out="$(python3 "$CAGE" 30 bash -c 'echo CHILD-SPOKE-ON-PASS; exit 0' 2>&1)"; p_rc=$?
+check "6f. a caged suite that PASSES still exits 0 (the regression that matters most)" \
+  "[ \"\$p_rc\" -eq 0 ]"
+check "6f-contract — …and its first line is byte-identical to the pre-change one" \
+  "[ \"\$(contract_line \"\$p_out\")\" = \"\$GOLD_PASS\" ]"
+check "6f-control — the passing child's own output still follows the line" \
+  "grep -q 'CHILD-SPOKE-ON-PASS' <<<\"\$p_out\""
+
+# A TIMEOUT IS NOT A FAILING SUITE, and a caller must be able to tell them
+# apart — that distinction is the whole point of the status change. 124 is
+# timeout(1)'s convention.
+cat >"$TMPROOT/talks-then-hangs.sh" <<'EOF'
+#!/usr/bin/env bash
+echo "MARKER-S289-BEFORE-THE-DEADLINE"
+while :; do sleep 0.2; done
+EOF
+t_out="$(python3 "$CAGE" 2 bash "$TMPROOT/talks-then-hangs.sh" 2>&1)"; t_rc=$?
+check "6f. a caged suite that OUTRUNS ITS DEADLINE exits 124, not 0 and not the child's" \
+  "[ \"\$t_rc\" -eq 124 ]"
+check "6f-contract — …and the TIMED OUT sentence is unchanged, word for word" \
+  "[ \"\$(contract_line \"\$t_out\")\" = \"\$GOLD_TIMEOUT\" ]"
+# S244's evidence-preservation fix must survive the status change: the status is
+# the only thing that moves, and the one run that most needs a diagnosis is the
+# one that produces it.
+check "6f-control — S244 holds: a timed-out cage STILL prints what the child said" \
+  "grep -q 'MARKER-S289-BEFORE-THE-DEADLINE' <<<\"\$t_out\""
+# …and 124 as a STATUS is never ambiguous, because a child that exits 124 on its
+# own says so on the line. Status plus line separates the two cases.
+c124_out="$(python3 "$CAGE" 30 bash -c 'exit 124' 2>&1)"; c124_rc=$?
+check "6f-control — a child that exits 124 ITSELF is still told apart by the line" \
+  "[ \"\$c124_rc\" -eq 124 ] && grep -q 'EXIT 124' <<<\"\$c124_out\" && ! grep -q 'TIMED OUT' <<<\"\$c124_out\""
+
+# THE CALLER-LEVEL PROOF, in the exact shape CLAUDE.md and ORCHESTRATION.md tell
+# every unattended run to use. The exit code is the mechanism; this is the harm.
+reached_fail="$(python3 "$CAGE" 30 bash -c 'exit 7' >/dev/null 2>&1 && echo REACHED)"
+reached_pass="$(python3 "$CAGE" 30 bash -c 'exit 0' >/dev/null 2>&1 && echo REACHED)"
+check "6f. \`cage … && <next step>\` does NOT advance past a failing suite" \
+  "[ -z \"\$reached_fail\" ]"
+check "6f-control — …and it DOES advance past a passing one (not merely always red)" \
+  "[ \"\$reached_pass\" = REACHED ]"
+
+# A child killed by a SIGNAL is reported as the shell reports it (128+N), not as
+# python's truncated negative. The line keeps printing the raw `EXIT -9`.
+k_out="$(python3 "$CAGE" 30 bash -c 'kill -9 $$' 2>&1)"; k_rc=$?
+check "6f-control — a child KILLED by a signal exits 128+N (137), and the line is unchanged" \
+  "[ \"\$k_rc\" -eq 137 ] && [ \"\$(contract_line \"\$k_out\")\" = 'ELAPSED <n>s EXIT -9' ]"
+
+# THE SIGNALLED PATH IS UNCHANGED (it was already honest): a cage that is itself
+# TERMed exits the way the signal would have, 128+15.
+cat >"$TMPROOT/s289-sleeper.sh" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$$" >"$1"
+while :; do sleep 0.2; done
+EOF
+s289_pidfile="$TMPROOT/s289-caged.pid"; rm -f "$s289_pidfile"
+python3 "$CAGE" 600 bash "$TMPROOT/s289-sleeper.sh" "$s289_pidfile" >"$TMPROOT/s289-sig.txt" 2>&1 &
+s289_cage=$!
+sw=0; while [ "$sw" -lt 60 ] && [ ! -s "$s289_pidfile" ]; do sw=$((sw + 1)); sleep 0.1; done
+s289_child="$(cat "$s289_pidfile" 2>/dev/null || true)"
+kill -TERM "$s289_cage" 2>/dev/null || true
+wait "$s289_cage" 2>/dev/null; s289_rc=$?
+check "6f-control — a TERMed cage still exits 128+15 and still says CAGE SIGNALLED" \
+  "[ \"\$s289_rc\" -eq 143 ] && grep -q 'CAGE SIGNALLED' '$TMPROOT/s289-sig.txt'"
+[ -n "$s289_child" ] && kill -KILL "$s289_child" 2>/dev/null
+
+# A USAGE ERROR KEEPS ITS OWN EXIT. It must not be dressed up as either a clean
+# pass or a timeout: 0 would hide it, 124 would misname it.
+python3 "$CAGE" >/dev/null 2>&1; u_rc=$?
+check "6f-control — a cage invoked with no deadline and no command keeps its exit 1" \
+  "[ \"\$u_rc\" -eq 1 ] && [ \"\$u_rc\" -ne 124 ]"
 
 # 6b. Kill the CAGE, not the caged process, and see whether the child survives.
 # The child records its own pid on disk so the roll call is against a FILE, never

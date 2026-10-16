@@ -37,14 +37,16 @@ Three consumers, one file:
   session-plan doc.
 - **`night-watch`** (lcars-dev) — chains sessions unattended; adds its own rules
   *on top of* this file.
-- **`lcars buddy`** (this skill) — orchestrates one **fix** to LCARS, driven from
+- **`lcars eeh`** (this skill) — orchestrates one **fix** to LCARS, driven from
   whatever foreign repo the captain happens to be in.
 
-Read it at the install path, which is stable from any cwd because `install.sh`
-symlinks this skill dir into `~/.claude/skills/`:
+Read it with the command `install.sh` puts on your PATH. It resolves this file
+beside whichever copy of `eeh.sh` ran, so it is stable from any cwd and under
+either install symlink farm (`~/.claude/skills/` for Claude Code, `~/.copilot/installed-plugins/_direct/lcars` for Copilot):
 
-```
-~/.claude/skills/lcars-buddy/ORCHESTRATION.md
+```bash
+lcars-eeh docs orchestration          # prints this file
+lcars-eeh docs --path orchestration   # just its absolute path
 ```
 
 **This file wins over any restatement.** If a skill, a doc, or a script says
@@ -52,7 +54,7 @@ something different about the loop, the pre-flight, the fix rounds, the branch,
 the trailer or the readout, this file is right and that text is a stale copy —
 fix the copy by deleting it and pointing here. Each consumer keeps only what is
 genuinely its own (run-session keeps roadmap resolution and its briefing;
-night-watch keeps its unattended additions; buddy keeps its own refusal rule).
+night-watch keeps its unattended additions; the EEH keeps its own refusal rule).
 
 ---
 
@@ -120,11 +122,14 @@ Run these **after** the go-ahead and **before** any sub-agent.
 
 ## The loop
 
+The orchestrator half spawns sub-agents and is run from Claude Code today; the ride-along brief and the ECH run from either CLI.
+
 Each piece of work is driven by ONE **orchestrator**. **The orchestrator writes
 no production code itself** — it spawns sub-agents and runs this loop:
 
-1. **Implementor sub-agent (TDD).** Given the goal + the "Behaviors to drive with
-   /tdd" list, it writes the failing tests **first**, implements until the scoped
+1. **Implementor sub-agent (TDD).** Given the goal + the "Behaviors to drive
+   with red-green TDD" list — meaning the `/tdd` skill in Claude Code, or the equivalent discipline by hand —
+   it writes the failing tests **first**, implements until the scoped
    suite is green, runs the install/build step (`./install.sh` in LCARS, so the
    change is the code that actually runs), and returns a summary of what changed.
 2. **Tester sub-agent (fresh, captain stand-in).** A *separate* sub-agent that
@@ -155,7 +160,7 @@ no production code itself** — it spawns sub-agents and runs this loop:
    *Readout*. No PR unless asked.
 
 **An invariant touch is a STOP.** Honour every invariant the work declares (a
-session doc's *What we are NOT changing*; for a buddy fix, the protected
+session doc's *What we are NOT changing*; for an EEH fix, the protected
 machinery: the Implement proof gates (flip-flop, declared test-edits,
 quality floor), the ≤3-sessions-then-park bound, env-injected/stubbable CLIs). If
 a change would touch one, **STOP and
@@ -168,7 +173,7 @@ report** rather than papering over it.
 Before any harness-driven testing, the tester's first action is to use the thing
 the way the captain would and confirm **it works at all**. On a viewscreen
 session that means: start the daemon, open it in real headed Chrome, take a
-screenshot, and look at it. On a buddy fix it means: re-collect the brief (or
+screenshot, and look at it. On an EEH fix it means: re-collect the brief (or
 re-drive the failing verb) from the foreign repo and read it. Only then go
 hunting for the specific behaviours.
 
@@ -357,9 +362,14 @@ interactive shell blocks on its own first assertion.
 **A caged run that does not come back is NOT proof of safety** — it is the hang,
 reported.
 
-**Never key a decision on the cage's own `$?`.** It exits 0 whether the probe
-passed, failed or was killed; the verdict is in the text it prints (`EXIT <n>`,
-`*** TIMED OUT — exceeded the <d>s deadline ***`, `ELAPSED`). Parse the output, not the status.
+**The cage's `$?` is now the probe's own (S289).** It exits the child's status,
+128+N for a child killed by signal N, and **124** when the child outran the
+deadline — so `cage … && <next step>` can be trusted and a caller can tell a
+FAILING probe from one that outran its budget. It used to exit 0 whether the
+probe passed, failed or was killed, which is why older rigs parse the text; a
+chain keyed on that status could not see a red suite at all. The text is still
+the record of WHICH case it was (`EXIT <n>`, `*** TIMED OUT — exceeded the <d>s deadline ***`,
+`ELAPSED`), and still the only place to look for how far the probe got.
 
 ### Two mechanisms hang a suite, not one
 
@@ -392,8 +402,8 @@ The contract for building LCARS is `CLAUDE.md` in the LCARS checkout
 repo needs it to hand:
 
 1. **Author in the repo.** Create/edit `skills/<name>/SKILL.md` and its script —
-   **never** under `~/.claude` (that is the install symlink farm;
-   `CLAUDE.md:9-20`).
+   **never** under the install farms (`~/.claude/skills/` for Claude Code, `~/.copilot/installed-plugins/_direct/lcars` for Copilot — both are generated by
+   `install.sh`; `CLAUDE.md:9-20`).
 2. **TDD it.** Write the failing case in `tests/<name>.test.sh` first, then make
    it pass. Keep logic in a bundled shell script (not buried in prose) so it
    stays testable, and take external dependencies via env vars
@@ -410,7 +420,7 @@ repo needs it to hand:
    not cosmetic; see the hang rule above.
 4. **Verify.** See the scoped-suite rule below.
 5. **Commit.** Source, test and doc updates are all tracked. Nothing that lives
-   only in `~/.claude/` counts — it doesn't ship.
+   only in an install farm counts — it doesn't ship.
 
 Three things the contract did not say, written down here (and now in `CLAUDE.md`
 too — this file quotes the contract, not the reverse):
@@ -480,7 +490,7 @@ blind spots; the journey carries the experience.
 ## Guardrails
 
 - **Briefing-before-work is unconditional** — even for "run session NN" with an
-  explicit number, even mid-round; and for a buddy fix, before the branch is cut.
+  explicit number, even mid-round; and for an EEH fix, before the branch is cut.
 - **Never fake the layer the work changes.** If pre-flight finds that, nothing
   starts until the harness is fixed or the scope changes.
 - **Never spend Claude without asking, and never quietly skip a Claude drive the
@@ -491,5 +501,5 @@ blind spots; the journey carries the experience.
   readout, offer the next; do not start it.
 - **A pre-flight failure means stand down** (dirty tree, install out of sync,
   missing auth) — report it rather than working around it.
-- **Never author under `~/.claude`.** lcars-dev is for planning docs and
+- **Never author under the install farms.** lcars-dev is for planning docs and
   meta-skills only; anything that ships is authored in the LCARS repo.

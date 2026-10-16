@@ -631,7 +631,7 @@ printf '\n── 5. S250 FIX ROUND 1 — D2 the refusals are visible; D3 "Observ
 #
 # D3. All three filed bug PRDs opened AC #1 with `Observed live:` when
 # `xo/live.json` did not exist and no live step had run. The opener is mandatory
-# (`autopilot.sh file-bug` refuses a PRD without it) so it stays — and the clause
+# (`ech.sh file-bug` refuses a PRD without it) so it stays — and the clause
 # after it now says WHERE, off the step readout's own `live` stamp.
 
 XORUNPY="$REPO_ROOT/skills/lcars-xo/xo-run.py"

@@ -117,6 +117,52 @@ def _scrub(b):
     return b
 
 
+def _pin_engines(case):
+    """Make the four S274/S275 `meta` engine keys a FIXTURE fact, not a fact
+    about the reader's laptop.
+
+    `meta.enginesHere` / `engineDefault` / `workerEngine` / `engineSource` come
+    from the shared bash detector, which asks `command -v` for each CLI. Left
+    unpinned they say whatever is installed on the machine running the suite —
+    so a byte-identity baseline carrying them would pass here and fail for
+    anyone who has only one of the two CLIs, or neither. Pinned through the
+    same `LCARS_CLAUDE_BIN` / `LCARS_COPILOT_BIN` seams `test_engine_default`
+    uses (stubs that are found but never run), both engines are "installed"
+    everywhere and the baseline means the same thing on every machine.
+
+    `LCARS_WORKER_BIN` is cleared because an operator's own export would make
+    `engineSource` "env" and re-home `workerEngine` on the exported path.
+
+    Nothing is written to `.git/lcars/config.json`: this fixture's repo has no
+    config at all — `test_meta_carries_no_numberOne_key_without_a_config_block`
+    turns on that — so the pin is env-only.
+    """
+    bins = os.path.join(case.tmp, "engine-bin")
+    os.makedirs(bins, exist_ok=True)
+    saved = {}
+    for key, name in (("LCARS_CLAUDE_BIN", "claude"),
+                      ("LCARS_COPILOT_BIN", "copilot"),
+                      ("LCARS_WORKER_BIN", None)):
+        saved[key] = os.environ.get(key)
+        if name is None:
+            os.environ.pop(key, None)
+            continue
+        path = os.path.join(bins, name)
+        with open(path, "w") as fh:
+            fh.write("#!/usr/bin/env bash\nexit 0\n")
+        os.chmod(path, 0o755)
+        os.environ[key] = path
+
+    def restore():
+        for key, old in saved.items():
+            if old is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = old
+
+    case.addCleanup(restore)
+
+
 class BaselineFixture(object):
     """The identity-free fixture the fixtures/s190 baselines were captured from.
 
@@ -149,19 +195,32 @@ class NoIdentityIsByteIdentical(unittest.TestCase):
         self.tmp = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
         BaselineFixture.plant(self.tmp)
+        _pin_engines(self)
         self.adapter = LocalAdapter(
             self.tmp, git_url_reader=lambda r: "git@x:acme/repo.git",
             # gh is ABSENT: whoami answers nothing, nothing is published.
             ownership_script=_silent_ownership_stub(self.tmp, whoami=""))
 
     def test_board_payload_is_byte_identical_to_the_pre_change_baseline(self):
+        # BASELINE PROVENANCE. Captured pre-S190 (no owner, no identity); moved
+        # ONCE since, on 2026-10-12, to take on the four `meta` keys S274/S275
+        # added — `enginesHere`, `engineDefault`, `workerEngine`,
+        # `engineSource`. That delta was DIFFED before the file was rewritten
+        # and those four keys were the ONLY difference; nothing else in 906
+        # lines moved. The engine values are now pinned by `_pin_engines`
+        # above, so they are a fact about the fixture and not about whichever
+        # CLIs the reader happens to have installed.
+        #
+        # If this goes red: diff it, name every key that moved, and only then
+        # decide. A rebaseline that absorbs an unexplained key is the one
+        # failure this file cannot survive.
         with open(os.path.join(FIXTURES, "board-baseline.json")) as fh:
             expected = fh.read()
         got = json.dumps(_scrub(self.adapter.board()),
                          sort_keys=True, indent=2) + "\n"
         self.assertEqual(expected, got,
-                         "the no-identity board payload changed; S190 is "
-                         "additive and must leave it untouched")
+                         "the no-identity board payload changed; diff it and "
+                         "account for every key before touching the baseline")
 
     def test_no_card_carries_an_owner_key(self):
         for c in self.adapter.board()["missions"]:

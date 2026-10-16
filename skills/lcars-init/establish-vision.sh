@@ -49,6 +49,8 @@
 #   establish-vision.sh --prd --idea <f> --stack <s> [--reasons <f>]
 #                       [--deferred <f>] [--slice <s>] [--title <s>]
 #       The assembled, foundation-scoped PRD on stdout. Deterministic.
+#       Instead of --idea <f>, supply both --stack and --slice to describe
+#       the foundation directly.
 #
 #   establish-vision.sh --write-vision …same args…
 #       Writes .git/lcars/vision.md (the durable project vision). Prints its path.
@@ -343,10 +345,15 @@ if [ "$MODE" = "brief" ]; then ev_brief; exit 0; fi
 # ---------------------------------------------------------------------------
 # THE ARTEFACTS — the PRD, the vision doc, the mission.
 # ---------------------------------------------------------------------------
-[ -n "$IDEA_SRC" ] || die "no idea given — pass --idea <file>."
-[ -f "$IDEA_SRC" ] || die "idea file not found: $IDEA_SRC"
+if [ -n "$IDEA_SRC" ]; then
+  [ -f "$IDEA_SRC" ] || die "idea file not found: $IDEA_SRC"
+  IDEA="$(cat "$IDEA_SRC")"
+elif [ -n "$STACK" ] && [ -n "$SLICE" ]; then
+  IDEA="Establish the foundation on $STACK with one thin vertical slice: $SLICE"
+else
+  die "no idea given — pass --idea <file>, or supply both --stack '<stack>' and --slice '<thin slice>'."
+fi
 [ -n "$STACK" ] || die "no stack given — pass --stack '<the stack the captain accepted>'."
-IDEA="$(cat "$IDEA_SRC")"
 REASONS=""; [ -n "$REASONS_SRC" ] && [ -f "$REASONS_SRC" ] && REASONS="$(cat "$REASONS_SRC")"
 DEFERRED=""; [ -n "$DEFERRED_SRC" ] && [ -f "$DEFERRED_SRC" ] && DEFERRED="$(cat "$DEFERRED_SRC")"
 # THE SLICE IS A NOUN PHRASE (fix round 1, D3) — the phrase that COMPLETES

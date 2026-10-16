@@ -1,6 +1,20 @@
 ---
 name: lcars-pause
-description: Pause or resume a running LCARS Mission at a safe boundary — user-initiated pause/resume (ADR-005, PRD §5.10). `lcars pause <id>` halts a Mission cleanly: it sets a `paused` flag in state.json and applies the `lcars:paused` label, so the driver stops advancing at the next safe boundary — between Stages, or between waves/tickets in Implement — and NEVER hard-kills a worker mid-step. The Mission stays put until resumed; `lcars status` shows it with the ⏸ paused glyph and the bare `lcars` driver will not auto-pick it. `lcars resume <id>` clears the flag, removes the `lcars:paused` label, and re-enters the driver from the recorded stage. Both verbs are idempotent (double-pause / double-resume safe; resuming a non-paused Mission is a clean no-op that still drives). Use when the captain runs `lcars pause <id>` / `lcars resume <id>`, asks to pause / hold / halt / stop a Mission for now, or to resume / un-pause / continue a paused Mission.
+description: >-
+  Pause or resume a running LCARS Mission at a safe boundary —
+  user-initiated pause/resume (ADR-005, PRD §5.10). `lcars pause <id>` halts
+  a Mission cleanly: it sets a `paused` flag in state.json and applies the
+  `lcars:paused` label, so the driver stops advancing at the next safe
+  boundary — between Stages, or between waves/tickets in Implement — and
+  NEVER hard-kills a worker mid-step. The Mission stays put until resumed;
+  `lcars status` shows it with the ⏸ paused glyph and the bare `lcars`
+  driver will not auto-pick it. `lcars resume <id>` clears the flag, removes
+  the `lcars:paused` label, and re-enters the driver from the recorded
+  stage. Both verbs are idempotent (double-pause / double-resume safe;
+  resuming a non-paused Mission is a clean no-op that still drives). Use
+  when the captain runs `lcars pause <id>` / `lcars resume <id>`, asks to
+  pause / hold / halt / stop a Mission for now, or to resume / un-pause /
+  continue a paused Mission.
 ---
 
 # lcars pause / resume

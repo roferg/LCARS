@@ -47,7 +47,8 @@ WEB_DIR="$REPO_ROOT/web"
 
 pass=0
 fail=0
-TMPROOT="$(mktemp -d)"
+TMPROOT="$(mktemp -d "${TMPDIR:-.}/lcars-install.XXXXXX")"
+TMPROOT="$(cd "$TMPROOT" && pwd)"
 trap 'rm -rf "$TMPROOT"' EXIT
 
 ok()   { printf '  \033[32mPASS\033[0m %s\n' "$1"; pass=$((pass + 1)); }
@@ -66,6 +67,7 @@ new_env() {
 # (so we can control whether LCARS_BIN_DEST is on PATH for the hint test).
 run_install() {
   local e="$1"; local extra_path="${2:-}"
+  LCARS_INSTALL_PREFIX="$e/inst" \
   LCARS_BIN_DEST="$e/bin" \
   LCARS_SKILLS_DEST="$e/claude-skills" \
   LCARS_COPILOT_PLUGINS_DIR="$e/copilot/_direct" \
@@ -111,6 +113,22 @@ check "2b. lcars-launch launcher exists and is executable in the bin dest" \
   "[ -f '$e1/bin/lcars-launch' ] && [ -x '$e1/bin/lcars-launch' ]"
 check "2b. lcars-launch launcher execs the repo's launch.sh by absolute path" \
   "qgrep -q -- '$REPO_ROOT/skills/lcars-launch/launch.sh' < '$e1/bin/lcars-launch'"
+
+# S277: the EEH's three documents tell the MODEL to run a script by name, and
+# they used to name `bash ~/.claude/skills/lcars-eeh/<script>`. That path is
+# Claude Code's install location; a Copilot-only machine has no `~/.claude` at
+# all. The S277 spike watched a real Copilot turn obey that prose literally,
+# take exit 127, report the error and STOP — it never fell back to the
+# `~/.copilot` plugin mount it had just loaded the skill from. So the prose now
+# names on-PATH commands, and the commands have to exist.
+check "2c. lcars-eeh launcher exists and is executable in the bin dest" \
+  "[ -f '$e1/bin/lcars-eeh' ] && [ -x '$e1/bin/lcars-eeh' ]"
+check "2c. lcars-eeh launcher execs the repo's eeh.sh by absolute path" \
+  "qgrep -q -- '$REPO_ROOT/skills/lcars-eeh/eeh.sh' < '$e1/bin/lcars-eeh'"
+check "2d. lcars-ech launcher exists and is executable in the bin dest" \
+  "[ -f '$e1/bin/lcars-ech' ] && [ -x '$e1/bin/lcars-ech' ]"
+check "2d. lcars-ech launcher execs the repo's ech.sh by absolute path" \
+  "qgrep -q -- '$REPO_ROOT/skills/lcars-eeh/ech.sh' < '$e1/bin/lcars-ech'"
 
 # ==========================================================================
 # Behaviour 3: running the launcher resolves WEB_DIR correctly — it reaches the
@@ -164,6 +182,8 @@ check "4. re-install creates NO .bak churn for our own launcher" \
   "[ '$baks' -eq 0 ]"
 check "4. re-install: lcars-viewscreen still execs the repo viewscreen.sh" \
   "qgrep -q -- '$REPO_ROOT/skills/lcars-viewscreen/viewscreen.sh' < '$e1/bin/lcars-viewscreen'"
+check "4. re-install: the two S277 EEH launchers are idempotent too" \
+  "[ \"\$(find '$e1/bin' -maxdepth 1 -name 'lcars-eeh' | wc -l | tr -d ' ')\" -eq 1 ] && [ \"\$(find '$e1/bin' -maxdepth 1 -name 'lcars-ech' | wc -l | tr -d ' ')\" -eq 1 ] && [ \"\$(find '$e1/bin' -maxdepth 1 -name 'lcars-eeh.bak.*' -o -maxdepth 1 -name 'lcars-ech.bak.*' | wc -l | tr -d ' ')\" -eq 0 ]"
 check "4. re-install: exactly one lcars-viewscreen + one lcars-serve in bin" \
   "[ \"\$(find '$e1/bin' -maxdepth 1 -name 'lcars-viewscreen' | wc -l | tr -d ' ')\" -eq 1 ] && [ \"\$(find '$e1/bin' -maxdepth 1 -name 'lcars-serve' | wc -l | tr -d ' ')\" -eq 1 ]"
 
@@ -194,8 +214,16 @@ check "6. the hint mentions the bin dest path" \
 
 e6b="$(new_env)"
 run_install "$e6b" "$e6b/bin"   # bin dest IS on PATH (passed as extra_path)
+# The pattern here must name the BIN-DEST hint SPECIFICALLY. It used to be
+# `not on .*PATH`, which also matched install.sh's entirely correct and
+# unrelated "Claude CLI not on PATH — install it before running lcars
+# commands." So this check passed only on a machine that HAS an AI CLI
+# installed, and went red on a clean runner — the exact property the CI gate
+# exists to protect (found by S283's first real Actions run). "ACTION NEEDED"
+# occurs once in install.sh, in the bin-dest block, and the dest path pins it
+# to THIS install.
 check "6. prints NO add-to-PATH hint when bin dest IS already on PATH" \
-  "! qgrep -qi 'add .* to your PATH\|not on .*PATH\|export PATH' < '$e6b/out.txt'"
+  "! qgrep -q 'ACTION NEEDED' < '$e6b/out.txt'"
 
 # ==========================================================================
 # Behaviour 7: the EXISTING claude symlink install + copilot-absent graceful
@@ -203,7 +231,7 @@ check "6. prints NO add-to-PATH hint when bin dest IS already on PATH" \
 # ==========================================================================
 e7="$(new_env)"
 rc7=0
-run_install "$e7" || rc7=$?
+run_install "$e7" "$e7/bin" || rc7=$?
 check "7. install still exits 0 with copilot absent" \
   "[ '$rc7' -eq 0 ]"
 check "7. claude dest still has the lcars skill symlinked" \
@@ -243,7 +271,8 @@ env -u LCARS_SKILLS_DEST -u LCARS_BIN_DEST -u LCARS_COPILOT_PLUGINS_DIR \
     LCARS_COPILOT_BIN=/usr/bin/true \
     bash "$INSTALL" >"$pout" 2>&1 || rc8=$?
 
-check "8. a prefix-only install exits 0" "[ '$rc8' -eq 0 ]"
+check "8. a prefix-only install off PATH exits 1 and says NOT READY" \
+  "[ '$rc8' -eq 1 ] && grep -q 'NOT READY' '$pout'"
 check "8. skills land under the prefix (not ~/.claude/skills)" \
   "[ -L '$pfx/claude-skills/lcars' ]"
 check "8. all skills are linked under the prefix (count matches)" \
@@ -317,6 +346,39 @@ check "10. the header warns that setting only ONE does not isolate the install" 
   "grep -qi 'does NOT isolate' '$INSTALL'"
 check "10. the header documents LCARS_INSTALL_PREFIX as the one-variable cure" \
   "grep -q 'LCARS_INSTALL_PREFIX' '$INSTALL'"
+
+# ==========================================================================
+# Behaviour 11 (S277): the launcher is a PASS-THROUGH, not a second
+# implementation. `lcars-ech <verb>` must be byte-identical to
+# `bash skills/lcars-eeh/ech.sh <verb>` — same stdout, same stderr,
+# same exit code — because HOLOGRAM-COMMAND-MODE.md's headings are locked to the script's
+# own output and a wrapper that reformatted anything would break that contract
+# silently on the CLI that has no `~/.claude`.
+# ==========================================================================
+AP_REPO="$TMPROOT/ap-target"
+mkdir -p "$AP_REPO"
+( cd "$AP_REPO" && git init -q 2>/dev/null )
+AP_SRC="$REPO_ROOT/skills/lcars-eeh/ech.sh"
+
+# 11a. no autopilot.json yet — the refusal must match, exit code included.
+direct_a="$(LCARS_ECH_CWD="$AP_REPO" bash "$AP_SRC" next 2>&1)"; drc_a=$?
+launch_a="$(LCARS_ECH_CWD="$AP_REPO" "$e1/bin/lcars-ech" next 2>&1)"; lrc_a=$?
+check "11a. lcars-ech next (no autopilot.json) is byte-identical to the script" \
+  "[ \"\$direct_a\" = \"\$launch_a\" ] && [ $drc_a -eq $lrc_a ]"
+
+# 11b. an initialised repo — the §-heading line `next` prints must come through
+# the launcher unchanged (this is the line the model acts on).
+printf 'a spec\n' >"$AP_REPO/spec.md"
+LCARS_ECH_CWD="$AP_REPO" bash "$AP_SRC" init --spec "$AP_REPO/spec.md" --scope M0 >/dev/null 2>&1
+direct_b="$(LCARS_ECH_CWD="$AP_REPO" bash "$AP_SRC" next 2>&1)"; drc_b=$?
+launch_b="$(LCARS_ECH_CWD="$AP_REPO" "$e1/bin/lcars-ech" next 2>&1)"; lrc_b=$?
+check "11b. lcars-ech next prints the PLAYBOOK heading, byte-identical" \
+  "[ \"\$direct_b\" = \"\$launch_b\" ] && [ $drc_b -eq $lrc_b ] && printf '%s' \"\$launch_b\" | qgrep -q '^PLAYBOOK: ## '"
+
+# 11c. and `lcars-eeh` is the brief, not a stub: run it through the launcher
+# against a fixture checkout and confirm it is eeh.sh's own first line.
+check "11c. lcars-eeh launcher prints eeh.sh's own brief header" \
+  "LCARS_REPO='$REPO_ROOT' LCARS_EEH_CWD='$AP_REPO' LCARS_SKILLS_DEST='$e1/claude-skills' '$e1/bin/lcars-eeh' 2>&1 | qgrep -q 'LCARS EEH — the Emergency Engineering Hologram'"
 
 # ==========================================================================
 echo

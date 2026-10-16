@@ -104,6 +104,116 @@ echo "lcars init"
 
 [ -f "$SCRIPT" ] || { echo "script under test not found at $SCRIPT"; exit 1; }
 
+# --- Argument handling: informational commands never initialize -----------
+USAGE='usage: lcars init [--help|-h] [--dry-run]'
+for flag in --help -h --nope -x --dry-run; do
+  repo="$(new_repo)"
+  make_claude_stub "$repo/claude"
+  make_gh_stub "$repo/gh"
+  export GH_LOG="$repo/gh.log"; : >"$GH_LOG"
+  export GH_EXISTING="$repo/existing"; : >"$GH_EXISTING"
+  cp "$repo/.git/info/exclude" "$repo/exclude.before"
+  ( cd "$repo" && find .git -type f | sort ) >"$repo/git.before"
+  rc=0
+  (
+    cd "$repo"
+    LCARS_CLAUDE_BIN="$repo/claude" LCARS_GH_BIN="$repo/gh" \
+      bash "$SCRIPT" "$flag" >out.txt 2>err.txt
+  ) || rc=$?
+  check "args $flag: creates no .git/lcars" "[ ! -e '$repo/.git/lcars' ]"
+  check "args $flag: makes ZERO gh calls" "[ ! -s '$GH_LOG' ]"
+  check "args $flag: does not seed a commit" \
+    "! git -C '$repo' rev-parse --verify -q HEAD >/dev/null 2>&1"
+  check "args $flag: leaves git excludes unchanged" \
+    "cmp -s '$repo/exclude.before' '$repo/.git/info/exclude'"
+  ( cd "$repo" && find .git -type f | sort ) >"$repo/git.after"
+  check "args $flag: creates no git files" "cmp -s '$repo/git.before' '$repo/git.after'"
+  case "$flag" in
+    --help|-h)
+      check "args $flag: exits zero" "[ '$rc' -eq 0 ]"
+      check "args $flag: prints exact usage on stdout" \
+        "[ \"\$(cat '$repo/out.txt')\" = '$USAGE' ]"
+      check "args $flag: stderr is empty" "[ ! -s '$repo/err.txt' ]"
+      ;;
+    --nope|-x)
+      check "args $flag: exits non-zero" "[ '$rc' -ne 0 ]"
+      check "args $flag: prints exact unknown-option error on stderr" \
+        "[ \"\$(cat '$repo/err.txt')\" = 'lcars init: unknown option \"$flag\" — $USAGE' ]"
+      check "args $flag: stdout is empty" "[ ! -s '$repo/out.txt' ]"
+      ;;
+    --dry-run)
+      check "args $flag: exits zero" "[ '$rc' -eq 0 ]"
+      check "args $flag: stderr is empty" "[ ! -s '$repo/err.txt' ]"
+      check "args $flag: clearly announces no changes" \
+        "qgrep -qxF 'lcars init: dry run — no changes made.' '$repo/out.txt'"
+      check "args $flag: names the config destination" \
+        "qgrep -qxF 'Would write config: $repo/.git/lcars/config.json' '$repo/out.txt'"
+      sed -n '/^{$/,/^}$/p' "$repo/out.txt" >"$repo/preview.json"
+      check "args $flag: previews valid JSON with the real config defaults" \
+        "python3 -c 'import json,sys; c=json.load(open(sys.argv[1])); assert c[\"model\"] == \"claude-sonnet\" and c[\"projectName\"] == sys.argv[2] and c[\"contextFile\"] is None and c[\"stack\"] == \"unknown\" and c[\"testCommand\"] is None and c[\"worktreeSetupCommand\"] is None and c[\"comprehensionBudget\"] == 1200 and c[\"numberOne\"] == {\"enabled\": False} and len(c[\"cloneId\"]) == 32 and c[\"created\"]' '$repo/preview.json' '$(basename "$repo")'"
+      ( . "$REPO_ROOT/skills/lcars-init/lcars-common.sh"; lcars_all_labels ) >"$repo/labels.expected"
+      sed -n '/^lcars:.*|/p' "$repo/out.txt" >"$repo/labels.actual"
+      check "args $flag: previews every canonical label and color" \
+        "cmp -s '$repo/labels.expected' '$repo/labels.actual'"
+      check "args $flag: previews all 20 labels" \
+        "[ \"\$(wc -l <'$repo/labels.actual' | tr -d ' ')\" = 20 ]"
+      ;;
+  esac
+done
+
+# A preview must preserve an existing config and bridge identity, not mint one
+# on disk or clobber the captain's settings while showing detected defaults.
+repo="$(new_repo)"
+make_claude_stub "$repo/claude"; make_gh_stub "$repo/gh"
+export GH_LOG="$repo/gh.log"; : >"$GH_LOG"
+export GH_EXISTING="$repo/existing"; : >"$GH_EXISTING"
+mkdir -p "$repo/.git/lcars"
+printf '{\n  "model": "custom-model",\n  "testCommand": null\n}\n' >"$repo/.git/lcars/config.json"
+printf '0123456789abcdef0123456789abcdef\n' >"$repo/.git/lcars/clone-id"
+cp "$repo/.git/lcars/config.json" "$repo/config.before"
+cp "$repo/.git/lcars/clone-id" "$repo/clone.before"
+rc=0
+( cd "$repo" && LCARS_CLAUDE_BIN="$repo/claude" LCARS_GH_BIN="$repo/gh" \
+    bash "$SCRIPT" --dry-run >out.txt 2>err.txt ) || rc=$?
+check "args dry-run re-init: exits zero" "[ '$rc' -eq 0 ]"
+check "args dry-run re-init: makes ZERO gh calls" "[ ! -s '$GH_LOG' ]"
+check "args dry-run re-init: leaves existing config byte-identical" \
+  "cmp -s '$repo/config.before' '$repo/.git/lcars/config.json'"
+check "args dry-run re-init: leaves bridge identity byte-identical" \
+  "cmp -s '$repo/clone.before' '$repo/.git/lcars/clone-id'"
+check "args dry-run re-init: creates no missions directory" "[ ! -e '$repo/.git/lcars/missions' ]"
+sed -n '/^{$/,/^}$/p' "$repo/out.txt" >"$repo/preview.json"
+check "args dry-run re-init: previews preserved model and bridge identity" \
+  "python3 -c 'import json,sys; c=json.load(open(sys.argv[1])); assert c[\"model\"] == \"custom-model\" and c[\"cloneId\"] == \"0123456789abcdef0123456789abcdef\"' '$repo/preview.json'"
+
+# Help and preview do not require a worker installation. Invalid options
+# after --dry-run must still be rejected before any initialization occurs.
+for mode in help dry-run invalid; do
+  repo="$(new_repo)"
+  make_gh_stub "$repo/gh"
+  export GH_LOG="$repo/gh.log"; : >"$GH_LOG"
+  export GH_EXISTING="$repo/existing"; : >"$GH_EXISTING"
+  case "$mode" in
+    help) set -- --help ;;
+    dry-run) set -- --dry-run ;;
+    invalid) set -- --dry-run --nope ;;
+  esac
+  rc=0
+  ( cd "$repo" && LCARS_CLAUDE_BIN="$repo/missing-claude" \
+      LCARS_COPILOT_BIN="$repo/missing-copilot" LCARS_GH_BIN="$repo/gh" \
+      bash "$SCRIPT" "$@" >out.txt 2>err.txt ) || rc=$?
+  check "args $mode without engines: creates no .git/lcars" "[ ! -e '$repo/.git/lcars' ]"
+  check "args $mode without engines: makes ZERO gh calls" "[ ! -s '$GH_LOG' ]"
+  case "$mode" in
+    invalid)
+      check "args dry-run then unknown: exits non-zero" "[ '$rc' -ne 0 ]"
+      check "args dry-run then unknown: reports the option, not a worker error" \
+        "[ \"\$(cat '$repo/err.txt')\" = 'lcars init: unknown option \"--nope\" — $USAGE' ]"
+      ;;
+    *) check "args $mode without engines: exits zero" "[ '$rc' -eq 0 ]" ;;
+  esac
+done
+
 # --- Behaviour 1 & 2: creates .git/lcars/ and config.json -----------------
 repo="$(new_repo)"
 make_claude_stub "$repo/claude"
@@ -184,7 +294,14 @@ check "2b. a \$LCARS_TESTS_DIR-honouring explicit command is NOT flagged" \
 # honours $LCARS_TESTS_DIR so the red gate is satisfied with no hand-edit.
 repoTCb="$(new_repo)"
 mkdir -p "$repoTCb/tests"
-printf '#!/usr/bin/env bash\necho runner\n' >"$repoTCb/tests/run.sh"
+# S299 FIXTURE ONLY — the stand-in runner now invokes a real program.
+# This leg has never been about the script's CONTENTS; it needed a tests/run.sh
+# that exits deterministically without a runner installed, and a bare `echo` was
+# the cheapest way to get one. The inert filter refuses a body that is only
+# shell no-ops, so the stand-in runs the same thing THROUGH a shell — `sh` is a
+# real command, the exit status and the output are identical, and what this leg
+# locks is unchanged.
+printf '#!/usr/bin/env bash\nsh -c "echo runner"\n' >"$repoTCb/tests/run.sh"
 make_claude_stub "$repoTCb/claude"; make_gh_stub "$repoTCb/gh"
 export GH_LOG="$repoTCb/gh.log"; : >"$GH_LOG"
 export GH_EXISTING="$repoTCb/existing"; : >"$GH_EXISTING"
@@ -265,7 +382,7 @@ printf 'lcars:align\nlcars:bug\n' >"$GH_EXISTING"
   LCARS_CLAUDE_BIN="$repo/claude" LCARS_GH_BIN="$repo/gh" bash "$SCRIPT" >out.txt 2>&1
 )
 created_count="$(grep -c 'label create' "$GH_LOG")"
-check "5. creates the 14 missing labels"        "[ '$created_count' -eq 14 ]"
+check "5. creates the 18 missing labels"        "[ '$created_count' -eq 18 ]"
 check "5. skips pre-existing lcars:align"        "! grep -q 'label create lcars:align' '$GH_LOG'"
 check "5. skips pre-existing lcars:bug"          "! grep -q 'label create lcars:bug' '$GH_LOG'"
 check "5. creates lcars:done with stage colour"  "grep -q 'label create lcars:done .*FF9900' '$GH_LOG'"
@@ -275,7 +392,7 @@ check "5. creates lcars:linked with rel colour"  "grep -q 'label create lcars:li
 check "5. creates lcars:mission role label"      "grep -q 'label create lcars:mission .*[0-9A-Fa-f]' '$GH_LOG'"
 check "5. creates lcars:ticket role label"       "grep -q 'label create lcars:ticket .*[0-9A-Fa-f]' '$GH_LOG'"
 
-# all-missing repo creates all 16
+# all-missing repo creates all 20
 repo3="$(new_repo)"
 make_claude_stub "$repo3/claude"
 make_gh_stub "$repo3/gh"
@@ -286,13 +403,13 @@ export GH_EXISTING="$repo3/existing"; : >"$GH_EXISTING"
   LCARS_CLAUDE_BIN="$repo3/claude" LCARS_GH_BIN="$repo3/gh" bash "$SCRIPT" >out.txt 2>&1
 )
 all_count="$(grep -c 'label create' "$repo3/gh.log")"
-check "5. creates all 16 labels when none exist" "[ '$all_count' -eq 16 ]"
+check "5. creates all 20 labels when none exist" "[ '$all_count' -eq 20 ]"
 
 # --- Behaviour 6: readiness summary ---------------------------------------
 check "6. summary: .git/lcars created"   "grep -q '.git/lcars/ created' '$repo3/out.txt'"
 check "6. summary: config.json written"  "grep -q 'config.json written' '$repo3/out.txt'"
 check "6. summary: Claude CLI verified"   "grep -qi 'Claude CLI verified' '$repo3/out.txt'"
-check "6. summary: labels created line"    "grep -q '16 labels' '$repo3/out.txt'"
+check "6. summary: labels created line"    "grep -q '20 labels' '$repo3/out.txt'"
 check "6. summary: LCARS ready line"       "grep -q 'LCARS ready' '$repo3/out.txt'"
 check "6. summary: points to lcars file"   "grep -q 'lcars file' '$repo3/out.txt'"
 
@@ -465,7 +582,7 @@ check "S82 init (npm): config.json is VALID JSON" \
 # pure-bash repo (only tests/run.sh): no installed runner to provision -> null
 repoWTb="$(new_repo)"
 mkdir -p "$repoWTb/tests"
-printf '#!/usr/bin/env bash\necho runner\n' >"$repoWTb/tests/run.sh"
+printf '#!/usr/bin/env bash\nsh -c "echo runner"\n' >"$repoWTb/tests/run.sh"
 make_claude_stub "$repoWTb/claude"; make_gh_stub "$repoWTb/gh"
 export GH_LOG="$repoWTb/gh.log"; : >"$GH_LOG"
 export GH_EXISTING="$repoWTb/existing"; : >"$GH_EXISTING"
@@ -887,7 +1004,7 @@ check "S146 init (unknown/greenfield): ONE calm bootstrap status — no ⚠ conf
 #     detected bash testCommand — byte-equivalence with pre-S105 (no suppression).
 repoBash105="$(new_repo)"
 mkdir -p "$repoBash105/tests"
-printf '#!/usr/bin/env bash\necho runner\n' >"$repoBash105/tests/run.sh"
+printf '#!/usr/bin/env bash\nsh -c "echo runner"\n' >"$repoBash105/tests/run.sh"
 make_claude_stub "$repoBash105/claude"; make_gh_stub "$repoBash105/gh"
 export GH_LOG="$repoBash105/gh.log"; : >"$GH_LOG"
 export GH_EXISTING="$repoBash105/existing"; : >"$GH_EXISTING"
@@ -1003,7 +1120,7 @@ check "S148 seed (pytest): an UNSET scope still defaults to exactly one '.' argu
 # --- (f) the bash runner arm — the pre-existing MODEL, must not regress ----
 repoWS6="$(new_repo)"
 mkdir -p "$repoWS6/tests"
-printf '#!/usr/bin/env bash\necho runner\n' >"$repoWS6/tests/run.sh"
+printf '#!/usr/bin/env bash\nsh -c "echo runner"\n' >"$repoWS6/tests/run.sh"
 WS_BASH="$(seeded_cmd_for "$repoWS6")"
 WS_BASH_WANT='bash tests/run.sh "${LCARS_TESTS_DIR:-tests}"'
 check "S148 seed (bash runner): the already-quoted model arm is unchanged" \
@@ -1208,6 +1325,102 @@ printf 'lockfileVersion: 9\n' >"$repoPNL/pnpm-lock.yaml"
 WT_PNL="$(sed -n 's/.*"worktreeSetupCommand": *"\(.*\)",*$/\1/p' "$repoPNL/.git/lcars/config.json")"
 check "S207-4: WITH a pnpm-lock.yaml the seed KEEPS --frozen-lockfile" \
   "printf '%s' \"\$WT_PNL\" | qgrep -q 'frozen-lockfile'"
+
+# --- S274 item 6: `lcars_default_engine` NEVER falls to the literal ---------
+# The S274 brief was written believing this function's last step was "claude,
+# the historical default", so that a laptop with NEITHER CLI would be told to
+# run one that is not there. It does not: an empty available-set returns EMPTY,
+# and `claude` is preferred ONLY when claude is genuinely among the installed
+# engines. init.sh:70-72 depends on that empty answer (it is the ONE fatal
+# case), and so, from this session on, do launch.sh and run.sh. This block
+# PINS the behaviour so nobody "fixes" it into a default again.
+ENGDIR="$(mktemp -d "$TMPROOT/engines.XXXX")"
+make_claude_stub "$ENGDIR/claude"
+make_copilot_stub "$ENGDIR/copilot"
+# the probe is `command -v`, so a path that does not exist is "not installed".
+ENG_NONE="$ENGDIR/not-installed"
+eng_default() { # claude-bin copilot-bin [config] → the chosen engine (may be empty)
+  ( LCARS_CLAUDE_BIN="$1" LCARS_COPILOT_BIN="$2" \
+      bash -c '. "$0"; lcars_default_engine "${1:-}"' \
+      "$REPO_ROOT/skills/lcars-init/lcars-common.sh" "${3:-}" )
+}
+eng_list() { # claude-bin copilot-bin → the installed engines, newline-joined
+  ( LCARS_CLAUDE_BIN="$1" LCARS_COPILOT_BIN="$2" \
+      bash -c '. "$0"; lcars_available_engines' \
+      "$REPO_ROOT/skills/lcars-init/lcars-common.sh" )
+}
+check "S274-6: NEITHER engine installed ⇒ lcars_default_engine answers EMPTY" \
+  "[ -z \"\$(eng_default '$ENG_NONE' '$ENG_NONE')\" ]"
+check "S274-6: …and it never names claude when claude is not there" \
+  "! printf '%s' \"\$(eng_default '$ENG_NONE' '$ENG_NONE')\" | qgrep -q claude"
+check "S274-6: …and lcars_available_engines is empty too" \
+  "[ -z \"\$(eng_list '$ENG_NONE' '$ENG_NONE')\" ]"
+check "S274-6: copilot-only ⇒ copilot (the single installed engine)" \
+  "[ \"\$(eng_default '$ENG_NONE' '$ENGDIR/copilot')\" = copilot ]"
+check "S274-6: claude-only ⇒ claude" \
+  "[ \"\$(eng_default '$ENGDIR/claude' '$ENG_NONE')\" = claude ]"
+check "S274-6: BOTH installed ⇒ claude, the historical front-door default" \
+  "[ \"\$(eng_default '$ENGDIR/claude' '$ENGDIR/copilot')\" = claude ]"
+# A config pin for an engine that is NOT installed is skipped, never preselected.
+ENGCFG="$ENGDIR/pin-copilot.json"
+printf '{\n  "workerBin": "copilot"\n}\n' >"$ENGCFG"
+check "S274-6: a config pin WINS when that engine is installed" \
+  "[ \"\$(eng_default '$ENGDIR/claude' '$ENGDIR/copilot' '$ENGCFG')\" = copilot ]"
+check "S274-6: a config pin for an ABSENT engine is skipped, not obeyed" \
+  "[ \"\$(eng_default '$ENGDIR/claude' '$ENG_NONE' '$ENGCFG')\" = claude ]"
+check "S274-6: a config pin cannot conjure an engine out of an empty laptop" \
+  "[ -z \"\$(eng_default '$ENG_NONE' '$ENG_NONE' '$ENGCFG')\" ]"
+
+# --- S295: the documented Establish Vision command needs no idea file ------
+repoVision="$(new_repo)"
+( cd "$repoVision" && git commit -q --allow-empty -m init )
+make_gh_stub "$repoVision/gh"
+export GH_LOG="$repoVision/gh.log"; : >"$GH_LOG"
+mkdir -p "$repoVision/.git/lcars"
+printf '{\n  "cloneId": "c10ec10ec10ec10ec10ec10ec10ec10e"\n}\n' >"$repoVision/.git/lcars/config.json"
+rcVision=0
+( cd "$repoVision" && LCARS_GH_BIN="$repoVision/gh" \
+    LCARS_FILE_SCRIPT="$REPO_ROOT/skills/lcars-file/file.sh" \
+    LCARS_RUN_BIN="$repoVision/no-estimator" LCARS_DATE=20260530 \
+    bash "$REPO_ROOT/skills/lcars-init/establish-vision.sh" --file \
+      --stack "python3 stdlib" --slice "a thin slice" --engine copilot \
+      >vision-out.txt 2>&1 ) || rcVision=$?
+visionMission="$repoVision/.git/lcars/missions/lcars-20260530-001-c10e"
+check "S295 vision: the documented command without --idea succeeds" \
+  "[ '$rcVision' -eq 0 ]"
+check "S295 vision: files a real initialization mission pinned to copilot" \
+  "python3 -c 'import json,os,sys; s=json.load(open(sys.argv[1])); assert s[\"missionType\"] == \"initialization\" and os.path.basename(s[\"workerBin\"]) == \"copilot\"' '$visionMission/state.json'"
+check "S295 vision: reports the filed mission id" \
+  "grep -qx 'MISSION_ID=lcars-20260530-001-c10e' '$repoVision/vision-out.txt'"
+check "S295 vision: records the supplied stack and slice as the idea" \
+  "grep -q 'Establish the foundation on python3 stdlib with one thin vertical slice: a thin slice' '$repoVision/.git/lcars/vision.md'"
+check "S295 vision: retains the foundation scope fence" \
+  "grep -q 'This mission does NOT build the product' '$visionMission/prd.md'"
+
+for missingVisionArg in stack slice; do
+  case "$missingVisionArg" in
+    stack) visionArgs=(--slice "a thin slice") ;;
+    slice) visionArgs=(--stack "python3 stdlib") ;;
+  esac
+  rcVision=0
+  ( cd "$repoVision" && bash "$REPO_ROOT/skills/lcars-init/establish-vision.sh" \
+      --prd "${visionArgs[@]}" >vision-error.txt 2>&1 ) || rcVision=$?
+  check "S295 vision: missing $missingVisionArg names both ways to supply an idea" \
+    "[ '$rcVision' -eq 1 ] && grep -qF -- '--idea <file>' '$repoVision/vision-error.txt' && grep -qF -- \"both --stack '<stack>' and --slice '<thin slice>'\" '$repoVision/vision-error.txt'"
+done
+printf 'Build a local reading tracker.\n' >"$repoVision/idea.md"
+rcVision=0
+( cd "$repoVision" && bash "$REPO_ROOT/skills/lcars-init/establish-vision.sh" \
+    --write-vision --idea idea.md --stack "python3 stdlib" --slice "a thin slice" \
+    >vision-out.txt 2>&1 ) || rcVision=$?
+check "S295 vision: an explicit idea takes precedence over stack and slice" \
+  "[ '$rcVision' -eq 0 ] && grep -qx 'Build a local reading tracker.' '$repoVision/.git/lcars/vision.md' && ! grep -q 'Establish the foundation on' '$repoVision/.git/lcars/vision.md'"
+rcVision=0
+( cd "$repoVision" && bash "$REPO_ROOT/skills/lcars-init/establish-vision.sh" \
+    --prd --idea missing-idea.md --stack "python3 stdlib" --slice "a thin slice" \
+    >vision-error.txt 2>&1 ) || rcVision=$?
+check "S295 vision: an explicit missing idea file is not silently replaced" \
+  "[ '$rcVision' -eq 1 ] && grep -qF 'idea file not found: missing-idea.md' '$repoVision/vision-error.txt'"
 
 # ==========================================================================
 echo

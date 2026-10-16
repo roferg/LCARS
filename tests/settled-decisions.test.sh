@@ -527,11 +527,28 @@ assert_eq "8a no un-runnable \`lcars respond|run <id>\` text remains in the two 
 # The SKILL.md bodies too — but NOT the frontmatter `description:`, which
 # describes the NATURAL-LANGUAGE trigger the captain types at his CLI ("lcars
 # respond"), not a shell command. Rewriting that would break skill discovery.
+#
+# S276: the exclusion used to be `grep -v ':[0-9]*:description:'`, which only
+# ever skipped the ONE line that starts with `description:`. Every SKILL.md's
+# description is now a `>-` BLOCK SCALAR — it had to be, because a strict YAML
+# reader (Copilot's) refuses an unquoted one-liner containing ": " — so the
+# description spans several INDENTED continuation lines, and a line-prefix
+# exclusion no longer covers it. The scan now strips the whole frontmatter
+# first, which is what "the SKILL.md bodies" says on the tin.
+body_only() { # print a SKILL.md with its `---` frontmatter removed, keeping
+              # the original line numbers so a hit is still locatable
+  awk -v f="$1" '
+    NR==1 && $0=="---" { inf=1; printf "%s:%d:\n", f, NR; next }
+    inf && $0=="---"   { inf=0; printf "%s:%d:\n", f, NR; next }
+    inf                { printf "%s:%d:\n", f, NR; next }
+                       { printf "%s:%d:%s\n", f, NR, $0 }
+  ' "$1"
+}
 badhint=0
 while IFS= read -r line; do
   badhint=$((badhint+1)); printf '       %s\n' "$line"
-done < <(grep -rnE "$BADPAT" "$SRC/lcars-run/SKILL.md" "$SRC/lcars-respond/SKILL.md" 2>/dev/null \
-           | grep -v ':[0-9]*:description:')
+done < <( { body_only "$SRC/lcars-run/SKILL.md"; body_only "$SRC/lcars-respond/SKILL.md"; } \
+            | grep -E "$BADPAT" )
 assert_eq "8a2 …nor in the SKILL.md bodies" "$badhint" "0"
 
 # The forms that replaced them must be the ones that actually run. Proven by

@@ -41,7 +41,7 @@
 #     `declared_escape` stay closed — this session changes what is REPORTED,
 #     never what is ALLOWED (section 5 pins it).
 #   • `prompts/evaluate.md` and its 688-line ceiling (section 2f).
-#   • `skills/lcars-buddy/` — read, never edited.
+#   • `skills/lcars-eeh/` — read, never edited.
 #   • A BARE TALLY STILL SETTLES NOTHING (section 3, controls 3c/3d/3e).
 #
 # EVERY assertion is paired with something that makes it fire. ZERO SPEND: both
@@ -675,9 +675,9 @@ sys.exit(0 if (d.get('numberOne') or {}).get('retakenAt') else 1)\""
 retake_pass fresh
 check "4f3. CONTROL — an unlooked mission is not stamped, and looks on each pass" \
   '[ "$(grep -c . "$TMPROOT/stub-fresh.log" 2>/dev/null | tr -d " ")" = 2 ]'
-# THE BUDDY, AND PROOF GIT IS REALLY ANSWERING (S264 fix round 2, FIX 7;
+# THE EEH, AND PROOF GIT IS REALLY ANSWERING (S264 fix round 2, FIX 7;
 # control replaced S265 fix round 1). The check was once
-# `[ -z "$(… git diff … lcars-buddy)" ]`, which is TRUE when git fails, is
+# `[ -z "$(… git diff … lcars-eeh)" ]`, which is TRUE when git fails, is
 # missing, or is run outside a repo — so it needed a control proving git spoke.
 # S264's control was "`skills/lcars-xo` is dirty", which was true only while
 # THAT session had uncommitted work there: on a clean tree, or any later
@@ -686,21 +686,21 @@ check "4f3. CONTROL — an unlooked mission is not stamped, and looks on each pa
 # The control is now a property of ANY clone of this repo rather than of one
 # session's working tree: git must SUCCEED (exit status checked, never
 # discarded) and must report a NON-EMPTY list of tracked files under
-# `skills/lcars-buddy`. That is true in every clone and false whenever git is
+# `skills/lcars-eeh`. That is true in every clone and false whenever git is
 # broken, absent, or run outside a repo — and it is positive evidence about
 # the very path the clean-half asserts on.
-buddy_clean_and_git_answered() {
-  local tracked buddy_diff
-  # (1) git answered: it exited 0 AND named the buddy's tracked files.
-  tracked="$(cd "$REPO_ROOT" && git ls-files -- skills/lcars-buddy)" || return 1
+eeh_clean_and_git_answered() {
+  local tracked eeh_diff
+  # (1) git answered: it exited 0 AND named the EEH's tracked files.
+  tracked="$(cd "$REPO_ROOT" && git ls-files -- skills/lcars-eeh)" || return 1
   [ -n "$tracked" ] || return 1
-  # (2) the buddy is clean: the diff exited 0 (so silence is an answer, not a
+  # (2) the EEH is clean: the diff exited 0 (so silence is an answer, not a
   #     swallowed failure) and was empty.
-  buddy_diff="$(cd "$REPO_ROOT" && git diff --name-only HEAD -- skills/lcars-buddy)" || return 1
-  [ -z "$buddy_diff" ]
+  eeh_diff="$(cd "$REPO_ROOT" && git diff --name-only HEAD -- skills/lcars-eeh)" || return 1
+  [ -z "$eeh_diff" ]
 }
-check "4g. the buddy was NOT edited — and git really answered (control: git lists the buddy's tracked files)" \
-  'buddy_clean_and_git_answered'
+check "4g. the EEH was NOT edited — and git really answered (control: git lists the EEH's tracked files)" \
+  'eeh_clean_and_git_answered'
 
 # ===========================================================================
 # 5. THE INVARIANT — the argv fence did not move, and the mutation fires

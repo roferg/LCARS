@@ -157,6 +157,224 @@ cfg_line() { # <repo> -> the raw numberOne line out of config.json
 echo "lcars xo (Number One — the verb)"
 [ -f "$SCRIPT" ] || { echo "script under test not found at $SCRIPT"; exit 1; }
 
+if [ "${1:-}" = --only-reviewer-filing ]; then
+  LOG_STUB="$TMPROOT/log.sh"; RESOLVE_STUB="$TMPROOT/resolve.sh"
+  FILE_STUB="$TMPROOT/file.sh"
+  cat >"$LOG_STUB" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"$FILING_CALLS"
+[ "${DONE_PARENT:-0}" = 0 ] && [ "${LOG_FAILURE:-0}" = 0 ] || { echo 'lcars log: no active Mission matches the Done parent.' >&2; exit 1; }
+printf '  lcars-20261013-002  #43  Reviewer finding\n'
+SH
+  cat >"$FILE_STUB" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"$FILE_CALLS"
+case "${FILE_OUTCOME:-success}" in
+  failure) echo 'lcars file: test filing failure' >&2; exit 7 ;;
+  empty) exit 0 ;;
+  partial) [ "$(wc -l <"$FILE_CALLS" | tr -d ' ')" != 2 ] || { echo 'lcars file: second filing failed' >&2; exit 7; } ;;
+esac
+bash "$REAL_FILE_SCRIPT" "$@"
+SH
+  cat >"$RESOLVE_STUB" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"$RESOLVER_CALLS"
+SH
+  for scenario in merge merge-with-follow-ups send-back done done-failure done-empty done-partial done-round done-filing-off done-plan-failure active-failure done-merge; do
+    rec="$scenario"; stage=verify; expected_calls=1
+    export DONE_PARENT=0 FILE_OUTCOME=success LOG_FAILURE=0
+    case "$scenario" in done*) stage=done; rec=send-back; DONE_PARENT=1 ;; esac
+    case "$scenario" in
+      done-failure) FILE_OUTCOME=failure ;;
+      done-empty) FILE_OUTCOME=empty ;;
+      done-partial) FILE_OUTCOME=partial; expected_calls=2 ;;
+      done-merge) rec=merge ;;
+      active-failure) rec=send-back; LOG_FAILURE=1 ;;
+    esac
+    repo="$(new_repo '"numberOne": {"enabled": true, "engine": "copilot"}')"
+    if [ "$scenario" = done-filing-off ]; then
+      sed 's/"enabled": true/"enabled": true, "filesBugs": false/' "$repo/.git/lcars/config.json" >"$repo/config.tmp"
+      mv "$repo/config.tmp" "$repo/.git/lcars/config.json"
+    fi
+    ( cd "$repo" && git commit -q --allow-empty -m fixture )
+    m="$(plant_mission "$repo" "$MID" "$stage" '{"status":"engaged"}')"
+    if [ "$scenario" = done-round ]; then
+      python3 - "$m/state.json" <<'PYFIX'
+import json, pathlib, sys
+p = pathlib.Path(sys.argv[1]); d = json.loads(p.read_text())
+d["numberOne"]["round"] = 1
+p.write_text(json.dumps(d))
+PYFIX
+    fi
+    cp "$m/state.json" "$repo/parent-before.json"
+    mkdir -p "$m/xo/shots"
+    printf 'observed faulty footer\n' >"$m/xo/shots/footer.txt"
+    export FILING_CALLS="$repo/filing.calls" RESOLVER_CALLS="$repo/resolver.calls"
+    export FILE_CALLS="$repo/file.calls" REAL_FILE_SCRIPT="$REPO_ROOT/skills/lcars-file/file.sh"
+    : >"$FILING_CALLS"; : >"$RESOLVER_CALLS"; : >"$FILE_CALLS"
+    python3 - "$m/xo" "$rec" "$scenario" <<'PY'
+import json, pathlib, sys
+p, rec = pathlib.Path(sys.argv[1]), sys.argv[2]
+find = {"title": "Reviewer finding", "expected": "footer keeps its host",
+        "saw": "footer switches host", "shots": ["footer.txt"],
+        "evidence": "transcript", "checkedBy": "cli"}
+gap = dict(find, criterion="prd-1", kind="contradiction")
+json.dump({"score": "high" if rec.startswith("merge") else "low",
+           "recommendation": rec, "gaps": [] if rec.startswith("merge") else [gap],
+           "followUps": ["Existing operator follow-up"] if rec == "merge-with-follow-ups" else [],
+           "volunteered": [find] if rec.startswith("merge") else [],
+           "criteria": [], "blockers": []}, open(p / "verdict.json", "w"))
+json.dump({"criteria": [{"id": "prd-1", "text": "footer keeps its host"}]},
+          open(p / "criteria.json", "w"))
+if sys.argv[3] == "done-partial":
+    (p / "shots" / "second.txt").write_text("second finding evidence\n")
+    v = json.load(open(p / "verdict.json"))
+    v["gaps"].append(dict(gap, criterion="prd-2", title="Second reviewer finding",
+                          saw="second footer switches host", shots=["second.txt"]))
+    json.dump(v, open(p / "verdict.json", "w"))
+    c = json.load(open(p / "criteria.json"))
+    c["criteria"].append({"id": "prd-2", "text": "second footer keeps its host"})
+    json.dump(c, open(p / "criteria.json", "w"))
+if sys.argv[3] == "done-plan-failure":
+    v = json.load(open(p / "verdict.json")); v["gaps"][0]["shots"] = 5
+    json.dump(v, open(p / "verdict.json", "w"))
+PY
+    rc=0
+    ( cd "$repo" && LCARS_LOG_SCRIPT="$LOG_STUB" LCARS_RESOLVE_LOGS_SCRIPT="$RESOLVE_STUB" \
+        LCARS_FILE_SCRIPT="$FILE_STUB" LCARS_VERSION_CHECK=0 LCARS_RUN_BIN=/usr/bin/true LCARS_OWNER_ENFORCE=0 \
+        LCARS_GH_BIN=true LCARS_HOST_ADAPTER=/usr/bin/true LCARS_RUN_SCRIPT=/usr/bin/true \
+        bash "$SCRIPT" file-logs --mission "$MID" >out.txt 2>&1 ) || rc=$?
+    if [ "$scenario" = done-filing-off ] || [ "$scenario" = done-plan-failure ]; then
+      check "a. $scenario: findings retained in the named verdict when filing cannot begin" \
+        "[ '$rc' = 0 ] && [ ! -s '$FILING_CALLS' ] && [ ! -s '$FILE_CALLS' ] && [ ! -s '$RESOLVER_CALLS' ] &&
+         grep -q 'footer switches host' '$m/xo/verdict.json' && grep -Fq '$m/xo/verdict.json' '$repo/out.txt' &&
+         cmp -s '$m/state.json' '$repo/parent-before.json'"
+    elif [ "$scenario" = active-failure ]; then
+      check "a. ACTIVE filing failure also names its durable finding location" \
+        "[ '$rc' = 1 ] && [ ! -s '$FILE_CALLS' ] && [ ! -s '$RESOLVER_CALLS' ] &&
+         grep -q 'footer switches host' '$m/xo/logs/1.md' && grep -Fq '$m/xo/logs' '$repo/out.txt' &&
+         grep -Fq '$m/xo/verdict.json' '$m/number-one.jsonl'"
+    elif [ "$stage" = done ] && [ "$rec" = send-back ]; then
+      check "a. $scenario: uses lcars file $expected_calls time(s), never log or the parent resolver" \
+        "[ '$rc' = 0 ] && [ ! -s '$FILING_CALLS' ] && [ ! -s '$RESOLVER_CALLS' ] &&
+         [ \"\$(wc -l <'$FILE_CALLS' | tr -d ' ')\" = $expected_calls ] && [ ! -e '$m/xo-resolve.pid' ] &&
+         cmp -s '$m/state.json' '$repo/parent-before.json'"
+      if [ "$scenario" = done ] || [ "$scenario" = done-round ]; then
+        check "a. Done finding becomes a real standalone Mission with its evidence" \
+          "python3 -c 'import json,pathlib,sys; p=pathlib.Path(sys.argv[1]); rows=json.load(open(p/\"$MID/xo/logs.json\"))[\"filed\"]; assert len(rows)==1; kid=p/rows[0][\"mission\"]; d=json.load(open(kid/\"state.json\")); assert d[\"stage\"]==\"align\"; assert not d.get(\"parentMission\"); assert \"footer switches host\" in (kid/\"prd.md\").read_text(); assert any(f.read_text()==\"observed faulty footer\\n\" for f in (kid/\"attachments\").iterdir())' '$repo/.git/lcars/missions' &&
+           grep -q 'standalone' '$repo/out.txt'"
+      else
+        retained=1; [ "$scenario" != done-partial ] || retained=2
+        check "a. $scenario: unfiled finding is durable and its exact location is reported" \
+          "grep -q 'footer switches host' '$m/xo/logs/$retained.md' &&
+           grep -Fq '$m/xo/logs/$retained.md' '$repo/out.txt' &&
+           grep -Fq '$m/xo/logs/$retained.md' '$m/number-one.jsonl' &&
+           ! grep -q 'filed 1 mission' '$repo/out.txt'"
+      fi
+      export FILE_OUTCOME=success
+      repeat_rc=0
+      ( cd "$repo" && LCARS_LOG_SCRIPT="$LOG_STUB" LCARS_RESOLVE_LOGS_SCRIPT="$RESOLVE_STUB" \
+          LCARS_FILE_SCRIPT="$FILE_STUB" LCARS_VERSION_CHECK=0 LCARS_RUN_BIN=/usr/bin/true LCARS_OWNER_ENFORCE=0 \
+          LCARS_GH_BIN=true LCARS_HOST_ADAPTER=/usr/bin/true LCARS_RUN_SCRIPT=/usr/bin/true \
+          bash "$SCRIPT" file-logs --mission "$MID" >repeat.txt 2>&1 ) || repeat_rc=$?
+      total_calls="$expected_calls"; expected_filed=1
+      case "$scenario" in
+        done-failure|done-empty) total_calls=2 ;;
+        done-partial) total_calls=3; expected_filed=2 ;;
+      esac
+      check "a. $scenario: repeat skips successes, retries failures, preserves the complete record" \
+        "[ '$repeat_rc' = 0 ] && [ \"\$(wc -l <'$FILE_CALLS' | tr -d ' ')\" = '$total_calls' ] &&
+         [ ! -s '$FILING_CALLS' ] && [ ! -s '$RESOLVER_CALLS' ] &&
+         cmp -s '$m/state.json' '$repo/parent-before.json' &&
+         python3 -c 'import json,pathlib,sys; p=pathlib.Path(sys.argv[1]); d=json.load(open(p/\"$MID/xo/logs.json\")); assert len(d[\"filed\"])==int(sys.argv[2]); assert not d.get(\"unfiled\"); assert len({f[\"mission\"] for f in d[\"filed\"]})==int(sys.argv[2]); assert all((p/f[\"mission\"]/\"prd.md\").is_file() for f in d[\"filed\"])' '$repo/.git/lcars/missions' '$expected_filed'"
+      if [ "$scenario" = done-partial ]; then
+        check "a. partial batch keeps each attachment bound to its own standalone finding" \
+          "python3 -c 'import json,pathlib,sys; p=pathlib.Path(sys.argv[1]); rows=json.load(open(p/\"$MID/xo/logs.json\"))[\"filed\"]; assert rows[0][\"criterion\"]==\"prd-1\"; assert rows[1][\"criterion\"]==\"prd-2\"; assert [[f.read_text() for f in (p/r[\"mission\"]/\"attachments\").iterdir()] for r in rows]==[[\"observed faulty footer\\n\"],[\"second finding evidence\\n\"]]' '$repo/.git/lcars/missions'"
+      fi
+      [ "$fail" = 0 ] || { cat "$repo/out.txt"; cat "$repo/repeat.txt"; }
+    elif [ "$rec" = send-back ]; then
+      check "c. NON-merge control: still files once and starts resolver once" \
+        "[ '$rc' = 0 ] && [ \"\$(wc -l <'$FILING_CALLS' | tr -d ' ')\" = 1 ] &&
+         [ \"\$(wc -l <'$RESOLVER_CALLS' | tr -d ' ')\" = 1 ] &&
+         [ ! -s '$FILE_CALLS' ] && grep -q -- '--parent $MID --prd' '$FILING_CALLS' &&
+         grep -q -- '--parent $MID' '$RESOLVER_CALLS' && [ -s '$m/xo-resolve.pid' ]"
+    else
+      check "b. $rec: no filing or resolver starts" \
+        "[ '$rc' = 0 ] && [ ! -s '$FILING_CALLS' ] && [ ! -s '$FILE_CALLS' ] && [ ! -s '$RESOLVER_CALLS' ] && [ ! -e '$m/xo-resolve.pid' ]"
+      check "b. $rec: finding retained in followUps for the operator" \
+        "python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); assert d[\"recommendation\"]==sys.argv[2]; assert any(\"Reviewer finding\" in str(f) and \"footer switches host\" in str(f) for f in d[\"followUps\"])' '$m/xo/verdict.json' '$rec' &&
+         grep -qi 'operator' '$repo/out.txt'"
+      cp "$m/xo/verdict.json" "$repo/verdict-before-repeat.json"
+      ( cd "$repo" && LCARS_LOG_SCRIPT="$LOG_STUB" LCARS_RESOLVE_LOGS_SCRIPT="$RESOLVE_STUB" \
+          LCARS_GH_BIN=true LCARS_RUN_SCRIPT=/usr/bin/true \
+          bash "$SCRIPT" file-logs --mission "$MID" >repeat.txt 2>&1 )
+      check "b. $rec: repeat keeps followUps unchanged, no fix round or resolver" \
+        "cmp -s '$m/xo/verdict.json' '$repo/verdict-before-repeat.json' &&
+         [ ! -s '$FILING_CALLS' ] && [ ! -s '$RESOLVER_CALLS' ] &&
+         python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); assert \"round\" not in d[\"numberOne\"]' '$m/state.json'"
+      if [ "$rec" = merge-with-follow-ups ]; then
+        check "b. existing operator follow-up is preserved" \
+          "python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); assert \"Existing operator follow-up\" in d[\"followUps\"]' '$m/xo/verdict.json'"
+      fi
+    fi
+  done
+  export DONE_PARENT=0 LOG_FAILURE=0
+  # Exercise the automatic HIGH/MERGE caller, not only the hand-run filing verb.
+  repo="$(new_repo '"numberOne": {"enabled": true, "engine": "copilot"}')"
+  ( cd "$repo" && git commit -q --allow-empty -m fixture )
+  m="$(plant_mission "$repo" "$MID" verify '{"status":"engaged","engine":"copilot"}')"
+  export FILING_CALLS="$repo/filing.calls" RESOLVER_CALLS="$repo/resolver.calls"
+  : >"$FILING_CALLS"; : >"$RESOLVER_CALLS"
+  cat >"$m/prd.md" <<'PRD'
+# The task board
+
+## 2. Acceptance criteria
+- The board shows every open task in one list.
+- A task can be added from the board itself.
+PRD
+  printf '%s\n' '{"tickets":[{"id":"t-1","changesScreenAppearance":true,"acceptanceCriteria":[{"text":"The ADD button sits under the list.","drawnAt":"#add-button"}]}]}' >"$m/plan.json"
+  LAUNCH_STUB="$TMPROOT/launch.sh"; DRIVE_STUB="$TMPROOT/drive.sh"; WORKER_STUB="$TMPROOT/worker.sh"
+  cat >"$LAUNCH_STUB" <<'SH'
+#!/usr/bin/env bash
+printf '{"status":"running","url":"http://127.0.0.1:4310/"}\n' >".git/lcars/missions/$1/launch.json"
+SH
+  cat >"$DRIVE_STUB" <<'SH'
+#!/usr/bin/env bash
+while [ $# -gt 0 ]; do
+  case "$1" in --out) out="$2"; shift 2 ;; *) shift ;; esac
+done
+mkdir -p "$out"
+printf 'PNG\n' >"$out/shot-01.png"
+printf '{"shot":"shot-01"}\n' >"$out/shot-01.json"
+printf '{"allPainted":true}\n'
+SH
+  cat >"$WORKER_STUB" <<'SH'
+#!/usr/bin/env bash
+cat >"$LCARS_WORK_OUT/xo-verdict.json" <<'JSON'
+{"score":"high","summary":"Looked at the board.","criteria":[
+{"id":"prd-1","impact":"high","status":"met","shot":"shot-01","note":"saw the list"},
+{"id":"prd-2","impact":"high","status":"met","shot":"shot-01","note":"saw the button"},
+{"id":"t-1-ac1","impact":"medium","status":"met","shot":"shot-01","note":"under it"},
+{"id":"journey-j1","impact":"high","status":"met","shot":"shot-01","note":"opened it"}],
+"gaps":[],"followUps":[],"volunteered":[{"title":"Automatic reviewer finding","saw":"footer switches host","shots":["shot-01"]}],"escalations":[]}
+JSON
+SH
+  chmod +x "$WORKER_STUB"
+  rc=0
+  ( cd "$repo" && LCARS_LAUNCH_SCRIPT="$LAUNCH_STUB" LCARS_XO_DRIVER="$DRIVE_STUB" LCARS_NODE_BIN=bash \
+      LCARS_WORKER_BIN="$WORKER_STUB" LCARS_WORKER_CLI=copilot LCARS_RUN_SCRIPT="$REPO_ROOT/skills/lcars-run/run.sh" \
+      LCARS_LOG_SCRIPT="$LOG_STUB" LCARS_RESOLVE_LOGS_SCRIPT="$RESOLVE_STUB" \
+      LCARS_HOST_ADAPTER=/usr/bin/true LCARS_GH_BIN=true LCARS_NOTIFY=/usr/bin/true LCARS_OWNER_ENFORCE=0 \
+      bash "$SCRIPT" evaluate --mission "$MID" >out.txt 2>&1 ) || rc=$?
+  check "b. automatic HIGH/MERGE retains followUps without filing or starting resolver" \
+    "[ '$rc' = 0 ] && [ ! -s '$FILING_CALLS' ] && [ ! -s '$RESOLVER_CALLS' ] &&
+     python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); assert d[\"score\"]==\"high\"; assert d[\"recommendation\"]==\"merge\"; assert any(\"Automatic reviewer finding\" in str(f) for f in d[\"followUps\"])' '$m/xo/verdict.json'"
+  if [ "$fail" -gt 0 ]; then cat "$repo/out.txt"; fi
+  check "no real workers hired" "[ ! -s '$XO_SHIM_LOG' ]"
+  printf '\n%d passed, %d failed\n' "$pass" "$fail"
+  [ "$fail" -eq 0 ]; exit $?
+fi
+
 # ==========================================================================
 # B1. `lcars xo on --engine copilot` writes the ONE-LINE block, and `lcars xo`
 #     reads it back off RECORDED state — it never re-derives it from prose.
@@ -1423,7 +1641,7 @@ check "B10d. it says so out loud too" \
 #
 # AND THEN IT BECAME OPT-IN (captain's ruling, 2026-10-04; S246). *A look has no
 # clock.* With `$LCARS_XO_MAX_ROUNDS` unset there is NO ceiling: the loop runs
-# until the worker writes its verdict, because the captain's buddy — following
+# until the worker writes its verdict, because the captain's EEH — following
 # the same checklists by hand — ran for hours while Number One was cut off at
 # roughly five minutes and so could never seed in one round and read the effect
 # in the next. **That default is proven in `tests/lcars-xo-drives.test.sh` §3.**
@@ -1681,6 +1899,9 @@ evpid=$!
 # Wait for the drive to be under way (the app is up, the driver is blocking).
 for _ in $(seq 1 60); do [ -f "$XO_DRIVE_LOG.slowpid" ] && break; sleep 0.2; done
 drivepid="$(cat "$XO_DRIVE_LOG.slowpid" 2>/dev/null)"
+printf 'Tried the helm. Saw a blank screen. Next: inspect navigation.\n' >"$mK3/xo/notes.md"
+printf '{"observations":[{"kind":"ui","detail":"Navigation missing","screen":"bridge","shot":"shots/bridge.png"}]}\n' >"$mK3/xo/observations.json"
+printf '{"action":"tested","outcome":"passed","detail":"Helm smoke check"}\n{"action":"tested","outcome":"failed","detail":"Navigation check"}\n' >>"$mK3/number-one.jsonl"
 ( cd "$repoK3" && bash "$SCRIPT" off "lcars-20260913-103" >"$repoK3/off.txt" 2>&1 ) || true
 for _ in $(seq 1 40); do kill -0 "$evpid" 2>/dev/null || break; sleep 0.25; done
 ev_alive=1; kill -0 "$evpid" 2>/dev/null || ev_alive=0
@@ -1699,6 +1920,18 @@ check "B11b. …no read-only work dir was left behind" \
   "[ \"\$(ls -1 '$evtmp' 2>/dev/null | grep -c .)\" = '0' ]"
 check "B11b. …and the state says stood-down" \
   "grep -q '\"status\": \"stood-down\"' '$mK3/state.json'"
+check "B11b. …interruption preserves a DISTINCT partial report" \
+  "[ -s '$mK3/xo/partial-report.md' ]"
+check "B11b. …the partial is INTERRUPTED, not a verdict or recommendation" \
+  "grep -q 'INTERRUPTED' '$mK3/xo/partial-report.md' && grep -qi 'partial' '$mK3/xo/partial-report.md' && grep -qi 'not a completed verdict' '$mK3/xo/partial-report.md' && grep -qi 'no.*score.*merge recommendation' '$mK3/xo/partial-report.md'"
+check "B11b. …notes retain exactly what was tried, seen, and next" \
+  "grep -Fq 'Tried the helm. Saw a blank screen. Next: inspect navigation.' '$mK3/xo/partial-report.md'"
+check "B11b. …structured observations preserve details and screenshot references" \
+  "grep -q 'Navigation missing' '$mK3/xo/partial-report.md' && grep -q 'bridge.png' '$mK3/xo/partial-report.md'"
+check "B11b. …the ROOT journal retains both passed and failed test outcomes" \
+  "grep -q 'Helm smoke check' '$mK3/xo/partial-report.md' && grep -q 'passed' '$mK3/xo/partial-report.md' && grep -q 'Navigation check' '$mK3/xo/partial-report.md' && grep -q 'failed' '$mK3/xo/partial-report.md'"
+check "B11b. …no completed report or verdict is manufactured" \
+  "[ ! -f '$mK3/xo/report.md' ] && [ ! -f '$mK3/xo/verdict.json' ]"
 
 # --------------------------------------------------------------------------
 # B11c (D2). A DIRECT SIGTERM to the recorded pid tears down just the same.
@@ -1721,19 +1954,93 @@ ev4=$!
 for _ in $(seq 1 60); do [ -f "$XO_DRIVE_LOG.slowpid" ] && break; sleep 0.2; done
 drive4="$(cat "$XO_DRIVE_LOG.slowpid" 2>/dev/null)"
 xopid="$(head -1 "$mK4/xo.pid" 2>/dev/null | tr -dc '0-9')"
+cp "$mK4/state.json" "$repoK4/state-before-term.json"
+cp "$mK4/number-one.jsonl" "$repoK4/journal-before-term.jsonl"
 [ -n "$xopid" ] && kill -TERM "$xopid" 2>/dev/null || true
 for _ in $(seq 1 40); do kill -0 "$ev4" 2>/dev/null || break; sleep 0.25; done
 ev4_alive=1; kill -0 "$ev4" 2>/dev/null || ev4_alive=0
 dr4_alive=1; [ -n "$drive4" ] && kill -0 "$drive4" 2>/dev/null || dr4_alive=0
 kill -9 "$ev4" 2>/dev/null || true
 [ -n "$drive4" ] && kill -9 "$drive4" 2>/dev/null || true
-wait "$ev4" 2>/dev/null || true
+ev4_rc=0; wait "$ev4" 2>/dev/null || ev4_rc=$?
 check "B11c. a direct TERM to xo.pid ends the spin" "[ '$ev4_alive' -eq 0 ]"
 check "B11c. …and the driver dies with it" "[ '$dr4_alive' -eq 0 ]"
 check "B11c. …the launch is stopped, not orphaned" \
   "grep -q -- '--stop' '$XO_LAUNCH_LOG'"
 check "B11c. …and no work dir survives" \
   "[ \"\$(ls -1 '$evtmp4' 2>/dev/null | grep -c .)\" = '0' ]"
+check "B11c. …TERM exits 143 and removes the pid" \
+  "[ '$ev4_rc' -eq 143 ] && [ ! -f '$mK4/xo.pid' ]"
+check "B11c. …TERM never rewrites state or appends a journal record" \
+  "cmp -s '$mK4/state.json' '$repoK4/state-before-term.json' && cmp -s '$mK4/number-one.jsonl' '$repoK4/journal-before-term.jsonl'"
+check "B11c. …bookkeeping alone does not produce an empty partial report" \
+  "[ ! -e '$mK4/xo/partial-report.md' ]"
+
+# Each source stands alone; corrupt evidence and write failures must not
+# compromise the real TERM trap's teardown or its state/journal non-writes.
+partial_case=110
+for evidence in notes observations journal malformed write-failure empty; do
+  partial_id="lcars-20260913-$partial_case"; partial_case=$((partial_case + 1))
+  partial_repo="$(new_repo '"numberOne": {"enabled": true, "engine": "copilot"}')"
+  partial_mission="$(plant_verify "$partial_repo" "$partial_id")"
+  rm -f "$XO_DRIVE_LOG.slowpid"
+  ( cd "$partial_repo" && \
+      LCARS_LAUNCH_SCRIPT="$LAUNCH_STUB" \
+      LCARS_XO_DRIVER="$SLOW_DRIVE" LCARS_NODE_BIN=bash \
+      LCARS_HOST_ADAPTER="$HOST_STUB" \
+      LCARS_WORKER_BIN="$EV_SHIM" LCARS_WORKER_CLI=copilot \
+      LCARS_GH_BIN=/usr/bin/true LCARS_NOTIFY=/usr/bin/true \
+      LCARS_OWNER_ENFORCE=0 TMPDIR="$evtmp4" \
+      bash "$SCRIPT" evaluate --mission "$partial_id" >"$partial_repo/ev.txt" 2>&1 ) &
+  partial_pid=$!; PROBE_PIDS="$PROBE_PIDS $partial_pid"
+  for _ in $(seq 1 60); do [ -f "$XO_DRIVE_LOG.slowpid" ] && break; sleep 0.2; done
+  check "B11c partial $evidence: the real evaluate reached its driver" \
+    "[ -s '$XO_DRIVE_LOG.slowpid' ]"
+  case "$evidence" in
+    notes|malformed|write-failure)
+      printf 'Tried impulse. Saw flicker. Next: inspect power.\n' >"$partial_mission/xo/notes.md" ;;
+  esac
+  case "$evidence" in
+    observations)
+      printf '{"observations":[{"kind":"ui","detail":"Independent observation","screen":"helm"}]}\n' >"$partial_mission/xo/observations.json" ;;
+    journal)
+      printf '{"action":"tested","outcome":"failed","detail":"Independent test failure"}\n' >>"$partial_mission/number-one.jsonl" ;;
+    malformed)
+      printf '{broken\n' >"$partial_mission/xo/observations.json"
+      printf 'bad journal line\n{"action":"tested","outcome":"passed","detail":"Surviving journal entry"}\n' >>"$partial_mission/number-one.jsonl" ;;
+    write-failure) mkdir "$partial_mission/xo/partial-report.md" ;;
+    empty)
+      printf ' \n' >"$partial_mission/xo/notes.md"
+      printf '{"observations":[]}\n' >"$partial_mission/xo/observations.json"
+      printf '{"action":"verdict-channel","detail":"Reply arrived on stdout"}\n{"action":"noted","lines":0}\n' >>"$partial_mission/number-one.jsonl" ;;
+  esac
+  cp "$partial_mission/state.json" "$partial_repo/state-before-term.json"
+  cp "$partial_mission/number-one.jsonl" "$partial_repo/journal-before-term.jsonl"
+  partial_xopid="$(head -1 "$partial_mission/xo.pid" 2>/dev/null | tr -dc '0-9')"
+  [ -n "$partial_xopid" ] && kill -TERM "$partial_xopid" 2>/dev/null || true
+  partial_rc=0; wait "$partial_pid" 2>/dev/null || partial_rc=$?
+  check "B11c partial $evidence: teardown still exits 143, stops launch, removes pid and work" \
+    "[ '$partial_rc' -eq 143 ] && [ ! -f '$partial_mission/xo.pid' ] && ! grep -q '\"status\": \"running\"' '$partial_mission/launch.json' && [ \"\$(ls -1 '$evtmp4' | grep -c .)\" = '0' ]"
+  check "B11c partial $evidence: state and journal remain byte-identical" \
+    "cmp -s '$partial_mission/state.json' '$partial_repo/state-before-term.json' && cmp -s '$partial_mission/number-one.jsonl' '$partial_repo/journal-before-term.jsonl'"
+  case "$evidence" in
+    notes) check "B11c partial notes: notes alone survive" \
+      "grep -Fq 'Tried impulse. Saw flicker. Next: inspect power.' '$partial_mission/xo/partial-report.md'" ;;
+    observations) check "B11c partial observations: object observations alone survive" \
+      "grep -q 'Independent observation' '$partial_mission/xo/partial-report.md'" ;;
+    journal) check "B11c partial journal: root test record alone survives with its outcome" \
+      "grep -q 'Independent test failure' '$partial_mission/xo/partial-report.md' && grep -q 'failed' '$partial_mission/xo/partial-report.md'" ;;
+    malformed)
+      check "B11c partial malformed: healthy sources and valid journal lines survive" \
+        "grep -q 'Tried impulse' '$partial_mission/xo/partial-report.md' && grep -q 'Surviving journal entry' '$partial_mission/xo/partial-report.md'"
+      check "B11c partial malformed: bad sources are diagnosed on stderr" \
+        "grep -q 'observations.json' '$partial_repo/ev.txt' && grep -q 'number-one.jsonl.*line' '$partial_repo/ev.txt'" ;;
+    write-failure) check "B11c partial write-failure: persistence failure is diagnosed" \
+      "grep -q 'partial-report.md' '$partial_repo/ev.txt'" ;;
+    empty) check "B11c partial empty: empty observations and bookkeeping produce nothing" \
+      "[ ! -e '$partial_mission/xo/partial-report.md' ]" ;;
+  esac
+done
 
 # --------------------------------------------------------------------------
 # B11d (D2 driver half). xo-drive.js tears its OWN Chrome down on a signal —
@@ -3439,7 +3746,8 @@ check "B23c. the launch and the browser both ran normally (no attachments is not
 # `tests/lcars-xo-evidence.test.sh` proves the runner's own arithmetic and the
 # scorer's guards directly. THESE rows prove the WIRING — that `xo.sh evaluate`
 # really runs the repo's own suite, in the LAUNCHED BUILD'S worktree, between
-# the capture and the worker round, and really hands the result to the worker.
+# stopping the app and relaunching for the capture, and really hands the
+# result to the worker.
 # A guard nobody calls is not a guard.
 # ==========================================================================
 echo
@@ -3455,11 +3763,40 @@ mid="$1"; shift
 m="$PWD/.git/lcars/missions/$mid"
 printf 'launch %s %s\n' "$mid" "$*" >>"$XO_LAUNCH_LOG"
 case "${1:-}" in
-  --stop) printf '{\n  "status": "stopped"\n}\n' >"$m/launch.json"; exit 0 ;;
+  --stop)
+    if [ -n "${XO_PORT_PROBE:-}" ] && [ -s "$m/port-server.pid" ]; then
+      kill -TERM "$(cat "$m/port-server.pid")" 2>/dev/null || true
+      python3 - "$XO_PORT_PROBE" <<'PY'
+import socket, sys, time
+for _ in range(100):
+    with socket.socket() as s:
+        if s.connect_ex(("127.0.0.1", int(sys.argv[1]))) != 0:
+            break
+    time.sleep(.02)
+else:
+    raise SystemExit("stub app did not stop")
+PY
+    fi
+    printf '{\n  "status": "stopped"\n}\n' >"$m/launch.json"; exit 0 ;;
 esac
 wt="${XO_FAKE_WORKTREE:-$PWD/.fake-worktree}"
 mkdir -p "$wt"
-printf '{\n  "status": "running",\n  "url": "http://127.0.0.1:4310/",\n  "worktree": "%s",\n  "pid": 1\n}\n' "$wt" >"$m/launch.json"
+if [ -n "${XO_PORT_PROBE:-}" ]; then
+  python3 -m http.server "$XO_PORT_PROBE" --bind 127.0.0.1 >"$m/port-server.log" 2>&1 &
+  echo "$!" >"$m/port-server.pid"
+  python3 - "$XO_PORT_PROBE" <<'PY'
+import socket, sys, time
+for _ in range(100):
+    with socket.socket() as s:
+        if s.connect_ex(("127.0.0.1", int(sys.argv[1]))) == 0:
+            break
+    time.sleep(.02)
+else:
+    raise SystemExit("stub app did not bind")
+PY
+  printf 'bound %s\n' "$XO_PORT_PROBE" >>"$m/port-events"
+fi
+printf '{\n  "status": "running",\n  "url": "http://127.0.0.1:%s/",\n  "worktree": "%s",\n  "pid": 1\n}\n' "${XO_PORT_PROBE:-4310}" "$wt" >"$m/launch.json"
 LWT
 chmod +x "$LAUNCH_STUB_WT"
 
@@ -3474,6 +3811,9 @@ printf 'worker %s\n' "$*" >>"$XO_WORKER_LOG"
 printf 'worker %s\n' "$*" >>"$XO_WORKER_LOG.all"
 if [ -s "${LCARS_XO_INPUT_DIR:-/nonexistent}/tests.json" ]; then
   printf 'saw tests.json\n' >>"$XO_TESTS_SEEN_LOG"
+  if [ -n "${XO_PORT_TEST_INPUT:-}" ]; then
+    cp "$LCARS_XO_INPUT_DIR/tests.json" "$XO_PORT_TEST_INPUT"
+  fi
 else
   printf 'NO tests.json\n' >>"$XO_TESTS_SEEN_LOG"
 fi
@@ -3518,7 +3858,10 @@ xo_evaluate_tests() { # <repo> <id> <worker-bin>
 repo24a="$(new_repo '"numberOne": {"enabled": true, "engine": "copilot"}')"
 m24a="$(plant_verify "$repo24a" "lcars-20260915-301")"
 WT24A="$TMPROOT/wt-24a"; mkdir -p "$WT24A"
+printf '[project]\nname = "conflicting-runner"\nversion = "0.0.1"\n' >"$WT24A/pyproject.toml"
+printf 'raise RuntimeError("configured command must win")\n' >"$WT24A/test_conflict.py"
 set_test_command "$repo24a" "pwd > ran-here.txt; echo 'PASS batches survive a restart'; exit 0"
+cp "$repo24a/.git/lcars/config.json" "$TMPROOT/config24a-before.json"
 : >"$XO_WORKER_LOG"; : >"$XO_TESTS_SEEN_LOG"
 out24a="$(XO_FAKE_WORKTREE="$WT24A" XO_EV_BODY="$(ev_verdict met met met high '')" \
   xo_evaluate_tests "$repo24a" "lcars-20260915-301" "$EV_SHIM_TESTS")"
@@ -3527,6 +3870,8 @@ check "B24a. …recording the command it actually ran" \
   "grep -q 'PASS batches survive a restart' '$m24a/xo/tests.json'"
 check "B24a. …and the outcome, derived where it was known" \
   "grep -q '\"outcome\": \"passed\"' '$m24a/xo/tests.json'"
+check "B24a. a configured command wins over a conflicting detectable runner" \
+  "grep -q '\"commandSource\": \"config\"' '$m24a/xo/tests.json' && cmp -s '$repo24a/.git/lcars/config.json' '$TMPROOT/config24a-before.json'"
 check "B24a. the suite really ran — it left its mark" "[ -s '$WT24A/ran-here.txt' ]"
 check "B24a. …IN THE LAUNCHED BUILD'S worktree, not the captain's checkout" \
   "grep -q \"\$(cd '$WT24A' && pwd -P)\" '$WT24A/ran-here.txt'"
@@ -3536,6 +3881,130 @@ check "B24a. the look JOURNALLED the test run, with its outcome" \
   "grep -q '\"action\": \"tested\"' '$m24a/number-one.jsonl' && grep -q 'passed' '$m24a/number-one.jsonl'"
 check "B24a. …and the captain's report says it ran them" \
   "grep -q 'I ran your tests' '$m24a/xo/report.md'"
+
+# A foundation mission can establish its runner only in the launched build,
+# before approval promotes testCommand into the captain's config.
+repo24e="$(new_repo '"numberOne": {"enabled": true, "engine": "copilot"}')"
+m24e="$(plant_verify "$repo24e" "lcars-20261014-296")"
+python3 - "$repo24e/.git/lcars/config.json" <<'PY'
+import json, sys
+path = sys.argv[1]
+with open(path) as fh:
+    config = json.load(fh)
+config.pop("testCommand", None)
+with open(path, "w") as fh:
+    json.dump(config, fh, indent=2)
+PY
+WT24E="$TMPROOT/wt-24e"; mkdir -p "$WT24E/tests"
+printf '[project]\nname = "build-only-suite"\nversion = "0.0.1"\n' >"$WT24E/pyproject.toml"
+cat >"$WT24E/tests/test_build.py" <<'PY'
+import unittest
+
+class BuildTests(unittest.TestCase):
+    def test_build_only_runner(self):
+        print("BUILD_ONLY_SUITE_RAN")
+        self.assertTrue(True)
+PY
+cp "$repo24e/.git/lcars/config.json" "$TMPROOT/config24e-before.json"
+out24e="$(XO_FAKE_WORKTREE="$WT24E" XO_EV_BODY="$(ev_verdict met met met high '')" \
+  xo_evaluate_tests "$repo24e" "lcars-20261014-296" "$EV_SHIM_TESTS")"
+python3 - "$m24e/xo/tests.json" <<'PY'
+import json, sys
+print("  B24e test record:", json.dumps(json.load(open(sys.argv[1])), sort_keys=True))
+PY
+check "B24e. an unconfigured suite in only the launched build really runs" \
+  "python3 -c 'import json; d=json.load(open(\"'$m24e'/xo/tests.json\")); assert d[\"ran\"] is True and d[\"command\"] == \"python3 -m unittest discover -s \" + chr(34) + chr(36) + \"{LCARS_TESTS_DIR:-tests}\" + chr(34) and d[\"outcome\"] == \"passed\" and d[\"exitCode\"] == 0 and \"BUILD_ONLY_SUITE_RAN\" in d[\"outputTail\"]'"
+check "B24e. the evidence names detection from the build as its source" \
+  "grep -q '\"commandSource\": \"detected-from-build\"' '$m24e/xo/tests.json'"
+check "B24e. detection leaves the captain's config byte-for-byte unchanged" \
+  "cmp -s '$repo24e/.git/lcars/config.json' '$TMPROOT/config24e-before.json'"
+check "B24e. the captain's checkout still has no runner" \
+  "[ ! -e '$repo24e/pyproject.toml' ] && [ ! -e '$repo24e/tests/test_build.py' ]"
+
+# Detection supplies evidence, not an assumed pass: a failing build suite must
+# retain its real exit status while the full look continues.
+repo24f="$(new_repo '"numberOne": {"enabled": true, "engine": "copilot"}')"
+m24f="$(plant_verify "$repo24f" "lcars-20261014-297")"
+set_test_command "$repo24f" __null__
+WT24F="$TMPROOT/wt-24f"; mkdir -p "$WT24F/tests"
+cp "$WT24E/pyproject.toml" "$WT24F/pyproject.toml"
+sed 's/self.assertTrue(True)/self.assertTrue(False)/' "$WT24E/tests/test_build.py" \
+  >"$WT24F/tests/test_build.py"
+cp "$repo24f/.git/lcars/config.json" "$TMPROOT/config24f-before.json"
+out24f="$(XO_FAKE_WORKTREE="$WT24F" XO_EV_BODY="$(ev_verdict met met met high '')" \
+  xo_evaluate_tests "$repo24f" "lcars-20261014-297" "$EV_SHIM_TESTS")"
+python3 - "$m24f/xo/tests.json" <<'PY'
+import json, sys
+print("  B24f test record:", json.dumps(json.load(open(sys.argv[1])), sort_keys=True))
+PY
+check "B24f. a detected failing suite records its actual failure and provenance" \
+  "python3 -c 'import json; d=json.load(open(\"'$m24f'/xo/tests.json\")); assert d[\"ran\"] is True and d[\"outcome\"] == \"failed\" and d[\"exitCode\"] == 1 and d[\"commandSource\"] == \"detected-from-build\" and \"FAILED (failures=1)\" in d[\"outputTail\"]'"
+check "B24f. detected failure leaves config unchanged and still gets a full look" \
+  "cmp -s '$repo24f/.git/lcars/config.json' '$TMPROOT/config24f-before.json' && [ -s '$m24f/xo/verdict.json' ] && [ -s '$m24f/xo/report.md' ]"
+
+# An unknown app default port must be available to the declared suite, not
+# occupied by the very launch Number One is reviewing.
+repo24p="$(new_repo '"numberOne": {"enabled": true, "engine": "copilot"}')"
+m24p="$(plant_verify "$repo24p" "lcars-20261014-295")"
+WT24P="$TMPROOT/wt-24p"; mkdir -p "$WT24P"
+port24p="$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()')"
+cat >"$WT24P/assert-port-free.py" <<PY
+import socket
+with socket.socket() as s:
+    assert s.connect_ex(("127.0.0.1", $port24p)) != 0, "LCARS holds the app default port"
+with socket.socket() as s:
+    s.bind(("127.0.0.1", $port24p))
+print("PASS app default port is free")
+PY
+set_test_command "$repo24p" "python3 assert-port-free.py"
+: >"$XO_LAUNCH_LOG"
+out24p="$(XO_FAKE_WORKTREE="$WT24P" XO_PORT_PROBE="$port24p" \
+  XO_PORT_TEST_INPUT="$TMPROOT/port-tests-input.json" \
+  XO_EV_BODY="$(ev_verdict met met met high '')" \
+  xo_evaluate_tests "$repo24p" "lcars-20261014-295" "$EV_SHIM_TESTS")"
+python3 - "$m24p/xo/tests.json" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+print("  B24p test record: outcome=%s exit=%s" % (d["outcome"], d["exitCode"]))
+if d["outcome"] != "passed":
+    print(d["outputTail"])
+PY
+check "B24p. the launch really bound a dynamically selected app port" \
+  "grep -q 'bound $port24p' '$m24p/port-events'"
+check "B24p. declared tests run with the app default port free" \
+  "grep -q '\"outcome\": \"passed\"' '$m24p/xo/tests.json' && grep -q 'PASS app default port is free' '$m24p/xo/tests.json'"
+check "B24p. the worker receives the actual passing test record" \
+  "grep -q '\"outcome\": \"passed\"' '$TMPROOT/port-tests-input.json'"
+check "B24p. the grade still comes from the worker's evidence" \
+  "grep -q '\"score\": \"high\"' '$m24p/xo/verdict.json'"
+check "B24p. the app is relaunched for the browser after the tests" \
+  "[ \"\$(grep -c 'launch lcars-20261014-295 $' '$XO_LAUNCH_LOG')\" -eq 2 ]"
+
+# Start the recheck fixture engaged, rather than rechecking the HIGH look
+# above after it has already been handed back.
+plant_verify "$repo24p" "lcars-20261014-295" >/dev/null
+plant_verdict "$m24p" "$(gap_json 1 contradiction prd-1 shot-01),$(gap_json 2 contradiction prd-2 shot-02)"
+cp "$m24p/xo/verdict.json" "$m24p/xo/verdict-1.json"
+plant_logs_json "$m24p" 2
+plant_child "$repo24p" "lcars-20261014-295" 1 verify
+plant_child "$repo24p" "lcars-20261014-295" 2 verify
+plant_reverify_gate "$m24p"
+: >"$XO_LAUNCH_LOG"
+rm -f "$TMPROOT/port-tests-input.json" "$m24p/xo/tests.json"
+out24r="$(cd "$repo24p" && XO_FAKE_WORKTREE="$WT24P" XO_PORT_PROBE="$port24p" \
+  XO_PORT_TEST_INPUT="$TMPROOT/port-tests-input.json" \
+  XO_EV_FILE=xo-recheck.json XO_EV_BODY="$(rc_body true true)" \
+  LCARS_LAUNCH_SCRIPT="$LAUNCH_STUB_WT" LCARS_XO_DRIVER="$DRIVE_STUB" LCARS_NODE_BIN=bash \
+  LCARS_HOST_ADAPTER="$HOST_STUB" LCARS_RESPOND_SCRIPT="$RESPOND_STUB" \
+  LCARS_WORKER_BIN="$EV_SHIM_TESTS" LCARS_WORKER_CLI=copilot \
+  LCARS_GH_BIN=/usr/bin/true LCARS_NOTIFY=/usr/bin/true LCARS_OWNER_ENFORCE=0 \
+  bash "$SCRIPT" recheck --mission lcars-20261014-295 2>&1)"
+check "B24p. recheck also runs declared tests with the app default port free" \
+  "grep -q '\"outcome\": \"passed\"' '$m24p/xo/tests.json' &&
+   grep -q '\"outcome\": \"passed\"' '$TMPROOT/port-tests-input.json'"
+check "B24p. recheck relaunches before looking and delivers a second grade" \
+  "[ \"\$(grep -c 'launch lcars-20261014-295 $' '$XO_LAUNCH_LOG')\" -eq 2 ] &&
+   [ -s '$m24p/xo/verdict-2.json' ]"
 
 # --------------------------------------------------------------------------
 # B24b. NO testCommand — THE COMMON CASE. The look runs exactly as it always

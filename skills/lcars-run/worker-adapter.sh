@@ -232,7 +232,7 @@ adapter_tools() { # cli role → tool list (stdout); non-zero on unknown role
 #                  WHERE ITS CONTAINMENT ACTUALLY IS, and it is real:
 #                    1. THE DISPOSABLE COPY. `spawn_number_one` runs this worker
 #                       with its cwd inside a DETACHED worktree minted by the
-#                       buddy's one helper (`autopilot.sh worktree`, via
+#                       EEH's one helper (`ech.sh worktree`, via
 #                       `xo-run.py prepare`). Anything it breaks dies with the
 #                       copy, and the copy is detached, so nothing it commits
 #                       can reach a branch.
@@ -244,7 +244,7 @@ adapter_tools() { # cli role → tool list (stdout); non-zero on unknown role
 #                       `number-one` and the S168 posture applies unchanged.
 #                  WHY THE SHELL IS HERE AT ALL (captain's approval, 2026-10-08
 #                  19:33 MDT): measured on 2026-10-08, the reviewer found 0 real
-#                  defects where the captain's buddy found 4, and three of its
+#                  defects where the captain's EEH found 4, and three of its
 #                  six recorded failures were this fence — drawn parts it could
 #                  not reach, a HOME store read refused, a shell action refused.
 #   default        the read-only sentinel: everything but Read/Grep/Glob is gone.

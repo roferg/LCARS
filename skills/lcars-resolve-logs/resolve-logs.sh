@@ -203,7 +203,7 @@ PARENT_STATE="$PARENT_DIR/state.json"
 # A mission assigned to SOMEONE ELSE on GitHub is READ-ONLY to this laptop's
 # write verbs. `lcars resolve-logs` DRIVES a parent's logged bugs to their
 # Verify gate, folds them onto the parent's branch and raises a gate on the
-# parent's issue, so it consults the lock; the READ verbs (status, buddy, the
+# parent's issue, so it consults the lock; the READ verbs (status, the EEH, the
 # viewscreen's reads) never do. The remedy is deliberately a HUMAN act on
 # GitHub — the solo protocol's premise is that the captain moves ownership
 # where both laptops can see it, and LCARS never takes a mission off anyone.

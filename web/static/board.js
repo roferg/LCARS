@@ -36,6 +36,12 @@ var writesActive = null;
 // viewscreen reloads board.js, resets this to false, and the banner returns.
 var versionBannerDismissed = false;
 
+// S275 — the same session-only dismissal for the "no LCARS-capable CLI on this
+// machine" band. In-memory for the same reason: installing a CLI is a thing he
+// does and then comes back, and a persisted dismissal would hide the one line
+// that explains why nothing works on the laptop he has not fixed yet.
+var engineBannerDismissed = false;
+
 // UX-14: the repo the board is attached to (board.meta.repo), captured on every
 // render so the detail modal's "View on GitHub" link can build the issue URL
 // even when the per-mission payload doesn't echo the repo. May stay null.
@@ -154,7 +160,7 @@ function ownerLockLine(login) {
 var LOCK_GLYPH = "⊘";
 /* The leading glyphs a control wears to say what it will DO. A locked control
    must wear none of them. */
-var LOCK_ACTION_GLYPHS = "▶▸▹✓⏸◐◷↻◆⊹";
+var LOCK_ACTION_GLYPHS = "▶▸▹✓⏸◐◷↻◆⊹◇";
 
 function markLocked(n) {
   if (!n) return;
@@ -473,7 +479,8 @@ function ownerNode(m) {
    holds THIS mission (`m.numberOne`, read off its own state.json); the band
    says whether it is on for THIS REPO (`meta.numberOne`, read off config.json);
    and `lcars xo` says both at a terminal. Nothing here infers, derives or
-   guesses: a mission is engaged because the record says `engaged`.
+   guesses: a mission is engaged because the record says `engaged`, unless
+   its Stage is already Done.
 
    IT NEVER SAYS "FIXING" (captain, 2026-09-11). Number One files ordinary
    mission logs and LCARS drives them, so fixes already show through the
@@ -504,7 +511,7 @@ function xoStatus(m) {
    back, and locking a mission it no longer holds would be a false lock — the
    error this board treats as strictly worse than the one it prevents. */
 function xoEngaged(m) {
-  return xoStatus(m) === "engaged";
+  return !!m && m.stage !== "done" && xoStatus(m) === "engaged";
 }
 
 /* The refusal, in one sentence. It is byte-identical to the line
@@ -532,6 +539,7 @@ var XO_PILL = {
 
 function xoPill(m) {
   var status = xoStatus(m);
+  if (status === "engaged" && !xoEngaged(m)) return null;
   var label = XO_PILL[status];
   if (!label) return null;
   return el("span", "pill xo" + (status === "engaged" ? "" : " done"), label);
@@ -557,7 +565,7 @@ function xoLine(m) {
   if (!x) return null;
   var status = String(x.status || "");
   var engine = x.engine ? " · " + engineLabel(x.engine) : "";
-  if (status === "engaged") return "Number One has the conn" + engine;
+  if (status === "engaged") return xoEngaged(m) ? "Number One has the conn" + engine : null;
   if (status === "finished") {
     return "Number One handed the conn back"
       + (x.score ? " · scored " + String(x.score) : "");
@@ -567,12 +575,202 @@ function xoLine(m) {
   return null;
 }
 
+/* ── S292: A STATUS OBJECT IS NOT A DOCUMENT VIEWER ───────────────────────
+
+   MEASURED ON THE CAPTAIN'S OWN BOARD (2880×1626, mission #11). When a mission
+   escalates, the note it leaves is the NEWS — and this is where the board drew
+   it. The whole of it: Number One's plain-English explanation, the source it
+   quotes, and then the formal gate text with its (a)/(b)/(c) options. Over a
+   thousand characters of 11px mono in a ~260px column — about 28 characters to
+   a line. The card filled the entire column height, was STILL clipped at the
+   bottom by the column, and the three options he was being asked to choose
+   between were off the screen. Every other column on that board sat empty.
+
+   His words: "That escalation UI crammed into the card is horrible. We need to
+   fix that so you click to see the details as part of answering the
+   escalation."
+
+   SO THE NEWS STAYS AND THE DOCUMENT GOES. The intent the S213 block below
+   describes is right — an escalation note is what Number One needs him to do,
+   and suppressing it would be worse than the wall. What is wrong is the
+   QUANTITY. A note that fits the column is drawn exactly as it always was; one
+   that does not is cut at the last sentence boundary inside the budget, and
+   the cut is SAID OUT LOUD with the number of characters not shown, so a
+   cut-off wall can never be mistaken for the whole message.
+
+   AND THE CLIP IS ONLY HONEST WHEN THERE IS A WAY TO READ THE REST. A remote
+   done card has no local detail to open (S278), so there is nowhere for the
+   remainder to live — such a card keeps the whole note rather than lose half
+   of it to a button that cannot exist. Clipping is never information loss.
+
+   THE BUDGET IS THE COLUMN'S, not a round number: ~140 characters is about
+   five lines at the column's real measure, which is a glance. */
+var XO_NOTE_CARD_CHARS = 140;
+
+/* Where to cut, as {text, cut}. `cut` is 0 when nothing was taken away, which
+   is the ONE flag every caller keys off — no caller re-measures the string. */
+function xoNoteClip(note) {
+  var t = String(note).replace(/\s+/g, " ").trim();
+  if (t.length <= XO_NOTE_CARD_CHARS) return { text: t, cut: 0 };
+  var head = t.slice(0, XO_NOTE_CARD_CHARS);
+  var at = -1, i, ch;
+  // A SENTENCE BOUNDARY FIRST — the last one inside the budget, so the summary
+  // reads as something somebody wrote rather than a string operation. The 40
+  // floor stops a one-word opener ("Blocked.") from becoming the whole summary.
+  for (i = head.length - 1; i >= 40; i--) {
+    ch = head.charAt(i);
+    if ((ch === "." || ch === "!" || ch === "?") &&
+        /\s/.test(t.charAt(i + 1) || " ")) { at = i + 1; break; }
+  }
+  // …then a word boundary, and only then a hard cut: a note with no sentence
+  // and no space in 140 characters is not prose, and it still must not overflow.
+  if (at < 0) at = head.lastIndexOf(" ");
+  if (at < 40) at = XO_NOTE_CARD_CHARS;
+  var kept = t.slice(0, at).replace(/\s+$/, "");
+  return { text: kept + " …", cut: t.length - kept.length };
+}
+
+/* MAY THIS CARD'S NOTE BE CUT? Only when the ◈ Number One tab would really
+   show the rest, because a clip is a PROMISE that the remainder is one click
+   away — and a button onto a surface that declines to draw it is worse than
+   the wall it replaced.
+
+   TWO CARDS CANNOT KEEP THAT PROMISE, and they are the same two the rest of
+   this file already treats as special:
+     · a REMOTE DONE card has no local detail at all (S278);
+     · an ENGAGED mission's note is the worker TRANSCRIPT, and the tab refuses
+       it for the same reason the card does — nobody wrote it for him.
+   Both keep their note exactly as the board has always drawn it. */
+function xoNoteOpenable(m) {
+  return !isRemoteDone(m) && xoStatus(m) !== "engaged";
+}
+
+/* Is this card's note being cut — and therefore owed a way in? Read by xoNode
+   to decide whether the card needs (or relabels) its one ⊙ control, so the
+   button and the clip can never disagree about whether anything is hidden. */
+function xoNoteIsClipped(m) {
+  var x = xoBlock(m);
+  var note = x && x.note ? String(x.note) : "";
+  if (!note || !xoNoteOpenable(m)) return false;
+  return xoNoteClip(note).cut > 0;
+}
+
+/* ── S292 FIX ROUND 2: A SHORTER WALL IS NOT A SUMMARY ────────────────────
+
+   MEASURED ON ROUND 1's OWN CAPTURE. The clip above works — the card came
+   down from over a thousand characters to five lines — and it still fails the
+   only question a kanban card has to answer: WHICH decision is this? What it
+   printed was
+
+       "Two things stopped this, and the first one is yours. …"
+
+   which is the opening of Number One's PROSE. It is the preamble, not the
+   call. Put two escalations on the board and BOTH cards read that same
+   sentence, so the captain is back to opening each one to find out which is
+   which — the clip bought him a shorter card and no information.
+
+   THE SENTENCE THAT NAMES THE DECISION WAS ALREADY IN THE PAYLOAD. BUG-027
+   had the harness write `humanSummary` into pending.json — one purpose-written
+   line, in plain language, with GitHub issue numbers instead of internal ids:
+
+       "The drawing wants a LIST of tags per note; the app stores one. Build it
+        anyway, cut the parts that need it, or change the data first?"
+
+   The gate modal has rendered it as its HEADLINE ever since. The card rendered
+   it nowhere. So the card prefers it.
+
+   AND ONLY WHERE A CLIP WAS ALREADY BEING MADE. This substitutes for the
+   TRUNCATION, never for the note: a note that FITS is still drawn verbatim and
+   unmarked (nothing is hidden, so there is nothing to summarise), and a card
+   whose detail surface would refuse the note — engaged, remote-done — is still
+   left whole and unclipped. Every invariant round 1 established survives
+   literally; what changes is exactly the card the captain was looking at. */
+
+/* The gate's own one-liner, or "" when this card has no usable one.
+
+   IT IS UNTRUSTED PAYLOAD TEXT and is treated as such — the same treatment the
+   note it stands in for gets, plus the one the field itself already gets:
+     · whitespace-collapsed and written through `el()` (textContent, so the DOM
+       escapes it; nothing here ever touches innerHTML);
+     · put through `sanitizeGateText`, the SAME sanitizer `openRespond` runs on
+       this SAME field, because UX-33 forbids CLI syntax on a GUI surface and
+       one payload must not read two ways on two surfaces;
+     · and it is the caller that holds it to `xoNoteClip`'s budget, so an
+       absurd summary cannot hand back the wall through a different field.
+   Empty after all that ⇒ there is no summary and the prose clip stands. */
+function xoGateSummary(m) {
+  var g = m && m.gate;
+  if (!g || typeof g.humanSummary !== "string") return "";
+  return sanitizeGateText(g.humanSummary).replace(/\s+/g, " ").trim();
+}
+
 /* The mission's own recorded note — an escalation, or a stand-down. Mono,
    because it is a quotation of something written elsewhere, not board copy. */
 function xoNote(m) {
   var x = xoBlock(m);
   var note = x && x.note ? String(x.note) : "";
-  return note ? el("div", "xo-note", note) : null;
+  if (!note) return null;
+  if (!xoNoteOpenable(m)) return el("div", "xo-note", note);
+  var clip = xoNoteClip(note);
+  if (!clip.cut) return el("div", "xo-note", clip.text);
+
+  var wrap = el("div", "xo-note-wrap");
+  var summary = xoGateSummary(m);
+  if (!summary) {
+    wrap.appendChild(el("div", "xo-note xo-note-clipped", clip.text));
+    // THE CUT, COUNTED. "…" alone is a punctuation mark he can read past; a
+    // number is a fact he cannot. It is the difference between a card that
+    // looks complete and a card that admits it is a summary.
+    wrap.appendChild(el("div", "xo-note-cut",
+                        "… clipped · " + clip.cut + " more characters"));
+    return wrap;
+  }
+  /* THE MARKER CANNOT GO ON SAYING "CLIPPED · N MORE CHARACTERS", because this
+     sentence is not the first N characters of anything. Nothing was cut off
+     its end, the note does not carry on where it stops, and a count of
+     characters removed from a string that is not on the card would be a number
+     measuring nothing — a truncation claimed where none happened, which is the
+     same dishonesty round 1 existed to remove, pointed the other way.
+
+     What he still has to know is unchanged: that this is a SUMMARY rather than
+     the message, and that there is more waiting. So the marker says both, and
+     the number it quotes is the FULL NOTE's length — a fact he can check by
+     pressing the ⊙ directly beneath it. The summary gets the same budget as
+     the prose, and on the rare occasion it needs cutting too the marker admits
+     THAT cut as well rather than quietly shortening his headline. */
+  var kept = xoNoteClip(summary);
+  var whole = String(note).replace(/\s+/g, " ").trim().length;
+  wrap.appendChild(el("div", "xo-note xo-note-summary", kept.text));
+  wrap.appendChild(el("div", "xo-note-cut",
+                      (kept.cut ? "… clipped summary · " : "summary · ") +
+                      "the full note is " + whole + " characters"));
+  return wrap;
+}
+
+/* S292 — THE WHOLE ESCALATION, at real width, for the surfaces that have room:
+   the ◈ Number One tab and the gate modal he answers from. ONE builder, so the
+   two can never carry different text.
+
+   THE SAME STATUS RULE THE CARD USES, read from the same place. `xo_finish`
+   writes the worker's TRANSCRIPT into `note` only while a mission is ENGAGED;
+   every other status's note is a sentence somebody wrote for the captain. So
+   `engaged` is the one status whose note is not news, and it is the one status
+   this block refuses — exactly as the card does. Keying off anything else (the
+   presence of a score, say) is the mistake S213 already made once. */
+function xoEscalationNode(mi) {
+  var x = xoBlock(mi);
+  var note = x && typeof x.note === "string" ? x.note.trim() : "";
+  if (!note) return null;
+  var status = xoStatus(mi);
+  if (status === "engaged") return null;
+  var box = el("div", "xo-escalation");
+  box.appendChild(el("div", "xo-escalation-label", status === "escalated"
+    ? "◈ Number One escalated this to you"
+    : "◈ What Number One left on this mission"));
+  // A <pre>, because the note's own line breaks ARE its structure — the
+  // lettered options arrive on lines of their own and must stay on them.
+  box.appendChild(el("pre", "xo-escalation-text", note));
+  return box;
 }
 
 /* ── S203: THE INTENT MATCH ───────────────────────────────────────────────
@@ -734,25 +932,74 @@ function xoScoreMeaning(m, s) {
 function xoNode(m) {
   var score = xoScorePill(m);
   var wrap;
+  var reportKind = m.numberOne && m.numberOne.reportKind;
+  if (reportKind === "partial" || (reportKind === "full" && !score)) {
+    wrap = el("div", "xo-block");
+    wrap.appendChild(el("div", "xo-line", reportKind === "partial"
+      ? "◈ Number One · INTERRUPTED — partial report (not a verdict)"
+      : "◈ Number One · Full report"));
+    var artifactRead = btn(reportKind === "partial"
+      ? "⊙ Read the partial report →" : "⊙ Read the full report →",
+      "xo-read-report", function () { openDetail(m.id, "xo"); });
+    artifactRead.setAttribute("data-act", "xo-report");
+    wrap.appendChild(artifactRead);
+    return wrap;
+  }
   if (score) {
     wrap = el("div", "xo-block xo-signal");
     var srow = el("div", "pills xo-pills");
     srow.appendChild(score);
     wrap.appendChild(srow);
     // The note, unless this is the ENGAGED status whose note is the transcript.
-    if (!xoEngaged(m)) {
+    var noteClipped = false;
+    if (xoStatus(m) !== "engaged") {
       var scoredNote = xoNote(m);
       if (scoredNote) wrap.appendChild(scoredNote);
+      noteClipped = xoNoteIsClipped(m);
     }
-    var read = btn("⊙ Read the full report →", "xo-read-report", function () {
-      openDetail(m.id, "xo");
-    });
-    read.title = "Open this mission on its ◈ Number One tab";
-    // NOT swept by applyXoLock: reading the report is the one thing an engaged
-    // mission must never stop the captain doing (it is how he finds out what
-    // Number One did on his behalf), and it writes nothing.
-    read.setAttribute("data-act", "xo-report");
-    wrap.appendChild(read);
+    /* S278 FIX ROUND 1 (D2) — EXCEPT ON A CARD THAT HAS NO REPORT TO OPEN.
+
+       THE GRADE STAYS, THE ROUTE GOES. A remote done card is a closed
+       `lcars:done` issue read back on a laptop that never drove the mission.
+       Its `◈ NUMBER ONE · LOW` comes off the issue's own `lcars:xo:*` label, so
+       the VERDICT is a real fact the forge is authoritative about and worth a
+       glance in a Done column. The 150-word report it grades is not: that lives
+       in the `.git/lcars` of whichever laptop ran it, and this product does not
+       sync local artifacts to the issue (standing ruling, 2026-09-04).
+
+       SO THE BUTTON WAS A PROMISE THE CARD CANNOT KEEP. `openDetail` already
+       short-circuits a remote done card to its GitHub issue — correctly, there
+       being no local detail — which meant `⊙ READ THE FULL REPORT →` opened
+       GitHub. Found by the tester on the real board: 11 of 51 cards, large,
+       orange, enabled, each taking its own Tab stop, none of them reading a
+       report.
+
+       NOT a suppression of the whole block, and not of the pill: dropping the
+       grade as well would take away information the card really does hold. A
+       done card now ends with exactly one affordance, the whole-card click, and
+       that is what `test_it_carries_no_data_act_control_of_any_kind` pins. */
+    /* S292 — AND WHEN THE ESCALATION IS WHAT IS CLIPPED, THE BUTTON SAYS SO.
+       A mission scored LOW and then escalated has BOTH a report and an
+       escalation, and the tab it opens now leads with the escalation. It gets
+       ONE control either way: a second orange button onto the same tab is the
+       defect S278 found 11 times on the captain's own board, and it would cost
+       him a second Tab stop to say nothing new. */
+    var escalating = noteClipped && xoStatus(m) === "escalated";
+    if (!isRemoteDone(m) && (reportKind !== "none" || noteClipped)) {
+      var read = btn(escalating ? "⊙ Read the full escalation →"
+                                : "⊙ Read the full report →",
+                     "xo-read-report", function () {
+        openDetail(m.id, "xo");
+      });
+      read.title = escalating
+        ? "Open this mission on its ◈ Number One tab to read it all"
+        : "Open this mission on its ◈ Number One tab";
+      // NOT swept by applyXoLock: reading the report is the one thing an engaged
+      // mission must never stop the captain doing (it is how he finds out what
+      // Number One did on his behalf), and it writes nothing.
+      read.setAttribute("data-act", "xo-report");
+      wrap.appendChild(read);
+    }
     if (xoEngaged(m)) wrap.title = xoLockLine(m);
     return wrap;
   }
@@ -766,6 +1013,22 @@ function xoNode(m) {
   }
   if (line) wrap.appendChild(el("div", "xo-line", line));
   if (note) wrap.appendChild(note);
+  /* S292 — THE WAY IN, on the shape the captain's #11 actually was: escalated
+     at Validate, nothing scored yet, so no verdict and (until now) no control
+     at all under a thousand-character wall. Same idiom, same `data-act`, same
+     exemption from the engaged sweep — reading what Number One needs him to do
+     writes nothing. */
+  if (note && xoNoteIsClipped(m)) {
+    var escalated = xoStatus(m) === "escalated";
+    var noteRead = btn(escalated ? "⊙ Read the full escalation →"
+                                 : "⊙ Read the full note →",
+                       "xo-read-report", function () {
+      openDetail(m.id, "xo");
+    });
+    noteRead.title = "Open this mission on its ◈ Number One tab to read it all";
+    noteRead.setAttribute("data-act", "xo-report");
+    wrap.appendChild(noteRead);
+  }
   if (xoEngaged(m)) wrap.title = xoLockLine(m);
   return wrap;
 }
@@ -988,6 +1251,42 @@ function xoEngineHere(meta, engine) {
   return xoEnginesHere(meta).indexOf(String(engine)) >= 0;
 }
 
+/* ── S275 FIX ROUND 1: `[]` IS AN ANSWER, ABSENT IS A SILENCE ─────────────
+   `xoEnginesHere` NORMALISES both to `[]`, which destroys the only fact that
+   tells them apart — and every `.length` test downstream then reads "nothing
+   installed" as "nobody asked". That is the defect a fresh tester hit on a
+   laptop with NEITHER CLI: `xoEnginesHere(meta).length && !xoEngineHere(...)`
+   is `0 && …` for every engine, so nothing was marked unavailable, ◈ Copilot
+   sat preselected and ◈ Engage POSTed `{"engine":"copilot"}` to a machine with
+   no copilot on it.
+
+   So the distinction gets ONE home, and it reads the RAW field before any
+   normalisation. `engineListAnswer` (the File/holodeck picker's own helper) is
+   already the single raw-shape test in this file — list → the list, anything
+   else → null — so these two delegate to it rather than re-testing the shape a
+   second time and disagreeing with it later.
+
+     absent  → `enginesAnswered` false. NOTHING CHANGES on any surface: an
+               older daemon, the GitHub adapter or a detector that could not
+               run has told us nothing, and "I could not ask" is not "it is
+               not here".
+     `[]`    → `noEngineHere` true. The detector ANSWERED, and the answer is
+               none: every engine locks and every control that needs one
+               refuses, out loud.
+
+   Both take the RAW value, not a `meta`, because the two surfaces that ask
+   carry it under different keys (`meta.enginesHere` for the board,
+   `fd.engines` for the front door) and a predicate bound to one key could not
+   serve the other. */
+function enginesAnswered(raw) {
+  return engineListAnswer(raw) !== null;
+}
+
+function noEngineHere(raw) {
+  var list = engineListAnswer(raw);
+  return !!list && list.length === 0;
+}
+
 function xoEngineRowLabel(meta, engine, chosen) {
   var here = xoEnginesHere(meta);
   var mark = chosen ? "◆ " : "◈ ";
@@ -1026,9 +1325,24 @@ function openXoPicker(meta) {
     "Number One takes the gates that are yours — a stage parked for an "
     + "answer, and the look at Verify — and hands the conn back with a "
     + "report. It never writes code and it never merges."));
+  /* S275 FIX ROUND 1 — the daemon's answer, and whether there IS one. `dead`
+     used to be `xoEnginesHere(meta).length && !xoEngineHere(meta, engine)`,
+     which on a laptop with NEITHER CLI is `0 && …` for every engine: nothing
+     locked, Copilot preselected, ◈ Engage live, and one press POSTed an engine
+     that was not on the machine. `answered` is the fact that `.length` could
+     not carry — see `enginesAnswered` above. */
+  var answered = enginesAnswered(meta && meta.enginesHere);
+  var noEngine = noEngineHere(meta && meta.enginesHere);
   var rows = [];
   function paint() {
     for (var i = 0; i < rows.length; i++) {
+      /* THE LOCKED ROW IS SKIPPED, NOT REPAINTED. This loop rewrites
+         `className` wholesale, so it used to drop the `locked` class
+         `markLocked` had just written — and paint() runs once right after the
+         rows are built, so the lock was wiped before the picker was ever on
+         screen, let alone on the next click. `engineOptions` already guards
+         this with a `continue`; that is the shape, so it is the shape here. */
+      if (rows[i].dead) continue;
       var on = rows[i].engine === chosen;
       rows[i].node.className = "btn xo-engine" + (on ? " chosen" : "");
       rows[i].node.textContent = xoEngineRowLabel(meta, rows[i].engine, on);
@@ -1036,8 +1350,13 @@ function openXoPicker(meta) {
     }
   }
   XO_ENGINES.forEach(function (engine) {
-    var dead = xoEnginesHere(meta).length && !xoEngineHere(meta, engine);
-    var o = btn(xoEngineRowLabel(meta, engine, false), "xo-engine",
+    var dead = answered && !xoEngineHere(meta, engine);
+    /* A dead row's label is built ONCE, here, and never repainted — so it is
+       built the way `engineOptions` builds its own: no leading `◈`, because
+       `markLocked` prepends `⊘` and "⊘ ◈ Claude" is two state glyphs on one
+       control. A live row keeps `xoEngineRowLabel`, which paint() owns. */
+    var o = btn(dead ? engineLabel(engine) + " — not installed"
+                     : xoEngineRowLabel(meta, engine, false), "xo-engine",
                 function () { if (!dead) { chosen = engine; paint(); } });
     o.setAttribute("data-engine", engine);
     o.setAttribute("role", "radio");
@@ -1046,15 +1365,29 @@ function openXoPicker(meta) {
       o.title = engineLabel(engine) + " is not installed on this machine";
       markLocked(o);
     }
-    rows.push({ engine: engine, node: o });
+    rows.push({ engine: engine, node: o, dead: dead });
     m.body.appendChild(o);
   });
   paint();
+  /* NOT A SILENT GREY-OUT (the File console's rule, applied here): when the
+     detector has answered "nothing", the picker says so in its own prose
+     before the captain reaches for a button that cannot work. */
+  if (noEngine) m.body.appendChild(el("div", "xo-q", ENGINE_NONE_NOTE));
   m.foot.appendChild(btn("Cancel", "", closeOverlay));
-  m.foot.appendChild(applyWriteState(btn("◈ Engage", "go", function () {
+  var engage = applyWriteState(btn("◈ Engage", "go", function () {
+    /* THE REFUSAL IS IN THE HANDLER TOO, not only on the attribute. A disabled
+       button is a DOM promise; this is the one that holds if anything ever
+       reaches the handler another way. */
+    if (noEngine) return;
     closeOverlay();
     dispatchCard("/api/xo/on", { engine: chosen });
-  })));
+  }));
+  if (noEngine) {
+    engage.disabled = true;
+    engage.title = ENGINE_NONE_NOTE;
+    markLocked(engage);
+  }
+  m.foot.appendChild(engage);
   showOverlay(m.wrap);
 }
 
@@ -1335,6 +1668,8 @@ function openXoReport() {
   controls.appendChild(chipsGrp);
   body.appendChild(controls);
 
+  var artifactsWrap = el("div", "xo-report-artifacts");
+  body.appendChild(artifactsWrap);
   var groupsWrap = el("div", "xo-report-groups");
   body.appendChild(groupsWrap);
   var sinceHead = el("div", "xo-report-since-head");
@@ -1546,6 +1881,15 @@ function openXoReport() {
   }
 
   function render() {
+    artifactsWrap.innerHTML = "";
+    (data.reports || []).forEach(function (artifact) {
+      var det = document.createElement("details");
+      var label = artifact.kind === "partial"
+        ? "INTERRUPTED — partial report (not a verdict)" : "Full report";
+      det.appendChild(el("summary", "", artifact.title + " — " + label));
+      det.appendChild(el("pre", "xo-report-text", artifact.text));
+      artifactsWrap.appendChild(det);
+    });
     groupsWrap.innerHTML = "";
     sinceList.innerHTML = "";
     histWrap.innerHTML = "";
@@ -1639,6 +1983,38 @@ var REMOTE_LINE =
 
 function isRemote(m) { return !!(m && m.remote === true); }
 
+/* S278 — A MISSION THIS REPO SHIPPED, read off GitHub rather than off disk.
+
+   A fresh clone has no `.git/lcars` at all, so its Done column was empty for
+   every mission the repo had ever shipped — 51 of them in the captain's own
+   work repo. The daemon now draws one read-only card per CLOSED `lcars:done`
+   mission issue, and `card.readOnly === true` is the whole contract.
+
+   IT IS A DIFFERENT STATE FROM `remote`, and the difference is what is OFFERED.
+   A live remote card is driven on ANOTHER MACHINE and can be taken over, so it
+   is read-only here and offers Adopt. This one is OVER: there is no driver to
+   take over, no local detail to open (the daemon answers no
+   `/api/mission/<id>` for it — deliberately, since the artifacts were never
+   synced), and nothing to adopt. So it offers exactly one thing, which is the
+   issue itself. */
+function isRemoteDone(m) {
+  return isRemote(m) && m.readOnly === true && normStage(m.stage) === "done";
+}
+
+/* The card `id` names IF it is a remote done one, else null. Resolved off
+   LAST_BOARD — the payload this page was last rendered from — because the id is
+   all `openDetail` is given, and a lookup is the only thing that can tell a
+   mission with a detail from one without. Null for every id on every board
+   before this round, so nothing else about openDetail moves. */
+function remoteDoneCard(id) {
+  if (id == null || !LAST_BOARD) return null;
+  var all = boardCards(LAST_BOARD);
+  for (var i = 0; i < all.length; i++) {
+    if (String(all[i].id) === String(id) && isRemoteDone(all[i])) return all[i];
+  }
+  return null;
+}
+
 /* Disable every write control under `host` on a REMOTE mission.
 
    A SUBTREE SWEEP, for the same reason S190's applyOwnerLock is one: cardControls
@@ -1688,8 +2064,15 @@ function applyRemoteLock(host, m) {
    product's own console-glyph family (the set test_help_console pins) and is used
    nowhere else, so it reads as its own state rather than borrowing another's. First in the row on purpose: WHERE this mission is being driven
    outranks what it will cost. */
-function remotePill() {
-  return el("span", "pill remote", "◈ REMOTE · DRIVEN ELSEWHERE");
+function remotePill(m) {
+  /* S278: …and a mission that has already SHIPPED is not being driven
+     anywhere. Same pill, same class, same framed diamond — no new visual
+     language for what is still the same fact ("this one is not yours to
+     drive") — with the half of the sentence that would have been a lie
+     replaced by where it actually is. */
+  return el("span", "pill remote",
+            isRemoteDone(m) ? "◈ REMOTE · ON GITHUB"
+                            : "◈ REMOTE · DRIVEN ELSEWHERE");
 }
 
 /* ADOPT — take command of a remote mission on THIS laptop.
@@ -2281,6 +2664,21 @@ function ghIssueUrl(repo, issue) {
   var host = (typeof boardGhHost === "string" && GH_HOST_RE.test(boardGhHost))
     ? boardGhHost : "github.com";
   return "https://" + host + "/" + repo + "/issues/" + issue;
+}
+
+/* S278 — …and the ONE place it builds a SEARCH. Same host resolution, same
+   pinned scheme, for the "+ more on GitHub" row the Done column draws when the
+   daemon's listing hit its 200-row cap (remote.py `_LIMIT`).
+
+   The query is GitHub's own issue search and it is the same question the daemon
+   asked, written out for a human: closed mission issues carrying `lcars:done`.
+   So the row is not an apology for a limit — it hands over the exact listing the
+   board could not finish, on the forge, where there is no cap. */
+function ghDoneSearchUrl(repo) {
+  var host = (typeof boardGhHost === "string" && GH_HOST_RE.test(boardGhHost))
+    ? boardGhHost : "github.com";
+  return "https://" + host + "/" + repo + "/issues?q="
+    + "is%3Aclosed+label%3Alcars%3Adone+label%3Alcars%3Amission";
 }
 
 /* UX-28: a board-wide index of mission-id → its GitHub issue number, captured on
@@ -3175,6 +3573,8 @@ function clearMergingOnState(m) {
      running  : live driver advancing, not paused           (running && !paused)
    When the real running flag finally arrives we drop the optimistic flag. */
 function runState(m) {
+  // Done retains recorded lifecycle flags as history, never live posture.
+  if (m && m.stage === "done") return "idle";
   var running = !!(m && m.running);
   var paused = !!(m && m.paused);
   var queued = !!(m && m.queued);
@@ -3247,6 +3647,11 @@ var ENGINE_SOURCE_WORDS = {
   "internal":        "LCARS re-pin",
   "detected":        "host CLI",
   "default":         "default",
+  // S274 — the resolver's honest empty answer: neither CLI is on this machine.
+  // It replaced the old `default` rung (the literal `claude`), which could name
+  // an engine the captain had never installed. `default` stays mapped for the
+  // cards that recorded it before this session.
+  "none":            "no CLI here",
   "adopt-kept":      "mission pin · kept at adopt",
   "adopt-converted": "converted at adopt",
   "adopt-chosen":    "chosen at adopt"
@@ -3410,6 +3815,12 @@ function cardNode(m) {
   // the stylesheet gives the card its cool "somewhere else" chrome; the controls
   // are disabled by remoteControls below, never by CSS.
   if (isRemote(m)) card.className += " remote";
+  // S278: …and this remote one is FINISHED — a mission read back off a closed
+  // `lcars:done` issue, in the Done column of a clone that never drove it. A
+  // marker class only, and it buys exactly one thing from the stylesheet: the
+  // pointer, because the whole card is a link to the issue (openDetail). No new
+  // palette and no new token — it keeps the remote card's violet edge.
+  if (isRemoteDone(m)) card.className += " remote-done";
   // …and this LOCAL one is finished on the forge — merged, or closed, from
   // another machine. A marker class only: the stylesheet draws the card's edge
   // DASHED (shape, not hue, so it survives a desaturated screenshot); the
@@ -3489,7 +3900,7 @@ function cardNode(m) {
   var pills = el("div", "pills");
   // S191: WHERE is this being driven — first in the row, because a card you
   // cannot act on has to say so before it says anything else.
-  if (isRemote(m)) pills.appendChild(remotePill());
+  if (isRemote(m)) pills.appendChild(remotePill(m));
   // …and FIRST for the same reason: a card whose mission has already ended has
   // to say so before it says what it was going to cost.
   var sv = shippedVerdict(m);
@@ -3564,6 +3975,25 @@ function cardNode(m) {
   var bfp = baseFreshnessPill(m.baseFreshness);
   if (bfp) pills.appendChild(bfp);
   card.appendChild(pills);
+
+  /* S278 — WHEN IT SHIPPED, on a mission read back off GitHub.
+
+     A local done card carries its ACTUAL spend (`pills.actual`, written by the
+     costing pass into this laptop's `.git/lcars`). A card drawn from a closed
+     issue has no actuals and never will — the usage record lives in the
+     `.git/` of whichever laptop drove it, and this product's standing ruling
+     (2026-09-04) is that mid-pipeline and local artifacts are not synced to the
+     issue. So the line the actuals would have occupied carries the one fact the
+     forge IS authoritative about: the date the merge closed the issue.
+
+     The DATE, not a timestamp: this is history, and "2026-09-20" is what a
+     captain scanning a Done column is reading for. Absent entirely when the row
+     carried no `closedAt` (a gh too old to emit it), because a shipped card with
+     no date is still worth drawing and an invented one is not. */
+  if (isRemoteDone(m) && typeof m.closedAt === "string" && m.closedAt) {
+    card.appendChild(el("div", "no shipped-on",
+      "⧗ shipped " + m.closedAt.slice(0, 10)));
+  }
 
   // UX-21/UX-22: a high-contrast status label for paused/pausing. It carries the
   // .pause-status class so the .paused dim overlay can EXCLUDE it (stays bright).
@@ -3682,6 +4112,12 @@ function cardNode(m) {
   card.appendChild(xoControls(remoteControls(
     applyShippedLock(applyOwnerLock(applyXoLock(cardControls(m), m), m), m), m), m));
 
+  /* THE WHOLE CARD IS CLICK-TO-OPEN (UX-12), and it stays ONE door: `openDetail`
+     decides what a mission opens onto, for the mouse and for the keyboard both.
+     S278 adds a mission that opens onto its ISSUE instead of a detail pane, and
+     the decision lives THERE rather than here — see openDetail. A branch here
+     would have left the keyboard deck's Enter (which calls openDetail with a
+     `data-mid` and never touches this handler) opening onto "no such mission". */
   card.addEventListener("click", function () { openDetail(m.id); });
   return card;
 }
@@ -4260,6 +4696,24 @@ function render(board) {
     col.appendChild(head);
     var body = el("div", "col-body");
     cards.forEach(function (m) { body.appendChild(cardNode(m)); });
+    /* S278 — THE HISTORY DOES NOT FIT, AND THE BOARD SAYS SO.
+       The overlay takes ONE `gh issue list` per cycle capped at 200 rows
+       (remote.py `_LIMIT`, and that cap is S152's whole budget), so a repo with
+       more shipped missions than that has a Done column that is quietly
+       incomplete — and quietly incomplete history is worse than none. One row,
+       AFTER the last card, handing over the same query on the forge.
+
+       It is a ROW AND NOT A CARD, deliberately: the column head counts cards,
+       and a head that counted this would be the board overstating its own
+       history in the one place a captain checks a number. */
+    if (key === "done" && board.meta && board.meta.doneTruncated && detailRepo) {
+      var more = el("a", "col-more", "+ more on GitHub");
+      more.href = ghDoneSearchUrl(detailRepo);
+      more.target = "_blank"; more.rel = "noopener";
+      more.title = "this repo has shipped more missions than the board lists — "
+        + "see them all on GitHub";
+      body.appendChild(more);
+    }
     col.appendChild(body);
     root.appendChild(col);
   });
@@ -4295,7 +4749,27 @@ function render(board) {
   } else {
     setIdleStatus(n + " active mission" + (n === 1 ? "" : "s"));
   }
-  renderEmptyState(n); // S141: a cold board teaches itself (the ? mention).
+  /* S141: a cold board teaches itself (the ? mention).
+
+     S278 FIX ROUND 1 (D1) — AND IT IS ASKED ABOUT THE CARDS, NOT ABOUT `n`.
+     `n` is `board.missions.length`, the ACTIVE list, and `assemble()` /
+     `local_adapter` both keep done OUT of it on purpose (it backs the footer's
+     "N active missions"). That made the two questions identical right up to
+     S278, which filled the Done column from the forge: a fresh clone of a repo
+     that has shipped everything it ever filed now has 51 cards and 0 active
+     missions, and the banner printed "NO MISSIONS ON THE BOARD / File the first
+     one" directly above them.
+
+     `allCards` is boardCards(board) — every card in every column — so the
+     condition now asks THE QUESTION THE BANNER ASKS: *does this board have any
+     cards at all, anywhere?* Deliberately NOT "…or any done cards": `done` is
+     merely the first column that could be non-empty while `missions` is empty,
+     and a per-column special case is one the next column forgets.
+
+     UNFILTERED, like `n` was. A chip that hides every card has not emptied the
+     board, and "file your first mission" is the wrong thing to say to a captain
+     who filtered his own cards away. */
+  renderEmptyState(allCards.length);
   renderMeta(board.meta);
   // S201: the band toggle and its two legend entries, on EVERY render so they
   // CLEAR as well as appear — a repo toggled off elsewhere must not leave its
@@ -4304,6 +4778,9 @@ function render(board) {
   renderXoLegend(board.meta);
   renderMainDeploy(board.meta);
   renderVersionBanner(board.meta && board.meta.version);
+  /* S275: the "no engine on this machine" band, on EVERY render so it clears
+     as well as appears. */
+  renderEngineBanner(board.meta);
   renderRemoteNote(board.meta && board.meta.remote);
   renderTestReadiness(board.meta && board.meta.testReadiness);
   /* S183: the FOUNDATION LOCK. On EVERY render, so it lifts as well as locks —
@@ -4430,7 +4907,7 @@ function openDeployMain() {
   m.body.appendChild(intro);
   var hint = el("input", "launch-hint"); hint.type = "text";
   hint.placeholder =
-    "Optional — name the app or its directory (e.g. “the game in web/”)";
+    "Optional — name the app or its directory (e.g. “the web app in web/”)";
   hint.style.cssText = "width:100%;box-sizing:border-box";
   m.body.appendChild(field("Instructions (optional)", hint));
   var err = el("div", "errline"); err.hidden = true; m.body.appendChild(err);
@@ -4567,6 +5044,62 @@ function renderVersionBanner(version) {
   host.appendChild(band);
 }
 
+/* ── S275: NO LCARS-CAPABLE CLI ON THIS MACHINE ───────────────────────────
+   S274 made this state REACHABLE with the daemon up — the viewscreen starts,
+   the board paints, and until now nothing on it said why every control that
+   needs an engine refuses. One band, said once, in the words the captain
+   approved; the consoles say the rest themselves (`ENGINE_NONE_NOTE`).
+
+   `meta.enginesHere` must be an EMPTY LIST, not absent: `[]` is the detector
+   answering "there is nothing here", while absent is "I could not ask" (an
+   older daemon, the GitHub adapter, a detector that could not run) and must
+   never be reported to the captain as a missing install.
+
+   NO NEW STYLE AND NO NEW COLOUR (ADR-007): this is the version banner's own
+   `.version-banner` host and its own `.vb-band` / `.vb-msg` / `.vb-right` /
+   `.vb-x` furniture, so the board grows one more band of a kind it already
+   has rather than a second banner idiom. Painted on EVERY render, so it
+   clears as well as appears — install a CLI and the next SSE tick takes it
+   down with nothing to reload. */
+var ENGINE_BANNER_TEXT =
+  "No LCARS-capable CLI is installed on this machine — install Claude Code "
+  + "or the GitHub Copilot CLI to file, grill or run anything. You can still "
+  + "watch.";
+
+function renderEngineBanner(meta) {
+  var host = document.getElementById("engineBanner");
+  if (!host) return;
+  // REBUILT, never appended to: render() runs on every SSE tick, and a host
+  // that is only added to stacks one band per tick.
+  host.innerHTML = "";
+  if (engineBannerDismissed) { host.hidden = true; return; }
+  var here = meta && meta.enginesHere;
+  if (Object.prototype.toString.call(here) !== "[object Array]"
+      || here.length) {
+    host.hidden = true;
+    return;
+  }
+  host.hidden = false;
+  // `vb-sentence` is typography only (the band's own amber, pip, pill and ✕
+  // are untouched) — this is the one message in this host that is a whole
+  // sentence rather than a three-word headline.
+  var band = el("div", "vb-band vb-sentence");
+  band.appendChild(el("span", "vb-pip", ""));
+  band.appendChild(el("span", "vb-msg", ENGINE_BANNER_TEXT));
+  var right = el("div", "vb-right");
+  var x = btn("✕", "vb-x", function () {
+    engineBannerDismissed = true;
+    host.hidden = true;
+    host.innerHTML = "";
+  });
+  x.title = "Dismiss until the viewscreen is refreshed or relaunched";
+  x.setAttribute("aria-label",
+                 "Dismiss the missing-CLI banner for this session");
+  right.appendChild(x);
+  band.appendChild(right);
+  host.appendChild(band);
+}
+
 /* ════════════════ S146: TEST-READINESS (banner + File-console fix) ════════
    Driven purely by the ADDITIVE board.meta.testReadiness block
    ({status: missing|broken|unknown, suggestion, testCommand}) — ABSENT on a
@@ -4597,15 +5130,60 @@ function readinessCopy(tr) {
      shipped voice below — those states were never wrong. */
   var fnd = tr && tr.foundation;
   if (fnd === "untested") {
+    /* S299 FIX ROUND 2 — the SAME parenthetical the CLI line carries, from the
+       same payload field. `untested` was never a contradiction (it does not
+       claim a test system), but it was SILENT about the file the captain or a
+       worker deliberately put there to be one: npm's generated placeholder
+       script lands exactly here, and the CLI names it while the board did not.
+       Same clause, same source, so the two surfaces cannot drift apart again.
+       Nothing branches on it — the voice, the sub and the controls are
+       untouched. */
     return {
       voice: "bootstrap",
       line: "◇ NO TEST SYSTEM FOUND — this repo has code, and nothing to prove "
-          + "a change with.",
+          + "a change with" + (tr.inertWhy ? " (" + tr.inertWhy + ")" : "")
+          + ".",
       sub: "Start with Establish Vision — normal missions unlock when the "
          + "foundation lands.",
     };
   }
   if (tr && tr.status === "unknown" && fnd === "unconfigured") {
+    /* S299 FIX ROUND 2 — THE SAME CONTRADICTION, ON THE SURFACE THE CAPTAIN
+       ACTUALLY WORKS FROM. Round 1 taught the detector to refuse a test
+       declaration that provably runs nothing (a `test:` target with no recipe,
+       an empty tests/run.sh, npm's placeholder script) and cured the CLI's
+       sentence. This branch was left asserting the opposite on the very same
+       repo: MEASURED through the real chain (readiness.sh → LocalAdapter →
+       this function), a decoy whose CLI line read "the test configuration at
+       the repo root cannot run: a Makefile `test:` target with no recipe …"
+       rendered on the board as "this repo HAS a test system", word for word
+       identical to a repo with a real jest config beside it. The board was the
+       more dangerous copy of the lie, because it is the surface he reads.
+
+       WHY ONE PAYLOAD CARRIES BOTH FACTS. `foundation` is deliberately claimed
+       from the mere PRESENCE of an artifact — it feeds the FILING gate, where a
+       false negative refuses a mission before it starts, so it errs toward
+       "there is something here". `inertWhy` is the detector's refusal of that
+       same artifact. Both are true; the honest sentence needs both, and until
+       this round the second one never left the shell.
+
+       THE WORDS ARE THE CLI's WORDS, not a second wording — lcars_readiness_line
+       in skills/lcars-init/lcars-common.sh owns them, and the only difference
+       here is that the board splits a sentence into a line and a sub-chip.
+       NOTHING ELSE CHANGES: the voice stays `repair`, so the same ⚡ FIX
+       affordance renders and the same controls stay unlocked, and `foundation`
+       itself is untouched — the filing route is byte-identical. */
+    if (tr.inertWhy) {
+      return {
+        voice: "repair",
+        line: "⚠ TEST SYSTEMS OFFLINE — the test configuration at the repo "
+            + "root cannot run: " + tr.inertWhy + "; missions cannot be "
+            + "proof-gated.",
+        sub: "Repair: establish a test runner that actually runs — or, if one "
+           + "is already here that LCARS missed, name it: "
+           + "lcars update --test-command '<command>'",
+      };
+    }
     /* The repo HAS a test system; LCARS just has no command for it. That is the
        `lcars update --test-command` case — the repair voice, worded the way the
        CLI line words it, never the bootstrap one. */
@@ -4932,10 +5510,42 @@ function frontDoorEngine(fd) {
   return list.length ? String(list[0]) : "";
 }
 
+/* ── S275 FIX ROUND 1: THE DAY-ONE DOOR ON A MACHINE WITH NO CLI ──────────
+   ▸ ESTABLISH VISION was enabled, untitled, asked no engine question, and
+   POSTed `/api/align/start {"idea":…,"vision":true}` on a laptop with neither
+   CLI installed — the same absent-versus-empty collapse as the ◈ Number One
+   picker, one surface along: `frontDoorEngines` normalises absent and `[]` to
+   the same `[]`, and `if (!list.length) return` then reads BOTH as "nothing to
+   offer".
+
+   IT ASKS `meta.enginesHere`, NOT `fd.engines`, and that is deliberate. The
+   daemon builds the front-door block with `blk.get("engines") or []`
+   (local_adapter.py :1305), so `fd.engines` is `[]` BOTH when nothing is
+   installed AND when the helper predates S195 — the distinction is already
+   gone by the time the door sees it. `meta.enginesHere` is the field whose
+   contract keeps it (local_adapter.py :566-578: always a list, `[]` is an
+   answer; absent only from an older daemon or the GitHub adapter), and it is
+   the same fact the File console's picker reads. A board that tells us nothing
+   behaves EXACTLY as it did before this round — which is what
+   `test_no_engine_installed_offers_nothing_and_posts_nothing` pins. */
+function frontDoorNoEngine() {
+  var meta = LAST_BOARD && LAST_BOARD.meta;
+  return noEngineHere(meta && meta.enginesHere);
+}
+
 /* Paint the control into `host`, or nothing at all. Returns nothing — the
    choice lives in `frontDoorState.engine`, never in the DOM. */
 function renderFrontDoorEngine(host, fd) {
   var list = frontDoorEngines(fd);
+  /* NOTHING TO PICK BECAUSE THERE IS NOTHING HERE — which is a different
+     screen from "nothing to pick because nobody asked". Said in the door's own
+     `fd-engine` furniture, so there is no new style and no new colour. */
+  if (frontDoorNoEngine()) {
+    var none = el("div", "fd-engine");
+    none.appendChild(el("div", "fd-engine-one", ENGINE_NONE_NOTE));
+    host.appendChild(none);
+    return;
+  }
   if (!list.length) return;                       // rule 1: nothing to offer
   var chosen = frontDoorEngine(fd);
   frontDoorState.engine = chosen;
@@ -5089,8 +5699,18 @@ function renderFrontDoor(fd) {
                 frontDoorState.screen === "grill" ? "▸ Continue" : copy.primary);
     go.type = "button";
     go.addEventListener("click", function () {
+      /* S275 — the refusal in the handler as well as on the attribute: this
+         button's whole job is to spawn a grill worker on a CLI, and there is
+         none. The sentence above says why; `title` says it on the control the
+         captain is pointing at. */
+      if (frontDoorNoEngine()) return;
       frontDoorSubmit(box ? (box.value || "") : "");
     });
+    if (frontDoorNoEngine()) {
+      go.disabled = true;
+      go.title = ENGINE_NONE_NOTE;
+      markLocked(go);
+    }
     actions.appendChild(go);
     var ghost = el("button", "btn ghost", copy.ghost);
     ghost.type = "button";
@@ -6615,15 +7235,20 @@ function openHelp() {
   return true;
 }
 
-/* First-run discoverability. A board holding zero Missions says what to do and
-   names the ? console; the moment a Mission lands the host hides again and the
+/* First-run discoverability. A board holding zero CARDS says what to do and
+   names the ? console; the moment a card lands the host hides again and the
    board is byte-identical to before this round. No pulse, no nag, no dismissal
-   state to remember. */
-function renderEmptyState(count) {
+   state to remember.
+
+   `cardCount` is EVERY card in EVERY column (the caller passes boardCards'
+   length), and the name says so: it used to be handed the active-mission count,
+   which stopped being the same number the moment S278 gave a clone a Done
+   column it had never driven. See the call site for the measurement. */
+function renderEmptyState(cardCount) {
   var host = document.getElementById("boardEmpty");
   if (!host) return;
   host.innerHTML = "";
-  if (count > 0) { host.hidden = true; return; }
+  if (cardCount > 0) { host.hidden = true; return; }
   host.hidden = false;
   host.appendChild(el("div", "be-title", "NO MISSIONS ON THE BOARD"));
   host.appendChild(el("div", "be-body",
@@ -6857,7 +7482,156 @@ function attachImagePaster(textarea, onError, store) {
   };
 }
 
+/* ════════════════ S275: THE ⬡ ENGINE PICKER, ONE IMPLEMENTATION ══════════
+   THE DEFECT, in the captain's own words: install only Copilot and the ▦ File
+   Mission console still offers you Claude, PRESELECTED. Pick nothing, press
+   the button, and you file a mission pinned to a CLI that is not on your
+   machine — `file.sh` persists it and `run.sh` dies at `require_worker` a
+   stage later. ⬡ New Program had the same picker and the same hole.
+
+   Three pickers already answered this correctly before this session: ◈ Number
+   One (`openXoPicker`), the remote Adopt picker (`openAdoptPicker`) and the
+   front door (`renderFrontDoorEngine`). This is THEIR treatment, extracted,
+   so the fourth and fifth cannot drift from the first three and a sixth
+   cannot be written without it:
+
+     `⬡ Claude`                     an engine this machine HAS, offerable.
+     `⊘ Claude — not installed`     one it does not: `disabled`, `.locked`
+                                    (hollow + dashed), titled with the SAME
+                                    sentence `openXoPicker` writes, and still
+                                    DRAWN rather than hidden — "claude is not
+                                    here" is the fact that explains the choice
+                                    he is being offered. Hiding it would turn
+                                    an explanation into a mystery.
+
+   NO NEW COLOUR (ADR-007): the one stylesheet rule this needs hands a
+   `.choice .opt` the `.btn.locked` blue the sheet already defines.
+
+   THREE STATES OF `engines`, NOT TWO, and collapsing the middle one is what
+   costs money:
+     null/undefined  nobody asked — an older daemon, the GitHub adapter, a
+                     detector that could not run. Every option is offered and
+                     the caller's own default stands: "I could not ask" is not
+                     "it is not here" (`xoEnginesHere`'s own ruling).
+     []              asked, and there is nothing here. Every option locks and
+                     the caller disables its submit and says so.
+     a list          offer what is on it, lock what is not.
+
+   KEYBOARD. :1038-1050's rows are real `<button disabled>`, which a browser
+   skips natively. These are `span`s, so the guarantee is built: a locked
+   option gets no `keyActivable` wiring and no click listener at all, so there
+   is no handler for Enter, Space or a mouse to reach. */
+var PICKER_ENGINES = ["claude", "copilot"];
+
+/* The sentence a console shows instead of greying a control out in silence.
+   Same words as the board band, in the second person, because here he is
+   looking straight at the control he cannot use. */
+var ENGINE_NONE_NOTE =
+  "No LCARS-capable CLI is installed on this machine, so nothing can drive "
+  + "this — install Claude Code or the GitHub Copilot CLI and this console "
+  + "unlocks itself.";
+
+/* The detector's answer as a list of strings, or null for "nobody asked". */
+function engineListAnswer(engines) {
+  return Object.prototype.toString.call(engines) === "[object Array]"
+    ? engines.map(String) : null;
+}
+
+function engineHereIn(list, engine) {
+  return !list || list.indexOf(String(engine)) >= 0;
+}
+
+/* The option to OPEN on: the caller's declared preference when this machine
+   has it (the daemon's `engineDefault` for the File console, the daemon's own
+   engine for the holodeck), else the first engine that IS here. With nothing
+   installed the preference is returned UNCHANGED rather than "" — the picker
+   is locked and the value is moot, but a submit that somehow fired must not
+   post an empty engine. */
+function engineDefaultFor(list, deflt) {
+  var want = String(deflt || "");
+  if (want && engineHereIn(list, want)) return want;
+  if (list) {
+    for (var i = 0; i < PICKER_ENGINES.length; i++) {
+      if (list.indexOf(PICKER_ENGINES[i]) >= 0) return PICKER_ENGINES[i];
+    }
+  }
+  return want;
+}
+
+/* Paint the picker into `host`. The choice lives in `ref.engine`, NEVER in the
+   DOM, and is set here — so a submit reads one place whether the captain
+   clicked or took the default, which is exactly what the old console got wrong
+   (its default was a literal and its clicks were a second code path).
+
+   Returns {nodes, live}: `live` is false when this machine has no engine at
+   all, and it is what the caller's submit gates on. */
+function engineOptions(host, ref, opts) {
+  opts = opts || {};
+  var list = engineListAnswer(opts.engines);
+  ref.engine = engineDefaultFor(list, opts.deflt);
+  var nodes = [];
+  var live = false;
+  function paint() {
+    for (var i = 0; i < nodes.length; i++) {
+      // THE LOCKED ROW IS SKIPPED, not repainted. openXoPicker's paint()
+      // rewrites className for every row including its dead one, which drops
+      // the `locked` class markLocked just wrote; openAdoptPicker's `continue`
+      // is the shape that holds, so it is the shape copied here.
+      if (nodes[i]._dead) continue;
+      var on = nodes[i]._engine === ref.engine;
+      if (on) nodes[i].classList.add("sel");
+      else nodes[i].classList.remove("sel");
+      nodes[i].setAttribute("aria-pressed", on ? "true" : "false");
+    }
+  }
+  PICKER_ENGINES.forEach(function (engine) {
+    var dead = !engineHereIn(list, engine);
+    var o = el("span", "opt", dead
+      ? engineLabel(engine) + " — not installed"
+      : "⬡ " + engineLabel(engine));
+    o.setAttribute("data-engine", engine);
+    o._engine = engine;
+    o._dead = dead;
+    if (dead) {
+      o.disabled = true;
+      o.title = engineLabel(engine) + " is not installed on this machine";
+      // The house lock treatment, not a second one: `⊘`, hollow, dashed — the
+      // same thing every other unusable control on this board wears.
+      markLocked(o);
+    } else {
+      live = true;
+      keyActivable(o);
+      o.addEventListener("click", function () {
+        ref.engine = engine;
+        paint();
+        if (typeof opts.onPick === "function") opts.onPick(engine);
+      });
+    }
+    nodes.push(o);
+    host.appendChild(o);
+  });
+  paint();
+  return { nodes: nodes, live: live };
+}
+
 /* ════════════════ SCREEN: FILE A MISSION (#file) ════════════════ */
+/* S288 — the copy for the File console's in-flight Align turn. Said ONCE, here,
+   because the band, the pressed control and its tooltip all have to agree about
+   the same turn (the lesson S162 wrote down next door: never let one surface
+   describe this state in its own words).
+   WHAT THESE SENTENCES DO NOT DO IS PROMISE A DURATION. The honest range we
+   have is two samples off one engine on one repo; printing it would put a
+   number on screen that goes stale and becomes the NEXT false positive. The
+   moving counter is the proof of life; these say why the wait exists and what
+   ends it. */
+var FILE_SCAN_ENDS_WHEN =
+  "this console is replaced by the alignment interview the moment its "
+  + "first question lands.";
+var FILE_SCAN_SLOW_AFTER = 20; // seconds before the reassurance is revealed
+var FILE_SCAN_SLOW_NOTE =
+  "Still running. The opening turn reads this repo before it can ask its first "
+  + "question, so it is normal for this to take a while — the counter above is "
+  + "live, and " + FILE_SCAN_ENDS_WHEN;
 function openFile() {
   /* S183 — the FOUNDATION LOCK, said rather than implied. `paintFoundationLock`
      disables ▦ FILE MISSION, but a hotkey (`f`) and the empty-board prompt both
@@ -6907,27 +7681,26 @@ function openFile() {
   var engineWrap = el("div", "field");
   engineWrap.appendChild(label("Engine — which CLI drives this mission?"));
   var choice = el("div", "choice");
+  /* S275 — THE ENGINES THIS MACHINE ACTUALLY HAS. This block used to be
+     `var chosen = { engine: "claude" }` and two hardcoded `⬡` spans with
+     Claude preselected, which is how a copilot-only laptop filed a mission
+     pinned to a CLI it did not have. The daemon's own detector answer
+     (`meta.enginesHere`) and its own preselection (`meta.engineDefault`) —
+     the same two facts the ◈ Number One picker reads — decide it now, through
+     the one shared helper. `"claude"` survives as the fallback for a board the
+     daemon told NOTHING, where the console is byte-identical to before. */
+  var fileMeta = LAST_BOARD && LAST_BOARD.meta;
   var chosen = { engine: "claude" };
-  // S140 fix: the picker is keyboard-operable (Tab to it, Enter/Space selects).
-  // Attribute + keydown only — the click path and what it does are untouched.
-  var optClaude = keyActivable(el("span", "opt", "⬡ Claude"));
-  var optCopilot = keyActivable(el("span", "opt", "⬡ Copilot"));
-  function pick(engine, node) {
-    chosen.engine = engine;
-    [optClaude, optCopilot].forEach(function (o) {
-      o.classList.remove("sel");
-      o.setAttribute("aria-pressed", "false");
-    });
-    node.classList.add("sel");
-    node.setAttribute("aria-pressed", "true");
-  }
-  optClaude.classList.add("sel");
-  optClaude.setAttribute("aria-pressed", "true");
-  optCopilot.setAttribute("aria-pressed", "false");
-  optClaude.addEventListener("click", function () { pick("claude", optClaude); });
-  optCopilot.addEventListener("click", function () { pick("copilot", optCopilot); });
-  choice.appendChild(optClaude); choice.appendChild(optCopilot);
+  var filePicker = engineOptions(choice, chosen, {
+    engines: fileMeta && fileMeta.enginesHere,
+    deflt: (fileMeta && fileMeta.engineDefault) || "claude",
+  });
   engineWrap.appendChild(choice);
+  // NOT A SILENT GREY-OUT. A console whose buttons are dead says why, in the
+  // console, next to the control it is about.
+  if (!filePicker.live) {
+    engineWrap.appendChild(el("div", "engine-none", ENGINE_NONE_NOTE));
+  }
   m.body.appendChild(engineWrap);
 
   var err = el("div", "errline"); err.hidden = true;
@@ -6967,18 +7740,81 @@ function openFile() {
   // it clears on success (console replaces the modal) and on error.
   var fileBusy = workingNode("Scanning the codebase…"); fileBusy.hidden = true;
   m.body.appendChild(fileBusy);
+  /* S288 — AND IT SAYS HOW LONG IT HAS BEEN WORKING.
+     This is the product's primary entry point and its longest silent wait: the
+     opening Align turn reads the repo before it can ask anything, which takes
+     tens of seconds on a real engine. Until now neither surface moved — a
+     static band, a static "Scanning…" — so for that whole window a watcher had
+     NO WAY to tell "working" from "hung". A coverage sweep did exactly what a
+     stranger evaluating LCARS would do: shot it mid-flight, twice, and reported
+     the front door completely broken. The road was fine. The silence was the
+     defect.
+     NOT A NEW WORDING, and not a new timer style: the elapsed time rides the
+     SAME `scanningLabel`/`fmtDuration` the card road already uses for this very
+     turn (startAlignmentControl, scanningPulse), and the tick is the
+     self-cancelling 1s interval the mission detail's "Active" clock uses. The
+     card road puts the time on the label AND the title; so does this.
+     The console road ticks every SECOND rather than riding the 4s board poll,
+     because here there is no repaint to ride — the modal is built once. */
+  var fileBusyNote = el("div", "note", FILE_SCAN_SLOW_NOTE);
+  fileBusyNote.hidden = true;
+  m.body.appendChild(fileBusyNote);
+  var scanTimer = null;
+  function stopFileScan() {
+    if (scanTimer) { clearInterval(scanTimer); scanTimer = null; }
+  }
+  function startFileScan() {
+    var since = Date.now();
+    function tick() {
+      var secs = Math.max(0, Math.floor((Date.now() - since) / 1000));
+      if (fileBusy._label) {
+        fileBusy._label.textContent =
+          scanningLabel(secs, "Scanning the codebase…");
+      }
+      go.textContent = scanningLabel(secs, "Scanning…");
+      go.title = scanningLabel(secs, "The alignment turn has been running")
+        + " — " + FILE_SCAN_ENDS_WHEN;
+      // Revealed only once the wait is long enough to READ as a hang. A line
+      // that was there from second zero is furniture; one that arrives when
+      // the captain starts to doubt is an answer.
+      if (secs >= FILE_SCAN_SLOW_AFTER) fileBusyNote.hidden = false;
+    }
+    stopFileScan();
+    tick();
+    scanTimer = setInterval(function () {
+      // Self-cancelling on leaving the stage — the mission detail's "Active"
+      // tick does exactly this, and for the same reason: a console that closed
+      // must not leave a timer running behind it.
+      if (!document.body.contains(fileBusy)) { stopFileScan(); return; }
+      tick();
+    }, 1000);
+  }
 
   var go = applyWriteState(btn("File & Begin Alignment", null, function () {
     var text = idea.value.trim();
     if (!text) { showErr(err, "Describe the idea first."); return; }
-    go.disabled = true; go.textContent = "Scanning…";
+    go.disabled = true;
     err.hidden = true; fileBusy.hidden = false;
+    startFileScan(); // paints "Scanning… 0s" now, then once a second.
     openAlignConsole(text, chosen.engine, ideaImgs.payload(), function (msg) {
-      go.disabled = false; go.textContent = "File & Begin Alignment";
-      fileBusy.hidden = true;
+      stopFileScan();
+      go.disabled = false; go.textContent = "File & Begin Alignment"; go.title = "";
+      fileBusy.hidden = true; fileBusyNote.hidden = true;
       showErr(err, msg);
     });
   }));
+  /* S275 — BOTH SUBMITS NEED AN ENGINE, so with none installed both are
+     locked: parking persists the engine into the mission (file.sh:385-396) and
+     aligning spawns a worker on it immediately. The sentence above says why
+     once; neither button pretends it could act. */
+  if (!filePicker.live) {
+    park.disabled = true;
+    park.title = ENGINE_NONE_NOTE;
+    markLocked(park);
+    go.disabled = true;
+    go.title = ENGINE_NONE_NOTE;
+    markLocked(go);
+  }
   // Footer order (primary rightmost, per the modal convention):
   // [Cancel] [File & Begin Alignment (secondary)] [◇ File to Backlog ▸ (primary)].
   m.foot.appendChild(go);
@@ -7595,6 +8431,19 @@ function openRespond(id) {
       : whyCopyForGate(gate.escalationType),
       design ? "amber" : undefined));
 
+    /* S292 — AND WHAT NUMBER ONE SAID WHEN IT HANDED THIS BACK, HERE, where he
+       is being asked to decide. The captain's words were "click to see the
+       details AS PART OF ANSWERING the escalation": a summary on the card is
+       only honest if the full thing is on the surface that takes his answer.
+
+       NOTHING NEW IS WIRED. This modal already posts to
+       /api/mission/<id>/respond and has since BUG-027; the escalation is a
+       READ off the same `numberOne` block the card drew, rendered by the same
+       builder the ◈ Number One tab uses. An ordinary pipeline gate has no
+       `numberOne` at all and this adds nothing to it. */
+    var xoEsc = xoEscalationNode(mi);
+    if (xoEsc) m.body.appendChild(xoEsc);
+
     // technicalDetail → collapsible disclosure (raw reason + command + any
     // internal ids). Only shown when the harness supplied it.
     if (gate.technicalDetail) {
@@ -7875,7 +8724,7 @@ function launchAffordance(mi) {
       }
       var hint = el("input", "launch-hint"); hint.type = "text";
       hint.placeholder =
-        "Optional — name the app or its directory (e.g. “the game in web/”)";
+        "Optional — name the app or its directory (e.g. “the web app in web/”)";
       hint.style.cssText = "width:100%;box-sizing:border-box;margin-bottom:8px";
       wrap.appendChild(hint);
       var run = act("launch", applyWriteState(btn("⚡ RUN", "go", function () {
@@ -8001,7 +8850,9 @@ function openVerify(id) {
         ? "Awaiting your design call — PR · "
         : isReconcileHealing(mi)
           ? "Merge heal in progress — PR · "
-          : "In review — PR open · ";
+          : !inReview
+            ? "No open PR to merge — PR · "
+            : "In review — PR open · ";
       var link = el("a"); link.href = mi.prUrl; link.target = "_blank";
       // BUG-036: never render a bare "PR #". The adapter populates prNumber
       // (deriving from prUrl when absent); fall back to deriving it here too.
@@ -8107,6 +8958,8 @@ function openVerify(id) {
     if (!isBugChild && !inReview) {
       merge.disabled = true;
       merge.title = "No open PR to merge yet — re-run the mission so Verify opens one.";
+      markLocked(merge);
+      m.body.appendChild(noteEl(merge.title, "amber"));
     }
     m.foot.appendChild(sendBack);
     m.foot.appendChild(merge);
@@ -9215,6 +10068,33 @@ function renderLogPreview(host, state, parentLabel, authored) {
 
 /* ════════════════ SCREEN: MISSION DETAIL (#detail) — two-pane ════════════════ */
 function openDetail(id, tab) {
+  /* S278 — A MISSION THIS CLONE NEVER DROVE OPENS ONTO ITS ISSUE.
+
+     There is no `/api/mission/<id>` for a remote done card and there is not
+     going to be one: a finished mission's research findings, plan.json, wave
+     logs and usage record live in whichever laptop's `.git/lcars` drove it, and
+     this product's boundary ruling (2026-09-04) is that those are never synced
+     to the issue. So a detail pane here would be a window onto nothing, and
+     letting the fetch run would make every card in a fresh clone's Done column
+     open onto "no such mission" — a board that shows you something and then
+     denies it exists.
+
+     DECIDED HERE, which is the ONE door every surface uses: the card's own
+     click, the keyboard deck's Enter (which resolves a `data-mid` and calls
+     straight into this), and the detail's own cross-links. A branch inside
+     cardNode would have covered the mouse and left the keyboard broken.
+
+     A GUARD ON THE URL, and `noopener` on a window this page does not own: a
+     card whose repo identity did not resolve (the daemon then sends no `url` —
+     absent, never wrong) does NOTHING rather than navigating somewhere
+     invented. */
+  var rd = remoteDoneCard(id);
+  if (rd) {
+    if (typeof rd.url === "string" && /^https:\/\//.test(rd.url)) {
+      window.open(rd.url, "_blank", "noopener");
+    }
+    return;
+  }
   // S163 fix round 6 (D2): the other door a captain opens onto a mission. Same
   // rule as openLog — reading a card is starting something else, and the last
   // action's verdict must stop speaking over it.
@@ -11522,13 +12402,38 @@ function xoReportPane(mi) {
   var xo = mi.numberOne || {};
   var report = xo.report;
 
+  /* S292 — THE ESCALATION LEADS, because it is the only thing on this pane
+     that is WAITING ON HIM. A verdict is a record of something that already
+     happened; an escalation is a question with a mission parked behind it, and
+     this is the surface the card's ⊙ now sends him to. It is also where the
+     (a)/(b)/(c) options get the width they never had in a 260px column.
+
+     IT IS NOT A SECOND COPY. The card carries a clipped summary and this
+     carries the whole note — both out of `numberOne.note`, through ONE builder
+     (xoEscalationNode), so the two cannot drift. */
+  var escalation = xoEscalationNode(mi);
+  if (escalation) pane.appendChild(escalation);
+
   if (!report) {
+    // …AND WHEN THE ESCALATION IS ALL THERE IS, IT IS THE WHOLE PANE. A mission
+    // can escalate before anything has been scored (the captain's #11 did,
+    // at Validate). This pane used to answer that with "Number One hasn't
+    // looked at this one yet" — both untrue and the only copy of the
+    // escalation gone with it.
+    if (escalation) return pane;
     var note = el("p");
     note.style.cssText = "font-size:13px;color:var(--lcars-text-dim)";
     note.textContent = isRemote(mi)
       ? "The report lives on the issue — open it on GitHub."
       : "Number One hasn't looked at this one yet.";
     pane.appendChild(note);
+    return pane;
+  }
+  if (report.kind === "partial" ||
+      (report.kind === "full" && !report.verdict && !report.verdict2)) {
+    pane.appendChild(el("h3", "", report.kind === "partial"
+      ? "INTERRUPTED — partial report (not a verdict)" : "Full report"));
+    pane.appendChild(el("pre", "xo-report-text", report.text));
     return pane;
   }
 
@@ -12442,7 +13347,14 @@ function workingNode(labelText) {
   var bars = el("div", "lcars-bars");
   for (var i = 0; i < 5; i++) bars.appendChild(el("i"));
   w.appendChild(bars);
-  w.appendChild(el("span", "lcars-working-label", labelText || "Working…"));
+  var lab = el("span", "lcars-working-label", labelText || "Working…");
+  w.appendChild(lab);
+  /* S288 — the label node, handed back on the band itself. A caller whose wait
+     TICKS (the File console's opening Align turn) has to rewrite this one span
+     once a second; reaching for it with a DOM query would work in Chrome and
+     return null in every node-vm harness that stubs querySelector, so the band
+     names its own label instead. */
+  w._label = lab;
   return w;
 }
 
@@ -16600,7 +17512,7 @@ function openNewProgram() {
     var lead = picked.val === "grounding" ? "One cheap pass"
              : picked.val === "screenshot" ? "One cheap pass over your screenshot"
              : "Nothing is read from your project";
-    var parts = [lead, holoEngineTier(chosenEngine.val)];
+    var parts = [lead, holoEngineTier(chosenEngine.engine)];
     if (picked.val === "grounding") parts.push("read-only");
     return parts.join(" · ");
   }
@@ -16691,33 +17603,33 @@ function openNewProgram() {
   var f3 = el("div", "field");
   f3.appendChild(label("Engine — which CLI runs this program?"));
   var echoice = el("div", "choice");
-  var chosenEngine = { val: holoDefaultEngine() };
-  var optClaude = keyActivable(el("span", "opt", "⬡ Claude"));
-  var optCopilot = keyActivable(el("span", "opt", "⬡ Copilot"));
-  function pickEngine(engine, node) {
-    chosenEngine.val = engine;
-    [optClaude, optCopilot].forEach(function (o) {
-      o.classList.remove("sel");
-      o.setAttribute("aria-pressed", "false");
-    });
-    node.classList.add("sel");
-    node.setAttribute("aria-pressed", "true");
-    paintFoot();
-  }
-  optClaude.addEventListener("click", function () {
-    pickEngine("claude", optClaude);
+  /* S275 — …AND ONLY THE ENGINES THIS MACHINE HAS. This picker was copied from
+     the File console's and it inherited its hole with it: two hardcoded spans
+     and a default from `holoDefaultEngine()`, which falls to copilot on an
+     unconfigured daemon — so a claude-only laptop opened the dialog on an
+     engine it did not have and the start died in the daemon.
+
+     `holoDefaultEngine()` is UNCHANGED and is still the preference (the S127
+     money default, and a configured daemon still opens on its own engine); it
+     only loses when this machine does not have what it asks for. The
+     installed list is the board payload's, read where the Adopt picker reads
+     it — no second detector in this file. */
+  var holoMeta = LAST_BOARD && LAST_BOARD.meta;
+  var chosenEngine = { engine: holoDefaultEngine() };
+  var holoPicker = engineOptions(echoice, chosenEngine, {
+    engines: holoMeta && holoMeta.enginesHere,
+    deflt: holoDefaultEngine(),
+    // the footer sentence names the tier the PICKED engine really runs at, so
+    // it is rebuilt on every pick (FL-001) — the one thing this picker does
+    // that the File console's does not.
+    onPick: function () { paintFoot(); },
   });
-  optCopilot.addEventListener("click", function () {
-    pickEngine("copilot", optCopilot);
-  });
-  echoice.appendChild(optClaude); echoice.appendChild(optCopilot);
   f3.appendChild(echoice);
+  if (!holoPicker.live) {
+    f3.appendChild(el("div", "engine-none", ENGINE_NONE_NOTE));
+  }
   m.body.appendChild(f3);
-  // the INITIAL selection goes through the same one function every later click
-  // does — no second block setting `sel` and aria-pressed by hand, which is
-  // where a picker's default and its clicks drift apart.
-  pickEngine(chosenEngine.val,
-             chosenEngine.val === "copilot" ? optCopilot : optClaude);
+  paintFoot();
 
   m.body.appendChild(err);
 
@@ -16747,7 +17659,8 @@ function openNewProgram() {
     err.hidden = true;
     busy.hidden = false;
     postWrite("/api/holodeck/start",
-      { program: nm, mode: picked.val, engine: holoEngineBin(chosenEngine.val) },
+      { program: nm, mode: picked.val,
+        engine: holoEngineBin(chosenEngine.engine) },
       function (state) {
         closeOverlay();
         HOLO.activeId = state.sessionId;
@@ -16784,6 +17697,15 @@ function openNewProgram() {
   // daemon's own `_holodeck_model` (published per engine), never a copy of it
   // here: this line was once the hardcoded "One cheap pass · sonnet tier ·
   // read-only", which is false on copilot AND false on a Blank deck.
+  /* S275 — and the control itself, when this machine has no CLI at all. The
+     daemon can only answer that press with a 502 (`_resolve_holodeck_engine`
+     has nothing to resolve), and a press that can only fail is not an offer.
+     The sentence above the footer says why, once. */
+  if (!holoPicker.live) {
+    go.disabled = true;
+    go.title = ENGINE_NONE_NOTE;
+    markLocked(go);
+  }
   m.foot.appendChild(footHint);
   m.foot.appendChild(el("span", "grow"));
   m.foot.appendChild(btn("Cancel", null, closeOverlay));

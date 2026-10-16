@@ -96,8 +96,8 @@
 #                                                            `<number>\t<url>`
 #                                                            lines. Nothing at
 #                                                            rc=0 means no such
-#                                                            PR. See the spike
-#                                                            record before
+#                                                            PR. See the op's
+#                                                            comments before
 #                                                            changing it.
 #     link-subissue <parent> <child>                      → nests child under
 #                                                            parent as a native
@@ -385,7 +385,7 @@ github_issue_close() { # <n> [--comment <c>]
 # S189 — IDENTITY AND ASSIGNEES. The forge half of solo ownership.
 #
 # The whole design rests on three facts measured against real gh 2.96.0 and
-# recorded in ADOPT-RESOLUTION-SPIKE.md (LEG A). Read that file before changing
+# covered by tests/ownership.test.sh. Read the comments below before changing
 # anything here; each one is a silent-failure trap, not a style preference.
 # ===========================================================================
 
@@ -393,8 +393,8 @@ github_issue_close() { # <n> [--comment <c>]
 #
 # `.login` is THE identity key: it is the same string `--add-assignee` takes and
 # the same string `assignees[].login` returns. It is NOT `.id` — the SAME login
-# has a DIFFERENT numeric id per host (40493721 on github.com, 97261 on the
-# enterprise host for the captain's own account), so an id is not a portable
+# has a DIFFERENT numeric id per host (101 on github.com, 202 on an
+# example enterprise host), so an id is not a portable
 # identity and must never be compared across hosts. Identity is the (host, login)
 # PAIR. `.name` is nullable and is not read here at all.
 #
@@ -490,8 +490,8 @@ github_issue_assign() { # <n> <login>
 # No read-back here, deliberately: the spike found no silent-drop mode on the
 # REMOVE side. Removing a login that is not assigned is an idempotent silent
 # no-op at rc=0, and removing one that is assigned takes effect at rc=0. The
-# asymmetry is a measured fact, not an oversight — see ADOPT-RESOLUTION-SPIKE.md
-# A.3 cases 4 and 5. Best-effort like relabel/close: never `die`, but PROPAGATE
+# asymmetry is a measured fact, not an oversight — see tests/ownership.test.sh.
+# Best-effort like relabel/close: never `die`, but PROPAGATE
 # gh's rc so the caller learns the removal did not happen.
 github_issue_unassign() { # <n> <login>
   local issue="${1:-}" login="${2:-}"
@@ -509,7 +509,8 @@ github_issue_unassign() { # <n> <login>
 # back through these four ops. Three of them are plain reads of the issue; the
 # fourth answers the one genuinely hard question — "which OPEN pull request
 # closes this issue?" — and its implementation is the recorded outcome of the
-# S189 spike (ADOPT-RESOLUTION-SPIKE.md, LEG B). Read that before touching it.
+# S189 spike. Read github_issue_closing_prs below and tests/lcars-adopt.test.sh
+# before touching it.
 #
 # All four use `gh issue`/`gh pr`, which self-resolve the forge host from the
 # repo's own remote, so none of them needs the gh_api host pin (spike B.5).

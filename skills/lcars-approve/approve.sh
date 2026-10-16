@@ -63,7 +63,7 @@ json_raw() { sed -n "s/.*\"$2\"[[:space:]]*:[[:space:]]*\([^,}\"[:space:]]*\).*/
 # --- S189: solo ownership, the light lock ----------------------------------
 # A mission assigned to SOMEONE ELSE on GitHub is READ-ONLY to this laptop's
 # write verbs. `lcars approve` MERGES a pull request and marks a mission Done, so it consults the lock; the READ verbs (status,
-# buddy, the viewscreen's reads) never do. The remedy is deliberately a HUMAN act
+# the EEH, the viewscreen's reads) never do. The remedy is deliberately a HUMAN act
 # on GitHub — the solo protocol's premise is that the captain moves ownership
 # where both laptops can see it, and LCARS never takes a mission off anyone.
 #
@@ -736,7 +736,11 @@ PR_URL="$(json_str "$STATE" prUrl)"
 PR_NUM="$(json_raw "$STATE" prNumber)"
 case "$PR_URL" in
   http*|*/pull/*) : ;;
-  *) die "no open PR recorded for this mission — run \`lcars run $MISSION_ID\` so Verify opens the PR, then approve to merge it. Mission stays at verify." ;;
+  *)
+    if origin_guidance="$(pr_origin_guidance)"; then
+      die "no open PR recorded for this mission — $origin_guidance"
+    fi
+    die "no open PR recorded for this mission — run \`lcars run $MISSION_ID\` so Verify opens the PR, then approve to merge it. Mission stays at verify." ;;
 esac
 
 # --- the merge step (shared by the normal flow + the reapprove flow) ---------
@@ -902,6 +906,9 @@ do_merge() {
   gh_relabel "lcars:done" "lcars:verify lcars:awaiting-human"
   set_stage "done"
   lcars_state_set_string "$STATE" review "merged"
+  . "$SELF_DIR/../lcars-xo/release-stop.sh" \
+    && lcars_xo_release_completed_stop "$MISSION_DIR" \
+    || die "PR merged, but Number One's stop could not be released; check $MISSION_DIR/xo-stop."
 
   # BUG-071: record the ship on the mission timeline so the card shows the
   # `merged` milestone (and a terminal `mission_done`), not just stdout.

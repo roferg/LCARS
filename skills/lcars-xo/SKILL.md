@@ -1,6 +1,18 @@
 ---
 name: lcars-xo
-description: Engage, stand down, and inspect Number One — the AI first officer that holds a Mission on the captain's behalf. `lcars xo on [--engine copilot|claude] [--model M]` turns Number One ON for this repo, recording the choice in `.git/lcars/config.json` as a one-line `numberOne` block; with no `--engine` and a terminal it opens a picker naming the engines installed on this machine, and with no terminal it refuses loudly rather than choosing in silence. `lcars xo off` stands the repo down and hands the conn back on every engaged Mission; `lcars xo off <mission>` opts one Mission out and stands just that one down (signalling its recorded worker pid, recording `stood-down` and a note); `lcars xo on <mission>` puts that Mission back in scope — it clears the per-mission opt-out AND the `stood-down` status, so the next drive can engage it again. `lcars xo answer --mission <id>` is the driver's call at a park: Number One reads the Mission's record in a read-only copy, then either ANSWERS the gate through `lcars respond` (attributed `answeredBy: number-one`, exit 0) or ESCALATES with a note and a recommendation and leaves the gate up (exit 1) — always escalating a `scope` gate, an uncited answer, and anything malformed. Bare `lcars xo` prints the status table — every Mission with its stage, Number One's RECORDED status (engaged / finished / escalated / answered / stood-down / opted-out) and its note. While a Mission is engaged the write verbs (approve, feedback, respond, log, pause, resume, resolve-logs) and the viewscreen's matching endpoints refuse with ONE sentence, because Number One is already acting through them on the captain's behalf. Use when the captain runs `lcars xo`, says "engage Number One", "turn the first officer on/off", "stand Number One down", "who has the conn", or asks what Number One is doing.
+description: >-
+  Engage, stand down, and inspect Number One — the AI first officer that
+  holds a Mission on the captain's behalf. `lcars xo on [--engine
+  copilot|claude] [--model M]` turns Number One ON for this repo, recording
+  the choice in `.git/lcars/config.json` as a one-line `numberOne` block;
+  with no `--engine` and a terminal it opens a picker naming the engines
+  installed on this machine, and with no terminal it refuses loudly rather
+  than choosing in silence. Bare `lcars xo` prints the status table — every
+  Mission with its stage, Number One's RECORDED status (engaged / finished /
+  escalated / answered / stood-down / opted-out) and its note. Use when the
+  captain runs `lcars xo`, says "engage Number One", "turn the first officer
+  on/off", "stand Number One down", "who has the conn", or asks what Number
+  One is doing.
 ---
 
 # lcars xo — Number One
@@ -12,6 +24,40 @@ through the ordinary verbs, and hands the conn back with a report.
 `xo.sh` does all of the mechanical work. It asks no model anything — **the
 worker reasons, the skill executes** (captain ruling, 2026-09-11). You (Claude)
 run it and read out what it printed.
+
+## When to use
+
+The sentences below were part of this skill's frontmatter `description:` until
+S276 moved them here. GitHub Copilot's CLI caps a skill description at 1024
+characters and refused to load this skill over it; the description now keeps
+the identity, the command forms and the `Use when…` trigger phrases that both
+CLIs match on, and the detail it could not hold is relocated here verbatim.
+Nothing was deleted.
+
+`lcars xo off` stands the repo down and hands the conn back on every engaged
+Mission; `lcars xo off <mission>` opts one Mission out and stands just that
+one down (signalling its recorded worker pid, recording `stood-down` and a
+note); `lcars xo on <mission>` puts that Mission back in scope — it clears the
+per-mission opt-out AND the `stood-down` status, so the next drive can engage
+it again.
+
+A named stop records a `paused` event for each Mission whose pause flag it sets,
+including linked children; `xo on <mission>` (or repo-wide `xo on`) records
+`resumed` only when it actually clears a pause owned by the stop. These events use
+the operator-write journal, so the viewscreen excludes the paused interval from
+active time without weakening the worker fence. Already-paused children stay
+paused, and repo-wide `xo off` remains marker-only, with no pause events.
+
+`lcars xo answer --mission <id>` is the driver's call at a park: Number One
+reads the Mission's record in a read-only copy, then either ANSWERS the gate
+through `lcars respond` (attributed `answeredBy: number-one`, exit 0) or
+ESCALATES with a note and a recommendation and leaves the gate up (exit 1) —
+always escalating a `scope` gate, an uncited answer, and anything malformed.
+
+While a Mission is engaged the write verbs (approve, feedback, respond, log,
+pause, resume, resolve-logs) and the viewscreen's matching endpoints refuse
+with ONE sentence, because Number One is already acting through them on the
+captain's behalf.
 
 ## The verbs
 
@@ -118,6 +164,9 @@ The order is the contract:
    happened to notice.
 2. **`launch.sh <id>`.** If the build does not come up, the score is **LOW**
    quoting the launch message — and **no browser is started at all**.
+   When `testCommand` is declared and the app started, stop it while retaining
+   its worktree, run the tests there, restore test writes, and relaunch before
+   reading the browser URL. The test record is reviewed at step 3c below.
 
    **2b. THE DECLARED SEED (S220 part E).** Screens that only exist once there
    is data in them cannot be photographed into existence, so a repo may declare
@@ -138,7 +187,7 @@ The order is the contract:
    so) and, per criterion, `reachVia` — `cli | browser | workflow | test |
    none`. **A CLI criterion is reached by RUNNING the CLI, not by looking for it
    on a page.** The live-check checklists (`skills/lcars-run/live-check/<type>.md`
-   — the SAME files the buddy follows in prose) are handed to the worker WHOLE,
+   — the SAME files the EEH follows in prose) are handed to the worker WHOLE,
    for the product types the contract recorded, as **advice the worker reads**:
    every `run:` block in them is an EXAMPLE of a shape, with the values left out
    on purpose, and the worker invents the values a human would. **There is ONE
@@ -148,10 +197,10 @@ The order is the contract:
    before the look.
 
    Three kinds: `run` (argv/cwd/env/expect/for), `workflow` (executed by
-   `autopilot.sh workflow-run`, the runner that names the first failing step)
+   `ech.sh workflow-run`, the runner that names the first failing step)
    and `read` (an artifact read rather than assumed). `xo-run.py` executes them
    in a **worktree detached from the mission's branch with a throwaway HOME**
-   (`autopilot.sh worktree --branch` — ONE machinery, the buddy's own), minted
+   (`ech.sh worktree --branch` — ONE machinery, the EEH's own), minted
    ONCE for the whole look so a record filed in one round can be read back in the
    next, caged per step, writing a transcript + a `.json` readout per step beside
    the browser shots under `xo/shots/<look>/`. Each row records `checkedBy`.
@@ -299,21 +348,28 @@ The order is the contract:
    something solid, the report's own observations section tells him so —
    *"Three things on this page were behind something solid, so I could not
    look at them."* Nothing hidden, nothing said.
-3c. **`xo/tests.json` — the project's OWN tests, run by the SKILL** (S211,
+3c. **Read `xo/tests.json` — the project's OWN tests, run at step 2 by the SKILL** (S211,
    `xo-tests.py`). Number One acts only through a browser, so a change with no
    screen surface was simply invisible to it: *"batches survive a restart"*
    came back "I could not check this" on both engines in S203 — correct, and
-   useless. So between the capture and the worker round, `evaluate` runs the
-   repo's own `testCommand` **in the launched build's worktree**, bounded
+   useless. After discovering the launch and before the browser capture,
+   `evaluate` stops its app with `--stop --keep-worktree`, runs the repo's own
+   `testCommand` **in that retained build worktree**, then restores test writes
+   and relaunches before reading the URL for the browser. This leaves the app's
+   default port available to the suite without guessing the port or changing
+   the declared command. The run is bounded
    (`LCARS_XO_TEST_TIMEOUT`, 300s) with the output tail capped
    (`LCARS_XO_TEST_TAIL_CAP`, 8000 bytes) and the cut STATED. It records the
-   command, the exit code, the duration, the tail and a plain verdict, and
+   command, its `commandSource` (`config` or `detected-from-build`), the exit code,
+   the duration, the tail and a plain verdict, and
    derives ONE `outcome` where it knew it: `passed` · `failed` · `hung` ·
    `no-test-command` · `no-worktree`. **A hang is infrastructure, never a
    product failure** — a suite that did not finish says nothing about the
-   build, and the whole process group is killed. **A repo with no
-   `testCommand` is the common case**: the file records that plainly and the
-   look proceeds exactly as it always did.
+   build, and the whole process group is killed. Without a configured
+   `testCommand`, the skill uses init's shared detector in the launched build
+   (or the existing reach worktree fallback), without writing config. Configured
+   commands always win; approval's post-merge promotion is unchanged. If no
+   runner is detected, the file records that plainly and the look still proceeds.
 
    **The skill runs the project's suite; the worker is handed the result.** The
    worker gets `tests.json` through the same read-only door as the shots and the
@@ -361,7 +417,9 @@ The order is the contract:
    **`recheck` re-runs it too**, for the reason its observations pass re-runs:
    a recheck relaunches the build from the FIXED branch, so the first look's
    test run is about code that no longer exists. Carrying it forward would be
-   the S204 stale-shots defect in another costume.
+   the S204 stale-shots defect in another costume. It uses the same
+   stop → tests → relaunch → browser ordering. With no declared test command,
+   neither look stops and relaunches solely for tests.
 4. **Up to `$LCARS_XO_MAX_ROUNDS` worker rounds — TWO by default** (the ceiling
    came down from three on 2026-09-20: over five real-arm runs the third round
    changed nothing). Each round Number One writes EITHER `xo-actions.json` (it
@@ -476,6 +534,29 @@ The order is the contract:
    `engaged` (gaps → S204), and the score **LABEL** `lcars:xo:<score>` with the
    other two removed. One source per fact: the label is the score, the comment
    is the report.
+
+   An interrupted look stops its processes first, then preserves existing
+   `xo/notes.md`, `xo/observations.json`, and useful root `number-one.jsonl`
+   evidence in the distinct **`xo/partial-report.md`**, labelled **INTERRUPTED**
+   and partial. It is not a completed verdict: no score or merge recommendation
+   is inferred, and next steps are only those already recorded in the notes.
+   No findings means no partial artifact (empty observations and bookkeeping
+   alone do not count). Malformed sources and write failures are diagnosed on
+   stderr without preventing teardown or preservation of other readable sources.
+   The signal handler never changes state or appends journal entries; `xo off`
+   remains the writer of stood-down status.
+
+   **Reading preserved evidence:** the local board card, Number One tab, report
+   modal/API, `lcars xo report`, and living comment prefer a nonempty
+   `xo/report.md`. Only when no full report exists do they offer
+   `xo/partial-report.md`, explicitly **INTERRUPTED — partial report (not a
+   verdict)**. Reading it requires neither a completed score nor a journal.
+   It supplies no score or merge recommendation; both files means the full
+   report wins, and neither file means no empty report button on the local card.
+   The shared reader treats only missing files as expected absence. An unreadable
+   report is an error, never permission to downgrade a full report to partial;
+   `lcars xo report` exits 1 with a stderr diagnostic and no report output.
+   Journal history remains separate from these preserved build reports.
 
    The four `lcars:xo:*` labels are part of `lcars init`'s canonical set, and
    the swap **ensures its own family first** (host adapter `label-ensure`) so a
@@ -610,6 +691,11 @@ matching `off` wrote, leaving the Mission looking exactly like one that was
 never stood down, so the NEXT drive is what engages it. It does not touch
 `escalated`: that gate is still the captain's.
 
+An already `finished` reviewer stays finished on a re-drive, including the
+drive that detects a GitHub merge. A Mission already at `done` never newly
+engages Number One. Neither rule rewrites older records or claims a review
+finished when none did.
+
 Every park in the pipeline lands on ONE line of `cmd_drive` — the awaiting halt
 at the top of the loop — so the hook is there, not at the two dozen raisers:
 
@@ -731,6 +817,24 @@ so each shot binds to its OWN bug by argument order. The parent's drawing is
 The child ids come back off the verb's own summary and land in
 **`xo/logs.json`**, which is the only thing `recheck` reads to know what it
 filed. Then `resolve-logs` is started detached, its pid in **`xo-resolve.pid`**.
+
+**MERGE never starts a resolver.** For `merge` or `merge-with-follow-ups`, both
+`evaluate` and the hand-run `file-logs` retain any remaining findings in
+`xo/verdict.json` under `followUps`, with their recorded details. The operator is
+told where they are kept and decides what to file. This check precedes the
+filing switch and the round marker; no issue, child Mission, or resolver is
+created by a MERGE verdict. Active-parent send-back filing and driving remain
+unchanged.
+
+**Done parents use `lcars file`, not `lcars log`.** For a non-MERGE verdict
+against a Mission already at `done`, each finding becomes a new standalone
+Mission at Align, with its own attachments and delivery path. No parent resolver
+is started and the Done parent's state is unchanged. Successful filings are
+recorded in `xo/logs.json` so another filing pass skips them. If filing fails,
+the finding stays in `xo/logs/<n>.md` and `xo/verdict.json`; Number One names
+those locations in its output and journal, and records the failure under
+`unfiled` in `xo/logs.json`. Unfiled findings can be retried. The MERGE gate
+above still takes precedence, including for Done parents.
 
 **ONE ROUND ONLY** (captain's ruling). `numberOne.round` is set to `1` and never
 incremented. A fix that does not hold goes to the captain, not to round two.

@@ -13,7 +13,8 @@
 #   3. The driver detects a merge (here or on GitHub via gh pr view) → marks Done;
 #      an UNMERGED/open PR never → Done (stays in review, no repeat notification).
 #
-# Everything is stubbed — NO real gh/git/network. The driver lock makes `drive`
+# Git repos and bare remotes are real; gh/notifications are stubbed (no network).
+# The driver lock makes `drive`
 # single-instance; each case uses a fresh repo so locks never collide.
 #
 # Usage: bash tests/lcars-verify-pr.test.sh
@@ -44,7 +45,8 @@ PR_LIB="$REPO_ROOT/skills/lcars-approve/pr-lib.sh"
 HOST_ADAPTER="$REPO_ROOT/skills/lcars-run/host-adapter.sh"
 
 pass=0; fail=0
-TMPROOT="$(mktemp -d)"; trap 'rm -rf "$TMPROOT"' EXIT
+TMPROOT="$(mktemp -d "${TMPDIR:-.}/lcars-verify-pr.XXXXXX")"; trap 'rm -rf "$TMPROOT"' EXIT
+TMPROOT="$(cd "$TMPROOT" && pwd)"
 ok()   { printf '  \033[32mPASS\033[0m %s\n' "$1"; pass=$((pass + 1)); }
 bad()  { printf '  \033[31mFAIL\033[0m %s\n' "$1"; fail=$((fail + 1)); }
 check(){ if eval "$2"; then ok "$1"; else bad "$1 ($2)"; fi; }
@@ -69,6 +71,7 @@ make_gh_stub() {
 #!/usr/bin/env bash
 echo "gh $*" | tr '\n' ' ' >>"$GH_LOG"; echo >>"$GH_LOG"
 if [ "${1:-}" = "pr" ] && [ "${2:-}" = "create" ]; then
+  [ "${GH_CREATE_FAIL:-0}" != "1" ] || exit 1
   echo "https://github.com/acme/repo/pull/77"
 fi
 if [ "${1:-}" = "pr" ] && [ "${2:-}" = "view" ]; then
@@ -127,7 +130,7 @@ EOF
 run_in() { # repo  subcommand-and-args…
   local repo="$1"; shift
   ( cd "$repo" \
-      && LCARS_GH_BIN="$repo/gh" LCARS_GIT_BIN="git" \
+      && LCARS_GH_BIN="$repo/gh" LCARS_GIT_BIN="${VERIFY_GIT_BIN:-git}" \
          LCARS_HOST_ADAPTER="$HOST_ADAPTER" LCARS_PR_LIB="$PR_LIB" \
          LCARS_NOTIFY="$repo/notify" NOTIFY_LOG="$repo/notify.log" \
          GH_LOG="$repo/gh.log" GH_PR_STATE="${GH_PR_STATE:-OPEN}" \
@@ -233,6 +236,142 @@ WAVES
   echo "$repo"
 }
 
+# --- No hosted origin: explain the prerequisite, not a push/auth retry -------
+missing="$(new_repo_verify)"
+make_gh_stub "$missing/gh"; make_notify_stub "$missing/notify"
+: >"$missing/gh.log"; : >"$missing/notify.log"
+( cd "$missing" && git remote remove origin )
+missing_rc=0
+run_in "$missing" open-pr --mission "$MID" >"$missing/out.txt" 2>&1 || missing_rc=$?
+check "10. missing origin open-pr fails with concrete hosted-repo guidance (no stored reason)" \
+  "[ '$missing_rc' -ne 0 ] &&
+   grep -q \"no 'origin' remote\" '$missing/out.txt' &&
+   grep -Fq 'git remote add origin <repository-url>' '$missing/out.txt' &&
+   grep -q 'existing hosted repo' '$missing/out.txt'"
+check "10. missing origin never creates a PR or review state" \
+  "! grep -q 'pr create' '$missing/gh.log' &&
+   python3 -c 'import json,sys; s=json.load(open(sys.argv[1])); assert s[\"stage\"]==\"verify\"; assert not s.get(\"prUrl\"); assert not s.get(\"review\")' '$(state_of "$missing")'"
+check "10. missing origin remedy is not executed" \
+  "[ -z \"$(cd "$missing" && git remote)\" ]"
+
+# A real remote that rejects a push is NOT the same as no remote. A historical
+# baseFreshness reason must not override today's configured origin.
+for failure in no-origin rejected-push config-error empty-origin gh-create; do
+  broken="$(new_repo_verify)"
+  make_gh_stub "$broken/gh"; make_notify_stub "$broken/notify"
+  : >"$broken/gh.log"; : >"$broken/notify.log"
+  create_fail=0
+  VERIFY_GIT_BIN=git
+  case "$failure" in
+    no-origin) ( cd "$broken" && git remote remove origin ) ;;
+    rejected-push|config-error)
+      printf '#!/bin/sh\nexit 1\n' >"$broken.remote.git/hooks/pre-receive"
+      chmod +x "$broken.remote.git/hooks/pre-receive"
+      if [ "$failure" = config-error ]; then
+        cat >"$broken/git-wrapper" <<'EOF'
+#!/usr/bin/env bash
+if [ "$#" -eq 3 ] && [ "$1" = config ] && [ "$2" = --get ] && [ "$3" = remote.origin.url ]; then
+  exit 128
+fi
+exec git "$@"
+EOF
+        chmod +x "$broken/git-wrapper"
+        VERIFY_GIT_BIN="$broken/git-wrapper"
+      fi
+      (
+        . "$REPO_ROOT/skills/lcars-init/lcars-state.sh"
+        lcars_state_set "$(state_of "$broken")" baseFreshness \
+          '{"status":"unknown","reason":"this repo has no '\''origin'\'' remote — there is nothing to be stale against."}'
+      ) ;;
+    empty-origin) ( cd "$broken" && git config remote.origin.url "" ) ;;
+    gh-create) create_fail=1 ;;
+  esac
+  open_rc=0
+  GH_CREATE_FAIL="$create_fail" run_in "$broken" open-pr --mission "$MID" >"$broken/open.txt" 2>&1 || open_rc=$?
+  if [ "$failure" = rejected-push ] || [ "$failure" = config-error ] || [ "$failure" = empty-origin ]; then
+    check "11. $failure does not prove missing origin: push failure retains historical guidance" \
+      "[ '$open_rc' -ne 0 ] &&
+       grep -Fq \"could not push 'lcars/$MID' to origin — push it and re-run\" '$broken/open.txt' &&
+       ! grep -Fq 'git remote add origin' '$broken/open.txt' &&
+       ! grep -Fq \"no 'origin' remote\" '$broken/open.txt' &&
+       ! grep -q 'pr create' '$broken/gh.log'"
+  elif [ "$failure" = gh-create ]; then
+    check "11. existing origin gh failure retains historical create guidance" \
+      "[ '$open_rc' -ne 0 ] &&
+       grep -q 'gh pr create did not return a PR URL' '$broken/open.txt' &&
+       ! grep -Fq 'git remote add origin' '$broken/open.txt'"
+  fi
+  drive_rc=0
+  GH_CREATE_FAIL="$create_fail" run_in "$broken" drive --mission "$MID" >"$broken/drive.txt" 2>&1 || drive_rc=$?
+  check "11. $failure drive exits nonzero, parked at verify, with no PR/review/Done" \
+    "[ '$drive_rc' -ne 0 ] &&
+     python3 -c 'import json,sys; s=json.load(open(sys.argv[1])); assert s[\"stage\"]==\"verify\"; assert not s.get(\"prUrl\"); assert not s.get(\"review\")' '$(state_of "$broken")' &&
+     ! grep -q 'add-label lcars:done' '$broken/gh.log'"
+  if [ "$failure" = no-origin ]; then
+    check "11. missing-origin drive explains prerequisite before retry, not push/auth/gh" \
+      "grep -Fq 'git remote add origin <repository-url>' '$broken/drive.txt' &&
+       grep -q 'existing hosted repo' '$broken/drive.txt' &&
+       ! grep -Fq 'Fix the cause (push/auth/gh)' '$broken/drive.txt'"
+  else
+    check "11. $failure drive retains push/auth/gh advice, not missing-origin advice" \
+      "grep -Fq 'Fix the cause (push/auth/gh)' '$broken/drive.txt' &&
+       ! grep -Fq 'git remote add origin' '$broken/drive.txt' &&
+       ! grep -Fq \"no 'origin' remote\" '$broken/drive.txt'"
+  fi
+  check "11. $failure drive fires one degraded notification" \
+    "[ \"$(wc -l <"$broken/notify.log" | tr -d ' ')\" -eq 1 ]"
+  retry_rc=0
+  GH_CREATE_FAIL="$create_fail" run_in "$broken" drive --mission "$MID" >"$broken/retry.txt" 2>&1 || retry_rc=$?
+  check "11. $failure retry stays failed and does not repeat the notification" \
+    "[ '$retry_rc' -ne 0 ] &&
+     [ \"$(wc -l <"$broken/notify.log" | tr -d ' ')\" -eq 1 ]"
+done
+unset VERIFY_GIT_BIN
+
+# Both approval entrypoints must explain why no PR can be opened locally,
+# without changing the existing refusal when a hosted origin is configured.
+for approval in approve answer; do
+  for origin in missing present; do
+    unreviewed="$(new_repo_verify)"
+    make_gh_stub "$unreviewed/gh"; : >"$unreviewed/gh.log"
+    if [ "$origin" = missing ]; then
+      ( cd "$unreviewed" && git remote remove origin )
+    else
+      (
+        . "$REPO_ROOT/skills/lcars-init/lcars-state.sh"
+        lcars_state_set "$(state_of "$unreviewed")" baseFreshness \
+          '{"reason":"this repo has no '\''origin'\'' remote — there is nothing to be stale against."}'
+      )
+    fi
+    cp "$(state_of "$unreviewed")" "$unreviewed/state.before"
+    approval_rc=0
+    (
+      cd "$unreviewed" || exit 1
+      export LCARS_GH_BIN="$unreviewed/gh" GH_LOG="$unreviewed/gh.log"
+      if [ "$approval" = answer ]; then
+        bash "$REPO_ROOT/skills/lcars-answer/answer.sh" approve --mission "$MID"
+      else
+        bash "$REPO_ROOT/skills/lcars-approve/approve.sh" --mission "$MID"
+      fi
+    ) >"$unreviewed/approval.txt" 2>&1 || approval_rc=$?
+    check "12. $approval with $origin origin refuses missing PR without any state change or forge write" \
+      "[ '$approval_rc' -ne 0 ] &&
+       cmp -s '$(state_of "$unreviewed")' '$unreviewed/state.before' &&
+       ! grep -Eq 'pr (create|merge)|add-label lcars:done' '$unreviewed/gh.log'"
+    if [ "$origin" = missing ]; then
+      check "12. $approval missing-origin refusal gives concrete causal guidance" \
+        "grep -q \"no 'origin' remote\" '$unreviewed/approval.txt' &&
+         grep -Fq 'git remote add origin <repository-url>' '$unreviewed/approval.txt' &&
+         grep -q 'existing hosted repo' '$unreviewed/approval.txt'"
+    else
+      check "12. $approval ignores stale no-origin reason and retains ordinary missing-PR guidance" \
+        "grep -q 'no open PR recorded for this mission' '$unreviewed/approval.txt' &&
+         grep -Fq 'lcars run $MID' '$unreviewed/approval.txt' &&
+         ! grep -Fq 'git remote add origin' '$unreviewed/approval.txt'"
+    fi
+  done
+done
+
 # ==========================================================================
 echo "lcars verify-pr (S75)"
 
@@ -284,6 +423,7 @@ check "2. the heartbeat still reports in review (no false done)" \
   "grep -q '\"stage\": *\"verify\"' '$s2'"
 
 # --- Behaviour 3: a merged PR (on GitHub) → Done; unmerged never → Done -------
+savedMID="$MID"; MID="lcars-20261015-298"
 r3="$(new_repo_verify)"; make_gh_stub "$r3/gh"; make_notify_stub "$r3/notify"
 : >"$r3/gh.log"; : >"$r3/notify.log"
 # First pass: open the PR (state OPEN), in review.
@@ -291,6 +431,15 @@ GH_PR_STATE=OPEN run_in "$r3" drive --mission "$MID" >"$r3/o1.txt" 2>&1
 s3="$(state_of "$r3")"
 check "3. opened + in review on first pass" \
   "grep -q 'pull/77' '$s3' && grep -q '\"stage\": *\"verify\"' '$s3'"
+(
+  . "$REPO_ROOT/skills/lcars-init/lcars-state.sh"
+  lcars_state_set "$s3" numberOne '{"status":"engaged","engine":"copilot"}'
+)
+( cd "$r3" && LCARS_OWNER_ENFORCE=0 LCARS_GH_BIN=true \
+    bash "$REPO_ROOT/skills/lcars-xo/xo.sh" off "$MID" >off.txt 2>&1 )
+check "3. xo stand-down pauses the open-PR mission before a GitHub merge" \
+  "grep -q '\"paused\": *true' '$s3' &&
+   grep -q '^self paused-by-us$' '${s3%/state.json}/xo-stop'"
 # Now the PR is merged on GitHub: the next heartbeat detects it → Done.
 GH_PR_STATE=MERGED run_in "$r3" drive --mission "$MID" >"$r3/o2.txt" 2>&1
 check "3. a merged-on-GitHub PR is detected → stage done" \
@@ -299,10 +448,58 @@ check "3. records review=merged on a detected merge" \
   "grep -q '\"review\": *\"merged\"' '$s3'"
 check "3. relabels to lcars:done on a detected merge" \
   "grep -q 'add-label lcars:done' '$r3/gh.log'"
+check "3. detected merge releases only the xo-owned pause and marker" \
+  "python3 -c 'import json,sys; assert not json.load(open(sys.argv[1])).get(\"paused\",False)' '$s3' &&
+   [ ! -e '${s3%/state.json}/xo-stop' ]"
+MID="$savedMID"
 
 # Contrast: an UNMERGED PR never flips to done (re-uses r2 from above).
 check "3. an unmerged/open PR never reaches done" \
   "! grep -q '\"stage\": *\"done\"' '$(state_of "$r2")'"
+(
+  . "$REPO_ROOT/skills/lcars-init/lcars-state.sh"
+  lcars_state_set "$s2" paused true
+)
+GH_PR_STATE=OPEN run_in "$r2" drive --mission "$MID" >"$r2/paused-open.txt" 2>&1
+check "3. captain-paused open PR stays paused at verify" \
+  "python3 -c 'import json,sys; s=json.load(open(sys.argv[1])); assert s[\"stage\"]==\"verify\"; assert s[\"paused\"] is True' '$s2'"
+GH_PR_STATE=MERGED run_in "$r2" drive --mission "$MID" >"$r2/paused-merged.txt" 2>&1
+check "3. captain-paused merged PR reaches done without releasing its own pause" \
+  "python3 -c 'import json,sys; s=json.load(open(sys.argv[1])); assert s[\"stage\"]==\"done\"; assert s[\"review\"]==\"merged\"; assert s[\"paused\"] is True' '$s2'"
+
+# A retained pause is historical on Done, but still live before that boundary.
+for pause_stage in done implement; do
+  pause_repo="$(new_repo_verify)"
+  make_gh_stub "$pause_repo/gh"; make_notify_stub "$pause_repo/notify"
+  : >"$pause_repo/gh.log"; : >"$pause_repo/notify.log"
+  pause_state="$(state_of "$pause_repo")"
+  (
+    . "$REPO_ROOT/skills/lcars-init/lcars-state.sh"
+    lcars_state_set "$pause_state" stage "\"$pause_stage\""
+    lcars_state_set "$pause_state" paused true
+    lcars_state_set "$pause_state" base '""'
+  )
+  cp "$pause_state" "$pause_repo/state.before.json"
+  printf 'self already-paused\n' >"${pause_state%/state.json}/xo-stop"
+  cp "${pause_state%/state.json}/xo-stop" "$pause_repo/xo-stop.before"
+  pause_rc=0
+  run_in "$pause_repo" drive --mission "$MID" >"$pause_repo/paused.txt" 2>&1 || pause_rc=$?
+  check "3. retained pause at $pause_stage exits cleanly without changing state or ownership" \
+    "[ '$pause_rc' -eq 0 ] &&
+     cmp -s '$pause_state' '$pause_repo/state.before.json' &&
+     cmp -s '${pause_state%/state.json}/xo-stop' '$pause_repo/xo-stop.before'"
+  if [ "$pause_stage" = done ]; then
+    check "3. done with retained pause prints shipped halt, not a live pause or resume advice" \
+      "grep -Fxq '⏹ stopped at: done  (Mission shipped — the PR is merged)' '$pause_repo/paused.txt' &&
+       ! grep -Eq '⏸|The Mission is paused|Resume with' '$pause_repo/paused.txt' ||
+       { cat '$pause_repo/paused.txt'; false; }"
+  else
+    check "3. nonterminal retained pause still prints live pause and resume advice" \
+      "grep -Fxq '⏸ paused at: implement  (paused by the captain — halted at a safe boundary)' '$pause_repo/paused.txt' &&
+       grep -Fxq 'The Mission is paused; no Stage will advance until you resume it.' '$pause_repo/paused.txt' &&
+       grep -Fxq 'Resume with \`lcars resume $MID\`.' '$pause_repo/paused.txt'"
+  fi
+done
 
 # --- Behaviour 4 (S111 root-tree sovereignty): open-pr NEVER moves HEAD -------
 # The old open_pr checked the mission branch out in the shared checkout before

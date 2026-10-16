@@ -309,7 +309,7 @@ echo "4. THE PORT A BUILDER MUST NOT TAKE — one line, in the file a builder re
 # WHY THIS FILE. `implement-tdd.md` is the prompt template `spawn_worker` hands
 # the unified TDD worker for every ticket (run.sh: spawn_worker implement-tdd
 # "$STAGES_DIR/implement-tdd.md"), so it is literally the text a builder reads
-# before it writes a line. AUTOPILOT.md is the BUDDY's playbook (a stand-in
+# before it writes a line. HOLOGRAM-COMMAND-MODE.md is the EEH's playbook (a stand-in
 # human driving LCARS, never the thing that builds) and the live-check files are
 # the REVIEWER's checklists — neither is read by the builder. `launch.sh` is
 # untouched on purpose: it OBSERVES the app's chosen port rather than dictating
@@ -325,8 +325,8 @@ check "4d. it tells the builder to AVOID it, not merely that it exists" \
   'grep -niE "port" "$BUILDER_MD" | grep -qiE "avoid|do not|never|reserved"'
 check "4e. launch.sh is NOT the place it was put — the observer stays an observer" \
   '! grep -qF "$DEFAULT_PORT" "$REPO_ROOT/skills/lcars-launch/launch.sh"'
-check "4f. and the buddy's playbook was not edited to carry it" \
-  '! grep -qF "$DEFAULT_PORT" "$REPO_ROOT/skills/lcars-buddy/AUTOPILOT.md"'
+check "4f. and the EEH's playbook was not edited to carry it" \
+  '! grep -qF "$DEFAULT_PORT" "$REPO_ROOT/skills/lcars-eeh/HOLOGRAM-COMMAND-MODE.md"'
 
 echo ""
 echo "5. THE TWO UNSAID COUNTS — rendered on his report, NON-ZERO ONLY"

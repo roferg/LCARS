@@ -2,7 +2,7 @@
 # tests/lcars-xo-volunteered.test.sh — S263, "connect the severed lanes".
 #
 # WHAT WAS MEASURED, before a line of this was written. In S262 Number One filed
-# ZERO bugs across 65 criteria while the captain's human buddy filed three. It
+# ZERO bugs across 65 criteria while the captain's human EEH filed three. It
 # has three filing lanes and TWO WERE SEVERED:
 #
 #   LANE 1 — `volunteered[]`, severed BY ACCIDENT. Fed the RAW verdict,

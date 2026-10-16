@@ -1,6 +1,18 @@
 ---
 name: lcars-version
-description: Show the LCARS version picture — the RUNNING version of this LCARS clone (its VERSION file), the source clone's path and git state (branch, clean/dirty), and, when the current repo is LCARS-initialized, the version stamped in its config.json with a one-line verdict — `current`, `repo needs lcars update` (stamp behind OR an initialized-but-unstamped repo that predates versioning), or `unknown` (only a malformed stamp). Read-only and safe; it never runs a network fetch. Also hosts `lcars release`, the manual drift-repair that bumps VERSION + writes a CHANGELOG entry when main moved without a bump. Use when the captain runs `lcars version`, asks "what version am I on", "is my checkout / repo up to date", wants to know whether an initialized repo needs `lcars update`, or runs `lcars release` to repair unversioned drift on main.
+description: >-
+  Show the LCARS version picture — the RUNNING version of this LCARS clone
+  (its VERSION file), the source clone's path and git state (branch,
+  clean/dirty), and, when the current repo is LCARS-initialized, the version
+  stamped in its config.json with a one-line verdict — `current`, `repo
+  needs lcars update` (stamp behind OR an initialized-but-unstamped repo
+  that predates versioning), or `unknown` (only a malformed stamp).
+  Read-only and safe; it never runs a network fetch. Also hosts `lcars
+  release`, the manual drift-repair that bumps VERSION + writes a CHANGELOG
+  entry when main moved without a bump. Use when the captain runs `lcars
+  version`, asks "what version am I on", "is my checkout / repo up to date",
+  wants to know whether an initialized repo needs `lcars update`, or runs
+  `lcars release` to repair unversioned drift on main.
 ---
 
 # lcars version

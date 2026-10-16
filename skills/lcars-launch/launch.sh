@@ -36,7 +36,8 @@
 #
 # Dependencies via env so tests can stub them:
 #   LCARS_GIT_BIN         the git binary               (default: git)
-#   LCARS_WORKER_BIN      the cold-worker CLI          (default: state workerBin → claude)
+#   LCARS_WORKER_BIN      the cold-worker CLI          (default: state workerBin
+#                         → config workerBin → the engine INSTALLED here)
 #   LCARS_WORKER_ADAPTER  the worker-adapter path      (default: ../lcars-run/worker-adapter.sh)
 #   LCARS_LAUNCH_SETTLE   liveness poll WINDOW seconds  (default: 4, may be fractional)
 #   LCARS_LAUNCH_ROOT     deploy-checkout root         (default: <repo-parent>/.lcars-launch/<repo>)
@@ -119,6 +120,7 @@ nap() { perl -e 'select(undef,undef,undef,'"${1:-0.3}"')' 2>/dev/null || true; }
 MISSION=""
 HINT=""
 STOP=0
+KEEP_WORKTREE=0
 MAIN=0
 # S215 — a hint is the captain's PROSE, and prose contains words like
 # `--config`. `--` is therefore a REAL end-of-options marker here: after it,
@@ -143,13 +145,29 @@ while [ $# -gt 0 ]; do
     add_positional "$1"; shift; continue
   fi
   case "$1" in
+    -h|--help)
+      cat <<'EOF'
+Usage: lcars-launch <mission> [hint words…] [--stop]
+       lcars-launch --main [hint words…] [--stop]
+       (Agent skill: lcars launch <same arguments>)
+
+Run a Mission's app, or the local default-branch HEAD with --main.
+  --stop           Stop the app and prune its disposable worktree.
+  --keep-worktree  With --stop, retain the worktree for inspection.
+  --               Treat remaining words as the target/hint, not options.
+  -h, --help       Show this help without launching anything.
+EOF
+      exit 0 ;;
     --main) MAIN=1; shift ;;
     --stop) STOP=1; shift ;;
+    --keep-worktree) KEEP_WORKTREE=1; shift ;;
     --) ENDOPTS=1; shift ;;
     --*) die "unknown option \"$1\" — usage: lcars launch <mission> [hint] [--stop], or lcars launch --main [hint] [--stop]." ;;
     *) add_positional "$1"; shift ;;
   esac
 done
+[ "$KEEP_WORKTREE" -eq 0 ] || [ "$STOP" -eq 1 ] \
+  || die "--keep-worktree requires --stop."
 
 # --- locate the repo + the mission dir ------------------------------------
 GIT_DIR="$("$GIT_BIN" rev-parse --git-dir 2>/dev/null)" \
@@ -553,7 +571,7 @@ kill_recorded_launch() {
 # =====================================================================
 if [ "$STOP" -eq 1 ]; then
   kill_recorded_launch          # group-kill the recorded process (TERM→grace→KILL)
-  remove_worktree
+  [ "$KEEP_WORKTREE" -eq 1 ] || remove_worktree
   # A captain who STOPS (rather than re-launches) right after upgrading past S167
   # must not be left with the legacy in-`.git/` checkout and its registration.
   migrate_legacy_worktree
@@ -569,6 +587,9 @@ if [ "$STOP" -eq 1 ]; then
       printf '  "target": "%s",\n'    "$(json_esc "$st_target")"
       printf '  "url": "%s",\n'       "$(json_esc "$st_url")"
       printf '  "howToStop": "%s",\n' "$(json_esc "$st_stop")"
+      if [ "$KEEP_WORKTREE" -eq 1 ]; then
+        printf '  "worktree": "%s",\n' "$(json_esc "$WT")"
+      fi
       printf '  "message": "the app has been stopped."\n'
       printf '}\n'
     } | commit_launch_json
@@ -684,14 +705,77 @@ fi
 provision_worktree "$WT" || :
 
 # --- resolve the engine + spawn the launch-role discovery worker ----------
+# S274 — WHICH ENGINE IS ACTUALLY ON THIS MACHINE. ONE answer to that question,
+# and it is not this file's: `lcars init`, the File console's engine picker,
+# `lcars xo`, the board and run.sh's resolver all read the shared detector in
+# skills/lcars-init/lcars-common.sh (`lcars_default_engine` / `lcars_engine_bin`),
+# and so does this. Read IN A SUBSHELL deliberately — that library is large and
+# this script has its own `json_str` / `die`, so sourcing it into this process
+# could silently redefine one of them; a subshell makes it a pure question.
+_launch_common_lib() {
+  printf '%s' "${LCARS_COMMON_LIB:-$SKILL_DIR/../lcars-init/lcars-common.sh}"
+}
+launch_installed_engine() { # [config] → engine name (may be EMPTY)
+  local lib; lib="$(_launch_common_lib)"
+  [ -f "$lib" ] || return 0
+  ( . "$lib" >/dev/null 2>&1 || exit 0; lcars_default_engine "${1:-}" )
+}
+launch_engine_bin() { # engine → the binary that name means (identity fallback)
+  local lib; lib="$(_launch_common_lib)"
+  [ -f "$lib" ] || { printf '%s' "${1:-}"; return 0; }
+  ( . "$lib" >/dev/null 2>&1 || { printf '%s' "${1:-}"; exit 0; }
+    lcars_engine_bin "${1:-}" || printf '%s' "${1:-}" )
+}
+
 WORKER_BIN="${LCARS_WORKER_BIN:-}"
 # The main deploy has NO state.json, so only consult it when it exists (reading an
-# empty $STATE path with the jq-free sed reader would stall). Fallback chain is
-# otherwise unchanged: env → state workerBin → claude.
+# empty $STATE path with the jq-free sed reader would stall).
 if [ -z "$WORKER_BIN" ] && [ -n "$STATE" ] && [ -f "$STATE" ]; then
   WORKER_BIN="$(json_str "$STATE" workerBin)"
 fi
-[ -n "$WORKER_BIN" ] || WORKER_BIN="claude"
+# The repo's AMBIENT default, below the mission's own pin and above detection —
+# the same rung run.sh's resolver reads config.json at.
+if [ -z "$WORKER_BIN" ] && [ -f "$LCARS_CFG" ]; then
+  WORKER_BIN="$(json_str "$LCARS_CFG" workerBin)"
+fi
+# THE LAST RUNG IS WHAT IS INSTALLED, never the literal `claude`. Until S274 this
+# read `[ -n "$WORKER_BIN" ] || WORKER_BIN="claude"`, so `lcars launch --main`
+# (which has no state.json to pin anything) spawned a claude that is not there on
+# every copilot-only laptop — a repo `lcars init` had already set up on copilot.
+if [ -z "$WORKER_BIN" ]; then
+  _eng="$(launch_installed_engine "$LCARS_CFG")"
+  [ -n "$_eng" ] && WORKER_BIN="$(launch_engine_bin "$_eng")"
+fi
+# NEITHER CLI IS HERE. One sentence naming BOTH engines, because either one
+# cures it (init.sh:72's wording, unchanged since S207) — never an instruction
+# to install the one engine this captain may deliberately not have.
+if [ -z "$WORKER_BIN" ]; then
+  NO_ENGINE_MSG="no worker CLI found — LCARS drives missions with Claude Code (looked for '$(launch_engine_bin claude)') or the GitHub Copilot CLI (looked for '$(launch_engine_bin copilot)'), and neither is on this machine. Install either one and re-run: https://claude.com/claude-code or https://github.com/features/copilot/cli."
+  # …AND REVISE THE RECORD BEFORE DYING (S274 fix round 2). This refusal lands
+  # ~75 lines AFTER the early `{"status":"launching", …}` write at the top of the
+  # flow, and that write is deliberately early (it is what stops an observer
+  # outrunning the slow spin-up and re-clicking RUN). So a refusal that only
+  # `die`s leaves "launching" on disk FOREVER for a launch that started nothing,
+  # and the board's top band faithfully renders a permanent ◐ DEPLOYING… pill —
+  # a visible lie, still there minutes later. Commit a `failed` record carrying
+  # THIS REFUSAL SENTENCE as the message (the band shows ml.message verbatim),
+  # so the captain reads the real reason and gets the ▸ Deploy Main retry back.
+  # Written here rather than by resolving the engine earlier, because moving the
+  # resolution above the worktree/provision block is a restructure. Inline (not
+  # write_failed) only because that helper is defined further down this file;
+  # it goes through commit_launch_json, the one sanctioned writer, and collapses
+  # newlines exactly as write_failed does — json_esc does not escape them, so a
+  # raw newline in "message" would truncate the record for every reader.
+  {
+    printf '{\n'
+    printf '  "status": "failed",\n'
+    printf '  "target": "",\n'
+    printf '  "message": "%s"\n' \
+      "$(json_esc "$(printf '%s' "$NO_ENGINE_MSG" | tr '\n' ' ')")"
+    printf '}\n'
+  } | commit_launch_json
+  die "$NO_ENGINE_MSG"
+fi
 CLI="${LCARS_WORKER_CLI:-$(basename "$WORKER_BIN")}"
 
 mkdir -p "$OUTDIR"
@@ -755,6 +839,8 @@ ${TOUCHED_BLOCK}
 DISCOVER how to start it. Do NOT start it yourself, and do NOT modify any file in
 the checkout — inspection only. Read package.json / Makefile / pyproject / README
 / config as needed to find the exact command that starts the app the captain named.
+When supported by the app, expose its configured port explicitly in the command
+(--port, -p, or PORT=) so the launcher can avoid an occupied port before starting.
 
 Then write a JSON object to EXACTLY this path (and print nothing):
   $LAUNCH_DISCOVERY
@@ -932,8 +1018,8 @@ fi
 # the truth rather than trust the guess: enumerate the launched process GROUP and
 # read its listening sockets.
 #
-# This adds OBSERVATION ONLY. The detached setsid spawn, PID == PGID, the group
-# kill on --stop, the liveness contract and idempotent re-launch are untouched.
+# The detached setsid spawn, PID == PGID, the group kill on --stop, the liveness
+# contract and idempotent re-launch are untouched.
 #
 # Darwin BSD userland, bash 3.2: `pgrep -g <pgid>` lists the group's pids and
 # `lsof -a -p <pids> -iTCP -sTCP:LISTEN -P -n` lists their LISTEN sockets. -P/-n
@@ -1002,6 +1088,65 @@ url_with_port() { # url port -> the same url with that port (scheme/host/path/qu
   [ -n "$host" ] || host="localhost"
   printf '%s://%s:%s%s%s\n' "$scheme" "$host" "$p" "$path" "$tail"
 }
+
+# Strict-binding apps die before socket observation can reconcile their URL.
+# Avoid a known collision BEFORE spawning; never signal the existing listener.
+# Only literal single commands are adapted, and only recognized port selectors
+# equal to the prediction. PORT is the fallback for apps configured by env.
+# The OS-selected port is advisory (another process can race the later bind);
+# the existing liveness gate and owned-socket observation remain authoritative.
+PRED_PORT="$(url_port "$URL")"
+if [ -n "$PRED_PORT" ] && [ -n "$LSOF_BIN" ] \
+   && "$LSOF_BIN" -iTCP:"$PRED_PORT" -sTCP:LISTEN -t >/dev/null 2>&1 \
+   && command -v python3 >/dev/null 2>&1; then
+  ADAPTED_CMD="$(python3 - "$CMD" "$PRED_PORT" <<'PY'
+import re, shlex, socket, sys
+
+command, predicted = sys.argv[1:]
+# Do not reinterpret shell expansions, operators, embedded code or redirections.
+if re.search(r'[;&|<>(){}\n`$\\*?\[\]~#]', command):
+    sys.exit(0)
+try:
+    args = shlex.split(command)
+except ValueError:
+    sys.exit(0)
+if not args:
+    sys.exit(0)
+assignment_count = 0
+while assignment_count < len(args) and re.match(r'^[A-Za-z_]\w*=', args[assignment_count]):
+    assignment_count += 1
+selectors = []
+for i, arg in enumerate(args):
+    if arg in ("--port", "-p") and i + 1 < len(args):
+        selectors.append((i + 1, "", args[i + 1]))
+    elif arg.startswith("--port="):
+        selectors.append((i, "--port=", arg[7:]))
+    elif arg.startswith("PORT=") and (
+        i < assignment_count or
+        (args[0] == "env" and all(re.match(r'^[A-Za-z_]\w*=', a) for a in args[1:i]))
+    ):
+        selectors.append((i, "PORT=", arg[5:]))
+# The Python built-in server uses a positional port, not --port.
+for i in range(len(args) - 2):
+    if args[i:i + 2] == ["-m", "http.server"] and args[i + 2].isdigit():
+        selectors.append((i + 2, "", args[i + 2]))
+# A different explicit port means the prediction was wrong, not the command.
+if selectors and any(value != predicted for _, _, value in selectors):
+    sys.exit(0)
+with socket.socket() as probe:
+    probe.bind(("127.0.0.1", 0))
+    port = str(probe.getsockname()[1])
+for i, prefix, _ in selectors:
+    args[i] = prefix + port
+if assignment_count:
+    args.insert(0, "env")
+if not selectors:
+    args = ["env", "PORT=" + port] + args
+print(" ".join(shlex.quote(arg) for arg in args))
+PY
+)"
+  [ -z "$ADAPTED_CMD" ] || CMD="$ADAPTED_CMD"
+fi
 
 : > "$LOG"
 # macOS has no setsid(1): perl POSIX::setsid makes the child its own session &

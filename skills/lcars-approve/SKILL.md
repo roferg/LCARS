@@ -1,6 +1,19 @@
 ---
 name: lcars-approve
-description: Ship a verified LCARS Mission — MERGE its open pull request and mark it Done. Runs only on a Mission parked at the Verify stage, where `lcars run` has already AUTO-OPENED the PR and left the Mission "in review — PR open" (prUrl recorded in state.json). `lcars approve` is the captain's MERGE signal: it merges that open PR with `gh pr merge` (via the host adapter) and, only on a SUCCESSFUL merge, clears the stage labels, applies `lcars:done`, moves the stage to `done`, and prints the merged PR URL. It NEVER marks a Mission Done without a real merge — a failed merge (conflicts, checks, auth) leaves it at Verify with an actionable message (no false Done). With no open PR recorded it refuses (re-run the mission so Verify opens the PR first). Use when the captain runs `lcars approve <mission-id>`, or asks to approve / ship / merge the PR for a Mission they have finished reviewing in Verify.
+description: >-
+  Ship a verified LCARS Mission — MERGE its open pull request and mark it
+  Done. Runs only on a Mission parked at the Verify stage, where `lcars run`
+  has already AUTO-OPENED the PR and left the Mission "in review — PR open"
+  (prUrl recorded in state.json). `lcars approve` is the captain's MERGE
+  signal: it merges that open PR with `gh pr merge` (via the host adapter)
+  and, only on a SUCCESSFUL merge, clears the stage labels, applies
+  `lcars:done`, moves the stage to `done`, and prints the merged PR URL. It
+  NEVER marks a Mission Done without a real merge — a failed merge
+  (conflicts, checks, auth) leaves it at Verify with an actionable message
+  (no false Done). With no open PR recorded it refuses (re-run the mission
+  so Verify opens the PR first). Use when the captain runs `lcars approve
+  <mission-id>`, or asks to approve / ship / merge the PR for a Mission they
+  have finished reviewing in Verify.
 ---
 
 # lcars approve
@@ -19,14 +32,20 @@ bash ~/.claude/skills/lcars-approve/approve.sh --mission <id>
 ```
 
 1. **Requires an open PR.** It reads `prUrl` / `prNumber` from `state.json` —
-   the PR **Verify** opened. With no recorded PR it refuses (re-run the mission
-   so Verify opens one), staying at `verify`.
+   the PR **Verify** opened. With no recorded PR it refuses, staying at `verify`.
+   If this repo has no `origin` remote, first connect an existing hosted repo
+   manually with `git remote add origin <repository-url>`, then retry the mission
+   so Verify opens a PR. Otherwise, re-run the mission so Verify opens one.
 2. **Merges the PR** with `gh pr merge` (via the host adapter), identifying it by
    the recorded PR number (or the branch).
 3. **Only on a successful merge:** clears the stage labels (removes
    `lcars:verify` + any `lcars:awaiting-human`, adds `lcars:done`), advances the
    stage to `done` in `state.json` (label and stage in lockstep), records
-   `review: "merged"`, and prints the merged PR URL.
+   `review: "merged"`, and prints the merged PR URL. If Number One was stood
+   down, releases only the mission and child pauses recorded as `paused-by-us`
+   in its `xo-stop` record, then removes that record. Existing captain-owned
+   pauses (`already-paused`), marker-only stops (`left-running`), and pauses
+   without a stop record are not cleared. This does not re-engage Number One.
 
 On success it prints:
 
@@ -56,7 +75,9 @@ one place.
 - **GitHub-side merge.** If the captain merges the PR directly on GitHub, the
   `lcars run` driver's Verify heartbeat detects it (`gh pr view --json
   state,mergedAt`) and marks the Mission Done the same way — `lcars approve` is
-  not the only path to Done, just the in-CLI one.
+  not the only path to Done, just the in-CLI one. A paused Verify mission with
+  a recorded PR can still detect that merge and release its recorded
+  Number One stop; an open PR remains paused and starts no work.
 
 ## Report
 

@@ -1,6 +1,12 @@
 ---
 name: lcars-status
-description: Show the LCARS command-and-control view — every active Mission in this repo as a table with its stage, GitHub issue, and any paused / awaiting-human status, plus the pending questions the captain still needs to answer. Use when the user runs `lcars status`, asks what missions are active / in flight, what's waiting on them, or wants the kanban / board view of LCARS missions.
+description: >-
+  Show the LCARS command-and-control view — every active Mission in this
+  repo as a table with its stage, GitHub issue, and any paused /
+  awaiting-human status, plus the pending questions the captain still needs
+  to answer. Use when the user runs `lcars status`, asks what missions are
+  active / in flight, what's waiting on them, or wants the kanban / board
+  view of LCARS missions.
 ---
 
 # lcars status
@@ -40,6 +46,9 @@ Respond with `lcars respond <id>`.
 - The **status glyph** column flags a Mission that is `⏸` paused, `❓` awaiting
   a human answer, or both — mirroring the `lcars:paused` / `lcars:awaiting-human`
   labels.
+- A recorded `done` Stage never shows a live pause glyph, even if a pending
+  gate changes the displayed Stage. The pause legend appears only when a row
+  actually shows `⏸`; recorded state is unchanged.
 - Any Mission awaiting a human answer has its **pending question spelled out**
   below the table so the captain knows exactly what to respond to.
 - A Mission with no GitHub issue yet shows `-` in the ISSUE column (so does

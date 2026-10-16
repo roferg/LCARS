@@ -17,7 +17,7 @@
 #     so that only the device scale factor was ever set.
 #
 # So the system handed itself an instruction and then made it impossible to
-# carry out. S262's buddy found the real bug it was blind to — the week grid
+# carry out. S262's EEH found the real bug it was blind to — the week grid
 # needs horizontal scrolling at 400 px and TODAY's column, the one the spec
 # singles out, is scrolled off-screen by default (table.week{min-width:520px}
 # inside .grid-scroll{overflow-x:auto}, with zero media queries) — and filed it
@@ -134,7 +134,7 @@ done
 # (`#screen-week`, so `landed.screen` is set and the landing rail has something
 # to compare). And it carries #163's actual shape — a 520 px-wide table inside
 # an `overflow-x:auto` scroller with no media query — so the page under the
-# camera is the page the buddy photographed, not a toy.
+# camera is the page the EEH photographed, not a toy.
 # ===========================================================================
 FX="$TMPROOT/fx"; mkdir -p "$FX"
 cat >"$FX/ruler.html" <<'HTML'
@@ -1056,8 +1056,8 @@ check "10d. …and the mutant scorer still scored the file (the controls are unm
 printf '\n\033[1m11. the fences this round was given\033[0m\n'
 check "11a. argv_refusal is STILL byte-identical (md5 82278f1b3bf34f8b6a667b493b0cfbcc)" \
   "[ \"\$(sed -n '/^def argv_refusal/,/^def refuse_reason/p' '$XORUN' | sed '\$d' | md5)\" = 82278f1b3bf34f8b6a667b493b0cfbcc ]"
-check "11b. skills/lcars-buddy/ has a zero diff" \
-  "git -C '$REPO_ROOT' diff --quiet -- skills/lcars-buddy && [ -z \"\$(git -C '$REPO_ROOT' status --porcelain -- skills/lcars-buddy)\" ]"
+check "11b. skills/lcars-eeh/ has a zero diff" \
+  "git -C '$REPO_ROOT' diff --quiet -- skills/lcars-eeh && [ -z \"\$(git -C '$REPO_ROOT' status --porcelain -- skills/lcars-eeh)\" ]"
 check "11c. prompts/evaluate.md is 688 lines and git-clean" \
   "[ \"\$(grep -c '' '$REPO_ROOT/skills/lcars-xo/prompts/evaluate.md')\" -eq 688 ] && git -C '$REPO_ROOT' diff --quiet -- skills/lcars-xo/prompts/evaluate.md"
 check "11d. xo-drive.js's viewport verb and its one override call are untouched by this round" \

@@ -1,6 +1,15 @@
 ---
 name: lcars
-description: The one LCARS entry point — "do the right thing" from the current state. With nothing filed it takes a free-form idea and files a Mission (the Align flow); with work in flight and nothing pending it drives the active Mission forward (auto-advance); with a decision waiting it opens the inbox. A shared resolver picks the target Mission so the captain never juggles ids — one candidate needs none, several drop into a picker, an explicit id / partial / title always works. Use when the user runs `lcars` (no verb), says "what should I do next", "continue", "pick up where I left off", or otherwise hands LCARS work without naming a stage.
+description: >-
+  The one LCARS entry point — "do the right thing" from the current state.
+  With nothing filed it takes a free-form idea and files a Mission (the
+  Align flow); with work in flight and nothing pending it drives the active
+  Mission forward (auto-advance); with a decision waiting it opens the
+  inbox. A shared resolver picks the target Mission so the captain never
+  juggles ids — one candidate needs none, several drop into a picker, an
+  explicit id / partial / title always works. Use when the user runs `lcars`
+  (no verb), says "what should I do next", "continue", "pick up where I left
+  off", or otherwise hands LCARS work without naming a stage.
 ---
 
 # lcars

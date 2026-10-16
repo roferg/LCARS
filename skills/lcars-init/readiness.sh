@@ -18,6 +18,9 @@
 #                           `foundation` (greenfield|untested|unconfigured|
 #                           ready) + `foundationWhy` — the SECOND axis. The daemon parses
 #                           this and OMITS meta.testReadiness when ready.
+#                           S299 adds `inertWhy` — why the test configuration at
+#                           the repo root cannot RUN, when there is such a file
+#                           (null otherwise). Message material only.
 #
 # Exit 0 always (it is a report, never a gate).
 set -uo pipefail
@@ -85,8 +88,22 @@ CANDS
   fwhy='null'
   [ -n "${LCARS_TESTREADY_FOUNDATION_WHY:-}" ] \
     && fwhy="\"$(lcars_json_escape "$LCARS_TESTREADY_FOUNDATION_WHY")\""
-  printf '{"status":"%s","suggestion":%s,"testCommand":%s,"stacks":%s,"candidates":%s,"foundation":%s,"foundationWhy":%s}\n' \
-    "$LCARS_TESTREADY_STATUS" "$sug" "$tc" "$st" "$cands" "$fnd" "$fwhy"
+  # S299 fix round 2: `inertWhy` — WHY the test configuration sitting at the
+  # repo root cannot be run. It exists because the FOUNDATION axis and the
+  # DETECTOR disagree on purpose: `foundation` is claimed from the mere PRESENCE
+  # of an artifact (it feeds the FILING gate, where a false negative kills a
+  # mission before it starts), while detection refuses an artifact that provably
+  # runs nothing. On a decoy repo both are right and the honest sentence needs
+  # BOTH of them — which the CLI line already says and the board could not,
+  # because this reason never left the shell. It is a STRING FOR A MESSAGE and
+  # nothing else: no verdict reads it, so it cannot move a gate. Null for every
+  # repo with no inert artifact, and the daemon forwards it only when set, so
+  # every other payload stays byte-identical.
+  iwhy='null'
+  [ -n "${LCARS_TESTREADY_INERT_WHY:-}" ] \
+    && iwhy="\"$(lcars_json_escape "$LCARS_TESTREADY_INERT_WHY")\""
+  printf '{"status":"%s","suggestion":%s,"testCommand":%s,"stacks":%s,"candidates":%s,"foundation":%s,"foundationWhy":%s,"inertWhy":%s}\n' \
+    "$LCARS_TESTREADY_STATUS" "$sug" "$tc" "$st" "$cands" "$fnd" "$fwhy" "$iwhy"
 else
   lcars_readiness_line
 fi

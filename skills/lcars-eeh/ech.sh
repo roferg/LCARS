@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 #
-# autopilot.sh — the TOKEN-FREE driver behind `lcars buddy`'s autopilot mode
+# ech.sh — the TOKEN-FREE driver behind `lcars eeh`'s Hologram Command Mode
 # ("run it for me"). The judgement in that mode is prose the MODEL follows
-# (AUTOPILOT.md); everything SEQUENCEABLE is here, and spends nothing.
+# (HOLOGRAM-COMMAND-MODE.md); everything SEQUENCEABLE is here, and spends nothing.
 #
 # IT DRIVES THE EXISTING VERBS. Every action below is an LCARS verb that an
 # earlier round already proved: `run.sh drive --mission`, `approve.sh
@@ -27,28 +27,28 @@
 # a human also writes. `stalled` (what the heartbeat calls) decides purely from
 # recorded pids for exactly that reason.
 #
-#   autopilot.sh init --spec <path|url> [--scope M0,M1] [--engine copilot]
+#   ech.sh init --spec <path|url> [--scope M0,M1] [--engine copilot]
 #                     [--deadline <iso>] [--force]
-#   autopilot.sh status
-#   autopilot.sh next [--all]
-#   autopilot.sh drive <mission>
-#   autopilot.sh stalled
-#   autopilot.sh land <mission>
-#   autopilot.sh push-gated
-#   autopilot.sh worktree <mission> | worktree --branch <branch>
-#   autopilot.sh live-check <mission> --type cli|web|workflow[,…]
-#   autopilot.sh live-check done <mission> --verdict pass|bugs
-#   autopilot.sh workflow-run <mission> <workflow.yml> [--evidence-dir <dir>]
-#   autopilot.sh file-bug --parent <mission> --prd <bug-prd.md>
-#   autopilot.sh policy --verdict high|medium|low [--reason product|infrastructure]
+#   ech.sh status
+#   ech.sh next [--all]
+#   ech.sh drive <mission>
+#   ech.sh stalled
+#   ech.sh land <mission>
+#   ech.sh push-gated
+#   ech.sh worktree <mission> | worktree --branch <branch>
+#   ech.sh live-check <mission> --type cli|web|workflow[,…]
+#   ech.sh live-check done <mission> --verdict pass|bugs
+#   ech.sh workflow-run <mission> <workflow.yml> [--evidence-dir <dir>]
+#   ech.sh file-bug --parent <mission> --prd <bug-prd.md>
+#   ech.sh policy --verdict high|medium|low [--reason product|infrastructure]
 #                       --live-check pass|bugs [--mission <m>] [--evidence <path>]
-#   autopilot.sh report [--out <path>]
-#   autopilot.sh ledger feedback|overrides|decisions '<json>'
-#   autopilot.sh heartbeat install|remove|status
-#   autopilot.sh record <dotted.key> <value>
-#   autopilot.sh answered <question-id|mission> ["<his answer>"]
-#   autopilot.sh ask "<what>" --mission <m> [--why …] [--command …] [--rollback …]
-#   autopilot.sh playbook
+#   ech.sh report [--out <path>]
+#   ech.sh ledger feedback|overrides|decisions '<json>'
+#   ech.sh heartbeat install|remove|status
+#   ech.sh record <dotted.key> <value>
+#   ech.sh answered <question-id|mission> ["<his answer>"]
+#   ech.sh ask "<what>" --mission <m> [--why …] [--command …] [--rollback …]
+#   ech.sh playbook
 #
 # EXIT CODES that mean something:
 #   0   done
@@ -59,7 +59,7 @@
 #   1   usage / a bad argument.
 #
 # DEPENDENCIES ARE ENV-INJECTED (the lcars-init pattern) so tests stub them:
-#   LCARS_AUTOPILOT_CWD   the repo to operate on       (default $PWD)
+#   LCARS_ECH_CWD   the repo to operate on       (default $PWD)
 #   LCARS_GIT_BIN         git                          (default git)
 #   LCARS_PYTHON_BIN      python3                      (default python3)
 #   LCARS_CRONTAB_BIN     crontab                      (default crontab)
@@ -67,6 +67,8 @@
 #   LCARS_LOG_SCRIPT LCARS_FILE_SCRIPT LCARS_RESOLVE_LOGS_SCRIPT
 #   LCARS_ESTABLISH_VISION_BIN                         (sibling skills)
 #   LCARS_NOTIFY          the walk-away ping           (lcars-run/notify.sh)
+#   LCARS_SELF_CMD        the name this driver calls itself in its own output
+#                         (default: derived from $0, else `lcars-ech`)
 #
 # BASH 3.2 ONLY. macOS ships 3.2.57 and this runs on the captain's laptop, so
 # nothing from bash 4 may appear here: no associative arrays, no line-slurping
@@ -80,7 +82,43 @@ SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SELF="$SELF_DIR/$(basename "${BASH_SOURCE[0]}")"
 SKILLS_DIR="$(cd "$SELF_DIR/.." && pwd)"
 
+# ==========================================================================
+# THE NAME THIS DRIVER CALLS ITSELF IN ITS OWN OUTPUT (S277)
+# ==========================================================================
+# WHY THIS EXISTS. Every message below that tells a human or a model to run
+# something used to spell it `ech.sh <verb>` — the FILE's name, which is
+# not a command anywhere. `init` ended with "record the answers with
+# `ech.sh record liveTargets.host <host>`" and a real Copilot turn told to
+# follow it ran exactly that, took exit 127, stopped, and recorded nothing — on
+# the very first step after `init`. `--help`'s usage header had the same bug, so
+# the driver misnamed itself to everyone on both CLIs. The prose fix (HOLOGRAM-COMMAND-MODE.md
+# naming `lcars-ech`) does not reach these: they are produced at runtime,
+# with no note anywhere near them.
+#
+# WHY DERIVED, NOT HARD-CODED. A literal would drift the moment the launcher is
+# renamed. So the name is taken from how this process was actually invoked, and
+# only falls back to the on-PATH name install.sh generates.
+#
+# MEASURED CAVEAT — the derivation cannot see the launcher's name today.
+# install.sh's generated wrapper is `exec bash "<abs>/ech.sh" "$@"`, which
+# REPLACES $0 with the script's own path, so `basename "$0"` is `ech.sh`
+# (the wrong name) and never `lcars-ech`. That is exactly the case the
+# fallback below is for, and it is why the effective value is the PATH command.
+# $LCARS_SELF_CMD is the seam: a future front door (or a test) can declare the
+# name it was invoked as, and every message follows it with no string edits.
+SELF_CMD="${LCARS_SELF_CMD:-}"
+if [ -z "$SELF_CMD" ]; then
+  SELF_CMD="$(basename -- "${0:-}" 2>/dev/null)"
+  case "$SELF_CMD" in
+    # the raw script, a shell, or nothing to go on -> the command install.sh makes
+    *.sh|''|-*|bash|sh|dash|zsh|ksh) SELF_CMD="lcars-ech" ;;
+  esac
+fi
+
 GIT_BIN="${LCARS_GIT_BIN:-git}"
+# The forge CLI, env-injected so a suite can stub it (CLAUDE.md step 2). Added
+# by the preflight forge-login check: no authenticated CLI, no pull request.
+GH_BIN="${LCARS_GH_BIN:-gh}"
 PY="${LCARS_PYTHON_BIN:-python3}"
 CRONTAB_BIN="${LCARS_CRONTAB_BIN:-crontab}"
 
@@ -91,20 +129,30 @@ RESPOND_SCRIPT="${LCARS_RESPOND_SCRIPT:-$SKILLS_DIR/lcars-respond/respond.sh}"
 LOG_SCRIPT="${LCARS_LOG_SCRIPT:-$SKILLS_DIR/lcars-log/log.sh}"
 NOTIFY_BIN="${LCARS_NOTIFY:-$SKILLS_DIR/lcars-run/notify.sh}"
 
-die()  { printf 'lcars autopilot: %s\n' "$1" >&2; exit "${2:-1}"; }
+die()  { printf 'lcars ech: %s\n' "$1" >&2; exit "${2:-1}"; }
 say()  { printf '%s\n' "$1"; }
 
 # The cheat sheet. The modelled run's two biggest token sinks were reading LCARS
 # internals to find a verb's real flags, and long log greps. Both are answered
 # here, on purpose, so nobody has to go and read run.sh to drive a mission.
 usage() {
+  # The header is printed SEPARATELY from the quoted heredoc below so the driver
+  # can name itself as the reader must type it ($SELF_CMD). The heredoc stays
+  # single-quoted on purpose: its body is full of backticks and `$`-looking
+  # examples that must print literally, and a suite check proves that.
+  printf 'Usage: %s <subcommand> [args]   (playbook: HOLOGRAM-COMMAND-MODE.md — print it with `lcars-eeh docs ech`)\n' "$SELF_CMD" >&2
   cat >&2 <<'USAGE'
-Usage: autopilot.sh <subcommand> [args]        (playbook: AUTOPILOT.md, beside this script)
 
   init --spec <path|url> [--scope M0,M1] [--engine <e>] [--deadline <iso>] [--force]
                        write .git/lcars/autopilot.json (refuses to overwrite without --force)
+                       ...and then runs `preflight`, below, while you are still here
+  preflight            the ONE round of setup questions, each with a RECOMMENDED
+                       default so "yes" answers the block. With NO terminal it never
+                       waits: it prints what it would have asked and the value it
+                       proceeds on, or stops deliberately (exit 10) on the one
+                       prerequisite nobody can default — nowhere to push
   status               one screen: scope, stages, gates, slots, EVERY open question, next action
-  next [--all]         the ONE next mechanical step, and the AUTOPILOT.md heading for it
+  next [--all]         the ONE next mechanical step, and the HOLOGRAM-COMMAND-MODE.md heading for it
   playbook             the action -> heading table the contract test locks
   record <k.k> <v>     write one key (JSON value if it parses; empty value deletes)
   answered <id> "<a>"  close ONE open question (ids come from `status`); never deletes it
@@ -119,7 +167,7 @@ Usage: autopilot.sh <subcommand> [args]        (playbook: AUTOPILOT.md, beside t
   push-gated           run the recorded testCommand, push ONLY on exit 0
   worktree <mission> | worktree --branch <br>
                        git worktree add --detach + a throwaway HOME; prints both.
-                       --branch needs no autopilot record (Number One passes it)
+                       --branch needs no ECH record (Number One passes it)
   live-check <mission> --type cli|web|workflow[,…]
                        the detached worktree + throwaway HOME + the evidence dir, and the
                        CHECKLIST(S) to follow. The MODEL does the looking.
@@ -138,11 +186,19 @@ Usage: autopilot.sh <subcommand> [args]        (playbook: AUTOPILOT.md, beside t
   report [--out <p>]   render the progress page from the ledgers (nothing from a clock)
   ledger feedback|overrides|decisions '<json>'
   heartbeat install|remove|status
+  exec <skill>/<script> [args]
+                       run a sibling skill's script from THIS clone (resolved beside
+                       this driver, so it works under either CLI's install mount)
 
 THE TWO CAPS THIS DRIVER ENFORCES: two parallel missions, and three failed
 drives of the same mission (then it asks the captain instead of retrying).
-
-THE VERBS THIS DRIVES (their real flags — do not guess, and do not re-implement):
+USAGE
+  # Printed separately so the prefix follows $SELF_CMD: NONE of the tokens below
+  # is runnable on its own -- each is an `exec` argument. The header said nothing
+  # about that, so a model copying a line took exit 127 (S277).
+  printf '\nTHE VERBS THIS DRIVES (run any of them with `%s exec <skill>/<script>` — their real flags\n' "$SELF_CMD" >&2
+  printf '                       — do not guess, and do not re-implement):\n' >&2
+  cat >&2 <<'USAGE'
   lcars-file/file.sh            --prd <path> --engine <e> [--idea <path>] [--park]
   lcars-init/establish-vision.sh --file --stack <s> --slice <s> --engine <e>
   lcars-run/run.sh              drive --mission <id> [--step]   (env: LCARS_GATE_TIMEOUT)
@@ -159,11 +215,11 @@ USAGE
 }
 
 # --- where we are ---------------------------------------------------------
-CWD="${LCARS_AUTOPILOT_CWD:-$PWD}"
+CWD="${LCARS_ECH_CWD:-$PWD}"
 [ -d "$CWD" ] || die "no such directory: $CWD"
 CWD="$(cd "$CWD" && pwd)"
 GITDIR="$CWD/.git"
-[ -e "$GITDIR" ] || die "$CWD is not a git repository — the autopilot operates on a repo."
+[ -e "$GITDIR" ] || die "$CWD is not a git repository — the ECH operates on a repo."
 LCARS_DIR="$GITDIR/lcars"
 MISSIONS="$LCARS_DIR/missions"
 CFG="$LCARS_DIR/config.json"
@@ -313,7 +369,7 @@ try:
 except FileNotFoundError:
     d = {}
 except Exception:
-    sys.stderr.write("autopilot: %s exists but is NOT valid JSON - refusing to overwrite it\n" % f)
+    sys.stderr.write("the ECH: %s exists but is NOT valid JSON - refusing to overwrite it\n" % f)
     sys.exit(2)
 parts = path.split(".")
 cur = d
@@ -346,7 +402,7 @@ PY
 # ==========================================================================
 # ONE HOME, ENFORCED BY CONSTRUCTION. `.pending` used to be BOTH a derived
 # mirror (on the raise path) and the SOLE STORAGE for a question the model wrote
-# by hand — the old AUTOPILOT.md § 9 instructed exactly that — with nothing
+# by hand — the old HOLOGRAM-COMMAND-MODE.md § 9 instructed exactly that — with nothing
 # declaring which. That single ambiguity produced FIVE separate defects over
 # five rounds of testing, each one a different function disagreeing about it:
 #   1. a second question deleted the first (the mirror was overwritten);
@@ -360,7 +416,7 @@ PY
 #      on without him.
 # Every one of those was a reader coping with the orphan slightly differently,
 # so a sixth careful reader was never the cure. A question is now RAISED with a
-# verb — `autopilot.sh ask`, or `write_pending` from inside the driver — and
+# verb — `ech.sh ask`, or `write_pending` from inside the driver — and
 # lands in `questions` with a real id; `.pending` is ONLY ever the derived
 # mirror of the oldest open question. There is no code path left that reads a
 # question OUT of `.pending`.
@@ -430,7 +486,7 @@ PY
 }
 
 require_state() {
-  [ -f "$APJSON" ] || die "no autopilot.json in $LCARS_DIR — run \`autopilot.sh init --spec <path>\` first."
+  [ -f "$APJSON" ] || die "no autopilot.json in $LCARS_DIR — run \`$SELF_CMD init --spec <path>\` first."
   # FAIL CLOSED on a record that EXISTS but will not parse. `ap_set` read it as
   # "no file yet" and wrote a fresh empty object over it: one `record` against a
   # mid-JSON truncation reported SUCCESS and took 8 questions, every recorded
@@ -500,9 +556,9 @@ slots_in_use() {
 }
 
 # ==========================================================================
-# THE PLAYBOOK TABLE — the contract between this script and AUTOPILOT.md.
+# THE PLAYBOOK TABLE — the contract between this script and HOLOGRAM-COMMAND-MODE.md.
 # `next` emits one of these actions and cites its heading; the suite asserts
-# every heading exists VERBATIM in the installed AUTOPILOT.md. Rename a heading
+# every heading exists VERBATIM in the installed HOLOGRAM-COMMAND-MODE.md. Rename a heading
 # and the suite fails; add an action with no prose behind it and it fails too.
 # ==========================================================================
 PB_align='## 1. The alignment round — one batch of questions, then walk away'
@@ -541,6 +597,1107 @@ cmd_playbook() {
 }
 
 # ==========================================================================
+# preflight — THE SETUP QUESTIONS, ASKED WHILE A HUMAN IS STILL THERE
+# ==========================================================================
+# THE DEFECT THIS CLOSES. The driver used to discover what it needed at the
+# moment it failed, not at the start. On 2026-10-14/15 THREE overnight runs died
+# at verification waiting on a permission nobody was awake to give, and a FOURTH
+# could not open a pull request because the repo had no remote — a fact LCARS had
+# ALREADY written into the mission's own state.json (`githubIssue: null`) and
+# never surfaced at the gate, because the gate re-derived its own view of the
+# world instead of reading the record. From outside, a blocked run and a healthy
+# idle one are indistinguishable, and NOTHING INSIDE THE RUN CAN DETECT OR
+# RECOVER FROM IT. The cost is the rest of the night, every time.
+#
+# THE MODEL IS THE DEPENDENCY SWEEP night-watch does while he is still awake:
+# ask ONCE, compactly, every question with a RECOMMENDED default in bold so
+# "yes to all" is a valid answer. He is trying to go to bed.
+#
+# WITH NOBODY THERE IT DECIDES, IT NEVER WAITS. Two outcomes are legal per
+# question and the choice is made per question, on purpose:
+#   PROCEED on a stated default — where the default destroys nothing and
+#     stopping the night over it would waste the night (questions 1 and 2).
+#   STOP deliberately, recording a real captain question — where there is
+#     nothing honest to invent and the run would die at the gate anyway
+#     (question 3: no remote means no push and no PR, full stop).
+# Proceeding SILENTLY is never one of them: every defaulted question prints the
+# question it would have asked and the value it took.
+#
+# HOW "NOBODY IS THERE" IS DETECTED, AND WHAT THAT MISSES. All THREE of these
+# must hold before anything is asked, and they are tested deepest-first so the
+# reason it prints is the most informative one that is true:
+#   1. `/dev/tty` opens — this process has a CONTROLLING TERMINAL. Answers are
+#      read from there, never from stdin, which belongs to the caller.
+#   2. `[ -t 0 ]` — stdin is a terminal and has not been redirected.
+#   3. WE ARE THE TERMINAL'S FOREGROUND PROCESS GROUP — the terminal's `tpgid`
+#      is our own `pgid`. Only the foreground group may READ the terminal.
+#
+# THE THIRD ONE IS THE ONE THAT MATTERED, AND IT WAS MEASURED. With 1 and 2
+# alone, `bash ech.sh init … &` from a terminal — a plain `&`, which is
+# the `nohup`/detached-tmux shape AND the shape ORCHESTRATION.md tells the
+# captain to use — printed question 1, was stopped by SIGTTIN, and sat in
+# process state `T` for the full 60s of observation: no output, no progress, no
+# exit. A background job SATISFIES both 1 and 2; what it cannot do is *read*
+# without the kernel stopping it. That is precisely "a blocked run and a healthy
+# idle run look identical from outside", reintroduced by the fix for it, so the
+# foreground test is not an optimisation — it is the whole point.
+#
+# AND SIGTTIN IS IGNORED FOR THE DURATION OF THE ROUND (`cmd_preflight`), so
+# even a case the three tests cannot see cannot STOP this process: with SIGTTIN
+# ignored the read FAILS instead, and a failed read already falls through to the
+# nobody-is-there decision. Detection first, the signal second, the bounded read
+# third — three independent reasons the round always comes back.
+#
+# BOTH OF THE FIRST TWO, AND THE SECOND ONE WAS LEARNED THE HARD WAY. The first
+# cut of this used /dev/tty ALONE, on the reasoning that `init | tee` has a human
+# right there. tests/harness.test.sh runs every suite from a pty with stdin OPEN
+# on purpose, `tests/lcars-eeh.test.sh` invokes `init`, and that suite went
+# from 5.9s to ELAPSED 120.0s — exactly the read bound — and was killed by the
+# cage. A BOUNDED read turns a hang into a long hang; it does not stop it being
+# one. This repo's standing convention is that a command run with stdin closed
+# is unattended -- the full test gate invokes every suite that way, on purpose --
+# and a question-asking step has to honour it or every suite becomes a hang
+# risk. (A suite check forbids naming that gate script here, so it is described
+# rather than spelled: see CLAUDE.md step 4.)
+# `init | tee` still asks, because `| tee` redirects stdout, not stdin, and a
+# pipeline runs in the shell's FOREGROUND group.
+#
+# WHAT IT STILL GETS WRONG. A detached session that KEEPS its terminal and is
+# its own foreground group — `setsid` with a tty handed to it, a tmux pane the
+# captain left attached and walked away from — reads as attended, which is why
+# every read is BOUNDED ($LCARS_ECH_ASK_TIMEOUT, default 120s) and one
+# unanswered question settles the whole block as "nobody is here". The other
+# direction: `init < answers.txt` reads as unattended although a human wrote
+# that file, and a CI runner reads as unattended, which is the right call here
+# but is NOT the same thing as a detached daemon.
+ASK_TIMEOUT="${LCARS_ECH_ASK_TIMEOUT:-120}"
+PF_TTY=0
+PF_VALUE=""
+PF_YES_TO_ALL=0
+PF_ASKED=0
+PF_STOPS=0
+PF_BOLD=""
+PF_NORM=""
+# WHY nothing could be asked, in his words, printed instead of a guess. The old
+# banner said "there is no /dev/tty to ask on" for every case, which is simply
+# FALSE when stdin was merely redirected and false again for a background job.
+PF_NO_TTY_WHY="nobody is there to ask"
+# Set by `pf_settled`: the id of the question the captain has already answered.
+PF_SETTLED_ID=""
+
+# THE BOUND ON EVERY PROBE THAT LEAVES THIS MACHINE. A reachability check that
+# can hang is worse than no reachability check: it becomes the exact failure it
+# was added to detect. There is no portable `timeout(1)` on macOS (this box has
+# none), so `pf_bounded` below is the bound.
+PROBE_TIMEOUT="${LCARS_ECH_PROBE_TIMEOUT:-15}"
+
+# THE SENTINEL for question 2's default. It is a PHRASE, never a command, and it
+# is never written to `testCommand`: `push-gated` eval's that string, and a
+# guessed suite is strictly worse than none (it either refuses every push or
+# passes vacuously and pushes red, which is the exact bug `push-gated` exists
+# for).
+PF_TC_FOUNDATION='leave it to the foundation step'
+
+# ==========================================================================
+# THE LEDGER KEYS — one constant per prerequisite preflight can STOP on
+# ==========================================================================
+# A question's `what` is BOTH the dedupe key (`write_pending`, over the open
+# set) and the withdrawal key (`ap_withdraw`), so it is a CONSTANT and every
+# detail that varies — a URL, a spelling, a mission id — lives in `why`. Put the
+# remote's URL in one of these and a cured prerequisite can no longer find its
+# own question to retire, which is defect 2 of fix 4 all over again.
+PF_Q_NOPUSH='there is nowhere to push: this repo has no origin remote, so nothing can be pushed and no pull request can be opened.'
+PF_Q_UNREACHABLE='the push remote does not answer: git cannot reach `origin`, so the push and the pull request both die at the gate.'
+# A DEADLINE IS NOT A REFUSAL, so it is not the same question (S300 fix1).
+# MEASURED: an `ext::` origin that answers correctly in 25.2s (`git ls-remote
+# origin` → EXIT 0, refs returned — a cold VPN handshake, a monorepo's huge ref
+# advertisement, a loaded forge) was reported as "The remote does NOT answer",
+# with a body blaming "a deleted repo, a typo'd host and revoked auth" and
+# advice to "fix the URL or the auth". Every word of that is FALSE for a healthy
+# slow remote, and the `what` is the line his inbox shows him first. It is also
+# the ONE stop that can never retire itself — a slow remote stays slow — so the
+# wording has to carry the settle route rather than a diagnosis it cannot
+# support.
+PF_Q_SLOW_REMOTE='the push remote did not answer inside the probe deadline: it may simply be slow rather than wrong, and only you can tell which.'
+PF_Q_FORGE_LOGIN='the forge CLI is not logged in, so no pull request can be opened however well the run builds.'
+PF_Q_ALLOW_ALL='the engine has no unattended permission: COPILOT_ALLOW_ALL is not exactly `true`, so an unattended copilot run is refused on every command.'
+PF_Q_NO_LAUNCH_DIR='there is nowhere to make the launch copies: no writable directory could be found for the throwaway worktrees every live check runs from.'
+
+# pf_bounded <secs> <cmd…> → the command's rc, or 124 if it outran <secs>.
+#
+# WHY IT EXISTS. The two checks below talk to the NETWORK, and an unreachable
+# host, a half-open connection or a credential helper waiting on a GUI answer
+# are all unbounded. There is no portable `timeout(1)` on macOS and this box has
+# none, so the bound is built here. 124 is `timeout(1)`'s own convention for
+# "outran the deadline", so a caller can tell that from a refusal.
+#
+# IT BLOCKS ON THE PROCESS, it does not poll it. A separate watchdog owns the
+# clock and the main path is a plain `wait`, which is this script's standing rule
+# for every spawn (the waiter is held to the same one). The watchdog LEAVES A
+# MARK before it kills, because "the child was signalled" and "the deadline
+# fired" are otherwise the same 137 to the reader — and an instrument must not
+# state a conclusion it cannot support.
+#
+# IT KILLS THE PROCESS GROUP, NOT THE CHILD (S300 fix3). MEASURED: against an
+# https black hole the bound returned on time and left
+# `git-remote-https origin https://10.255.255.1/x.git` alive at `ppid 1`, still
+# there 50s later, drifting toward libcurl's ~300s connect timeout. `git
+# ls-remote` execs a TRANSPORT HELPER, and the old kill reached the direct child
+# and its direct children only; anything one level deeper survived, re-parented
+# to init. Reproduced on a slow (healthy) remote too, so it is the bound-kill
+# path and not an https quirk. A `ppid 1` orphan outlives the cage and corrupts
+# every later process measurement (`harness` 7b asserts zero of them), so the
+# whole spawn now runs under `set -m` in a subshell: monitor mode gives the job
+# its OWN process group, which `kill -9 -$p` then takes out wholesale. The
+# watchdog's own group goes the same way, which also stops its `sleep` from
+# outliving it — the second orphan nobody had attributed.
+#
+# AND THE SUBSHELL'S STDERR IS CLOSED ON PURPOSE (S300 fix4). MEASURED: bash's
+# job-control notification — `ech.sh: line 740: 93081 Killed: 9 "$@" >
+# /dev/null 2>&1 < /dev/null` — landed in the middle of the captain's report,
+# between items 3 and 3b, exposing an internal line number and a raw `"$@"` and
+# reading like a crash to a human at 03:00. The notification is printed by the
+# shell that REAPS the job, so the job is reaped inside a subshell whose stderr
+# is discarded. The commands themselves were already fully redirected, so
+# nothing legible is lost.
+pf_bounded() {
+  local secs="$1"; shift
+  local mark; mark="$(mktemp "${TMPDIR:-/tmp}/lcars-pf-bound.XXXXXX")"
+  rm -f "$mark"
+  local rc=0
+  (
+    set -m
+    "$@" >/dev/null 2>&1 </dev/null &
+    local p=$!
+    # THE WHOLE GROUP: `git ls-remote` execs a transport helper (and over ssh an
+    # `ssh` of its own), and killing only the parent leaves it holding the
+    # socket open until the TCP stack gives up — minutes later, at `ppid 1`.
+    # `kill -9 -$p` is the group; the two narrower kills stay as belt and braces
+    # for anything that left the group on its own.
+    ( sleep "$secs"; : >"$mark"
+      kill -9 -"$p" >/dev/null 2>&1
+      pkill -9 -P "$p" >/dev/null 2>&1
+      kill -9 "$p" >/dev/null 2>&1 ) </dev/null >/dev/null 2>&1 &
+    local w=$!
+    local crc=0
+    wait "$p" || crc=$?
+    kill -9 -"$w" >/dev/null 2>&1 || true
+    kill -9 "$w" >/dev/null 2>&1 || true
+    wait "$w" 2>/dev/null || true
+    exit $crc
+  ) 2>/dev/null
+  rc=$?
+  if [ -f "$mark" ]; then
+    rm -f "$mark"
+    return 124
+  fi
+  rm -f "$mark"
+  return $rc
+}
+
+# pf_remote_is_forge <url> — is there a forge at the other end to log in to?
+# A local path or a `file://` url is a real remote that can be pushed to and has
+# no account, so question 4 must not stop on it.
+pf_remote_is_forge() {
+  case "$1" in
+    http://*|https://*|ssh://*|git://*|*@*:*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# pf_answer_means_local_only <answer> — does this answer, in HIS words, mean
+# "don't push"? THE ONE PLACE that decides, because two copies of this list
+# would drift and the drift IS the defect below.
+#
+# The old reader matched the four exact spellings of `local` and nothing else,
+# so "ship local-only, no push" — a perfectly clear instruction, and the one a
+# man types on his phone — fell through to `git remote add origin "ship
+# local-only, no push"`.
+pf_answer_means_local_only() {
+  local low; low="$(printf '%s' "${1-}" | tr 'A-Z' 'a-z')"
+  case "$low" in
+    local|local-only|local_only|*'local-only'*|*'local only'*|*'locally'*|*'no push'*|*'not push'*|*"don't push"*|*'nothing to push'*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# pf_local_only_recorded — is this run, by the captain's own record, a run that
+# never pushes? (S300 fix2)
+#
+# MEASURED: an https origin with the forge CLI logged out raised BOTH the push
+# question and the forge-login question. `answered q1 "ship local-only, no push"`
+# cleared the first and the next preflight STILL stopped on the login — so the
+# offline/train/local-only case cost TWO commands, against a playbook that
+# promises one. And it contradicted the login check's own stated scope ("skipped
+# when … a run recorded as local-only"): a question answered *local-only* is the
+# plainest possible record of that intent, and the check never read it.
+#
+# Three records mean the same thing, and all three count: `push.mode` (written
+# by `pf_apply_push_answer` or by `record localOnly`), and a settled answer to
+# EITHER push question in his own words — the unreachable-remote one included,
+# because "it's unreachable, ship local-only" is the same decision.
+# It names the record it found in $PF_LOCAL_ONLY_WHY, because a check that
+# skips something has to say on whose authority.
+PF_LOCAL_ONLY_WHY=""
+pf_local_only_recorded() {
+  PF_LOCAL_ONLY_WHY=""
+  if [ "$(ap_j push.mode)" = "local-only" ]; then
+    PF_LOCAL_ONLY_WHY="push.mode is recorded as local-only"
+    return 0
+  fi
+  local q
+  for q in "$PF_Q_NOPUSH" "$PF_Q_UNREACHABLE" "$PF_Q_SLOW_REMOTE"; do
+    if pf_settled "$q" && pf_answer_means_local_only "$PF_SETTLED"; then
+      PF_LOCAL_ONLY_WHY="you answered [$PF_SETTLED_ID] \"$PF_SETTLED\""
+      return 0
+    fi
+  done
+  return 1
+}
+
+# pf_remote_reachable <remote> → 0 reachable | 2 reachable but has NO refs yet
+#                                124 it outran the bound | anything else: no
+#
+# A NAME IS NOT A REACHABILITY CHECK, AND THAT WAS MEASURED. `git remote
+# get-url` only proves a line of config exists: pointed at
+# `https://github.invalid.example/nope/nope.git` and at a dead local path, the
+# old check printed "Somewhere to push: origin -> … — not asking" and returned
+# in 0.4s, which is itself the proof it never spoke to the other end. A deleted
+# repo, a typo'd host and revoked auth all leave that config line intact and die
+# at the pull-request gate at 03:00 — the fourth dead night's exact class.
+# `ls-remote` is the cheapest call that actually reaches the far side.
+#
+# EVERY INTERACTIVE DOOR IS SHUT, and the obvious one is not the one that bites:
+# git PREFERS $GIT_ASKPASS over the terminal, so GIT_TERMINAL_PROMPT=0 ALONE was
+# measured still hanging (600.1s in one case — the trace is in
+# lcars-version/check.sh). These four muzzles are that file's shape, plus ssh
+# BatchMode for a `git@` remote, plus `pf_bounded` over the lot.
+pf_remote_reachable() {
+  local rc
+  pf_bounded "$PROBE_TIMEOUT" env \
+    GIT_TERMINAL_PROMPT=0 GIT_ASKPASS= SSH_ASKPASS= \
+    GIT_SSH_COMMAND='ssh -oBatchMode=yes -oConnectTimeout=5' \
+    "$GIT_BIN" -C "$CWD" -c core.askPass= ls-remote --exit-code "$1"
+  rc=$?
+  # `--exit-code` says 2 for "no matching refs", which on a bare `ls-remote` is
+  # an EMPTY remote — a brand-new forge repo. It answered, so it is reachable.
+  return $rc
+}
+
+# pf_dir_usable <path> — can a throwaway worktree actually be made under it?
+#
+# ASKING EARLY IS THE WHOLE POINT, so an answer that cannot work has to be
+# caught while he is still in the room. Measured: `/nonexistent/…`,
+# `/System/Library` (real, unwritable) and a bare `ok` — recorded verbatim as a
+# RELATIVE launchDir — were all accepted, and each one fails hours later inside
+# `worktree`, with nobody there.
+pf_dir_usable() {
+  local d="$1"
+  case "$d" in /*) ;; *) return 1 ;; esac
+  # The nearest EXISTING ancestor decides it: a directory that is not there yet
+  # is fine so long as it can be created.
+  while [ -n "$d" ] && [ "$d" != / ] && [ ! -d "$d" ]; do
+    d="${d%/*}"
+    [ -n "$d" ] || d=/
+  done
+  [ -d "$d" ] && [ -w "$d" ]
+}
+
+# ==========================================================================
+# ap_withdraw — a prerequisite that is NOW SATISFIED retires its OWN question
+# ==========================================================================
+# THE DEFECT. After `git remote add origin …`, preflight printed `proceeding`
+# while `status` still showed `open questions: 1 [q5] … this repo has no origin
+# remote` and `next` said `answer-pending`. The captain had to hand-answer a
+# question that was no longer true to unstick a run that was already unstuck.
+# The cure is not a sixth careful reader: the check that RAISED the question is
+# the one thing that knows the prerequisite is cured, so it is the thing that
+# retires it — keyed on the same `what` the raise path dedupes on.
+#
+# IT NEVER DELETES, exactly like `answered`: the question stays on the record
+# with the withdrawal beside it. `withdrawnAt` is what stops a withdrawal from
+# ever reading as the captain's own decision (see `pf_settled`), so a
+# prerequisite that breaks, is cured, and then breaks AGAIN earns a real new
+# question instead of silently proceeding on a retirement note.
+#
+# IT DOES NOT NOTIFY. `write_pending` holds this script's ONE notify call site;
+# retiring a question is not a new event for the captain.
+ap_withdraw() { # <what> <reason> → prints the ids it retired, space-joined
+  [ -f "$APJSON" ] || return 0
+  ap_lock
+  "$PY" - "$APJSON" "$1" "$2" "$(now)" <<'PY'
+import json, os, sys
+f, what, reason, ts = sys.argv[1:5]
+try:
+    d = json.load(open(f))
+except Exception:
+    sys.exit(0)
+qs = d.get("questions")
+if not isinstance(qs, dict):
+    sys.exit(0)
+hit = []
+for k in sorted(qs):
+    q = qs[k]
+    if isinstance(q, dict) and not q.get("answeredAt") and q.get("what") == what:
+        q["answeredAt"] = int(ts)
+        q["withdrawnAt"] = int(ts)
+        q["answer"] = reason
+        hit.append(q.get("id") or k)
+if not hit:
+    sys.exit(0)
+d["questions"] = qs
+openq = [q for q in qs.values() if isinstance(q, dict) and not q.get("answeredAt")]
+openq.sort(key=lambda q: (q.get("raisedAt") or 0, q.get("id") or ""))
+d["pending"] = dict(openq[0]) if openq else {}
+tmp = f + ".tmp.%d" % os.getpid()
+with open(tmp, "w") as fh:
+    json.dump(d, fh, indent=2)
+    fh.write("\n")
+os.replace(tmp, f)
+sys.stdout.write(" ".join(hit))
+PY
+  ap_unlock
+  return 0
+}
+
+# pf_withdraw_say <what> <reason> — withdraw, and SAY SO when something moved.
+# Silent when there was nothing open, so a healthy repo gains no noise.
+pf_withdraw_say() {
+  local ids; ids="$(ap_withdraw "$1" "$2")"
+  [ -n "$ids" ] || return 0
+  say "   WITHDRAWN [$ids]: that prerequisite is satisfied now, so its question is"
+  say "   closed on the record — you do not have to answer a question that is no"
+  say "   longer true to unstick your own run."
+  return 0
+}
+
+# pf_settled <what>
+#   rc 0  he HAS answered this exact question: $PF_SETTLED is his answer and
+#         $PF_SETTLED_ID is the question's id
+#   rc 1  he never has
+# It sets GLOBALS rather than echoing, for the reason `pf_prompt` carries the
+# same note: a `$(…)` caller would run the whole thing in a subshell and lose
+# the id every time.
+#
+# THE ESCAPE HATCH THE TOOL PRINTS HAS TO WORK. preflight and HOLOGRAM-COMMAND-MODE.md both
+# promise "settle it with `answered <id> …`, or fix the cause". Measured: the
+# answer was recorded and then NOTHING READ IT, so the next preflight minted a
+# byte-identical clone — `write_pending`'s dedupe is over the OPEN set only, by
+# design, because a problem that RECURS after he answered is a real new event.
+# Four attempts produced q1, q2, q3, q4, q5: one question, five times, in the
+# inbox of a man answering from his phone. That is the interrupt-budget
+# violation § 9 forbids. His answer is now CONSUMED — on a prerequisite
+# preflight cannot default, his recorded decision is the authority, and it is
+# read BEFORE anything is raised.
+pf_settled() {
+  PF_SETTLED=""
+  PF_SETTLED_ID=""
+  [ -f "$APJSON" ] || return 1
+  local out
+  out="$("$PY" - "$APJSON" "$1" <<'PY'
+import json, sys
+f, what = sys.argv[1:3]
+try:
+    d = json.load(open(f))
+except Exception:
+    sys.exit(0)
+qs = (d.get("questions") or {})
+best = None
+for k in sorted(qs):
+    q = qs[k]
+    if not isinstance(q, dict):
+        continue
+    # A WITHDRAWAL IS NOT A DECISION: preflight wrote that answer itself.
+    if q.get("withdrawnAt"):
+        continue
+    if q.get("what") != what or not q.get("answeredAt"):
+        continue
+    if not q.get("answer"):
+        continue
+    if best is None or (q.get("answeredAt") or 0) >= (best.get("answeredAt") or 0):
+        best = q
+if best is None:
+    sys.exit(0)
+sys.stdout.write("%s\n%s" % (best.get("id") or "?",
+                             (best.get("answer") or "").replace("\n", " ")))
+PY
+)"
+  [ -n "$out" ] || return 1
+  PF_SETTLED_ID="$(printf '%s' "$out" | sed -n '1p')"
+  PF_SETTLED="$(printf '%s' "$out" | sed -n '2,$p')"
+  [ -n "$PF_SETTLED" ] || return 1
+  return 0
+}
+
+# pf_stop <what> <why> <command> <rollback>
+#   rc 0  it STOPPED: PF_STOPS is up and the question is on the record
+#   rc 1  the captain had ALREADY ANSWERED this exact question — nothing was
+#         raised and nothing stopped. His answer is echoed by the caller from
+#         $PF_SETTLED / $PF_SETTLED_ID.
+#
+# EVERY deliberate stop goes through here, so "settleable" and "never minted
+# twice" are properties of ONE path rather than four call sites that each have
+# to remember. `write_pending` behind it keeps the (mission, what) dedupe over
+# the open set, the single notify site, and the printed `answered <id>` line.
+PF_SETTLED=""
+pf_stop() {
+  if pf_settled "$1"; then
+    return 1
+  fi
+  PF_STOPS=$((PF_STOPS + 1))
+  write_pending "-" "$1" "$2" "$3" "$4"
+  return 0
+}
+
+# pf_in_foreground — are we the terminal's FOREGROUND process group? Only that
+# group may read the terminal; any other is stopped with SIGTTIN the moment it
+# tries. `ps -o tpgid=` is the shell-visible `tcgetpgrp()`.
+#
+# IT FAILS OPEN ON PURPOSE. If `ps` cannot answer (no such field, no such
+# process, a stripped container) this returns 0 — "assume foreground" — because
+# the other two defences are still there: SIGTTIN is ignored for the round, so
+# the read fails rather than stopping us, and the read is bounded besides. An
+# instrument that cannot measure must not invent a verdict.
+pf_in_foreground() {
+  local fg mine
+  fg="$(ps -o tpgid= -p $$ 2>/dev/null | tr -d ' ')"
+  mine="$(ps -o pgid= -p $$ 2>/dev/null | tr -d ' ')"
+  case "$fg" in ''|*[!0-9-]*) return 0 ;; esac
+  case "$mine" in ''|*[!0-9]*) return 0 ;; esac
+  PF_FG_PGID="$fg"; PF_MY_PGID="$mine"
+  # -1 is "this terminal has no foreground group", i.e. nobody can read it.
+  [ "$fg" != "-1" ] || return 1
+  [ "$fg" = "$mine" ]
+}
+PF_FG_PGID=""
+PF_MY_PGID=""
+
+# pf_tty_present — is there a human to ask? See the header for all THREE halves
+# and for what they still miss. Sets $PF_NO_TTY_WHY on every `no`.
+pf_tty_present() {
+  # THE DEEPEST FACT FIRST, so the printed reason is the most informative one
+  # that is true. A detached daemon has no controlling terminal AND a redirected
+  # stdin; saying "stdin is a redirect" about it is true and useless. All three
+  # must hold either way, so the order changes only what it tells him.
+  if ! ( exec 3<>/dev/tty ) 2>/dev/null; then
+    PF_NO_TTY_WHY="there is no /dev/tty: this process has no controlling terminal at all"
+    return 1
+  fi
+  if [ ! -t 0 ]; then
+    PF_NO_TTY_WHY="stdin is not a terminal (a redirect or a pipe), which this repo reads as unattended"
+    return 1
+  fi
+  if ! pf_in_foreground; then
+    PF_NO_TTY_WHY="this is a BACKGROUND job (the terminal's foreground group is ${PF_FG_PGID:-?}, ours is ${PF_MY_PGID:-?}) — reading the terminal would stop it with SIGTTIN and it would never come back"
+    return 1
+  fi
+  return 0
+}
+
+# pf_prompt <question> <recommended> → sets PF_VALUE
+#   rc 0  a value was chosen (typed, or the RECOMMENDED default he accepted)
+#   rc 1  NOBODY ANSWERED — no terminal, the read ran out, or he returned on a
+#         question that has no honest default. The CALLER then decides whether
+#         to proceed or stop, and must never loop back and ask again.
+# It sets a GLOBAL rather than echoing: a `$(…)` call would put the whole thing
+# in a subshell and lose PF_ASKED and PF_YES_TO_ALL on every question.
+pf_prompt() {
+  local q="$1" rec="$2" ans=""
+  PF_VALUE=""
+  [ "$PF_TTY" = 1 ] || return 1
+  # "yes to all" already said: take this default with no further prompt.
+  if [ "$PF_YES_TO_ALL" = 1 ] && [ -n "$rec" ]; then PF_VALUE="$rec"; return 0; fi
+  {
+    printf '\n%s\n' "$q"
+    if [ -n "$rec" ]; then
+      printf '   RECOMMENDED: %s%s%s\n' "$PF_BOLD" "$rec" "$PF_NORM"
+      printf '   [return] takes it; "yes" takes every remaining RECOMMENDED default.\n'
+    else
+      printf '   NO RECOMMENDATION — there is nothing here that is honest to guess.\n'
+    fi
+    printf '> '
+  } >/dev/tty 2>/dev/null
+  PF_ASKED=$((PF_ASKED + 1))
+  if ! IFS= read -r -t "$ASK_TIMEOUT" ans </dev/tty 2>/dev/null; then
+    # A TERMINAL WITH NOBODY BEHIND IT — the case detection cannot see. One
+    # unanswered question settles the whole block, because three timeouts in a
+    # row buy three times the delay for the same conclusion.
+    #
+    # IT MAY ALSO HAVE FAILED INSTANTLY, so the message no longer asserts the
+    # timeout. With SIGTTIN ignored (see `cmd_preflight`) a background job's read
+    # RETURNS AN ERROR instead of stopping the process, which is the whole point
+    # of ignoring it — and saying "nobody answered inside 120s" about a read that
+    # failed in a millisecond is a measurement the line cannot support.
+    PF_TTY=0
+    PF_ASKED=$((PF_ASKED - 1))
+    say ""
+    say "   NOBODY ANSWERED (the read came back with nothing, inside its ${ASK_TIMEOUT}s"
+    say "   bound or because the terminal refused it) — taking that as nobody being here."
+    return 1
+  fi
+  case "$ans" in
+    y|Y|yes|YES|Yes|a|A|all|ALL|'yes to all') PF_YES_TO_ALL=1; ans="" ;;
+  esac
+  if [ -z "$ans" ]; then
+    # Return on a question with no recommendation is NOT an answer.
+    [ -n "$rec" ] || return 1
+    PF_VALUE="$rec"
+    return 0
+  fi
+  PF_VALUE="$ans"
+  return 0
+}
+
+# pf_missions_without_issue → the ids LCARS ITSELF recorded as having no forge
+# issue, comma-joined. RECORD, DON'T INFER: `githubIssue: null` in a mission's
+# own state.json is LCARS saying it had no forge to reach. The gate that could
+# not open a PR re-derived its own view and never read this line.
+pf_missions_without_issue() {
+  [ -d "$MISSIONS" ] || return 0
+  "$PY" - "$MISSIONS" <<'PY'
+import json, os, sys
+root = sys.argv[1]
+out = []
+try:
+    names = sorted(os.listdir(root))
+except OSError:
+    sys.exit(0)
+for n in names:
+    p = os.path.join(root, n, "state.json")
+    if not os.path.isfile(p):
+        continue
+    try:
+        d = json.load(open(p))
+    except Exception:
+        continue
+    if d.get("stage") == "done":
+        continue
+    # The KEY MUST BE PRESENT and null. An absent key is a mission filed before
+    # the field existed, which says nothing either way; null is a statement.
+    if "githubIssue" in d and d["githubIssue"] is None:
+        out.append(d.get("id") or n)
+sys.stdout.write(", ".join(out))
+PY
+}
+
+# --- question 1: where the launch copies go --------------------------------
+# PROCEEDS on its default with nobody there. A throwaway directory overwrites
+# nothing and is trivially defaultable; stopping a night over it would be the
+# very waste this preflight exists to prevent.
+pf_q_launch_dir() {
+  local rec recorded
+  recorded="$(ap_j launchDir)"
+  if [ -n "$recorded" ]; then
+    say ""
+    say "1. Where the launch copies go: already recorded ($recorded) — not asking."
+    pf_withdraw_say "$PF_Q_NO_LAUNCH_DIR" "withdrawn by preflight: launchDir is recorded as $recorded."
+    return 0
+  fi
+  rec="${TMPDIR:-/tmp}"
+  rec="${rec%/}"
+  if pf_prompt "1. Where do the launch copies go? Every live check runs from a throwaway worktree and a throwaway HOME made under this directory." "$rec"; then
+    # AN ANSWER THAT CANNOT WORK IS NOT AN ANSWER. Checked while he is in the
+    # room, which is the whole reason this round happens here. It is NOT re-asked
+    # (`pf_prompt`'s contract forbids looping back): the vetted default is taken
+    # instead and said out loud, which is this question's standing character.
+    if pf_dir_usable "$PF_VALUE"; then
+      ap_set launchDir "$PF_VALUE"
+      say ""
+      say "1. Where the launch copies go: recorded launchDir = $PF_VALUE"
+      pf_withdraw_say "$PF_Q_NO_LAUNCH_DIR" "withdrawn by preflight: launchDir is now $PF_VALUE."
+      return 0
+    fi
+    say ""
+    # TWO REFUSALS, TWO REMEDIES (S300 fix5). Both reasons used to print the
+    # same advice — "re-run preflight after `mkdir -p <dir>`" — which is the fix
+    # for a MISSING directory and the wrong fix for a relative one: nothing is
+    # missing there, the path is merely ambiguous, and `mkdir -p ok` would
+    # "succeed" and leave the same refusal in place.
+    case "$PF_VALUE" in
+      /*)
+        say "1. Where the launch copies go: $PF_VALUE is NOT WRITABLE (nor is the nearest"
+        say "   directory above it that exists), so no worktree could be made there."
+        say "   NOT RECORDED. Taking the default instead: $rec"
+        say "   (make it writable — or \`mkdir -p $PF_VALUE\` if it is simply not there —"
+        say "    then re-run \`$SELF_CMD preflight\`, or set it directly with"
+        say "    \`$SELF_CMD record launchDir <dir>\`)"
+        ;;
+      *)
+        say "1. Where the launch copies go: \"$PF_VALUE\" is not an absolute path, so it"
+        say "   would be recorded relative to wherever a later command happened to run."
+        say "   NOT RECORDED. Taking the default instead: $rec"
+        say "   (nothing is missing here and there is nothing to create: give the SAME"
+        say "    directory as an ABSOLUTE path, one starting with \`/\`, then re-run"
+        say "    \`$SELF_CMD preflight\` — or set it directly with"
+        say "    \`$SELF_CMD record launchDir /absolute/dir\`)"
+        ;;
+    esac
+  else
+    say ""
+    say "1. Where the launch copies go — WOULD HAVE ASKED. Proceeding with: $rec"
+    say "   (a throwaway directory overwrites nothing, so taking the default is free;"
+    say "    stopping the night over it would not be)"
+  fi
+  if pf_dir_usable "$rec"; then
+    ap_set launchDir "$rec"
+    pf_withdraw_say "$PF_Q_NO_LAUNCH_DIR" "withdrawn by preflight: launchDir is now $rec."
+    return 0
+  fi
+  # THE DEFAULT ITSELF IS UNUSABLE. There is now nowhere on this machine to make
+  # the throwaway worktree every live check runs from, which no default can
+  # invent, so this one DOES stop — settleable and self-retiring like the rest.
+  say "   And the default is not usable either: $rec"
+  if pf_settled "$PF_Q_NO_LAUNCH_DIR"; then
+    say "   SETTLED BY YOU [$PF_SETTLED_ID] — \"$PF_SETTLED\". Proceeding on your answer."
+    return 0
+  fi
+  say "   STOPPING deliberately: a live check cannot run from a directory it cannot write."
+  pf_stop "$PF_Q_NO_LAUNCH_DIR" \
+    "every live check runs from a throwaway worktree and a throwaway HOME made under launchDir, and neither the answer given nor the ${TMPDIR:+TMPDIR }default ($rec) is a writable absolute path." \
+    "mkdir -p <dir> && $SELF_CMD record launchDir <dir>   # then: $SELF_CMD preflight" \
+    "nothing has run, so there is nothing to undo."
+  return 0
+}
+
+# --- question 2: is a test command recorded --------------------------------
+# PROCEEDS with nobody there, because LCARS ALREADY HAS a deliberate answer for
+# a repo with no test system: `next` names `foundation`, which sets one up as
+# the run's first step. The gap has a recorded route, so it does not need him
+# awake — and the alternative (guess a command) is actively worse than the gap.
+pf_q_test_command() {
+  local tc
+  tc="$(ap_j testCommand)"
+  [ -n "$tc" ] || tc="$(jfile "$CFG" testCommand)"
+  if [ -n "$tc" ]; then
+    say ""
+    say "2. The test command the push gate runs: already recorded ($tc) — not asking."
+    return 0
+  fi
+  if pf_prompt "2. No test command is recorded, so the push gate has nothing to gate on. Type the suite command, or take the default." "$PF_TC_FOUNDATION"; then
+    say ""
+    if [ "$PF_VALUE" != "$PF_TC_FOUNDATION" ]; then
+      ap_set testCommand "$PF_VALUE"
+      say "2. The test command: recorded testCommand = $PF_VALUE"
+    else
+      say "2. The test command: left to the foundation step — nothing recorded."
+    fi
+    return 0
+  fi
+  say ""
+  say "2. The test command — WOULD HAVE ASKED. Proceeding with: $PF_TC_FOUNDATION"
+  say "   (nothing is recorded, deliberately: a guessed suite either refuses every"
+  say "    push or passes vacuously and pushes red. \`next\` names the foundation"
+  say "    step, which sets a real one up as this run's first piece of work)"
+  return 0
+}
+
+# --- question 3: is there somewhere to push, and does it ANSWER -------------
+# STOPS DELIBERATELY with nobody there. There is nothing honest to invent: with
+# no remote nothing can be pushed and no pull request can be opened, so the run
+# dies at the gate whatever happens next. Stopping at second zero costs a
+# message; finding out at 03:00 costs the night — that is the fourth failure.
+#
+# AND IT SPEAKS TO THE OTHER END (fix 2). A `remote get-url` is a NAME CHECK: it
+# proves a config line exists, which a deleted repo, a typo'd host and revoked
+# auth all satisfy. See `pf_remote_reachable` for the measurement and for why
+# the probe is bounded.
+pf_q_somewhere_to_push() {
+  local url noissue
+  url="$("$GIT_BIN" -C "$CWD" remote get-url origin 2>/dev/null || true)"
+  noissue="$(pf_missions_without_issue)"
+
+  if [ -z "$url" ]; then
+    # HIS ANSWER FIRST. A question he has already answered is settled; minting a
+    # clone of it is the defect fix 4 closes.
+    if pf_settled "$PF_Q_NOPUSH"; then
+      say ""
+      say "3. Somewhere to push: SETTLED BY YOU [$PF_SETTLED_ID] — \"$PF_SETTLED\""
+      pf_apply_push_answer "$PF_SETTLED"
+      return 0
+    fi
+    # `record localOnly true` IS A DECISION, NOT A NOTE (S300 fix2). Measured:
+    # it was accepted silently — "recorded localOnly" — and then nothing read
+    # it, so a repo with no remote kept stopping. It looked like it had worked
+    # and did nothing, which is the worst of the three available behaviours.
+    # `cmd_record` now maps it onto `push.mode`, and this is the read.
+    if [ "$(ap_j push.mode)" = "local-only" ]; then
+      say ""
+      say "3. Somewhere to push: NOT ASKING — push.mode is recorded as local-only, so"
+      say "   nothing is pushed and no pull request is opened, and a remote is not"
+      say "   needed. (undo: \`$SELF_CMD record push.mode origin\`)"
+      pf_withdraw_say "$PF_Q_NOPUSH" "withdrawn by preflight: the run is recorded as local-only, so there is nothing to push."
+      return 0
+    fi
+    if pf_prompt "3. There is nowhere to push: this repo has no \`origin\` remote, so nothing can be pushed and no pull request can be opened. Paste a remote URL to add, or type \`local\` to accept a local-only run." ""; then
+      say ""
+      pf_apply_push_answer "$PF_VALUE"
+      return 0
+    fi
+    say ""
+    say "3. Somewhere to push — WOULD HAVE ASKED, and there is NOTHING to default to."
+    say "   STOPPING deliberately. There is nowhere to push: no \`origin\` remote, so"
+    say "   nothing can be pushed and no pull request can be opened. A run that finds"
+    say "   this out at 03:00 loses the rest of the night, and no part of the run can"
+    say "   detect it or recover from it."
+    if [ -n "$noissue" ]; then
+      say "   LCARS had already recorded it: $noissue has githubIssue: null in its own state.json."
+    fi
+    pf_stop "$PF_Q_NOPUSH" \
+      "preflight stops on this instead of starting a run that cannot finish. There is nothing honest to default to, and a night that discovers it at the gate is a night lost with no way to ask." \
+      "cd $CWD && $GIT_BIN remote add origin <url>   # then: $SELF_CMD preflight" \
+      "nothing has run, so there is nothing to undo; the add itself reverses with \`cd $CWD && $GIT_BIN remote remove origin\`."
+    return 0
+  fi
+
+  # A RECORDED LOCAL-ONLY RUN IS NOT OVERRULED BY A REMOTE BEING PRESENT
+  # (S300 fix2). The old body wrote `push.mode = origin` unconditionally, which
+  # silently undid `record localOnly true` in any repo that happened to have an
+  # origin — and then probed a remote the run was never going to use.
+  if [ "$(ap_j push.mode)" = "local-only" ]; then
+    say ""
+    say "3. Somewhere to push: origin -> $url exists, but this run is recorded as"
+    say "   local-only, so it is neither used nor probed. Nothing is pushed and no"
+    say "   pull request is opened. (undo: \`$SELF_CMD record push.mode origin\`)"
+    pf_withdraw_say "$PF_Q_NOPUSH" "withdrawn by preflight: the run is recorded as local-only, so there is nothing to push."
+    pf_withdraw_say "$PF_Q_UNREACHABLE" "withdrawn by preflight: the run is recorded as local-only, so the remote is not used."
+    pf_withdraw_say "$PF_Q_SLOW_REMOTE" "withdrawn by preflight: the run is recorded as local-only, so the remote is not used."
+    return 0
+  fi
+  say ""
+  say "3. Somewhere to push: origin -> $url — not asking."
+  ap_set push.mode origin
+  ap_set push.remote "$url"
+  # THE PREREQUISITE IS SATISFIED, so its question retires itself (fix 4).
+  pf_withdraw_say "$PF_Q_NOPUSH" "withdrawn by preflight: origin is now $url, so there is somewhere to push."
+  if [ -n "$noissue" ]; then
+    # SURFACED AT THE GATE, from the record. A push will work; opening a PR
+    # for this mission will not, and this is the line the 2026-10-15 run had
+    # on disk and never read.
+    say "   BUT LCARS ALREADY RECORDED a Mission it could not get a forge issue for:"
+    say "     $noissue  (githubIssue: null in its own state.json)"
+    say "   Pushing works; opening a pull request for that Mission will not until it has one."
+  fi
+  pf_check_reachable "$url"
+  return 0
+}
+
+# pf_apply_push_answer <answer> — the ONE reader of an answer to question 3,
+# whether he typed it just now or recorded it with `answered` days ago. Three
+# outcomes, and none of them is "ask again".
+pf_apply_push_answer() {
+  local ans="$1" low
+  low="$(printf '%s' "$ans" | tr 'A-Z' 'a-z')"
+  # LOCAL-ONLY, in his words — `pf_answer_means_local_only` owns the list of
+  # ways a man says "don't push", so this reader and the forge-login check
+  # (S300 fix2) cannot disagree about what he meant.
+  if pf_answer_means_local_only "$ans"; then
+    ap_set push.mode local-only
+    ap_set push.remote ""
+    say "3. Somewhere to push: recorded push.mode = local-only — nothing will be"
+    say "   pushed and no pull request opened. Your call, and it is on the record."
+    pf_withdraw_say "$PF_Q_NOPUSH" "withdrawn by preflight: you chose a local-only run, so there is nothing left to answer."
+    return 0
+  fi
+  case "$low" in
+    *://*|*@*:*|/*|*.git)
+      if "$GIT_BIN" -C "$CWD" remote add origin "$ans" 2>/dev/null; then
+        ap_set push.mode origin
+        ap_set push.remote "$ans"
+        say "3. Somewhere to push: added origin -> $ans"
+        say "   undo:  cd $CWD && $GIT_BIN remote remove origin"
+        pf_withdraw_say "$PF_Q_NOPUSH" "withdrawn by preflight: origin was added as $ans."
+        pf_check_reachable "$ans"
+      else
+        say "3. Somewhere to push: could NOT add origin -> $ans (git refused it)."
+        say "   Add it by hand, then re-run \`$SELF_CMD preflight\`."
+        PF_STOPS=$((PF_STOPS + 1))
+      fi
+      ;;
+    *)
+      # SOMETHING THAT IS NEITHER. Say so and stop — but raise NOTHING: either a
+      # human is in the room right now, or this came from a question he has
+      # already answered, and a clone of it in his inbox is the thing fix 4
+      # exists to stop.
+      say "3. Somewhere to push: \"$ans\" is neither a remote URL nor a local-only"
+      say "   decision, so preflight cannot act on it. STOPPING, and raising nothing new."
+      say "   Either:  cd $CWD && $GIT_BIN remote add origin <url>"
+      say "   or:      $SELF_CMD answered ${PF_SETTLED_ID:-<id>} \"local-only\""
+      PF_STOPS=$((PF_STOPS + 1))
+      ;;
+  esac
+  return 0
+}
+
+# pf_check_reachable <url> — the reachability half of question 3.
+# A FACT CHECK, SO IT NEVER PROMPTS. Nothing he could type into this process
+# makes a dead host answer; the two real moves are a command (fix the URL) or a
+# decision (`answered <id> "push anyway"`), and the second one is exactly what a
+# recorded question is for. So this stops with a settleable question even when a
+# human is present, and `PF_ASKED` is untouched.
+pf_check_reachable() {
+  local url="$1" rc
+  pf_remote_reachable origin
+  rc=$?
+  case "$rc" in
+    0|2)
+      if [ "$rc" = 2 ]; then
+        say "   reachable: git reached it; it has no refs yet (an empty remote — the first push fills it)."
+      else
+        say "   reachable: git reached it and read its refs. A name check would not have."
+      fi
+      pf_withdraw_say "$PF_Q_UNREACHABLE" "withdrawn by preflight: origin answers again ($url)."
+      pf_withdraw_say "$PF_Q_SLOW_REMOTE" "withdrawn by preflight: origin answered inside the ${PROBE_TIMEOUT}s bound ($url)."
+      return 0
+      ;;
+  esac
+  # A DEADLINE AND A REFUSAL ARE TWO DIFFERENT FINDINGS (S300 fix1), so they are
+  # two different questions with two different stories. The old code printed one
+  # headline for both and put the only honest distinction — `rc 124` — in small
+  # type under advice that contradicted it.
+  local qkey qother
+  if [ "$rc" = 124 ]; then
+    qkey="$PF_Q_SLOW_REMOTE"; qother="$PF_Q_UNREACHABLE"
+  else
+    qkey="$PF_Q_UNREACHABLE"; qother="$PF_Q_SLOW_REMOTE"
+  fi
+  say ""
+  if [ "$rc" = 124 ]; then
+    say "3b. The remote did not answer IN TIME, which is NOT the same as not answering:"
+    say "    the probe outran its ${PROBE_TIMEOUT}s bound (rc 124), so git never said no."
+    say "    Nothing here is evidence against the URL or the auth."
+  else
+    say "3b. The remote does NOT answer: \`git ls-remote origin\` failed (rc $rc)."
+  fi
+  say "    $url"
+  # HIS DECISION ABOUT THIS REMOTE COVERS BOTH READINGS. A remote that is slow
+  # one night and refusing the next would otherwise put a second, near-identical
+  # card in the inbox of a man who has already said what he wants done.
+  if pf_settled "$qkey" || pf_settled "$qother"; then
+    say "    SETTLED BY YOU [$PF_SETTLED_ID] — \"$PF_SETTLED\". Proceeding on your answer;"
+    say "    nothing is re-asked and no new question is raised."
+    return 0
+  fi
+  if [ "$rc" = 124 ]; then
+    say "    IT MAY SIMPLY BE SLOW. A cold VPN handshake, a monorepo with a huge ref"
+    say "    advertisement and a loaded forge all read exactly like this, and all three"
+    say "    are healthy. Time it by hand: if \`git ls-remote origin\` answers at all,"
+    say "    the remote is fine and this bound is just too short for it."
+    say "    STOPPING deliberately — but on a QUESTION, not a diagnosis. And THIS stop"
+    say "    cannot retire itself, because a slow remote stays slow: it will keep"
+    say "    stopping here until you settle it or widen the bound."
+    say "    Either:  $SELF_CMD answered <id> \"it's just slow\"   # clears it for good"
+    say "    or:      LCARS_ECH_PROBE_TIMEOUT=60 $SELF_CMD preflight"
+    pf_stop "$qkey" \
+      "the probe hit its ${PROBE_TIMEOUT}s DEADLINE before origin answered (rc 124) — a deadline, not a refusal: git never said no. It may simply be slow (a cold VPN handshake, a monorepo's huge ref advertisement, a loaded forge) and be perfectly healthy; nothing here says the URL or the auth is wrong. Only you can tell slow from dead: $url" \
+      "cd $CWD && $GIT_BIN ls-remote origin   # time it by hand: if it answers, it is just slow — then: $SELF_CMD answered <id> \"it's just slow\" (or run preflight with LCARS_ECH_PROBE_TIMEOUT=60)" \
+      "nothing has run, so there is nothing to undo."
+    return 0
+  fi
+  say "    STOPPING deliberately. A config line is not a reachable remote: a deleted"
+  say "    repo, a typo'd host and revoked auth all leave it intact and die at the"
+  say "    pull-request gate at 03:00, which is the fourth dead night exactly."
+  pf_stop "$qkey" \
+    "preflight probed it with a bounded \`git ls-remote\` (every credential prompt muzzled) and it did not answer: $url (rc $rc). The push and the pull request both need this." \
+    "cd $CWD && $GIT_BIN ls-remote origin   # see what it says, then fix the URL or the auth; or: $SELF_CMD answered <id> \"push anyway\"" \
+    "nothing has run, so there is nothing to undo."
+  return 0
+}
+
+# --- question 4: the forge login a pull request needs ----------------------
+# STOPS DELIBERATELY, and never prompts — a fact check, like 3b. No
+# authenticated forge CLI means no pull request, whatever the run builds: the
+# same class and the same cost as having no remote, and one command to check.
+# Nothing he can type into THIS process logs him in.
+pf_q_forge_login() {
+  local url rc
+  # ONE COMMAND SETTLES THE OFFLINE CASE (S300 fix2). `pf_local_only_recorded`
+  # reads push.mode AND a settled push question in his own words, so "ship
+  # local-only, no push" answered once clears this check too — it does not come
+  # back as a second card about a pull request nobody is opening.
+  if pf_local_only_recorded; then
+    say ""
+    say "4. The forge login a pull request needs: NOT CHECKED — this run is local-only"
+    say "   ($PF_LOCAL_ONLY_WHY), so nothing is pushed and no"
+    say "   pull request is opened. A login cannot be needed for one."
+    pf_withdraw_say "$PF_Q_FORGE_LOGIN" "withdrawn by preflight: the run is local-only, so no pull request is opened and no login is needed."
+    return 0
+  fi
+  url="$(ap_j push.remote)"
+  if [ -n "$url" ] && ! pf_remote_is_forge "$url"; then
+    say ""
+    say "4. The forge login a pull request needs: not asking — origin is a local path"
+    say "   ($url), which has no account to log in to."
+    pf_withdraw_say "$PF_Q_FORGE_LOGIN" "withdrawn by preflight: origin is a local path, which has no forge account."
+    return 0
+  fi
+  if ! command -v "$GH_BIN" >/dev/null 2>&1 && [ ! -x "$GH_BIN" ]; then
+    say ""
+    say "4. The forge login a pull request needs: the forge CLI \`$GH_BIN\` is not on PATH."
+    if pf_settled "$PF_Q_FORGE_LOGIN"; then
+      say "   SETTLED BY YOU [$PF_SETTLED_ID] — \"$PF_SETTLED\". Proceeding on your answer;"
+      say "   nothing is re-asked and no new question is raised."
+      return 0
+    fi
+    say "   STOPPING deliberately — no CLI, no pull request, and no way to ask at 03:00."
+    pf_stop "$PF_Q_FORGE_LOGIN" \
+      "the forge CLI ($GH_BIN) is not on PATH, so the run can build and push and still never open the pull request it exists to open." \
+      "install the GitHub CLI, then: $GH_BIN auth login   # then: $SELF_CMD preflight" \
+      "nothing has run, so there is nothing to undo."
+    return 0
+  fi
+  pf_bounded "$PROBE_TIMEOUT" "$GH_BIN" auth status
+  rc=$?
+  if [ "$rc" = 0 ]; then
+    say ""
+    say "4. The forge login a pull request needs: \`$GH_BIN auth status\` says logged in — not asking."
+    pf_withdraw_say "$PF_Q_FORGE_LOGIN" "withdrawn by preflight: $GH_BIN auth status now reports a logged-in account."
+    return 0
+  fi
+  say ""
+  if [ "$rc" = 124 ]; then
+    say "4. The forge login a pull request needs: \`$GH_BIN auth status\` outran its ${PROBE_TIMEOUT}s bound."
+  else
+    say "4. The forge login a pull request needs: \`$GH_BIN auth status\` says NOT logged in (rc $rc)."
+  fi
+  if pf_settled "$PF_Q_FORGE_LOGIN"; then
+    say "   SETTLED BY YOU [$PF_SETTLED_ID] — \"$PF_SETTLED\". Proceeding on your answer;"
+    say "   nothing is re-asked and no new question is raised."
+    return 0
+  fi
+  say "   STOPPING deliberately. No login, no pull request — the run would build all"
+  say "   night and have nowhere to deliver it, and nothing inside it can log you in."
+  pf_stop "$PF_Q_FORGE_LOGIN" \
+    "preflight ran a bounded \`$GH_BIN auth status\` and it reported no usable login (rc $rc). Pushing may work; opening the pull request will not." \
+    "$GH_BIN auth login   # then: $SELF_CMD preflight" \
+    "nothing has run, so there is nothing to undo."
+  return 0
+}
+
+# --- question 5: the engine's unattended permission ------------------------
+# THE BIGGEST GAP OF THE FOUR DEAD NIGHTS, and the subject of this playbook's
+# OPENING SECTION: with COPILOT_ALLOW_ALL unset, a measured EEH round was
+# refused on every command — including read-only ones — with "Permission denied
+# because no interactive user response was available", after four rounds had
+# worked. From outside, that blocked run and a healthy idle one are identical,
+# and nothing inside it can detect or recover from it. Three of the four nights
+# are this one fact, and the preflight that exists to prevent them did not
+# mention it.
+#
+# STOPS DELIBERATELY, and never prompts. There is nothing to default to and
+# nothing he can type HERE that would help: the variable must be exported in the
+# shell that LAUNCHES the run — this process's parent — and a child cannot set
+# its parent's environment. So the honest move is to stop at second zero with
+# the one command that fixes it. `answered <id> "…"` is his override, and it is
+# consumed on the next run.
+#
+# ENGINE-AWARE: a copilot fact. A claude run is unaffected and says so.
+# EXACTLY `true`: this playbook's own setup section is explicit that `1`, `yes`,
+# `on` and `y` auto-approve TOOLS without trusting the working directory, so a
+# truthy-but-wrong spelling is a FAILING value and is named as one. That is the
+# hardest version of this to debug at 03:00 and the cheapest to catch here.
+pf_q_engine_permission() {
+  local eng val how
+  eng="$(ap_j engine)"
+  [ -n "$eng" ] || eng="$(jfile "$CFG" engine)"
+  if [ "$eng" != "copilot" ]; then
+    say ""
+    say "5. The engine's unattended permission: not asking — engine is ${eng:-unset},"
+    say "   and COPILOT_ALLOW_ALL is a copilot fact."
+    pf_withdraw_say "$PF_Q_ALLOW_ALL" "withdrawn by preflight: the engine is ${eng:-unset}, so COPILOT_ALLOW_ALL does not apply."
+    return 0
+  fi
+  val="${COPILOT_ALLOW_ALL-}"
+  if [ "$val" = "true" ]; then
+    say ""
+    say "5. The engine's unattended permission: COPILOT_ALLOW_ALL=true is exported — not asking."
+    pf_withdraw_say "$PF_Q_ALLOW_ALL" "withdrawn by preflight: COPILOT_ALLOW_ALL=true is exported in this environment."
+    return 0
+  fi
+  say ""
+  if [ -n "$val" ]; then
+    say "5. The engine's unattended permission: COPILOT_ALLOW_ALL is set to \"$val\", which"
+    say "   is NOT the string \`true\`. Other truthy spellings (1, yes, on, y) only"
+    say "   auto-approve tools; they do not TRUST the working directory, so an"
+    say "   unattended copilot run is still refused on every command."
+  else
+    say "5. The engine's unattended permission: COPILOT_ALLOW_ALL is not set, so an"
+    say "   unattended copilot run is refused on every command — including read-only"
+    say "   ones — with \"Permission denied because no interactive user response was"
+    say "   available\". Nothing inside a blocked run can detect or recover from it."
+  fi
+  if pf_settled "$PF_Q_ALLOW_ALL"; then
+    say "   SETTLED BY YOU [$PF_SETTLED_ID] — \"$PF_SETTLED\". Proceeding on your answer;"
+    say "   nothing is re-asked and no new question is raised."
+    return 0
+  fi
+  say "   STOPPING deliberately. This is what killed three of the four nights, and a"
+  say "   child process cannot export a variable into the shell that launched it."
+  if [ -n "$val" ]; then
+    how="set to \"$val\" rather than the string true"
+  else
+    how="not set at all"
+  fi
+  pf_stop "$PF_Q_ALLOW_ALL" \
+    "the engine is copilot and COPILOT_ALLOW_ALL is $how. An unattended copilot run is then refused on every command, with no interactive user to approve it and no way for the run to recover." \
+    "export COPILOT_ALLOW_ALL=true   # in the shell you launch from, then: $SELF_CMD preflight" \
+    "nothing has run, so there is nothing to undo; unset the variable to reverse it."
+  return 0
+}
+
+# cmd_preflight — the one round. Exits 10 when something stopped it, which is
+# this driver's existing "a question for the captain was recorded" code.
+cmd_preflight() {
+  require_state
+  PF_TTY=0; PF_ASKED=0; PF_STOPS=0; PF_YES_TO_ALL=0
+  # THE SECOND DEFENCE, AND IT IS CHEAP. With SIGTTIN ignored, a background job
+  # that reads the terminal gets a FAILED read instead of being stopped dead in
+  # state `T` — and a failed read already means "nobody is there" here. Set for
+  # the round only, and reset after, so nothing else in the process inherits an
+  # opinion about job control. (TTOU for the same reason on the write side,
+  # which only bites when the terminal has TOSTOP set.)
+  trap '' TTIN TTOU 2>/dev/null || true
+  pf_tty_present && PF_TTY=1
+  if [ "$PF_TTY" = 1 ]; then
+    PF_BOLD="$(printf '\033[1m')"
+    PF_NORM="$(printf '\033[0m')"
+  else
+    PF_BOLD=""
+    PF_NORM=""
+  fi
+
+  say "preflight: the setup questions, asked NOW — once you have gone there is nobody to ask."
+  if [ "$PF_TTY" = 1 ]; then
+    say "  Answered once, compactly. Every question carries a RECOMMENDED default, so"
+    say "  \"yes\" is a valid answer to the whole block."
+  else
+    # NAMES THE REASON IT FOUND, not one guess for every case. "there is no
+    # /dev/tty to ask on" was printed even when stdin was merely redirected and
+    # again for a background job that had a perfectly good /dev/tty.
+    say "  NO TERMINAL TO ASK ON — $PF_NO_TTY_WHY, so nothing is"
+    say "  asked and nothing is waited on. Each item below prints the question it"
+    say "  WOULD have asked and the value it proceeds on, or stops on."
+  fi
+
+  pf_q_launch_dir
+  pf_q_test_command
+  pf_q_somewhere_to_push
+  pf_q_forge_login
+  pf_q_engine_permission
+
+  trap - TTIN TTOU 2>/dev/null || true
+  say ""
+  if [ "$PF_STOPS" -gt 0 ]; then
+    say "preflight: asked $PF_ASKED question(s); STOPPING — $PF_STOPS prerequisite(s) nobody can default."
+    say "  Settle it with \`$SELF_CMD answered <id> \"<what you decided>\"\` — that answer is"
+    say "  READ on the next run, so the same question is never raised twice — or fix the"
+    say "  cause and re-run \`$SELF_CMD preflight\`, which retires the question itself."
+    return 10
+  fi
+  say "preflight: asked $PF_ASKED question(s); proceeding."
+  return 0
+}
+
+# ==========================================================================
 # init
 # ==========================================================================
 cmd_init() {
@@ -563,7 +1720,7 @@ cmd_init() {
 
   if [ -f "$APJSON" ] && [ "$force" != 1 ]; then
     die "autopilot.json already exists at $APJSON — a run is already configured.
-  Pass --force to overwrite it, or edit one key with \`autopilot.sh record <key> <value>\`.
+  Pass --force to overwrite it, or edit one key with \`$SELF_CMD record <key> <value>\`.
   (Refusing by default because overwriting it would discard the captain's recorded answers.)" 1
   fi
 
@@ -641,18 +1798,52 @@ PY
   cat "$APJSON"
   say ""
   say "Next: answer the alignment round, then record the answers with"
-  say "  autopilot.sh record liveTargets.host <host>"
-  say "  autopilot.sh record captainOnlySteps '[{\"what\":\"…\",\"instructions\":\"…\",\"neededBy\":\"…\",\"done\":false}]'"
-  say "then follow $SKILLS_DIR/lcars-buddy/AUTOPILOT.md."
+  say "  $SELF_CMD record liveTargets.host <host>"
+  say "  $SELF_CMD record captainOnlySteps '[{\"what\":\"…\",\"instructions\":\"…\",\"neededBy\":\"…\",\"done\":false}]'"
+  say "then follow $SKILLS_DIR/lcars-eeh/HOLOGRAM-COMMAND-MODE.md."
+  say ""
+  # THE SWEEP RUNS WHILE HE IS STILL HERE. `init` is the one moment a human is
+  # reliably present, so the setup questions are asked here and not discovered
+  # at the gate hours later. A deliberate stop propagates (exit 10): there is no
+  # point naming the next step of a run that cannot finish.
+  cmd_preflight || return $?
   cmd_next
 }
 
 # ==========================================================================
 # record — the "record, don't infer" primitive the MODEL uses
 # ==========================================================================
+# cmd_record <dotted.key> [value]
+#
+# `localOnly` IS HONOURED, NOT JUST STORED (S300 fix2). MEASURED: `record
+# localOnly true` printed "recorded localOnly" and then NOTHING read it — a
+# repo with no remote kept stopping at question 3. An accepted key that does
+# nothing is a footgun: it reads as success. It is now an ALIAS onto the one key
+# preflight actually reads (`push.mode`), and it says so out loud, so the
+# captain can see which record his word landed in.
 cmd_record() {
   [ $# -ge 1 ] || die "record: <dotted.key> <value>"
   require_state
+  case "$1" in
+    localOnly|local-only|local_only|localonly)
+      case "$(printf '%s' "${2-true}" | tr 'A-Z' 'a-z')" in
+        true|yes|1|on|local-only|local)
+          ap_set push.mode local-only || die "record: could not write push.mode"
+          ap_set push.remote "" || die "record: could not write push.remote"
+          say "recorded $1 -> push.mode = local-only (the key preflight reads)"
+          say "  nothing will be pushed and no pull request opened; questions 3 and 4"
+          say "  are skipped. undo: $SELF_CMD record push.mode origin"
+          return 0
+          ;;
+        false|no|0|off)
+          ap_set push.mode "" || die "record: could not write push.mode"
+          say "recorded $1=false -> push.mode cleared (preflight will ask about pushing again)"
+          return 0
+          ;;
+      esac
+      die "record: $1 takes true or false (it maps onto push.mode), not \"${2-}\""
+      ;;
+  esac
   ap_set "$1" "${2-}" || die "record: could not write $1"
   say "recorded $1"
 }
@@ -801,7 +1992,20 @@ EOF
     IFS="$(printf '\t')" read -r r_action r_arg r_why <<EOF
 $(printf '%s\n' "$plan" | grep -v '^answer-pending' | head -1)
 EOF
-    if [ -n "${r_action:-}" ]; then
+    # EXCEPT a RUN-WIDE PREREQUISITE, which parks everything (S300 fix1).
+    # `--mission -` is how a question says it belongs to no milestone, and every
+    # preflight stop is exactly that: nowhere to push, no login, no engine
+    # permission. No other milestone works around a missing remote, and
+    # HOLOGRAM-COMMAND-MODE.md says plainly not to drive a milestone past a preflight stop —
+    # so printing `ALSO RUNNABLE: foundation` beside one was the driver
+    # contradicting the playbook, in the one place a model reads for its next
+    # move. § 9's rule is untouched: a question filed against a MILESTONE still
+    # parks only that milestone.
+    if open_questions | cut -f2 | grep -qx -- '-'; then
+      say "NOTHING ELSE IS OFFERED: that question is a run-wide prerequisite, not one"
+      say "  milestone's. Fix the cause (or answer it) and re-run \`$SELF_CMD preflight\`;"
+      say "  do not drive a milestone past a preflight stop."
+    elif [ -n "${r_action:-}" ]; then
       if [ "$r_arg" = "-" ]; then
         say "ALSO RUNNABLE: $r_action"
       else
@@ -834,7 +2038,7 @@ EOF
 cmd_status() {
   require_state
   local used; used="$(slots_in_use)"
-  say "AUTOPILOT — $CWD"
+  say "ECH — $CWD"
   say "  spec:     $(ap_j spec)"
   say "  engine:   $(ap_j engine)"
   say "  deadline: $(ap_j deadline)    last forecast: $(ap_j lastForecast)"
@@ -872,7 +2076,7 @@ cmd_status() {
     done <<EOF
 $qs
 EOF
-    say "    answer one with: autopilot.sh answered <id> \"<what he said>\""
+    say "    answer one with: $SELF_CMD answered <id> \"<what he said>\""
   else
     say "  open questions for the captain: none"
   fi
@@ -928,7 +2132,7 @@ cmd_drive() {
   local prior; prior="$(ap_j "drivers.$m.failures")"
   case "$prior" in ''|*[!0-9]*) prior=0 ;; esac
   if [ "$prior" -ge "$MAX_DRIVE_FAILURES" ]; then
-    die "drive: $m has already failed $prior drives in a row and the cap is $MAX_DRIVE_FAILURES — the captain has the question (\`autopilot.sh status\`). Clear it with \`autopilot.sh answered <id>\` or \`autopilot.sh record drivers.$m.failures ''\` once the cause is fixed." 11
+    die "drive: $m has already failed $prior drives in a row and the cap is $MAX_DRIVE_FAILURES — the captain has the question (\`$SELF_CMD status\`). Clear it with \`$SELF_CMD answered <id>\` or \`$SELF_CMD record drivers.$m.failures ''\` once the cause is fixed." 11
   fi
   local used; used="$(slots_in_use)"
   if [ "$used" -ge "$MAX_SLOTS" ]; then
@@ -947,7 +2151,7 @@ cmd_drive() {
   say "driving $m in the background (owner pid $wpid)"
   say "  log: $log"
   say "  the waiter blocks on the process and records the exit in autopilot.json;"
-  say "  ask \`autopilot.sh next\` / \`autopilot.sh stalled\` rather than reading the log."
+  say "  ask \`$SELF_CMD next\` / \`$SELF_CMD stalled\` rather than reading the log."
 }
 
 # _waiter <mission> <log> — internal. Starts the real driver as its own child.
@@ -978,10 +2182,10 @@ cmd_waiter() {
     ap_set "drivers.$m.failures" "$fails"
     if [ "$fails" -ge "$MAX_DRIVE_FAILURES" ]; then
       write_pending "$m" \
-        "$m has failed $fails drives in a row (last exit $rc) and the autopilot has stopped retrying it." \
+        "$m has failed $fails drives in a row (last exit $rc) and the ECH has stopped retrying it." \
         "Repeating a failure that never changes is an LCARS bug with no verb-level workaround — one of the four things that may reach you. A fourth attempt would spin until morning and achieve nothing." \
         "LCARS_GATE_TIMEOUT=$gt bash $RUN_SCRIPT drive --mission $m   # in the FOREGROUND; its last log is $log" \
-        "nothing was merged and nothing to undo. Once the cause is fixed, \`autopilot.sh answered <id>\` clears the counter and the mode resumes."
+        "nothing was merged and nothing to undo. Once the cause is fixed, \`$SELF_CMD answered <id>\` clears the counter and the mode resumes."
     fi
   fi
   ap_set "drivers.$m.driverPid" ""
@@ -989,7 +2193,7 @@ cmd_waiter() {
   ap_set "drivers.$m.pid" ""
   # NO PING FOR A ROUTINE STOP. `notify … drive-stopped` used to fire on EVERY
   # drive exit, exit 0 included — three pings from three routine stage stops in
-  # one tester run. AUTOPILOT.md § 9 promises exactly four things reach the
+  # one tester run. HOLOGRAM-COMMAND-MODE.md § 9 promises exactly four things reach the
   # captain; a stage stop the mode handles itself is not one of them, so the only
   # notification left on this path is the one write_pending sends when the
   # failure cap turns into a question.
@@ -1018,8 +2222,8 @@ cmd_stalled() {
       "$m" "${stage:-unknown}" "$(ap_j "drivers.$m.exitCode")"
   done
   if [ "$n" -gt 0 ]; then
-    printf '%s stalled mission(s). Run `autopilot.sh next` for the step, then `autopilot.sh record drivers.<id>.pickedUpAt %s`.\n' \
-      "$n" "$(now)"
+    printf '%s stalled mission(s). Run `%s next` for the step, then `%s record drivers.<id>.pickedUpAt %s`.\n' \
+      "$n" "$SELF_CMD" "$SELF_CMD" "$(now)"
   fi
   return 0
 }
@@ -1073,7 +2277,7 @@ if not isinstance(qs, dict):
 # notification, and the open question keeps its ORIGINAL raisedAt. Without
 # this, re-running `land` on a mission still blocked by the same bug child
 # appended q3, q4, q5 byte-identical and pushed the captain three times for
-# one problem - the interrupt-budget violation AUTOPILOT.md section 9
+# one problem - the interrupt-budget violation HOLOGRAM-COMMAND-MODE.md section 9
 # forbids. The pair is the key, NOT the mission: a drive-failure-cap question
 # and a land question on one mission are two DIFFERENT problems and must stay
 # two questions. An ANSWERED question never suppresses a new one - a problem
@@ -1117,7 +2321,7 @@ PY
       say ""
       say "ALREADY OPEN [${qid#=}] — same mission, same question. Not re-raised, not re-notified."
       say "  what:     $2"
-      say "  record his answer with: autopilot.sh answered ${qid#=} \"<what he said>\""
+      say "  record his answer with: $SELF_CMD answered ${qid#=} \"<what he said>\""
       return 0
       ;;
   esac
@@ -1129,13 +2333,13 @@ PY
   say "  why:      $3"
   say "  command:  $4"
   say "  rollback: $5"
-  say "  record his answer with: autopilot.sh answered $qid \"<what he said>\""
+  say "  record his answer with: $SELF_CMD answered $qid \"<what he said>\""
 }
 
 # ==========================================================================
 # ask — the ONE supported way for the MODEL to raise a question by hand
 # ==========================================================================
-# WHY A VERB AND NOT A FIELD. AUTOPILOT.md § 9 used to tell the model to write
+# WHY A VERB AND NOT A FIELD. HOLOGRAM-COMMAND-MODE.md § 9 used to tell the model to write
 # its own question — a product call, a scope change, a standing-rule conflict
 # including a permission denial — straight into `autopilot.json.pending`. That
 # instruction is what made `.pending` load-bearing STORAGE on one path while it
@@ -1171,7 +2375,7 @@ cmd_ask() {
     esac
   done
   [ -n "$what" ] || die "ask: the question is required.
-  autopilot.sh ask \"<what you need from him>\" --mission <id> [--why <why it is safe/needed>] [--command <the ONE command that would run>] [--rollback <how to undo it>]"
+  $SELF_CMD ask \"<what you need from him>\" --mission <id> [--why <why it is safe/needed>] [--command <the ONE command that would run>] [--rollback <how to undo it>]"
   # A QUESTION MUST NAME ITS MILESTONE, because `next` blocks only the milestone
   # a question is filed against (§ 9). An unattributed question would either
   # park nothing or park everything; `--mission -` says "no milestone" on
@@ -1196,9 +2400,12 @@ cmd_answered() {
   require_state
   local out rc
   ap_lock
-  out="$("$PY" - "$APJSON" "$1" "${2-}" "$(now)" 2>&1 <<'PY'
+  out="$(LCARS_SELF_CMD="$SELF_CMD" "$PY" - "$APJSON" "$1" "${2-}" "$(now)" 2>&1 <<'PY'
 import json, os, sys
 f, want, answer, ts = sys.argv[1:5]
+# The name the caller must TYPE, handed in by the shell (S277). A literal here
+# would print `ech.sh status`, which is not a command on any PATH.
+selfcmd = os.environ.get("LCARS_SELF_CMD") or "lcars-ech"
 try:
     d = json.load(open(f))
 except Exception:
@@ -1228,7 +2435,7 @@ if hit is None:
             by_mission = True
             break
 if hit is None:
-    sys.stderr.write("no OPEN question with id or mission '%s' — `autopilot.sh status` lists them" % want)
+    sys.stderr.write("no OPEN question with id or mission '%s' — `%s status` lists them" % (want, selfcmd))
     sys.exit(1)
 hit["answeredAt"] = int(ts)
 if answer:
@@ -1264,6 +2471,16 @@ PY
   local m; m="$(printf '%s' "$out" | sed -n '2p')"
   [ -z "$m" ] || ap_set "drivers.$m.failures" ""
   say "$(printf '%s' "$out" | sed -n '1p')"
+  # ONE COMMAND HAS TO READ LIKE ONE COMMAND (S300 fix2). "Still open: q2" is
+  # true at this instant, and it sent a captain who had just said "ship
+  # local-only, no push" off to answer a second question about a pull request
+  # nobody is going to open. Preflight withdraws that one by itself now, so say
+  # so here rather than leaving him to discover it.
+  if pf_answer_means_local_only "${2-}" \
+     && open_questions | grep -q 'forge CLI is not logged in'; then
+    say "  (that makes this a local-only run, so the forge-login question closes itself"
+    say "   on the next \`$SELF_CMD preflight\` — you do not owe it an answer.)"
+  fi
   # Line 2 is the mission (read above); anything after it is a note for the
   # captain and is printed as-is.
   printf '%s\n' "$out" | sed -n '3,$p'
@@ -1307,7 +2524,7 @@ cmd_land() {
     write_pending "$m" \
       "$m cannot be landed: its logged bug Mission(s) $open are still open." \
       "Approving a parent with bugs in flight ships a known-broken merge — LCARS refuses it, and so does the mode." \
-      "bash $SKILLS_DIR/lcars-resolve-logs/resolve-logs.sh --parent $m   # then re-verify, then: autopilot.sh land $m" \
+      "bash $SKILLS_DIR/lcars-resolve-logs/resolve-logs.sh --parent $m   # then re-verify, then: $SELF_CMD land $m" \
       "nothing to undo — no approve was attempted."
     exit 10
   fi
@@ -1350,7 +2567,7 @@ cmd_land() {
     write_pending "$m" \
       "approve exited 0 but did NOT merge $m — it is still at stage '${st:-unknown}', not done." \
       "LCARS reconciled main into the branch and re-tested it green, then stopped for your reapprove; reapprove is YOUR sign-off, so the mode will not give it and will not claim a merge that did not happen." \
-      "bash $APPROVE_SCRIPT --mission $m --reapprove   # then: autopilot.sh land $m" \
+      "bash $APPROVE_SCRIPT --mission $m --reapprove   # then: $SELF_CMD land $m" \
       "nothing was merged and no post-merge hygiene ran, so there is nothing to undo."
     exit 10
   fi
@@ -1443,7 +2660,7 @@ cmd_push_gated() {
 # landing a green fix for an hour. And exploring a CLI needs a throwaway HOME:
 # a `draft --help` once created a junk draft on the real machine.
 cmd_worktree() {
-  # `worktree <mission>` resolves the branch from the autopilot record;
+  # `worktree <mission>` resolves the branch from the ECH record;
   # `worktree --branch <br>` is handed it (S239 — see wt_prepare). With an
   # explicit branch there is nothing to look up, so neither autopilot.json nor
   # a mission is required: the branch IS the record for this call.
@@ -1486,10 +2703,10 @@ f, body, ts = sys.argv[1], sys.argv[2], sys.argv[3]
 try:
     d = json.loads(body)
 except Exception as e:
-    sys.stderr.write("lcars autopilot: ledger: not valid JSON (%s)\n" % e)
+    sys.stderr.write("lcars ech: ledger: not valid JSON (%s)\n" % e)
     sys.exit(1)
 if not isinstance(d, dict):
-    sys.stderr.write("lcars autopilot: ledger: the entry must be a JSON object\n")
+    sys.stderr.write("lcars ech: ledger: the entry must be a JSON object\n")
     sys.exit(1)
 d.setdefault("ts", int(ts))
 with open(f, "a") as fh:
@@ -1508,12 +2725,12 @@ cmd_ledger() {
 # ==========================================================================
 # WHY crontab AND NOT A HARNESS TOOL. The weekend's heartbeat was a Claude Code
 # cron tool, and the design notes still say so. LCARS ships to people who are
-# not inside Claude Code — a harness-only tool cannot be the autopilot's
+# not inside Claude Code — a harness-only tool cannot be the ECH's
 # heartbeat, because on their machine it does not exist. `crontab` is on every
 # POSIX box, it survives the session dying, and the captain can read and delete
 # the line himself. The mode owns exactly ONE line, tagged so `remove` can find
 # it without touching anything else in his crontab.
-HB_MARK="# LCARS-AUTOPILOT"
+HB_MARK="# LCARS-ECH"
 hb_line() {
   printf '17 * * * * cd %s && bash %s stalled >> %s/heartbeat.log 2>&1 %s %s\n' \
     "$CWD" "$SELF" "$APDIR" "$HB_MARK" "$CWD"
@@ -1540,7 +2757,7 @@ cmd_heartbeat() {
         || die "heartbeat: crontab refused the new table"
       say "heartbeat installed (one crontab line, minute 17):"
       hb_line | sed 's/^/  /'
-      say "  it calls \`autopilot.sh stalled\` and acts only when a pipeline ended with nobody picking it up."
+      say "  it calls \`$SELF_CMD stalled\` and acts only when a pipeline ended with nobody picking it up."
       ;;
     remove)
       # WRITING AN EMPTY TABLE IS A SUCCESS. `{ [ -n "$rest" ] && printf …; }`
@@ -1590,7 +2807,7 @@ cmd_heartbeat() {
 # checklist(s) for the product type, and records the verdict. It judges nothing.
 #
 # THE CHECKLISTS LIVE IN lcars-run/, NOT HERE, because the rebuilt Number One
-# reads the same files. One source, two readers: the buddy follows the prose,
+# reads the same files. One source, two readers: the EEH follows the prose,
 # the fenced worker lifts each item's `run:`/`workflow:`/`read:` template.
 LIVE_CHECK_DIR="${LCARS_LIVE_CHECK_DIR:-$SKILLS_DIR/lcars-run/live-check}"
 LIVE_CHECK_TYPES="cli web workflow"
@@ -1610,13 +2827,20 @@ wt_prepare() {
   local m="$1" br="${2:-}"
   # S239: THE BRANCH MAY BE NAMED OUTRIGHT. Number One's harness (xo-run.py)
   # reuses THIS helper — one machinery, because a second "detach a worktree" is
-  # a second thing that can be subtly wrong and the buddy and the first officer
+  # a second thing that can be subtly wrong and the EEH and the first officer
   # must check the same tree. It holds the branch already (from the mission's
   # own state.json, read by xo.sh) and has no autopilot.json, so it passes the
   # branch rather than asking this script to look the mission up.
   [ -n "$br" ] || br="$(mstate "$m" branch)"
   [ -n "$br" ] || die "worktree: mission $m has no branch in its state.json"
-  local base="${TMPDIR:-/tmp}"
+  # WHERE THE LAUNCH COPIES GO IS THE RECORDED ANSWER (preflight question 1),
+  # not a re-derivation. ${TMPDIR:-/tmp} stays the fallback, so a caller with no
+  # autopilot.json at all — xo-run.py reuses this helper — behaves exactly as
+  # before.
+  local base; base="$(ap_j launchDir)"
+  [ -n "$base" ] || base="${TMPDIR:-/tmp}"
+  base="${base%/}"
+  mkdir -p "$base" 2>/dev/null || true
   local wt home
   wt="$(mktemp -d "$base/lcars-ap-wt-XXXXXX")"   || die "worktree: could not make a worktree dir"
   home="$(mktemp -d "$base/lcars-ap-home-XXXXXX")" || die "worktree: could not make a throwaway HOME"
@@ -1694,7 +2918,7 @@ cmd_live_check() {
     say ""
   done
   say "WHEN DONE:  $SELF live-check done $m --verdict pass|bugs"
-  say "A BUG:      $SELF file-bug --parent $m --prd <bug-prd.md>   (template: $SKILLS_DIR/lcars-buddy/bug-prd.md)"
+  say "A BUG:      $SELF file-bug --parent $m --prd <bug-prd.md>   (template: $SKILLS_DIR/lcars-eeh/bug-prd.md)"
 }
 
 cmd_live_check_done() {
@@ -1786,7 +3010,7 @@ cmd_workflow_run() {
   # S239: Number One's harness runs this very runner for a `workflow` step and
   # writes its transcript BESIDE THE BROWSER SHOTS, under xo/shots/<look>/, so
   # the First Officer's report serves it with no new surface anywhere. With the
-  # evidence directory named there is nothing to look up in the autopilot record
+  # evidence directory named there is nothing to look up in the ECH record
   # — so a mission (and autopilot.json) is not required for that call.
   if [ -z "$evdirarg" ]; then
     require_state
@@ -1795,7 +3019,7 @@ cmd_workflow_run() {
   [ -f "$wf" ] || die "workflow-run: no workflow file at $wf"
   wf="$(cd "$(dirname "$wf")" && pwd)/$(basename "$wf")"
   # The repo root is the one the workflow's own paths are relative to — the
-  # directory holding .github/, not whatever cwd the buddy happens to be in.
+  # directory holding .github/, not whatever cwd the EEH happens to be in.
   if [ -z "$root" ]; then
     case "$wf" in
       */.github/workflows/*) root="${wf%/.github/workflows/*}" ;;
@@ -2130,7 +3354,7 @@ cmd_file_bug() {
   done
   require_state
   [ -n "$parent" ] || die "file-bug: --parent <mission> is required — a logged bug is always a CHILD of the mission it was found in, and grounding needs the parent's code."
-  [ "$n" -gt 0 ] || die "file-bug: --prd <file> is required (once per bug). The template is $SKILLS_DIR/lcars-buddy/bug-prd.md."
+  [ "$n" -gt 0 ] || die "file-bug: --prd <file> is required (once per bug). The template is $SKILLS_DIR/lcars-eeh/bug-prd.md."
   mexists "$parent" || die "file-bug: no parent mission $parent in $MISSIONS"
   [ -x "$LOG_SCRIPT" ] || [ -f "$LOG_SCRIPT" ] || die "file-bug: no lcars log at $LOG_SCRIPT"
 
@@ -2141,9 +3365,9 @@ cmd_file_bug() {
     p="${PRDS[$i]}"
     [ -f "$p" ] || die "file-bug: no PRD at $p"
     if ! msg="$(bug_prd_problems "$p")"; then
-      printf 'lcars autopilot: file-bug: %s is not an evidence-first bug PRD.\n' "$p" >&2
+      printf 'lcars ech: file-bug: %s is not an evidence-first bug PRD.\n' "$p" >&2
       printf '%s\n' "$msg" >&2
-      printf 'Nothing was filed. The template is %s/lcars-buddy/bug-prd.md.\n' "$SKILLS_DIR" >&2
+      printf 'Nothing was filed. The template is %s/lcars-eeh/bug-prd.md.\n' "$SKILLS_DIR" >&2
       exit 1
     fi
     i=$((i + 1))
@@ -2271,7 +3495,7 @@ PY
 #
 # Number One scored every CLI or integration milestone `low` for reasons it
 # could not reach, so the live check decided every merge. THE MERGE IS STILL THE
-# BUDDY'S CALL: this prints the recommendation and the commands; the buddy
+# EEH'S CALL: this prints the recommendation and the commands; the EEH
 # decides, and every override is written down.
 POLICY_ACTIONS='merge merge+follow-ups send-back override'
 
@@ -2419,7 +3643,7 @@ policy_table() {
   say ""
   say "  The live check decides: Number One scored every CLI or integration milestone"
   say "  low for reasons it could not reach, so a \`bugs\` live check sends back a high."
-  say "  THE MERGE IS THE BUDDY'S CALL — this is the recommendation, and every"
+  say "  THE MERGE IS THE EEH'S CALL — this is the recommendation, and every"
   say "  override lands in autopilot-overrides.jsonl with the evidence path."
 }
 
@@ -2566,7 +3790,7 @@ def ul(uid, items):
 html = """<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Autopilot progress</title>
+<title>ECH progress</title>
 <style>
   body { font-family: -apple-system, system-ui, sans-serif; margin: 2rem; max-width: 60rem; }
   table { border-collapse: collapse; width: 100%%; }
@@ -2576,7 +3800,7 @@ html = """<!doctype html>
   @media (max-width: 500px) { body { margin: .75rem; } }
 </style></head>
 <body>
-<h1 id="report-title">Autopilot progress</h1>
+<h1 id="report-title">ECH progress</h1>
 <p id="report-meta">spec: %(spec)s &middot; started: %(started)s</p>
 <table id="report-milestones">
 <thead><tr><th>Milestone</th><th>Mission</th><th>Stage</th><th>Number One</th><th>Live check</th><th>Shots</th><th>Bugs filed</th><th>Bugs fixed</th></tr></thead>
@@ -2610,12 +3834,88 @@ PY
 }
 
 # ==========================================================================
+# exec — run a SIBLING skill's script, resolved from THIS clone (S277)
+# ==========================================================================
+# WHY THIS EXISTS. HOLOGRAM-COMMAND-MODE.md names four scripts that belong to other skills
+# (lcars-init/establish-vision.sh, lcars-file/file.sh,
+# lcars-resolve-logs/resolve-logs.sh, lcars-respond/respond.sh). It used to name
+# them as `bash ~/.claude/skills/<skill>/<script>`, which is Claude Code's
+# install mount: on a Copilot-only machine that path does not exist, and the
+# S277 spike watched a real model run such a line, take exit 127 and STOP.
+#
+# Those four are not `lcars` verbs — `lcars file` runs an Align CONVERSATION and
+# `lcars.sh` has no `file`/`respond`/`establish-vision` route at all — so routing
+# them through an `lcars` launcher would have meant adding dispatch to another
+# skill's front door and still not reaching `file.sh --prd`. Instead the driver
+# the playbook already uses on every line exposes them, resolved relative to its
+# OWN physical location ($SKILLS_DIR), which is correct under either mount:
+#
+#   lcars-ech exec lcars-file/file.sh --prd <path> --engine copilot
+#   lcars-ech exec lcars-file file.sh  --prd <path> --engine copilot
+#
+# It adds NO stage logic: it resolves a path and hands over with `exec`.
+cmd_exec() {
+  local spec="${1:-}" script=""
+  [ -n "$spec" ] || die "exec: name a skill script, e.g. \`exec lcars-file/file.sh --prd <path>\`"
+  shift
+  case "$spec" in
+    */*) script="$spec" ;;
+    *)   # two-argument form: <skill> <script>
+         [ -n "${1:-}" ] || die "exec: $spec — name the script too, e.g. \`exec $spec <script>.sh\`"
+         script="$spec/$1"; shift ;;
+  esac
+  case "$script" in
+    *..*|/*) die "exec: refusing an out-of-tree path: $script" ;;
+  esac
+  local target="$SKILLS_DIR/$script"
+  [ -f "$target" ] || die "exec: no such script in this LCARS clone: $target"
+  exec bash "$target" "$@"
+}
+
+# ==========================================================================
+# the announcement
+# ==========================================================================
+# THE ECH SAYS WHO IT IS — WITHOUT EVER TOUCHING THE DATA PATH.
+#
+# This program is the Emergency Command Hologram, and it says so. But it is also
+# the thing the chain, xo-run.py and the suites call dozens of times a run and
+# PARSE. Its verbs emit line-oriented machine records on STDOUT: `playbook`
+# prints a bare TAB-SEPARATED table with no prefix at all, `next` prints
+# `NEXT:`/`WHY:`/`PLAYBOOK:` lines asserted with a `^` anchor, and `worktree`
+# prints `WORKTREE:`/`HOME:` lines that xo-run.py scans by prefix — reporting a
+# refusal by reading the LAST line of the output. A banner anywhere on stdout is
+# therefore indistinguishable from data: at the top it corrupts a first-line
+# reader, at the bottom it corrupts xo-run.py's error path. There is no safe
+# position on stdout, so the banner is not on stdout.
+#
+# It goes to STDERR, and only when stdout is a REAL TTY — i.e. a human is
+# looking. Command substitution, a pipe and subprocess capture_output are all
+# not a tty, so every captured call is silent and stdout stays BYTE-IDENTICAL
+# to before the rename. `LCARS_ECH_QUIET=1` is the explicit off switch for a
+# human who is in a loop and tired of reading it.
+#
+# It is a VALUE check, not a presence check, and deliberately: `=0` has to mean
+# "not quiet". A `-z` test silences the banner for ANY non-empty value, so
+# somebody writing `LCARS_ECH_QUIET=0` to say "leave it on" would get the
+# opposite of what they asked for. `[ "${X:-0}" != "1" ]` is the same idiom
+# `LCARS_BASE_QUIET` and every other boolean switch in this repo already uses.
+#
+# NOT "ONCE PER SESSION", DELIBERATELY. Each `lcars-ech <verb>` is its own
+# short-lived process, so "only the first time this session" would need new
+# persisted state in autopilot.json — new behaviour, which a rename may not add.
+# The tty test needs no state and costs nothing.
+if [ -t 1 ] && [ "${LCARS_ECH_QUIET:-0}" != "1" ]; then
+  printf '%s\n' "LCARS ECH — the Emergency Command Hologram. Please state the nature of the command emergency." >&2
+fi
+
+# ==========================================================================
 # dispatch
 # ==========================================================================
 SUB="${1:-}"
 [ $# -gt 0 ] && shift
 case "$SUB" in
   init)        cmd_init "$@" ;;
+  preflight)   cmd_preflight "$@" ;;
   status)      cmd_status "$@" ;;
   next)        cmd_next "$@" ;;
   playbook)    cmd_playbook "$@" ;;
@@ -2635,6 +3935,7 @@ case "$SUB" in
   report)      cmd_report "$@" ;;
   ledger)      cmd_ledger "$@" ;;
   heartbeat)   cmd_heartbeat "$@" ;;
+  exec)        cmd_exec "$@" ;;
   ''|-h|--help|help) usage ;;
-  *)           printf 'lcars autopilot: unknown subcommand %s\n' "$SUB" >&2; usage ;;
+  *)           printf 'lcars ech: unknown subcommand %s\n' "$SUB" >&2; usage ;;
 esac

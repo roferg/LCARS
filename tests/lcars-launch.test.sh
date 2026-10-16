@@ -32,7 +32,8 @@ ADAPTER="$REPO_ROOT/skills/lcars-run/worker-adapter.sh"
 
 pass=0
 fail=0
-TMPROOT="$(mktemp -d)"
+TMPROOT="$(mktemp -d "${TMPDIR:-.}/lcars-launch.XXXXXX")"
+TMPROOT="$(cd "$TMPROOT" && pwd -P)"
 # The CANONICAL form of $TMPROOT (macOS mktemp hands back /var/... which is a
 # symlink to /private/var/...). launch.sh canonicalizes every path it builds with
 # `pwd -P`, and `git worktree list` reports realpaths, so every expectation in
@@ -333,8 +334,21 @@ check "1c. the captain's own checkout is untouched (still on trunk)" \
   "[ \"$BEFORE_HEAD\" = trunk ] && [ \"$AFTER_HEAD\" = trunk ]"
 check "1d. the worktree checkout is at the mission branch TIP (has app.txt)" \
   "[ -f \"$WT1/app.txt\" ]"
+( cd "$R1" && LCARS_WORKER_BIN="$W1" bash "$LAUNCH_SH" m1 --stop --keep-worktree >/dev/null 2>&1 )
+check "1e. stop for declared tests kills the app but retains its checkout" \
+  "! kill -0 '$PID1' 2>/dev/null && wt_registered '$R1' '$WT1' && [ -f '$WT1/app.txt' ]"
+check "1f. retained stop records a stopped app and its test worktree" \
+  "[ \"\$(json_field '$R1/.git/lcars/missions/m1/launch.json' status)\" = stopped ] &&
+   [ \"\$(json_field '$R1/.git/lcars/missions/m1/launch.json' worktree)\" = '$WT1' ]"
+( cd "$R1" && LCARS_WORKER_BIN="$W1" LCARS_LAUNCH_SETTLE=0.6 bash "$LAUNCH_SH" m1 >/dev/null 2>&1 )
+PID1="$(json_num "$R1/.git/lcars/missions/m1/launch.json" pid)"
+[ -n "$PID1" ] && LAUNCHED_PIDS+=("$PID1")
+check "1g. relaunch after declared tests reuses the retained checkout" \
+  "[ \"\$(wt_rows '$R1' '$WT1')\" -eq 1 ] && kill -0 '$PID1' 2>/dev/null"
 # stop to release
 ( cd "$R1" && LCARS_WORKER_BIN="$W1" bash "$LAUNCH_SH" m1 --stop >/dev/null 2>&1 )
+check "1h. ordinary stop still prunes a previously retained checkout" \
+  "[ ! -d '$WT1' ] && ! wt_registered '$R1' '$WT1'"
 
 # =====================================================================
 # 2. worker argv carries the `launch` role toolset + the captain's hint,
@@ -1379,6 +1393,91 @@ check "28e. and B's launch never touched repo A's app" \
 ( cd "$R28A" && LCARS_WORKER_BIN="$W28A" bash "$LAUNCH_SH" m28a --stop >/dev/null 2>&1 )
 ( cd "$R28B" && LCARS_WORKER_BIN="$W28B" bash "$LAUNCH_SH" m28b --stop >/dev/null 2>&1 )
 
+# A foreign listener cannot be stopped by LCARS. Unlike test 28, this app
+# strictly binds the configured (occupied) port instead of choosing its own.
+P28STRICT="$(free_port)"
+FOREIGN28="$TMPROOT/foreign28.sh"
+make_binding_app "$FOREIGN28" "$P28STRICT"
+"$FOREIGN28" >"$TMPROOT/foreign28.log" 2>&1 &
+FOREIGN28PID=$!; LAUNCHED_PIDS+=("$FOREIGN28PID")
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+  curl -sf -m 1 "http://127.0.0.1:$P28STRICT" >/dev/null 2>&1 && break
+  nap 0.1
+done
+check "28f. collision fixture is a real foreign listener" \
+  "kill -0 \"$FOREIGN28PID\" && curl -sf -m 1 \"http://127.0.0.1:$P28STRICT\" >/dev/null"
+STRICT28="$TMPROOT/strict28.py"
+cat >"$STRICT28" <<'PY'
+import argparse, os
+from http.server import BaseHTTPRequestHandler, HTTPServer
+
+p = argparse.ArgumentParser()
+p.add_argument("--port", "-p", type=int, default=int(os.environ.get("PORT", "0")))
+p.add_argument("--label")
+a = p.parse_args()
+
+class Handler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        body = ("owned %s label=%s" % (self.server.server_port, a.label)).encode()
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(body)
+
+HTTPServer(("127.0.0.1", a.port), Handler).serve_forever()
+PY
+R28STRICT="$(make_repo m28strict)"; W28STRICT="$(claude_stub_path)"
+make_ready_worker "$W28STRICT" "python3 $STRICT28 --port $P28STRICT --label $P28STRICT" \
+  "strict app" "http://127.0.0.1:$P28STRICT?seed=42#view" "stop"
+OUT28STRICT="$( cd "$R28STRICT" && LCARS_WORKER_BIN="$W28STRICT" LCARS_LAUNCH_SETTLE=1.5 bash "$LAUNCH_SH" m28strict 2>&1 )"
+RC28STRICT=$?
+LJ28STRICT="$R28STRICT/.git/lcars/missions/m28strict/launch.json"
+PID28STRICT="$(json_num "$LJ28STRICT" pid)"; [ -n "$PID28STRICT" ] && LAUNCHED_PIDS+=("$PID28STRICT")
+URL28STRICT="$(json_field "$LJ28STRICT" url)"
+check "28g. strict app launches despite a foreign owner of its configured port" \
+  "[ \"$RC28STRICT\" = 0 ] && [ \"\$(json_field \"$LJ28STRICT\" status)\" = running ]"
+if [ "$RC28STRICT" != 0 ]; then printf '  strict collision evidence: %s\n' "$OUT28STRICT"; fi
+check "28h. verified replacement URL preserves query/fragment and original prediction" \
+  "[ \"$URL28STRICT\" != \"http://127.0.0.1:$P28STRICT?seed=42#view\" ] \
+   && printf '%s' \"$URL28STRICT\" | grep -q '?seed=42#view$' \
+   && [ \"\$(json_field \"$LJ28STRICT\" predictedUrl)\" = \"http://127.0.0.1:$P28STRICT?seed=42#view\" ]"
+check "28i. actual app serves the replacement URL with unrelated numeric argument intact" \
+  "curl -sf -m 2 \"$URL28STRICT\" | grep -q 'owned .* label=$P28STRICT'"
+( cd "$R28STRICT" && LCARS_WORKER_BIN="$W28STRICT" bash "$LAUNCH_SH" m28strict --stop --keep-worktree >/dev/null 2>&1 )
+check "28j. stop keeps the worktree and leaves the foreign listener serving" \
+  "[ -d \"\$(json_field \"$LJ28STRICT\" worktree)\" ] \
+   && ! kill -0 \"$PID28STRICT\" 2>/dev/null \
+   && kill -0 \"$FOREIGN28PID\" \
+   && curl -sf -m 1 \"http://127.0.0.1:$P28STRICT\" >/dev/null"
+( cd "$R28STRICT" && LCARS_WORKER_BIN="$W28STRICT" bash "$LAUNCH_SH" m28strict --stop >/dev/null 2>&1 )
+for FORM28 in equals short assignment env inherited python; do
+  case "$FORM28" in
+    equals) CMD28="python3 $STRICT28 --port='$P28STRICT' --label 'keep $P28STRICT space'" ;;
+    short) CMD28="python3 $STRICT28 -p $P28STRICT --label 'keep $P28STRICT space'" ;;
+    assignment) CMD28="PORT=$P28STRICT python3 $STRICT28 --label 'keep $P28STRICT space'" ;;
+    env) CMD28="env PORT=$P28STRICT python3 $STRICT28 --label 'keep $P28STRICT space'" ;;
+    inherited) CMD28="python3 $STRICT28 --label 'keep $P28STRICT space'" ;;
+    python) CMD28="python3 -m http.server $P28STRICT --bind 127.0.0.1" ;;
+  esac
+  R28FORM="$(make_repo "m28$FORM28")"; W28FORM="$(claude_stub_path)"
+  make_ready_worker "$W28FORM" "$CMD28" "strict app" "http://127.0.0.1:$P28STRICT" "stop"
+  OUT28FORM="$( cd "$R28FORM" && PORT="$P28STRICT" LCARS_WORKER_BIN="$W28FORM" LCARS_LAUNCH_SETTLE=1.5 bash "$LAUNCH_SH" "m28$FORM28" 2>&1 )"
+  RC28FORM=$?
+  LJ28FORM="$R28FORM/.git/lcars/missions/m28$FORM28/launch.json"
+  PID28FORM="$(json_num "$LJ28FORM" pid)"; [ -n "$PID28FORM" ] && LAUNCHED_PIDS+=("$PID28FORM")
+  URL28FORM="$(json_field "$LJ28FORM" url)"
+  check "28k-$FORM28. occupied-port command form launches on its own verified port" \
+    "[ \"$RC28FORM\" = 0 ] && [ \"\$(json_field \"$LJ28FORM\" status)\" = running ] \
+     && [ \"$URL28FORM\" != \"http://127.0.0.1:$P28STRICT\" ] \
+     && curl -sf -m 2 \"$URL28FORM\" >/dev/null"
+  if [ "$FORM28" != python ]; then
+    check "28l-$FORM28. quoted unrelated arguments survive port adaptation" \
+      "curl -sf -m 2 \"$URL28FORM\" | grep -q 'label=keep $P28STRICT space'"
+  fi
+  ( cd "$R28FORM" && LCARS_WORKER_BIN="$W28FORM" bash "$LAUNCH_SH" "m28$FORM28" --stop >/dev/null 2>&1 )
+done
+kill "$FOREIGN28PID" 2>/dev/null || true
+wait "$FOREIGN28PID" 2>/dev/null || true
+
 # =====================================================================
 # 29. AN APP THAT BINDS NOTHING (the legacy sleep-loop fixture — a CLI tool, a
 #     worker, an app that died before listen()). A url we cannot verify must not
@@ -1569,6 +1668,83 @@ OUT33b="$( cd "$R33b" && LCARS_WORKER_BIN="$S33" \
   bash "$LAUNCH_SH" m33b 2>&1 )"; RC33b=$?
 check "33b. the same arbitrary filename is refused when its CLI is undeclared" \
   "[ \"$RC33b\" -ne 0 ] && [ ! -s \"$A33b\" ] && printf '%s' \"\$OUT33b\" | grep -q 'unknown worker cli'"
+
+# =====================================================================
+# 34. S274 — THE ENGINE IS THE ONE THAT IS INSTALLED, never the literal `claude`.
+# =====================================================================
+# THE DEFECT. The fallback chain ended `[ -n "$WORKER_BIN" ] || WORKER_BIN="claude"`.
+# The --main deploy has NO state.json, so on a laptop with only the GitHub
+# Copilot CLI `lcars launch --main` spawned a `claude` that is not there and the
+# launch died — with `lcars init` having already set the repo up on copilot.
+# The last rung is now the shared detector (`lcars_default_engine`,
+# skills/lcars-init/lcars-common.sh), the same answer init, the board, `lcars
+# xo` and run.sh give.
+#
+# The engines are faked through the LCARS_*_BIN seams (never $PATH), so these
+# measure the fixture and not the tester's laptop, and no real CLI is ever run.
+R34="$(make_repo m34)"
+printf '{"mainBranch":"trunk"}\n' > "$R34/.git/lcars/config.json"
+S34="$(rec_stub copilot)"; A34="$TMPROOT/argv34"; make_rec_worker "$S34" "$A34"
+NOCLI34="$TMPROOT/definitely-not-installed"
+OUT34="$( cd "$R34" && env -u LCARS_WORKER_BIN -u LCARS_WORKER_CLI \
+  LCARS_CLAUDE_BIN="$NOCLI34" LCARS_COPILOT_BIN="$S34" \
+  bash "$LAUNCH_SH" --main 2>&1 )"; RC34=$?
+check "34a. --main with NO \$LCARS_WORKER_BIN and no state.json still spawns an inspector" \
+  "[ -s \"$A34\" ]"
+check "34b. …and it is the COPILOT adapter's argv (--available-tools), not claude's" \
+  "grep -qx -- '--available-tools' \"$A34\""
+check "34c. …and never claude's (--allowedTools)" \
+  "! grep -qx -- '--allowedTools' \"$A34\""
+check "34d. …and the copilot write floor still applies to it" \
+  "[ \"\$(argv_model \"$A34\")\" = 'claude-opus-4.8' ]"
+check "34e. …and it never complained about a claude that is not there" \
+  "! printf '%s' \"\$OUT34\" | grep -q 'definitely-not-installed'"
+
+# NEITHER CLI: one sentence, non-zero, BOTH engines named — and no spawn.
+R34n="$(make_repo m34n)"
+printf '{"mainBranch":"trunk"}\n' > "$R34n/.git/lcars/config.json"
+A34n="$TMPROOT/argv34n"; rm -f "$A34n"
+OUT34n="$( cd "$R34n" && env -u LCARS_WORKER_BIN -u LCARS_WORKER_CLI \
+  LCARS_CLAUDE_BIN="$NOCLI34" LCARS_COPILOT_BIN="$NOCLI34" \
+  bash "$LAUNCH_SH" --main 2>&1 )"; RC34n=$?
+check "34f. with NEITHER CLI, \`lcars launch --main\` exits non-zero" \
+  "[ \"$RC34n\" -ne 0 ]"
+check "34g. …and names Claude Code" \
+  "printf '%s' \"\$OUT34n\" | grep -qi 'claude code'"
+check "34h. …and names the GitHub Copilot CLI" \
+  "printf '%s' \"\$OUT34n\" | grep -qi 'copilot cli'"
+check "34i. …and says it looked for both binaries" \
+  "[ \"\$(printf '%s' \"\$OUT34n\" | grep -o \"'$NOCLI34'\" | wc -l | tr -d ' ')\" = 2 ]"
+check "34j. …in ONE sentence, not a stack trace" \
+  "[ \"\$(printf '%s\n' \"\$OUT34n\" | grep -c 'lcars launch:')\" = 1 ]"
+check "34k. …and it never spawned anything" "[ ! -s \"$A34n\" ]"
+
+# S274 fix round 2 — AND THE BOARD IS NEVER TOLD A LIE ABOUT IT.
+# THE DEFECT a fresh tester found: the refusal above lands ~75 lines AFTER the
+# early `{"status":"launching", …}` record is committed (that record exists so an
+# observer during the slow spin-up can't outrun the launch and re-click RUN). On
+# the no-engine path nothing ever revised it, so a `lcars launch --main` that
+# started NOTHING left `status: "launching"` on disk forever and the board's top
+# band showed a permanent ◐ DEPLOYING… pill — still there 20s later. The engine
+# resolution is deliberately NOT moved earlier (that is a restructure of the
+# worktree/provision block); instead the refusal now commits a `failed` record
+# carrying the refusal sentence ITSELF, so the band shows the real reason and the
+# ▸ Deploy Main retry comes back.
+LJ34n="$R34n/.git/lcars/main/launch.json"
+check "34l. …and the refusal still leaves a launch record for the board to read" \
+  "[ -s \"$LJ34n\" ]"
+check "34m. …whose status is failed, NEVER a stranded \"launching\" (no permanent ◐ DEPLOYING… pill)" \
+  "[ \"\$(json_field \"$LJ34n\" status)\" = 'failed' ]"
+check "34n. …and whose message is the refusal itself, naming Claude Code" \
+  "printf '%s' \"\$(json_field \"$LJ34n\" message)\" | grep -qi 'claude code'"
+check "34o. …and the GitHub Copilot CLI" \
+  "printf '%s' \"\$(json_field \"$LJ34n\" message)\" | grep -qi 'copilot cli'"
+check "34p. …and both install URLs, so the band says what to do" \
+  "printf '%s' \"\$(json_field \"$LJ34n\" message)\" | grep -q 'claude.com/claude-code' && printf '%s' \"\$(json_field \"$LJ34n\" message)\" | grep -q 'github.com/features/copilot/cli'"
+check "34q. …on ONE line — a raw newline inside \"message\" would truncate it for every reader" \
+  "[ \"\$(grep -c '\"message\"' \"$LJ34n\" | tr -d ' ')\" = 1 ] && grep -q '^ *\"message\": \".*\"\$' \"$LJ34n\""
+check "34r. …and the record is a whole object, not a half-write" \
+  "head -1 \"$LJ34n\" | grep -qx '{' && tail -1 \"$LJ34n\" | grep -qx '}'"
 
 echo "lcars launch: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

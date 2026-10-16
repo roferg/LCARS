@@ -208,6 +208,15 @@ if (spec.click === "toggle" || spec.click === "off") {
     (n) => (n.textContent || "").indexOf("Turn off") >= 0);
   if (menuOff.length) menuOff[0].click();
 }
+/* S275 — CLICK A ROW, so the picker REPAINTS. `openXoPicker`'s paint() rewrites
+ * every row's className, and a row the fix locked must still be locked after
+ * one. Done BEFORE "engage" so a spec can pick a row and then confirm it. */
+if (spec.clickRow) {
+  const want = String(spec.clickRow);
+  const row = pickerRows().filter(
+    (r) => r.getAttribute("data-engine") === want)[0];
+  if (row) row.click();
+}
 if (spec.click === "engage") {
   const foot = pickerFoot();
   const engage = foot.filter((b) => (b.textContent || "").indexOf("Engage") >= 0);
@@ -261,10 +270,27 @@ process.stdout.write(JSON.stringify({
     open: open,
     engines: rows.map((r) => r.getAttribute("data-engine") || ""),
     rows: rows.map((r) => ({ text: r.textContent || "", cls: r.className || "",
-                             disabled: !!r.disabled })),
+                             disabled: !!r.disabled,
+                             // S275 — the lock treatment is three things, and
+                             // a projection carrying only `disabled` cannot
+                             // tell a locked row from a silently dead one.
+                             title: r.title || "",
+                             engine: r.getAttribute("data-engine") || "",
+                             ariaPressed: r.getAttribute("aria-pressed") })),
     chosen: (rows.filter((r) => r.getAttribute("aria-pressed") === "true")
                  .map((r) => r.getAttribute("data-engine"))[0]) || "",
     foot: pickerFoot().map((b) => (b.textContent || "").trim()),
+    /* S275 — ADDITIVE beside `foot` (which is text, and which an existing test
+       pins exactly): whether ◈ Engage can be pressed at all, and the sentence
+       that says why not. */
+    footState: pickerFoot().map((b) => ({ text: (b.textContent || "").trim(),
+                                          disabled: !!b.disabled,
+                                          title: b.title || "" })),
+    /* The picker's own prose rows (`.xo-q`) — the explanation it shows instead
+       of greying a button out in silence. */
+    notes: overlayNodes()
+      .filter((n) => (" " + String(n._cls || "") + " ").indexOf(" xo-q ") >= 0)
+      .map((n) => (n.textContent || "").trim()),
   },
   // S205: the ON-state menu, snapshotted BEFORE any follow-through click
   // ("toggle"/"off") would have closed it — so `click: "menu"` can inspect

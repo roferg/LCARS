@@ -137,7 +137,14 @@ check "1. broken: line names the one-click fix verb" \
 # missing — no testCommand, detection has a candidate (Makefile test target).
 repoM="$(new_repo)"
 write_config "$repoM" 'null'
-printf 'test:\n\t@echo 1 passed\n' >"$repoM/Makefile"
+# S299 FIXTURE ONLY — the stand-in recipe now invokes a real program.
+# This leg has never been about the recipe's CONTENTS; it needed a `make test`
+# that exits deterministically without a runner installed, and `@echo` was the
+# cheapest way to get one. The inert filter refuses a recipe that is only shell
+# no-ops, so the stand-in runs the same thing THROUGH a shell — `sh` is a real
+# command, the exit status and the output are identical, and what this leg
+# locks is unchanged.
+printf 'test:\n\t@sh -c "echo 1 passed"\n' >"$repoM/Makefile"
 ( cd "$repoM" && bash "$READINESS" --json >j.txt 2>&1; bash "$READINESS" --line >l.txt 2>&1 )
 check "1. missing: json status is missing"    "grep -q '\"status\":\"missing\"' '$repoM/j.txt'"
 check "1. missing: suggestion carries the detected candidate (make test)" \
@@ -333,7 +340,7 @@ check "3. probe with no command: refuses legibly (points at the setters)" \
 # 4a. suggestion present ⇒ set + probe in ONE invocation, NO worker spawned.
 repoF1="$(new_repo)"
 write_config "$repoF1" 'null'
-printf 'test:\n\t@echo 1 passed\n' >"$repoF1/Makefile"
+printf 'test:\n\t@sh -c "echo 1 passed"\n' >"$repoF1/Makefile"
 argvF1="$repoF1/worker-argv.txt"
 wkF1="$(make_worker_stub claude "$argvF1")"
 rcF1=0
@@ -350,7 +357,7 @@ check "4a. suggestion path: final verdict is ONLINE" \
 # 4b. probe fails after set ⇒ honestly SET BUT UNVERIFIED, never ready.
 repoF2="$(new_repo)"
 write_config "$repoF2" 'null'
-printf 'test:\n\t@exit 1\n' >"$repoF2/Makefile"
+printf 'test:\n\t@sh -c "exit 1"\n' >"$repoF2/Makefile"
 rcF2=0
 ( cd "$repoF2" && bash "$UPDATE" --fix-tests >outF2.txt 2>&1 ) || rcF2=$?
 check "4b. probe-fails-after-set: exits non-zero" "[ '$rcF2' -ne 0 ]"
@@ -389,6 +396,51 @@ for engine in claude copilot; do
   check "4c[$engine]. the crew's rationale is surfaced" \
     "grep -qi 'bespoke runner' '$repoF3/outF3.txt'"
 done
+
+# 4c-S274. NO env pin, NO config pin → THE ENGINE THAT IS INSTALLED, never the
+# literal `claude`. This rung read `[ -n "$wb" ] || wb="claude"`, so on a
+# copilot-only laptop `lcars update --fix-tests` spawned a claude that is not
+# there and reported "the crew found nothing". It reads the shared detector now
+# (lcars_default_engine, already sourced by update.sh) — the same answer `lcars
+# init`, run.sh and launch.sh give. Engines faked through the LCARS_*_BIN seams,
+# never $PATH, so this measures the fixture and not the tester's laptop.
+repoF3c="$(new_repo)"
+write_config "$repoF3c" 'null'
+printf '#!/usr/bin/env bash\necho 3 passed\nexit 0\n' >"$repoF3c/mytests.sh"
+chmod +x "$repoF3c/mytests.sh"
+argvF3c="$repoF3c/worker-argv.txt"
+wkF3c="$(make_worker_stub copilot "$argvF3c")"
+NOCLI_S274="$TMPROOT/definitely-not-installed"
+propF3c="$repoF3c/proposal.json"
+printf '{\n  "testCommand": "bash mytests.sh",\n  "rationale": "repo ships a bespoke runner script",\n  "status": "ready"\n}\n' >"$propF3c"
+rcF3c=0
+( cd "$repoF3c" && env -u LCARS_WORKER_BIN STUB_PROPOSAL_FILE="$propF3c" \
+    LCARS_CLAUDE_BIN="$NOCLI_S274" LCARS_COPILOT_BIN="$wkF3c" \
+    bash "$UPDATE" --fix-tests >outF3c.txt 2>&1 ) || rcF3c=$?
+check "4c-S274. copilot-only laptop, no pins: the COPILOT CLI was spawned" \
+  "[ -s '$argvF3c' ]"
+check "4c-S274. …and the discovery succeeded (proposal set + ONLINE)" \
+  "grep -q '\"testCommand\": \"bash mytests.sh\"' '$repoF3c/.git/lcars/config.json' && grep -q 'TEST SYSTEMS ONLINE' '$repoF3c/outF3c.txt'"
+check "4c-S274. …and the argv is the COPILOT adapter's, not claude's" \
+  "grep -qx -- '--available-tools' '$argvF3c' && ! grep -qx -- '--allowedTools' '$argvF3c'"
+
+# NEITHER CLI: one sentence naming both, no spawn, non-zero.
+# A repo that HAS a test system with a BROKEN command (4d's shape), so the
+# discovery crew's own message is the one the captain reads — the greenfield
+# arm above deliberately prints its own bootstrap copy instead.
+repoF3n="$(new_repo)"
+write_config "$repoF3n" '"no-such-runner-xyz-274 test"'
+rcF3n=0
+( cd "$repoF3n" && env -u LCARS_WORKER_BIN \
+    LCARS_CLAUDE_BIN="$NOCLI_S274" LCARS_COPILOT_BIN="$NOCLI_S274" \
+    bash "$UPDATE" --fix-tests >outF3n.txt 2>&1 ) || rcF3n=$?
+check "4c-S274. with NEITHER CLI, --fix-tests exits non-zero" "[ '$rcF3n' -ne 0 ]"
+check "4c-S274. …and names Claude Code AND the GitHub Copilot CLI" \
+  "grep -qi 'claude code' '$repoF3n/outF3n.txt' && grep -qi 'copilot cli' '$repoF3n/outF3n.txt'"
+check "4c-S274. …and names both install URLs" \
+  "grep -q 'claude.com/claude-code' '$repoF3n/outF3n.txt' && grep -q 'github.com/features/copilot/cli' '$repoF3n/outF3n.txt'"
+check "4c-S274. …and says it looked for BOTH binaries" \
+  "[ \"\$(grep -o \"'$NOCLI_S274'\" '$repoF3n/outF3n.txt' | wc -l | tr -d ' ')\" = 2 ]"
 
 # 4d. worker garbage (status failed) on a repo that HAS infra (broken command)
 #     ⇒ config untouched + repair voice + non-zero.
@@ -562,7 +614,7 @@ check "5. readiness --json(greenfield): still 'unknown' (states never blur)" \
 
 repoH7="$(new_repo)"
 make_gh_stub "$repoH7/gh"; make_claude_stub "$repoH7/claude"
-printf 'test:\n\t@echo ok\n' >"$repoH7/Makefile"
+printf 'test:\n\t@sh -c "echo ok"\n' >"$repoH7/Makefile"
 ( cd "$repoH7" && LCARS_CLAUDE_BIN="$repoH7/claude" LCARS_GH_BIN="$repoH7/gh" bash "$INIT" >outH7.txt 2>&1 )
 check "5. init(make repo, runner resolves): silent — no OFFLINE, no crew line" \
   "! grep -q 'TEST SYSTEMS OFFLINE' '$repoH7/outH7.txt' && ! grep -qi 'engineering crew' '$repoH7/outH7.txt'"
@@ -705,7 +757,7 @@ check "6. init(dotnet): NO false \$LCARS_TESTS_DIR alarm (native isolation)" \
 repoN5="$(new_repo)"
 make_gh_stub "$repoN5/gh"; make_claude_stub "$repoN5/claude"
 { echo '<Project Sdk="Microsoft.NET.Sdk">'; echo '</Project>'; } >"$repoN5/App.csproj"
-printf 'test:\n\t@echo ok\n' >"$repoN5/Makefile"
+printf 'test:\n\t@sh -c "echo ok"\n' >"$repoN5/Makefile"
 ( cd "$repoN5" && LCARS_CLAUDE_BIN="$repoN5/claude" LCARS_GH_BIN="$repoN5/gh" bash "$INIT" >outN5.txt 2>&1 )
 check "6. init(dotnet marker + Makefile): still seeds 'make test'" \
   "grep -q '\"testCommand\": \"make test\"' '$repoN5/.git/lcars/config.json'"

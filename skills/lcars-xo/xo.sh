@@ -1044,6 +1044,17 @@ xo_logs_children() { # <mission-dir> — one linked child mission id per line
     | sed 's/.*"\([^"]*\)"$/\1/' | sed '/^$/d' | sort -u
 }
 
+xo_pause_event() { # <mission-dir> <paused|resumed>
+  local dir="$1" type="$2" ts stage event
+  ts="${LCARS_NOW:-$(date +%s)}"
+  stage="$(mission_stage "$dir/state.json")"; stage="${stage:-unknown}"
+  printf -v event '{"ts":%s,"mission":%s,"stage":%s,"type":%s,"detail":%s}' \
+    "$ts" "$(jstr "${dir##*/}")" "$(jstr "$stage")" "$(jstr "$type")" \
+    "$(jstr "Number One $type the Mission at the $stage boundary")"
+  lcars_operator_write "$dir/events.jsonl" lcars_operator_append "$event" \
+    || die "could not record the $type event for ${dir##*/}."
+}
+
 # ── MARKER ALWAYS; FLAGS ONLY FOR THE MISSION THE CAPTAIN NAMED (S254) ──────
 #
 # THE MEASURED DEFECT. Repo-wide `lcars xo off` — no Mission named, the captain
@@ -1111,6 +1122,9 @@ EOF
     lcars_state_set "$st" paused true 2>/dev/null || true
     [ "$(lcars_state_get_raw "$st" paused 2>/dev/null)" = "true" ] \
       && XO_PAUSED=$((XO_PAUSED + 1))
+    if [ "$(lcars_state_get_raw "$st" paused 2>/dev/null)" = "true" ]; then
+      xo_pause_event "$dir" paused
+    fi
   fi
   # A CHILD'S WRITE NEVER REFUSES THE STOP. `lcars_state_set` latches a refusal in
   # $LCARS_STATE_REFUSED and every verb exits non-zero on it — correct for the
@@ -1130,6 +1144,9 @@ EOF
     # under-claiming.
     [ "$(lcars_state_get_raw "$cst" paused 2>/dev/null)" = "true" ] \
       && XO_PAUSED=$((XO_PAUSED + 1))
+    if [ "$(lcars_state_get_raw "$cst" paused 2>/dev/null)" = "true" ]; then
+      xo_pause_event "$MISSIONS_DIR/$c" paused
+    fi
   done <<EOF
 $(xo_logs_children "$dir")
 EOF
@@ -1146,17 +1163,26 @@ xo_unquiesce() { # <mission-dir>
   # kills the verb. Measured here as "dir: unbound variable" on `lcars xo on`.
   local dir="$1"
   local m="$dir/xo-stop" line who how
+  local was
   [ -f "$m" ] || return 0
   while IFS= read -r line; do
     case "$line" in
       "self paused-by-us")
-        lcars_state_unset "$dir/state.json" paused 2>/dev/null || true ;;
+        was="$(lcars_state_get_raw "$dir/state.json" paused)"
+        lcars_state_unset "$dir/state.json" paused 2>/dev/null || true
+        if [ "$was" = "true" ] && [ "$(lcars_state_get_raw "$dir/state.json" paused)" != "true" ]; then
+          xo_pause_event "$dir" resumed
+        fi ;;
       "child "*)
         who="$(printf '%s' "$line" | awk '{print $2}')"
         how="$(printf '%s' "$line" | awk '{print $3}')"
         [ "$how" = "paused-by-us" ] || continue
         [ -f "$MISSIONS_DIR/$who/state.json" ] || continue
-        lcars_state_unset "$MISSIONS_DIR/$who/state.json" paused 2>/dev/null || true ;;
+        was="$(lcars_state_get_raw "$MISSIONS_DIR/$who/state.json" paused)"
+        lcars_state_unset "$MISSIONS_DIR/$who/state.json" paused 2>/dev/null || true
+        if [ "$was" = "true" ] && [ "$(lcars_state_get_raw "$MISSIONS_DIR/$who/state.json" paused)" != "true" ]; then
+          xo_pause_event "$MISSIONS_DIR/$who" resumed
+        fi ;;
     esac
   done <"$m"
   rm -f "$m"
@@ -1510,6 +1536,7 @@ write_config_block() { # <enabled true|false> [engine] [model]
 }
 
 cmd_on() {
+  local _LCARS_OPERATOR_CONTROL=xo-on
   # DEFAULT 0 — SWITCHING NUMBER ONE ON STARTS NOTHING (S241, the captain's
   # ruling). The catch-up is KEPT, in full, but it is now its own word. See the
   # note at the sweep call below for the whole reasoning.
@@ -1535,7 +1562,7 @@ cmd_on() {
     esac
   done
   # THE ESCAPE HATCH, both directions, no code edit either way: `lcars xo on
-  # --sweep` — or $LCARS_XO_SWEEP_ON_START=1 for an autopilot with no argv to
+  # --sweep` — or $LCARS_XO_SWEEP_ON_START=1 for an ECH with no argv to
   # change — restores the pre-S241 behaviour exactly: switch on AND work the
   # backlog. A flag on the command line beats the variable.
   if [ -z "$sweep" ]; then
@@ -1801,6 +1828,7 @@ xo_sweep_verify() {
 }
 
 cmd_off() {
+  local _LCARS_OPERATOR_CONTROL=xo-off
   local target="${1:-}" id
   if [ -n "$target" ]; then
     id="$(resolve_mission "$target")"
@@ -2464,15 +2492,20 @@ xo_teardown() {
   # just the looking part, because the measured defect was a second look
   # overwriting the verdict AFTER the first had filed its bugs from it. It is
   # released here, on the EXIT trap, so every way out of a look gives it back.
-  xo_release_claim
+  [ "${1:-}" = keep-claim ] || xo_release_claim
   return 0
 }
 
 on_stand_down() {
-  xo_teardown
+  xo_teardown keep-claim
+  if [ -n "$XO_MISSION_DIR" ]; then
+    "$XO_PY" "$SKILL_DIR/xo-partial-report.py" "$XO_MISSION_DIR" ||
+      printf 'lcars xo: could not preserve xo/partial-report.md\n' >&2
+  fi
   [ -n "$XO_MISSION_DIR" ] && rm -f "$XO_MISSION_DIR/xo.pid"
-  # NOTHING IS RECORDED HERE. `lcars xo off` has already written stood-down, and
-  # a second writer racing it is how a stand-down ends up reading `escalated`.
+  xo_release_claim
+  # NO STATE OR JOURNAL IS WRITTEN HERE. `lcars xo off` has already written
+  # stood-down, and a second writer racing it is how it ends up `escalated`.
   printf '◈ NUMBER ONE: stood down mid-spin — you have the conn.\n' >&2
   exit 143
 }
@@ -2904,10 +2937,10 @@ XO_PY="${LCARS_PYTHON_BIN:-python3}"
 # $LCARS_XO_MAX_ROUNDS, which the round loop exports for the spawn. A second
 # hard-coded 3 in prose is exactly how the two drift apart.
 # S246 — AND THE CEILING IS NOW OPT-IN, BECAUSE A LOOK HAS NO CLOCK (captain,
-# 2026-10-04). The buddy, following the same checklists by hand, ran for HOURS.
+# 2026-10-04). The EEH, following the same checklists by hand, ran for HOURS.
 # Number One was cut off at two rounds — roughly five minutes — so it could never
 # seed in one round and read the effect in the next, which is most of what the
-# buddy's day consists of. UNSET now means NO CEILING: the loop runs until the
+# EEH's day consists of. UNSET now means NO CEILING: the loop runs until the
 # worker writes its verdict, and the bounds that remain are the per-step cage,
 # the captain's `lcars xo off`, and the look timeout. SET still means a ceiling,
 # and every sentence below that quotes it still reads true — the benchmark rig
@@ -4045,7 +4078,7 @@ PY
 
 # ── THE NOTEBOOK (S246) ─────────────────────────────────────────────────────
 #
-# The buddy keeps a memory file. Number One's rounds are COLD SPAWNS — a fresh
+# The EEH keeps a memory file. Number One's rounds are COLD SPAWNS — a fresh
 # model each time, with no memory of the last one but the artifacts in its input
 # dir — so without a notebook a worker that spent round 1 learning something has
 # no way to tell round 2. It re-reads the same transcripts and asks for the same
@@ -4143,7 +4176,7 @@ except Exception:
 # `origin` while the consumer reads `host`, was unreachable by construction.
 #
 # THE CURE. The look prepares the pair ONCE, here, through the same ONE helper
-# (`autopilot.sh worktree`, reached via `xo-run.py prepare` so there is still no
+# (`ech.sh worktree`, reached via `xo-run.py prepare` so there is still no
 # second implementation), and hands it to every `xo-run.py run` of the look. The
 # pair is removed at the end of the look AND from the TERM trap, because a
 # `finally` does not run on a signal and a killed look used to leave a REGISTERED
@@ -4509,9 +4542,10 @@ with open(obs_path, "w") as fh:
 # worktree the launch did not record, a runner that will not start — each is
 # recorded plainly by xo-tests.py and the look carries on. A missing suite must
 # never be why the captain does not get his Verify look.
-xo_run_tests() { # <launch.json> <out tests.json> — writes the record, nothing else
-  local launch="$1" out="$2" cmd="" wt=""
+xo_run_tests() { # <launch.json> <out tests.json> [launch engine]
+  local launch="$1" out="$2" engine="${3:-}" cmd="" wt="" restart=0 command_source=""
   cmd="$(lcars_config_get "$CONFIG" testCommand 2>/dev/null)" || cmd=""
+  [ -n "$cmd" ] && command_source=config
   wt="$(json_field "$launch" worktree)"
   # NO LAUNCHED WORKTREE IS NOT "NO TESTS" (S246). A CLI-only milestone has no
   # page, so no launch worktree — but the LOOK already has a detached copy of the
@@ -4522,6 +4556,24 @@ xo_run_tests() { # <launch.json> <out tests.json> — writes the record, nothing
   if [ -z "$wt" ] || [ ! -d "$wt" ]; then
     [ -n "$XO_REACH_WT" ] && [ -d "$XO_REACH_WT" ] && wt="$XO_REACH_WT"
   fi
+  # A foundation build may establish its runner before approval promotes it.
+  # Scope the shared detector to that build without changing the repo config.
+  if [ -z "$cmd" ] && [ -d "$wt" ]; then
+    local TOPLEVEL="$wt"
+    cmd="$(detect_test_cmd 2>/dev/null)" || cmd=""
+    [ -n "$cmd" ] && command_source=detected-from-build
+  fi
+  # The suite may prove its documented default port. Stop our app, keeping the
+  # checkout (ordinary --stop prunes it), before running any declared command.
+  # Do this before the browser, so its walk and every worker see the same fresh
+  # launch afterwards, including a newly discovered URL.
+  if [ -n "$cmd" ] && [ "$(json_field "$launch" status)" = running ]; then
+    xo_tree_mark "$wt" "${out%/*}/test-tree-mark"
+    bash "$XO_LAUNCH_SCRIPT" "${XO_LAUNCH_ID}" --stop --keep-worktree \
+      >>"${out%/*}/launch.log" 2>&1 \
+      || die "could not stop the launched app; declared tests were not run."
+    restart=1
+  fi
   # BACKGROUNDED AND WAITED ON, exactly as the driver is (S204 fix round 1, D2).
   # A foreground child holds the trap's first opportunity to run until it
   # finishes, and this one may legitimately take the whole five minutes — five
@@ -4530,10 +4582,14 @@ xo_run_tests() { # <launch.json> <out tests.json> — writes the record, nothing
   # the test runner and its children included.
   "$XO_PY" "$XO_TESTS_PY" --out "$out" --cwd "$wt" \
     --timeout "$(xo_test_timeout)" --cap "$XO_TEST_TAIL_CAP" \
-    --command "$cmd" >/dev/null 2>&1 &
+    --command "$cmd" --command-source "$command_source" >/dev/null 2>&1 &
   XO_TESTS_PID=$!
   wait "$XO_TESTS_PID" 2>/dev/null || true
   XO_TESTS_PID=""
+  if [ "$restart" -eq 1 ]; then
+    xo_tree_restore "${launch%/*}"
+    xo_do_launch "${launch%/*}" "$XO_LAUNCH_ID" "${out%/*}" "$engine"
+  fi
   return 0
 }
 
@@ -4746,7 +4802,7 @@ xo_finish() { # <mission-dir> <score> <status> <why> [<headline>] [<meaning>] [<
     obj="$(obj_del "$obj" meaning)"
   fi
   # S240 — THE ACTION, MIRRORED. `numberOne.recommendation` is what the board,
-  # the living comment and the autopilot's `policy` read; it is the word the
+  # the living comment and the ECH's `policy` read; it is the word the
   # SCORER decided, never re-derived from `score` by a surface (that hand-mapping
   # is the defect S240 exists to remove).
   if [ -n "$recommendation" ]; then
@@ -5040,6 +5096,8 @@ cmd_evaluate() {
   printf '◈ NUMBER ONE: launching the build…\n'
   : >"$xodir/launch.log"
   xo_do_launch "$dir" "$id" "$xodir" "$xo_engine"
+  local testsfile="$xodir/tests.json" test_outcome=""
+  xo_run_tests "$dir/launch.json" "$testsfile" "$xo_engine"
   local lstatus lurl lmsg nopage=0 nolook_why=""
   local lwork=""
   lstatus="$(json_field "$dir/launch.json" status)"
@@ -5122,11 +5180,11 @@ cmd_evaluate() {
   # the path that newly needs it.
   XO_LAUNCH_STOPPED=0
 
-  # EVERYTHING FROM HERE TO THE PROJECT'S OWN TESTS NEEDS A PAGE (S246). A seed
+  # THE SCREEN MEASUREMENTS BELOW NEED A PAGE (S246). A seed
   # runs in the launched worktree; a walk, a shot, the layout pass, the drawing
   # pairs and the moment-by-moment readings are all readings OF a screen. With no
   # address to open there is no screen, so these are skipped — and nothing else
-  # is. The reach transcripts are already on disk, the tests still run below, and
+  # is. The reach transcripts and test run are already on disk, and
   # the worker rounds and the scorer run over both.
   if [ "$nopage" = 0 ]; then
     # --- 2b. THE SAMPLE DATA (S220 part E) ------------------------------------
@@ -5280,13 +5338,8 @@ except Exception: print(0)' "$obsfile" 2>/dev/null)"
       >/dev/null 2>&1 || true
   fi
 
-  # --- 3c. THE PROJECT'S OWN TESTS (S211) — run by the SKILL, between the
-  # capture and the worker round. A screenshot cannot answer "batches survive a
-  # restart"; the captain's own suite can. Run ONCE, here, in the launched
-  # build's worktree, so however many rounds of looking follow, they are all
-  # reasoning from the same one run.
-  local testsfile="$xodir/tests.json" test_outcome=""
-  xo_run_tests "$dir/launch.json" "$testsfile"
+  # --- 3c. THE PROJECT'S OWN TESTS (S211) — recorded before the browser,
+  # with our app stopped. Every worker round reasons from that same one run.
   test_outcome="$(json_field "$testsfile" outcome)"
   case "${test_outcome:-}" in
     passed)          printf '◈ NUMBER ONE: your tests pass — I can use them as evidence.\n' ;;
@@ -5703,11 +5756,13 @@ except Exception: print(0)' "$obsfile" 2>/dev/null)"
   # --- 8. THE FIX ROUND (S204) ---------------------------------------------
   # A gap that CONTRADICTS something the captain wrote down is a bug, and a bug
   # gets an ordinary mission log — the same verb he would use. A HIGH has none
-  # by construction, so nothing is filed; an interpretation is never filed at
+  # by construction; MERGE findings are retained as operator follow-ups, not filed.
+  # An interpretation is never filed at
   # all (it is a call the build made, reported on the report). `file_logs_for`
   # is the one implementation, shared with the hand-run `lcars xo file-logs`,
   # and it enforces the one-round marker itself.
-  if [ "$status" != "finished" ]; then
+  if [ "$status" != "finished" ] || [ "$recommendation" = "merge" ] \
+     || [ "$recommendation" = "merge-with-follow-ups" ]; then
     file_logs_for "$id" "$dir"
   fi
   return 0
@@ -5743,6 +5798,7 @@ except Exception: print(0)' "$obsfile" 2>/dev/null)"
 # ===========================================================================
 
 XO_LOG_SCRIPT="${LCARS_LOG_SCRIPT:-$SKILL_DIR/../lcars-log/log.sh}"
+XO_FILE_SCRIPT="${LCARS_FILE_SCRIPT:-$SKILL_DIR/../lcars-file/file.sh}"
 XO_RESOLVE_SCRIPT="${LCARS_RESOLVE_LOGS_SCRIPT:-$SKILL_DIR/../lcars-resolve-logs/resolve-logs.sh}"
 XO_LOG_CAP="${LCARS_XO_LOG_CAP:-10}"
 
@@ -5835,11 +5891,26 @@ file_logs_for() { # <id> <dir>
     return 0
   }
 
+  # Shipping advice cannot create blocking work, even through the hand-run verb.
+  # Keep the finding on the verdict before any filing switch or round marker.
+  local merge_note=""
+  merge_note="$("$XO_PY" "$SKILL_DIR/xo-logs.py" --merge-follow-ups "$xodir/verdict.json")" \
+    || die "could not retain reviewer follow-ups in $xodir/verdict.json — no logs filed and no resolver started."
+  if [ -n "$merge_note" ]; then
+    printf '◈ NUMBER ONE: %s\n' "$merge_note"
+    journal "$dir" follow-ups "$(printf '"detail": %s' "$(jstr "$merge_note")")"
+    xo_mirror "$id"
+    return 0
+  fi
+
+  local done_parent=0
+  [ "$(json_field "$st" stage)" != done ] || done_parent=1
+
   # ONE ROUND ONLY (captain ruling). The marker is READ, never inferred from the
   # presence of children or of a logs.json a half-finished run might have left.
   local round
   round="$(obj_get "$(state_xo_block "$st")" round)"
-  if [ -n "$round" ]; then
+  if [ -n "$round" ] && [ "$done_parent" = 0 ]; then
     printf '◈ NUMBER ONE: %s has already had its fix round (round %s) — one round only.\n' \
       "$id" "$round"
     printf '  Anything still short of the mark is on the report, and it is yours.\n'
@@ -5851,11 +5922,12 @@ file_logs_for() { # <id> <dir>
   if ! cfg_files_bugs; then
     printf '◈ NUMBER ONE: filing is off for this repo (numberOne.filesBugs: false) — nothing filed.\n'
     printf '  What I found is on the report either way. Turn it back on in .git/lcars/config.json.\n'
+    [ "$done_parent" = 0 ] || printf '  Findings retained in %s.\n' "$xodir/verdict.json"
     journal "$dir" filed-logs '"filed": 0, "detail": "filing is off (numberOne.filesBugs: false)"'
     return 0
   fi
 
-  mkdir -p "$xodir/logs"
+  mkdir -p "$xodir/logs" || die "cannot create $xodir/logs — findings retained in $xodir/verdict.json."
   local plan overflow=0 n=0
   # THE SIXTH ARGUMENT IS THE RECORD OF WHAT IS ALREADY FILED (S240). A criterion
   # already in `logs.json` is skipped and said out loud, so a second look can
@@ -5883,6 +5955,7 @@ file_logs_for() { # <id> <dir>
       "$id" "$prc"
     printf '  Nothing was filed, and that is NOT a clean bill of health: anything the look\n'
     printf '  found is still on the report, and it has not been checked against the record.\n'
+    [ "$done_parent" = 0 ] || printf '  Findings retained in %s.\n' "$xodir/verdict.json"
     journal "$dir" filed-logs \
       "$(printf '"filed": 0, "exit": %s, "detail": %s' "$prc" \
            "$(jstr "the filer failed (exit $prc) — nothing was filed and nothing is proven clean")")"
@@ -5988,6 +6061,89 @@ file_logs_for() { # <id> <dir>
     return 0
   fi
 
+  # A merged parent has no PR for a child fix to ride. File independently;
+  # the generated PRDs remain the durable fallback even if filing fails.
+  if [ "$done_parent" = 1 ]; then
+    local ai=2 fi=0 filed=0 fprd fid fout frc fwhy fissue fengine=""
+    local -a fileargs=()
+    [ -n "${LCARS_WORKER_BIN:-}" ] || fengine="$(xo_engine_for "$st")"
+    while [ "$ai" -lt "${#args[@]}" ]; do
+      fprd="${args[$((ai + 1))]}"
+      fileargs=(--prd "$fprd")
+      ai=$((ai + 2))
+      while [ "$ai" -lt "${#args[@]}" ] && [ "${args[$ai]}" != --prd ]; do
+        fileargs+=("${args[$ai]}")
+        ai=$((ai + 1))
+      done
+      frc=0; fid=""; fissue=""; fwhy=""
+      fout="$(
+        if [ -n "$fengine" ]; then
+          export LCARS_WORKER_BIN="$fengine" LCARS_WORKER_BIN_INTERNAL=1
+        fi
+        LCARS_XO_INTERNAL="$id" bash "$XO_FILE_SCRIPT" "${fileargs[@]}" 2>&1
+      )" || frc=$?
+      if [ "$frc" = 0 ]; then
+        fid="$(printf '%s\n' "$fout" | sed -n 's/^  Mission filed: \(lcars-[a-zA-Z0-9-]*\)$/\1/p' | tail -1)"
+        if [ -z "$fid" ] || [ ! -s "$MISSIONS_DIR/$fid/prd.md" ] ||
+           [ "$(json_field "$MISSIONS_DIR/$fid/state.json" id)" != "$fid" ] ||
+           [ -n "$(json_field "$MISSIONS_DIR/$fid/state.json" parentMission)" ]; then
+          frc=1; fid=""
+          fwhy="lcars file returned success without a persisted standalone Mission ID."
+        else
+          fissue="$(lcars_state_get_raw "$MISSIONS_DIR/$fid/state.json" githubIssue)"
+          [ "$fissue" != null ] || fissue=""
+          filed=$((filed + 1))
+        fi
+      fi
+      if [ "$frc" != 0 ]; then
+        [ -n "$fwhy" ] || fwhy="$(xo_log_refusal_why "$fout" "$frc")"
+        printf '  Not filed through `lcars file`: %s Finding retained in %s (record: %s).\n' \
+          "$fwhy" "$fprd" "$xodir/verdict.json"
+        journal "$dir" finding-retained \
+          "$(printf '"exit": %s, "detail": %s' "$frc" \
+               "$(jstr "lcars file did not finish: $fwhy Finding retained in $fprd (record: $xodir/verdict.json).")")"
+      else
+        printf '  Standalone Mission filed: %s — %s\n' "$fid" "${gap_title[$fi]}"
+        journal "$dir" filed-mission \
+          "$(printf '"mission": %s, "detail": %s' "$(jstr "$fid")" \
+               "$(jstr "standalone Mission $fid filed for Done parent $id")")"
+      fi
+      # Record each result before the next call, preserving earlier successes.
+      "$XO_PY" -c 'import json, os, pathlib, sys
+p = pathlib.Path(sys.argv[1])
+d = json.loads(p.read_text()) if p.exists() else {"filed": []}
+f = {"n": int(sys.argv[2]), "mission": sys.argv[3], "issue": sys.argv[4],
+     "criterion": sys.argv[5], "title": sys.argv[6],
+     "shots": [pathlib.Path(s).stem for s in sys.argv[7].split(",") if s],
+     "prd": sys.argv[8]}
+d["standalone"] = True
+d["overflow"] = int(sys.argv[10])
+d["filedAt"] = sys.argv[11]
+d["unfiled"] = [old for old in d.get("unfiled", [])
+                if old.get("criterion") != f["criterion"]]
+if f["mission"]:
+    d["filed"].append(f)
+else:
+    f["why"] = sys.argv[9]
+    d["unfiled"].append(f)
+tmp = p.with_suffix(".json.tmp")
+tmp.write_text(json.dumps(d, ensure_ascii=False) + "\n")
+os.replace(tmp, p)' "$xodir/logs.json" "$((fi + 1))" "$fid" "$fissue" \
+        "${gap_crit[$fi]}" "${gap_title[$fi]}" "${gap_shots[$fi]}" "$fprd" "$fwhy" \
+        "$overflow" "$NOW" \
+        || die "cannot record filing result — findings retained in $xodir/logs and $xodir/verdict.json."
+      fi=$((fi + 1))
+    done
+    printf '◈ NUMBER ONE: filed %d standalone mission(s); no parent resolver started.\n' "$filed"
+    if [ "${overflow:-0}" -gt 0 ]; then
+      printf '  %s more finding(s) retained in %s — cap %s.\n' "$overflow" "$xodir/verdict.json" "$XO_LOG_CAP"
+      journal "$dir" overflow \
+        "$(printf '"detail": %s' "$(jstr "$overflow more findings retained in $xodir/verdict.json — cap $XO_LOG_CAP")")"
+    fi
+    xo_mirror "$id"
+    return 0
+  fi
+
   # --- ONE call to the ordinary verb ---------------------------------------
   # Exactly the invocation run.sh already makes (`LCARS_WORKER_BIN=<engine> bash
   # log.sh --parent … --prd …`), with the engine pinned the way every other
@@ -6015,9 +6171,9 @@ file_logs_for() { # <id> <dir>
     local lwhy
     lwhy="$(xo_log_refusal_why "$lout" "$lrc")"
     escalate "$dir" verify \
-      "Number One had $n gaps to file but \`lcars log\` did not finish: $lwhy" \
+      "Number One had $n gaps to file but \`lcars log\` did not finish: $lwhy Findings retained in $xodir/logs (record: $xodir/verdict.json)." \
       "$(printf '"stage": "verify", "reason": "log-refused", "exit": %s, "detail": %s' \
-           "$lrc" "$(jstr "$lwhy")")"
+           "$lrc" "$(jstr "$lwhy Findings retained in $xodir/logs (record: $xodir/verdict.json).")")"
   fi
 
   # --- the child ids, read off the verb's own summary ----------------------
@@ -6358,6 +6514,8 @@ cmd_recheck() {
     fi
     exec bash "$XO_LAUNCH_SCRIPT" "$id"
   ) >>"$xodir/launch.log" 2>&1 || true
+  local testsfile="$xodir/tests.json" test_outcome2=""
+  xo_run_tests "$dir/launch.json" "$testsfile" "$xo_engine"
   local lstatus lurl lmsg
   lstatus="$(json_field "$dir/launch.json" status)"
   lurl="$(json_field "$dir/launch.json" url)"
@@ -6377,7 +6535,7 @@ cmd_recheck() {
     "$(printf '"url": %s, "commit": %s, "branchNote": %s' \
          "$(jstr "$lurl")" "$(jstr "${XO_RECHECK_SHA:-}")" "$(jstr "${XO_RECHECK_NOTE:-}")")"
   # THE RELAUNCHED TREE IS REMEMBERED TOO (S221). A recheck drives the build the
-  # same way a look does, and it runs the project's suite afterwards — so it
+  # same way a look does, after running the project's suite — so it
   # gets the same guarantee: whatever the browser leaves behind is put back.
   xo_tree_mark "$(json_field "$dir/launch.json" worktree)" "$xodir/tree-mark"
 
@@ -6487,15 +6645,13 @@ except Exception: pass' "$xodir/pairs.json" 2>/dev/null)"
   # re-check too the second look had no measurement of them at all.
   xo_measure_walk "$dir" "$xodir" "$obsfile" "$rwalk"
 
-  # --- 2c. AND THE PROJECT'S OWN TESTS, AGAIN (S211). A recheck relaunches the
+  # --- 2c. READ THE PROJECT'S OWN TESTS, AGAIN (S211). A recheck relaunches the
   # build from the FIXED branch, so the first look's test run is about code that
   # no longer exists. Re-running it here is the same reason the observations
   # pass re-runs: this is a look, and a look reasons from what is in front of it
   # today. Handing the recheck stale evidence is the S204 stale-shots defect in
   # another costume — it reached the right verdict once by luck and the wrong
   # one the time after.
-  local testsfile="$xodir/tests.json" test_outcome2=""
-  xo_run_tests "$dir/launch.json" "$testsfile"
   test_outcome2="$(json_field "$testsfile" outcome)"
   journal "$dir" tested "$(printf '"outcome": %s, "round": "recheck"' "$(jstr "${test_outcome2:-unknown}")")"
 

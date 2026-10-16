@@ -21,7 +21,7 @@
 #     filed. The selection is WIDENED (not replaced) to every `gap` proven by ANY
 #     recorded instrument plus every high-impact `untested` with a PRODUCT cause,
 #     and the PRD it assembles is rewritten to the evidence-first template that
-#     `autopilot.sh file-bug` actually accepts.
+#     `ech.sh file-bug` actually accepts.
 #
 # WHAT IS NOT CHANGED, AND IS ASSERTED NOT TO BE: the grade ladder
 # (`derive_grade`), `checkedBy`/`evidence`, and the WHY wire line.
@@ -33,7 +33,7 @@
 #     widening is a widening and not the removal of a rule.
 #   * the weekend archive's own PRD (`canvas-weekend-2026-09-26/evidence/
 #     filed-prds/bug-020-1.md`) is STILL REFUSED by the real validator lifted out
-#     of autopilot.sh — if this suite ever loosens it, that check goes red.
+#     of ech.sh — if this suite ever loosens it, that check goes red.
 #   * the shim on PATH is proven to fire before "no spend" is claimed.
 #
 # Skill source under test:
@@ -41,7 +41,7 @@
 #                                    report.md lines 1-2, the RECOMMENDATION wire
 #   skills/lcars-xo/xo-logs.py     — the widened selection + the evidence-first PRD
 #   skills/lcars-xo/xo-journey.py  — coverage reasons that come from the record
-#   skills/lcars-buddy/autopilot.sh — `policy` reads `recommendation`
+#   skills/lcars-eeh/ech.sh — `policy` reads `recommendation`
 #
 # ZERO SPEND. Pure python/shell over fixture JSON. No worker, no browser, no gh,
 # no network. A PATH shim stubs `claude` and `copilot`.
@@ -54,7 +54,7 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SCOREPY="${LCARS_XO_SCORE_PY:-$REPO_ROOT/skills/lcars-xo/xo-score.py}"
 LOGSPY="${LCARS_XO_LOGS_PY:-$REPO_ROOT/skills/lcars-xo/xo-logs.py}"
 JOURNEYPY="${LCARS_XO_JOURNEY_PY:-$REPO_ROOT/skills/lcars-xo/xo-journey.py}"
-AUTOPILOT="$REPO_ROOT/skills/lcars-buddy/autopilot.sh"
+ECH="$REPO_ROOT/skills/lcars-eeh/ech.sh"
 ARCHIVE_PRD="$HOME/Projects/lcars-dev/canvas-weekend-2026-09-26/evidence/filed-prds/bug-020-1.md"
 PY="${LCARS_PYTHON_BIN:-python3}"
 
@@ -82,15 +82,15 @@ bad()  { printf '  \033[31mFAIL\033[0m %s\n' "$1"; fail=$((fail + 1)); }
 check(){ if eval "$2"; then ok "$1"; else bad "$1 ($2)"; fi; }
 
 # THE REAL VALIDATOR, LIFTED OUT OF THE REAL FILE — never a copy of it. The PY
-# heredoc inside `bug_prd_problems` is extracted from autopilot.sh at run time,
+# heredoc inside `bug_prd_problems` is extracted from ech.sh at run time,
 # so a PRD this suite calls valid is one `file-bug` would accept, and a change
 # to the validator shows up here instead of being shadowed by a stale duplicate.
 VALIDATOR="$TMPROOT/bug_prd_problems.py"
-awk '/^bug_prd_problems\(\) \{/,/^\}$/' "$AUTOPILOT" \
+awk '/^bug_prd_problems\(\) \{/,/^\}$/' "$ECH" \
   | awk "/<<'PY'/{f=1;next} /^PY\$/{f=0} f" >"$VALIDATOR"
 prd_valid() { "$PY" "$VALIDATOR" "$1" >"$TMPROOT/prd.msg" 2>&1; }
 
-check "0. the real validator was lifted out of autopilot.sh (non-empty)" \
+check "0. the real validator was lifted out of ech.sh (non-empty)" \
   "[ -s '$VALIDATOR' ] && grep -q 'Observed live' '$VALIDATOR'"
 
 # ─── THE CONTRACT, SHARED BY EVERY LEDGER BELOW ──────────────────────────────
@@ -520,11 +520,11 @@ P"
 check "5n. …and says which switch did it, so a captain is not left guessing" \
   "grep -q 'numberOne.filesBugs: false' '$REPO_ROOT/skills/lcars-xo/xo.sh'"
 
-printf '\n── 6. the autopilot reads the recommendation, and keeps its fallback ──\n'
+printf '\n── 6. the ECH reads the recommendation, and keeps its fallback ──\n'
 check "6a. policy reads \`recommendation\` off Number One's own verdict.json" \
-  "grep -q 'verdict.json\" recommendation' '$AUTOPILOT'"
+  "grep -q 'verdict.json\" recommendation' '$ECH'"
 check "6b. …and KEEPS its playbook fallback for a verdict that names none" \
-  "grep -q 'verdict.json\" score' '$AUTOPILOT'"
+  "grep -q 'verdict.json\" score' '$ECH'"
 check "6c. the verdict carries the one sentence a shell can read with one key" \
   "[ -n \"\$(field sendback recommendationWhy)\" ]"
 

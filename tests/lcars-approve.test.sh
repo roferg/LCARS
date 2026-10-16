@@ -191,11 +191,87 @@ check "2. adds the lcars:done label" "grep -q 'add-label lcars:done' '$GH_LOG'"
 check "2. removes the lcars:verify stage label" \
   "grep -q 'remove-label lcars:verify' '$GH_LOG'"
 
+# --- Completion releases only the pause recorded by Number One -------------
+savedMID="$MID"; MID="lcars-20261015-295"
+repoXO="$(new_repo_with_open_pr_mission)"
+make_gh_stub "$repoXO/gh"; make_reconcile_stub "$repoXO/recon.sh" 0
+sXO="$(state_of "$repoXO")"; mXO="${sXO%/state.json}"
+xoChild="lcars-20261015-296"; ownChild="lcars-20261015-297"
+mkdir -p "$mXO/xo" "${mXO%/*}/$xoChild" "${mXO%/*}/$ownChild"
+printf '{"filed":[{"mission":"%s"},{"mission":"%s"}]}\n' "$xoChild" "$ownChild" >"$mXO/xo/logs.json"
+for child in "$xoChild" "$ownChild"; do
+  printf '{\n  "id": "%s",\n  "type": "bug",\n  "parentMission": "%s",\n  "stage": "done"\n}\n' \
+    "$child" "$MID" >"${mXO%/*}/$child/state.json"
+done
+(
+  . "$REPO_ROOT/skills/lcars-init/lcars-state.sh"
+  lcars_state_set "$sXO" numberOne '{"status":"engaged","engine":"copilot"}'
+  lcars_state_set "${mXO%/*}/$ownChild/state.json" paused true
+)
+rcXO=0
+( cd "$repoXO" && LCARS_OWNER_ENFORCE=0 LCARS_GH_BIN=true \
+    bash "$REPO_ROOT/skills/lcars-xo/xo.sh" off "$MID" >off.txt 2>&1 ) || rcXO=$?
+check "2xo. unfinished xo off still pauses and records ownership" \
+  "[ '$rcXO' -eq 0 ] && grep -q '\"paused\": *true' '$sXO' &&
+   grep -q '^self paused-by-us$' '$mXO/xo-stop' &&
+   grep -q '\"stage\": *\"verify\"' '$sXO'"
+check "2xo. stop distinguishes its child pause from a captain-owned child pause" \
+  "grep -q '^child $xoChild paused-by-us$' '$mXO/xo-stop' &&
+   grep -q '^child $ownChild already-paused$' '$mXO/xo-stop'"
+rcXO=0
+( cd "$repoXO" && GH_LOG="$repoXO/gh.log" RECON_LOG="$repoXO/recon.log" \
+    LCARS_GH_BIN="$repoXO/gh" LCARS_RUN_SCRIPT="$repoXO/recon.sh" \
+    bash "$SCRIPT" --mission "$MID" >out.txt 2>&1 ) || rcXO=$?
+check "2xo. merged mission releases its xo-owned pause and stop marker" \
+  "[ '$rcXO' -eq 0 ] &&
+   python3 -c 'import json,sys; s=json.load(open(sys.argv[1])); assert s[\"stage\"]==\"done\"; assert s[\"review\"]==\"merged\"; assert not s.get(\"paused\",False)' '$sXO' &&
+   [ ! -e '$mXO/xo-stop' ]"
+check "2xo. completion releases the owned child pause, not the captain's pause" \
+  "python3 -c 'import json,sys; assert not json.load(open(sys.argv[1])).get(\"paused\",False); assert json.load(open(sys.argv[2]))[\"paused\"] is True' '${mXO%/*}/$xoChild/state.json' '${mXO%/*}/$ownChild/state.json'"
+
+for stopMode in own-pause already-paused marker-only; do
+  repoControl="$(new_repo_with_open_pr_mission)"
+  printf '{\n  "numberOne": {"enabled": true, "engine": "copilot"}\n}\n' >"$repoControl/.git/lcars/config.json"
+  make_gh_stub "$repoControl/gh"; make_reconcile_stub "$repoControl/recon.sh" 0
+  sControl="$(state_of "$repoControl")"; mControl="${sControl%/state.json}"
+  (
+    . "$REPO_ROOT/skills/lcars-init/lcars-state.sh"
+    lcars_state_set "$sControl" paused true
+    lcars_state_set "$sControl" numberOne '{"status":"engaged","engine":"copilot"}'
+  )
+  case "$stopMode" in
+    already-paused)
+      ( cd "$repoControl" && LCARS_OWNER_ENFORCE=0 LCARS_GH_BIN=true \
+          bash "$REPO_ROOT/skills/lcars-xo/xo.sh" off "$MID" >off.txt 2>&1 )
+      check "2xo. control stop records an already-paused mission" \
+        "grep -q '^self already-paused$' '$mControl/xo-stop'" ;;
+    marker-only)
+      ( cd "$repoControl" && LCARS_OWNER_ENFORCE=0 LCARS_GH_BIN=true \
+          bash "$REPO_ROOT/skills/lcars-xo/xo.sh" off >off.txt 2>&1 )
+      check "2xo. repo-wide control records no ownership of the captain's pause" \
+        "grep -q '^self left-running$' '$mControl/xo-stop'" ;;
+  esac
+  rcControl=0
+  ( cd "$repoControl" && GH_LOG="$repoControl/gh.log" RECON_LOG="$repoControl/recon.log" \
+      LCARS_GH_BIN="$repoControl/gh" LCARS_RUN_SCRIPT="$repoControl/recon.sh" \
+      bash "$SCRIPT" --mission "$MID" >out.txt 2>&1 ) || rcControl=$?
+  check "2xo. $stopMode control completes but keeps its own pause" \
+    "[ '$rcControl' -eq 0 ] &&
+     python3 -c 'import json,sys; s=json.load(open(sys.argv[1])); assert s[\"stage\"]==\"done\"; assert s[\"paused\"] is True' '$sControl' &&
+     [ ! -e '$mControl/xo-stop' ]"
+done
+MID="$savedMID"
+
 # --- Behaviour 3: a FAILED merge must NOT flip the Mission to Done -----------
 # No false Done: when `gh pr merge` fails, approve stays at verify, applies no
 # lcars:done, and exits non-zero with an actionable message.
 repoF="$(new_repo_with_open_pr_mission)"; make_gh_stub_merge_fail "$repoF/gh"
 make_reconcile_stub "$repoF/recon.sh" 0
+(
+  . "$REPO_ROOT/skills/lcars-init/lcars-state.sh"
+  lcars_state_set "$(state_of "$repoF")" paused true
+)
+printf 'mission %s\nself paused-by-us\n' "$MID" >"${repoF}/.git/lcars/missions/$MID/xo-stop"
 export GH_LOG="$repoF/gh.log"; : >"$GH_LOG"
 rcF=0
 ( cd "$repoF" && LCARS_GH_BIN="$repoF/gh" LCARS_RUN_SCRIPT="$repoF/recon.sh" \
@@ -208,6 +284,9 @@ check "3. applies NO lcars:done label on a failed merge" \
   "! grep -q 'add-label lcars:done' '$repoF/gh.log'"
 check "3. prints an actionable error mentioning verify" \
   "grep -qi 'verify' '$repoF/out.txt'"
+check "3. failed merge keeps Number One's pause and ownership record" \
+  "grep -q '\"paused\": *true' '$(state_of "$repoF")' &&
+   grep -q '^self paused-by-us$' '$repoF/.git/lcars/missions/$MID/xo-stop'"
 
 # --- Behaviour 4: approve REQUIRES an open PR (none recorded → refuse) -------
 # A verify mission with NO prUrl was never driven through the Verify auto-open;

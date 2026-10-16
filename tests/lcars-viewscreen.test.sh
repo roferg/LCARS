@@ -308,6 +308,37 @@ ghgone="$(LCARS_WEB_DIR="$WEB_DIR" LCARS_PYTHON_BIN="$PYSTUB" LCARS_GH_BIN="$TMP
 check "github adapter: missing gh degrades (launch still proceeds)" \
   "[ $rc -eq 0 ] && printf '%s' \"\$ghgone\" | qgrep -q 'ARGV:'"
 
+# --- S275 CRASH: github adapter from CONFIG with NO extra CLI args ------------
+# `lcars viewscreen` (no arguments) in a repo whose .git/lcars/config.json sets
+# "serveAdapter": "github" died instantly on macOS bash 3.2:
+#   viewscreen.sh: line 152: EXTRA_ARGS[@]: unbound variable
+# Cause: with no CLI args EXTRA_ARGS is an EMPTY array, and the --gh-repo
+# derivation block looped over it as "${EXTRA_ARGS[@]}" — which trips `set -u`
+# on bash 3.2. Every other github case above passes CLI args, so the array was
+# never empty on that path and the crash hid. This case drives it the way the
+# tester did: adapter from CONFIG, argv EMPTY.
+GHCFG_DIR="$TMPROOT/ghcfgrepo"
+mkdir -p "$GHCFG_DIR/.git/lcars"
+( cd "$GHCFG_DIR" && git init -q 2>/dev/null )
+printf '{\n  "serveAdapter": "github"\n}\n' >"$GHCFG_DIR/.git/lcars/config.json"
+
+cfgout="$(cd "$GHCFG_DIR" && LCARS_WEB_DIR="$WEB_DIR" LCARS_PYTHON_BIN="$PYSTUB" \
+  LCARS_GH_BIN="$GHSTUB" LCARS_VERSION_CHECK_BIN=/nonexistent/x \
+  bash "$SERVE" 2>&1)"; cfgrc=$?
+check "github adapter via config + NO args: does not die on unbound variable" \
+  "! printf '%s' \"\$cfgout\" | qgrep -q 'unbound variable'"
+check "github adapter via config + NO args: reaches the daemon (rc 0, ARGV printed)" \
+  "[ $cfgrc -eq 0 ] && printf '%s' \"\$cfgout\" | qgrep -q 'ARGV:'"
+check "github adapter via config + NO args: still derives --gh-repo" \
+  "printf '%s' \"\$cfgout\" | qgrep -q -- '--gh-repo octo/widgets'"
+
+# Static lock: the hazard form must not come back. Line 163 uses
+# "${EXTRA_ARGS[@]:-}" and lines 183-187 guard on the element count; a bare
+# "${EXTRA_ARGS[@]}" in a for-loop is the crash above.
+ea_unguarded="$(grep -cF 'for a in "${EXTRA_ARGS[@]}"' "$SERVE")"
+check "launcher: no unguarded \"\${EXTRA_ARGS[@]}\" for-loop remains" \
+  "[ $ea_unguarded -eq 0 ]"
+
 # --- S68 write layer: the LOCAL daemon dispatches a POST to the skill script ---
 # Boot the read+write local daemon against the fixture repo, point the pause
 # skill path env at a RECORDING STUB, POST /api/mission/m-001/pause, and assert
@@ -361,7 +392,7 @@ OPENOUT="$(LCARS_WEB_DIR="$WEB_DIR" LCARS_PYTHON_BIN="$PYSTUB" LCARS_GH_BIN="$GH
 check "launcher forwards --open to the daemon" \
   "printf '%s' \"\$OPENOUT\" | qgrep -q -- '--open'"
 
-# --- BUG (lcars-buddy): a QUEUED card must not render a live Start button -------
+# --- BUG (lcars-eeh): a QUEUED card must not render a live Start button -------
 # A logged bug SCHEDULED in a resolve-logs batch carries state.json.queued:true; the
 # board derives runState→"queued" and shows a "QUEUED · WAITING" pill. But the card's
 # action control (cardControls) branched only on paused/pausing/running and otherwise

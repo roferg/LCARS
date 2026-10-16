@@ -35,7 +35,9 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
+import urllib.request
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))
@@ -43,6 +45,162 @@ sys.path.insert(0, os.path.dirname(HERE))
 CARD_HARNESS = os.path.join(HERE, "board_card_harness.js")
 TAB_HARNESS = os.path.join(HERE, "board_xo_tab_harness.js")
 BOARD_JS = os.path.join(os.path.dirname(HERE), "static", "board.js")
+
+
+class InterruptedReportSurfaces(unittest.TestCase):
+    """One artifact predicate, exercised through HTTP, shipping DOM, and CLI."""
+
+    def test_cli_surfaces_unreadable_reports_without_downgrading_full(self):
+        from tests import _fixtures as fx
+
+        with tempfile.TemporaryDirectory(dir=os.environ.get("TMPDIR")) as root:
+            subprocess.run(["git", "init", "-q", root], check=True)
+            fx.write_json(os.path.join(root, ".git", "lcars", "config.json"), {})
+            mid = "m-unreadable-report"
+            fx.plant_simple(root, mid, stage="verify", issue=1)
+            xo = os.path.join(fx.mission_dir(root, mid), "xo")
+            os.makedirs(xo, exist_ok=True)
+            cases = (
+                ("invalid-full", b"\xff", b"Preserved partial evidence.", "report.md"),
+                ("invalid-partial", None, b"\xff", "partial-report.md"),
+                ("missing", None, None, None),
+                ("valid-full", b"Completed full report.", b"\xff", None),
+            )
+            for name, full, partial, unreadable in cases:
+                with self.subTest(artifacts=name):
+                    for filename, data in (("report.md", full),
+                                           ("partial-report.md", partial)):
+                        path = os.path.join(xo, filename)
+                        if os.path.exists(path):
+                            os.unlink(path)
+                        if data is not None:
+                            with open(path, "wb") as fh:
+                                fh.write(data)
+                    cli = subprocess.run(
+                        ["bash", "skills/lcars-xo/xo.sh", "report", mid],
+                        env=dict(os.environ, GIT_DIR=os.path.join(root, ".git")),
+                        text=True, capture_output=True)
+                    if unreadable:
+                        self.assertEqual(cli.returncode, 1, cli.stdout)
+                        self.assertEqual(cli.stdout, "")
+                        self.assertIn("cannot read", cli.stderr.lower())
+                        self.assertIn(os.path.join(xo, unreadable), cli.stderr)
+                        self.assertNotIn("Traceback", cli.stderr)
+                    else:
+                        self.assertEqual(cli.returncode, 0, cli.stderr)
+                        self.assertEqual(cli.stderr, "")
+                        self.assertEqual("Completed full report." in cli.stdout,
+                                         name == "valid-full")
+                        self.assertNotIn("Preserved partial evidence.", cli.stdout)
+
+    def test_report_availability_and_precedence_on_every_read_surface(self):
+        from tests import _fixtures as fx
+        from tests.test_xo_toggle import plant_number_one
+        from lcars_serve.local_adapter import LocalAdapter
+        from lcars_serve.server import make_server
+
+        full = "Completed look: the toolbar was checked."
+        partial = "Unfinished evidence: the toolbar disappeared."
+        states = (("verify", "engaged"), ("done", "engaged"),
+                  ("verify", "stood-down"), ("verify", "escalated"))
+        artifacts = (("partial", False, True), ("full", True, False),
+                     ("none", False, False), ("both", True, True))
+        with tempfile.TemporaryDirectory() as root:
+            subprocess.run(["git", "init", "-q", root], check=True)
+            fx.write_json(os.path.join(root, ".git", "lcars", "config.json"), {})
+            expected = {}
+            for stage, status in states:
+                for name, has_full, has_partial in artifacts:
+                    mid = "m-%s-%s-%s" % (stage, status, name)
+                    fx.plant_simple(root, mid, stage=stage, issue=len(expected) + 1)
+                    plant_number_one(root, mid, {
+                        "status": status, "engine": "copilot", "score": "high",
+                        "evaluatedAt": "2026-10-15T10:00:00Z"})
+                    d = fx.mission_dir(root, mid)
+                    # No journal is required to read preserved evidence.
+                    if status != "engaged" or stage == "done":
+                        fx.write_jsonl(os.path.join(d, "number-one.jsonl"), [{
+                            "at": "2026-10-15T10:01:00Z", "action": "stopped",
+                            "detail": "The operator interrupted this look."}])
+                    if has_full:
+                        fx.write(os.path.join(d, "xo", "report.md"), full)
+                        fx.write_json(os.path.join(d, "xo", "verdict.json"),
+                                      {"score": "high", "summary": full})
+                    if has_partial:
+                        fx.write(os.path.join(d, "xo", "partial-report.md"), partial)
+                    expected[mid] = ("full" if has_full else
+                                     "partial" if has_partial else "none")
+            server = make_server(LocalAdapter(root), host="127.0.0.1", port=0,
+                                 poll_interval=0.05)
+            threading.Thread(target=server.serve_forever, daemon=True).start()
+            try:
+                def get(path):
+                    url = "http://127.0.0.1:%d%s" % (server.server_address[1], path)
+                    with urllib.request.urlopen(url, timeout=15) as response:
+                        return json.load(response)
+
+                cards = {m["id"]: m for column in get("/api/board")["columns"].values()
+                         for m in column}
+                aggregate = get("/api/xo/report")
+                modal = _run(os.path.join(HERE, "board_xo_report_harness.js"),
+                             {"reportData": aggregate})
+                for mid, kind in expected.items():
+                    detail = get("/api/mission/" + mid)
+                    card = _run(CARD_HARNESS, cards[mid])
+                    tab = _run(TAB_HARNESS, detail)
+                    cli = subprocess.run(
+                        ["bash", os.path.join(os.getcwd(), "skills/lcars-xo/xo.sh"),
+                         "report", mid], cwd=root, text=True, capture_output=True)
+                    env = dict(os.environ, MISSION_DIR=fx.mission_dir(root, mid),
+                               MISSION_ID=mid, STATE=os.path.join(
+                                   fx.mission_dir(root, mid), "state.json"))
+                    comment = subprocess.run(
+                        ["bash", "-c", '. "$1"; cm_render_number_one', "bash",
+                         "skills/lcars-run/comment-mirror.sh"],
+                        env=env, text=True, capture_output=True)
+                    with self.subTest(mission=mid, surface="cli-exit"):
+                        self.assertEqual(cli.returncode, 0, cli.stderr)
+                    for surface, actual in (
+                        ("card-payload", cards[mid]["numberOne"].get("reportKind")),
+                        ("detail-payload", detail["numberOne"].get(
+                            "report", {}).get("kind")),
+                        ("aggregate-api", next((r["kind"] for r in aggregate.get(
+                            "reports", []) if r["id"] == mid), None)),
+                    ):
+                        with self.subTest(mission=mid, surface=surface):
+                            self.assertEqual(actual or "none", kind)
+                    controls = [n for n in _flatten(card)
+                                if "xo-read-report" in n.get("cls", "").split()]
+                    with self.subTest(mission=mid, surface="card-control"):
+                        self.assertEqual(bool(controls), kind != "none")
+                        if kind == "partial":
+                            self.assertIn("partial", json.dumps(controls).lower())
+                            self.assertIn("INTERRUPTED", _all_text(card))
+                            self.assertFalse(_cls_of(card, "xo-score"))
+                    if kind == "partial":
+                        with self.subTest(mission=mid, surface="aggregate-grade"):
+                            group = next((m for m in aggregate["missions"]
+                                          if m["id"] == mid), {})
+                            self.assertIsNone(group.get("score"))
+                    for surface, text in (
+                        ("detail-render", _all_text(tab["pane"])),
+                        ("cli-output", cli.stdout),
+                        ("living-comment", comment.stdout),
+                    ):
+                        with self.subTest(mission=mid, surface=surface):
+                            self.assertEqual(full in text, kind == "full")
+                            self.assertEqual(partial in text, kind == "partial")
+                            if kind == "partial":
+                                self.assertIn("INTERRUPTED", text)
+                                self.assertIn("not a verdict", text.lower())
+                                self.assertNotIn("HIGH", text)
+                    if kind != "none":
+                        with self.subTest(mission=mid, surface="aggregate-render"):
+                            self.assertIn(full if kind == "full" else partial,
+                                          json.dumps(modal))
+            finally:
+                server.shutdown()
+                server.server_close()
 
 LONG = ("Captain, this build is a code-only engine change — two pure "
         "coordinate functions, a factory method, a Camera type field, and "
@@ -335,6 +493,20 @@ class TabBase(unittest.TestCase):
         mi["numberOne"].update(over.pop("block", {}))
         mi.update(over)
         return _run(TAB_HARNESS, mi)
+
+
+class DoneMissionsKeepTheirReport(TabBase):
+
+    def test_done_with_stale_engaged_status_keeps_the_historical_report(self):
+        result = self.mi(stage="done")
+        self.assertIn({"text": "◈ Number One", "key": "xo"}, result["tabs"])
+        text = _all_text(result["pane"])
+        self.assertIn("MEDIUM", text)
+        self.assertIn(HEADLINE, text)
+        self.assertIn("worldToScreen converts correctly", text)
+        self.assertNotIn("NUMBER ONE · ENGAGED", text)
+        self.assertNotIn("has the conn", text)
+        self.assertNotIn("Stand down", text)
 
 
 class C2_TheVerdictLeadsAndReassuranceGoesLast(TabBase):

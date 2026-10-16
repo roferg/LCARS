@@ -1,6 +1,21 @@
 ---
 name: lcars-viewscreen
-description: Start the LCARS Kanban web board — the bridge **viewscreen**, a local, browser-based command-and-control view of every active Mission (PRD §5.1–5.2, §6; ADR-001/002/003/007). `lcars viewscreen` (alias `lcars serve`, the older power verb that still works) launches a Python-3-stdlib-only daemon (NO pip/npm/build step) that serves a vanilla LCARS-themed static front end rendering the Kanban board: all active Missions as cards in their correct Stage columns, each with one cost pill + two difficulty pills (reasoning + implementation, low=teal/med=amber/high=red), awaiting-you and paused card states, nested ticket rows, and Implement wave/ticket progress. `lcars viewscreen --open` is the one-command launcher — it boots on a free port and opens the board in your browser. It exposes a small read API (`GET /api/board`, `GET /api/mission/<id>`) plus a live channel (SSE) that pushes on state change, and — on the LOCAL adapter — operator write endpoints (file / start / pause / resume / respond / verify / log) that dispatch to the `lcars` skills; the GitHub adapter and `--read-only` keep it view-only. ONE adapter-neutral board shape backs two interchangeable read adapters (ADR-003): a LOCAL adapter parsing `.git/lcars/missions/*` (default) and a GITHUB adapter reading issues + `lcars:*` labels via `$LCARS_GH_BIN`; the front end depends only on the shape, so a hosted view-only build is a configuration away. Use when the captain runs `lcars viewscreen` or `lcars serve`, asks to open / start / launch the LCARS viewscreen / board / web UI / Kanban / dashboard in a browser, or wants a live visual view of the mission fleet.
+description: >-
+  Start the LCARS Kanban web board — the bridge **viewscreen**, a local,
+  browser-based command-and-control view of every active Mission (PRD
+  §5.1–5.2, §6; ADR-001/002/003/007). `lcars viewscreen` (alias `lcars
+  serve`, the older power verb that still works) launches a
+  Python-3-stdlib-only daemon (NO pip/npm/build step) that serves a vanilla
+  LCARS-themed static front end rendering the Kanban board: all active
+  Missions as cards in their correct Stage columns, each with one cost pill
+  + two difficulty pills (reasoning + implementation,
+  low=teal/med=amber/high=red), awaiting-you and paused card states, nested
+  ticket rows, and Implement wave/ticket progress. `lcars viewscreen --open`
+  is the one-command launcher — it boots on a free port and opens the board
+  in your browser. Use when the captain runs `lcars viewscreen` or `lcars
+  serve`, asks to open / start / launch the LCARS viewscreen / board / web
+  UI / Kanban / dashboard in a browser, or wants a live visual view of the
+  mission fleet.
 ---
 
 # lcars viewscreen
@@ -20,11 +35,33 @@ and live Implement progress, refreshing as the harness advances.
 The bundled `viewscreen.sh` launches the daemon so the skill stays testable; you
 (Claude) just announce the action, print the URL, and report.
 
+## When to use
+
+The sentences below were part of this skill's frontmatter `description:` until
+S276 moved them here. GitHub Copilot's CLI caps a skill description at 1024
+characters and refused to load this skill over it; the description now keeps
+the identity, the command forms and the `Use when…` trigger phrases that both
+CLIs match on, and the detail it could not hold is relocated here verbatim.
+Nothing was deleted.
+
+It exposes a small read API (`GET /api/board`, `GET /api/mission/<id>`) plus a
+live channel (SSE) that pushes on state change, and — on the LOCAL adapter —
+operator write endpoints (file / start / pause / resume / respond / verify /
+log) that dispatch to the `lcars` skills; the GitHub adapter and `--read-only`
+keep it view-only.
+
+ONE adapter-neutral board shape backs two interchangeable read adapters
+(ADR-003): a LOCAL adapter parsing `.git/lcars/missions/*` (default) and a
+GITHUB adapter reading issues + `lcars:*` labels via `$LCARS_GH_BIN`; the
+front end depends only on the shape, so a hosted view-only build is a
+configuration away.
+
 ## Start the board
 
 ```bash
 lcars-viewscreen
 # the power alias is identical: lcars-serve
+lcars-viewscreen --help  # also -h; usage only, safe inside either agent
 ```
 
 > **From either CLI.** `lcars-viewscreen` (alias `lcars-serve`) is a real command
@@ -42,6 +79,9 @@ lcars-viewscreen
 > it **refuses to launch and prints a copy-paste `cd … && lcars-viewscreen --open`
 > to run in a real terminal**, unless `LCARS_VIEWSCREEN_ALLOW_AI=1` is set (the
 > bypass tests/automation use to boot a headless daemon deliberately).
+> Copilot's markers take precedence if it inherited `CLAUDECODE=1`.
+> `--help` / `-h` only print usage, without running Python, the version check,
+> or the board; actual board starts still pass through the session guard.
 
 This launches a **Python-3-stdlib-only** `http.server` daemon (no pip, no npm, no
 build step — ADR-007) bound to `127.0.0.1:8765` by default, serving:

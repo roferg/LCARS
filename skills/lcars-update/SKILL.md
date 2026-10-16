@@ -1,6 +1,18 @@
 ---
 name: lcars-update
-description: Bring an already-initialized LCARS repo up to the current schema without clobbering the captain's customizations. Creates any MISSING GitHub labels and adds any MISSING config.json keys with their defaults, while preserving every existing value (customized testCommand / model / comprehensionBudget) and leaving missions/ untouched. Also migrates a stale LCARS-generated copy-based vitest testCommand (the incompatible `.lcars-tests` copy-staging form) to the in-place equivalent, preserving its runner flags and any leading `cd`. Additionally carries the S146 test-readiness verbs — the ONE sanctioned testCommand writers: `--test-command '<cmd>'` (manual set), `--probe-tests` (one bounded suite run reporting pass/fail/zero-collected/timeout), and `--fix-tests` (the one-click repair: detected suggestion or a read-only discovery worker, then set + probe + verdict). Use when the user runs `lcars update`, asks to refresh / upgrade / sync an existing LCARS setup after pulling new versions, wants new labels/config keys added without re-initializing, or wants the repo's test systems set, probed, or repaired (TEST SYSTEMS OFFLINE).
+description: >-
+  Bring an already-initialized LCARS repo up to the current schema without
+  clobbering the captain's customizations. Creates any MISSING GitHub labels
+  and adds any MISSING config.json keys with their defaults, while
+  preserving every existing value (customized testCommand / model /
+  comprehensionBudget) and leaving missions/ untouched. Also migrates a
+  stale LCARS-generated copy-based vitest testCommand (the incompatible
+  `.lcars-tests` copy-staging form) to the in-place equivalent, preserving
+  its runner flags and any leading `cd`. Use when the user runs `lcars
+  update`, asks to refresh / upgrade / sync an existing LCARS setup after
+  pulling new versions, wants new labels/config keys added without
+  re-initializing, or wants the repo's test systems set, probed, or repaired
+  (TEST SYSTEMS OFFLINE).
 ---
 
 # lcars update
@@ -11,6 +23,21 @@ keys after a `git pull`, without touching anything the captain has customized.
 
 Where `lcars init` is first-time setup (and is itself idempotent), `update` only
 fills GAPS. It never overwrites a value you set.
+
+## When to use
+
+The sentences below were part of this skill's frontmatter `description:` until
+S276 moved them here. GitHub Copilot's CLI caps a skill description at 1024
+characters and refused to load this skill over it; the description now keeps
+the identity, the command forms and the `Use when…` trigger phrases that both
+CLIs match on, and the detail it could not hold is relocated here verbatim.
+Nothing was deleted.
+
+Additionally carries the S146 test-readiness verbs — the ONE sanctioned
+testCommand writers: `--test-command '<cmd>'` (manual set), `--probe-tests`
+(one bounded suite run reporting pass/fail/zero-collected/timeout), and
+`--fix-tests` (the one-click repair: detected suggestion or a read-only
+discovery worker, then set + probe + verdict).
 
 ## What it does
 

@@ -138,6 +138,22 @@ def entry_key(mission_id, seq):
     return "%s#%d" % (mission_id, seq)
 
 
+def read_report(mdir):
+    """Read preserved evidence, preferring a completed report over a partial."""
+    for kind, name in (("full", "report.md"), ("partial", "partial-report.md")):
+        path = os.path.join(mdir, "xo", name)
+        try:
+            with open(path, encoding="utf-8") as fh:
+                text = fh.read()
+            if text:
+                return {"kind": kind, "text": text}
+        except FileNotFoundError:
+            continue
+        except (OSError, UnicodeError) as exc:
+            raise OSError("cannot read Number One report %s: %s" % (path, exc)) from exc
+    return None
+
+
 def gather_missions(missions_dir, mission_filter=None):
     """Every mission carrying a `number-one.jsonl`, each with its entries in
     RECORDED (chronological) order. A mission with no journal at all is
@@ -155,6 +171,9 @@ def gather_missions(missions_dir, mission_filter=None):
         if not entries:
             continue
         meta = _mission_meta(mdir)
+        artifact = read_report(mdir)
+        if artifact and artifact["kind"] == "partial":
+            meta["score"] = None
         rows = []
         for e in entries:
             row = dict(e)
@@ -290,6 +309,17 @@ def build_report(missions_dir, seen_path, mission_filter=None):
     first about what "matches" means.
     """
     missions = gather_missions(missions_dir, mission_filter)
+    reports = []
+    if os.path.isdir(missions_dir):
+        for name in sorted(os.listdir(missions_dir)):
+            if mission_filter and name != mission_filter:
+                continue
+            mdir = os.path.join(missions_dir, name)
+            artifact = read_report(mdir)
+            if artifact:
+                meta = _mission_meta(mdir)
+                reports.append(dict(artifact, id=meta["id"],
+                                    title=meta["title"], issue=meta["issue"]))
     last_seen_at = read_seen(seen_path)
     seen_keys = read_seen_entries(seen_path)
 
@@ -331,6 +361,7 @@ def build_report(missions_dir, seen_path, mission_filter=None):
     grouped.sort(key=lambda g: (0 if g["needsYou"] else (1 if g["newCount"] else 2),
                                  _invert(g["newestAt"])))
     return {
+        "reports": reports,
         "lastSeenAt": last_seen_at,
         "since": {"count": len(since), "entries": since},
         "history": history,
@@ -438,6 +469,11 @@ def _fmt_entry(e, with_mission=True):
 
 def render_text(report, show_all):
     lines = []
+    for artifact in report.get("reports", []):
+        label = ("INTERRUPTED — partial report (not a verdict)"
+                 if artifact["kind"] == "partial" else "Full report")
+        lines.extend(["%s — %s" % (artifact["title"], label),
+                      artifact["text"], ""])
     since = report["since"]
     lines.append("Since you last looked (%d):" % since["count"])
     if since["count"] == 0:
@@ -537,4 +573,8 @@ def main(argv):
 
 
 if __name__ == "__main__":
-    sys.exit(main(sys.argv))
+    try:
+        sys.exit(main(sys.argv))
+    except OSError as exc:
+        print("xo-report: %s" % exc, file=sys.stderr)
+        sys.exit(1)

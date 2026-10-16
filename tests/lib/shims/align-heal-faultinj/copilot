@@ -9,6 +9,7 @@
 set -u
 STATE="${FI_STATE:?}"; DROP="${FI_DROP:-5}"; HEALS_OK="${FI_HEALS_OK:-1}"
 BRIEF="${FI_BRIEF:?}"
+FI_REPO="${FI_REPO:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../.." && pwd)}"
 n=0; [ -f "$STATE" ] && n=$(cat "$STATE"); n=$((n+1)); echo "$n" > "$STATE"
 prompt="$*"
 is_heal=0; case "$prompt" in *"YOUR PRD WAS REFUSED"*) is_heal=1 ;; esac
@@ -28,13 +29,13 @@ if [ "$is_heal" = 0 ] && [ "$n" -le "${FI_QUESTIONS:-2}" ]; then
   FI_N="$n" python3 -c 'import json,os; print(json.dumps({"status":"question","question":{"text":"Scripted grill question %s - proceed?"%os.environ["FI_N"],"choices":["Proceed"],"recommended":"Proceed"},"prd":"# Mission: MBR Builder\n\n**Type:** feature\n**Goal:** _(assembling)_\n"}))'
   exit 0
 fi
-FI_OMIT="$OMIT" FI_BRIEF="$BRIEF" python3 - <<'PY'
+FI_OMIT="$OMIT" FI_BRIEF="$BRIEF" FI_REPO="$FI_REPO" python3 - <<'PY'
 import json, os, re, subprocess, sys
 brief = os.environ["FI_BRIEF"]; omit = int(os.environ["FI_OMIT"])
-qs = subprocess.run(["bash","-c",
-    ". %s/skills/lcars-init/lcars-common.sh; lcars_concept_open_questions %s"
-    % (os.environ.get("FI_REPO","/Users/roganferguson/Projects/LCARS"), brief)],
-    capture_output=True, text=True).stdout.strip().split("\n")
+qs = subprocess.run(["bash", "-c",
+    '. "$1"; lcars_concept_open_questions "$2"', "faultinj",
+    os.path.join(os.environ["FI_REPO"], "skills/lcars-init/lcars-common.sh"), brief],
+    check=True, capture_output=True, text=True).stdout.strip().split("\n")
 qs = [q for q in qs if q.strip()]
 keep = qs[:len(qs)-omit] if omit else qs          # DROP THE TAIL, like the real worker
 lines = ["# Mission: MBR Builder", "", "**Type:** feature",

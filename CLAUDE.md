@@ -4,7 +4,9 @@ This repo **is** LCARS: a reusable AI harness that drives a human idea to a
 merged PR. See `vision.md` for the full design and `CONTEXT.md` for the domain
 glossary — read both before doing substantial work.
 
-This file is the contract for *building* LCARS. Follow it on every session.
+This file is the contract for *building* LCARS, written for an AI agent.
+[`CONTRIBUTING.md`](CONTRIBUTING.md) is the same contract for a human; read that
+one first if you are a person. Follow this one on every session.
 
 ## The golden rule: skills live in this repo, not in `~/.claude`
 
@@ -13,11 +15,11 @@ For others to clone the repo, install the skills, and receive updates via
 `git pull`, **the skill source must live in this repo** — never authored
 directly under `~/.claude/skills/`.
 
-> ⚠️ The bootstrap prompts in `.dev/bootstrap.md` say things like
-> "implement the skill at `~/.claude/skills/<name>/SKILL.md`". **Ignore that
-> location.** Author the skill in `skills/<name>/` here, then run
-> `./install.sh`, which symlinks it into `~/.claude/skills/`. The symlink is
-> what makes `git pull` deliver updates with no re-install.
+> ⚠️ An older prompt may tell you to "implement the skill at
+> `~/.claude/skills/<name>/SKILL.md`". **Ignore that location.** Author the
+> skill in `skills/<name>/` here, then run `./install.sh`, which symlinks it
+> into the CLIs you have. The symlink is what makes `git pull` deliver updates
+> with no re-install.
 
 ## Repo layout
 
@@ -31,12 +33,11 @@ install.sh            Symlinks skills/* into ~/.claude/skills/ (idempotent).
 vision.md             The product vision. Source of truth for behaviour.
 CONTEXT.md            Domain glossary. Use this language in code and docs.
 docs/                 Rendered vision / static assets.
-.dev/                 GIT-IGNORED. Author-local notes (bootstrap prompts). Do
-                      not put anything others need to clone in here.
 ```
 
-Anything others must be able to clone goes in a **tracked** path. `.dev/` is
-ignored — never put skills, tests, installers, or docs there.
+Anything others must be able to clone goes in a **tracked** path. Author-local
+scratch belongs outside this repo — never put skills, tests, installers, or
+docs somewhere git ignores.
 
 ## Workflow for adding or changing a skill
 
@@ -78,9 +79,9 @@ Files left only in `~/.claude/` do not count — they don't ship.
 Sessions and fixes are not run freehand: one orchestrator spawns an implementor
 sub-agent (TDD) and a **fresh** tester at a declared proof surface, loops fixes
 with a regression guard, and **stops hard at three rounds**. Those rules live in
-ONE file — `skills/lcars-buddy/ORCHESTRATION.md`, installed (and readable from
-any cwd) at `~/.claude/skills/lcars-buddy/ORCHESTRATION.md`. It is shared by
-`lcars buddy`, `run-session` and `night-watch` so the loop cannot drift between
+ONE file — `skills/lcars-eeh/ORCHESTRATION.md`, installed (and readable from
+any cwd) at `~/.claude/skills/lcars-eeh/ORCHESTRATION.md`. It is shared by
+`lcars eeh`, `run-session` and `night-watch` so the loop cannot drift between
 them, and it **wins over any restatement**. Read it before orchestrating
 anything; this section points at it rather than repeating it.
 
@@ -91,9 +92,10 @@ init` stamps a repo's `lcarsVersion`, `lcars update` refreshes it, and `lcars
 version` reports the running/source/stamp picture — an unbumped `main` reads as
 drift.
 
-## Build order (from `.dev/bootstrap.md`)
+## Build order
 
-Skills are built in this sequence. Status:
+Skills were built in this sequence; `CHANGELOG.md` is the running record of what
+landed when. Status:
 
 1. `lcars init`   — Setup: local config + GitHub labels.  ✅ built
 2. `lcars file`   — Entry: idea → Align → PRD on disk.  ✅ built
@@ -148,8 +150,7 @@ Skills are built in this sequence. Status:
     one). Viewscreen + CLI show the Research + Validate Stages and their models on
     the same generic card. See `CONTEXT.md` → *Grounding*.  ✅ built
 
-Detailed per-session prompts live in `.dev/bootstrap.md` (author-local, not
-shipped). When you finish a skill, tick it off here.
+When you finish a skill, tick it off here and add its `CHANGELOG.md` entry.
 
 ## Mission state lives in `.git/lcars/`
 

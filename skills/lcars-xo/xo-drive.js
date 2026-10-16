@@ -2742,7 +2742,7 @@ const FOCUS = (sel) => `(function () {
            * branch existed there was no way for the reviewer to carry it out:
            * the window size was hard-coded, there was no `viewport` verb, and
            * the one `setDeviceMetricsOverride` in the file deliberately CLEARED
-           * the width/height override. S262's buddy found the bug that blindness
+           * the width/height override. S262's EEH found the bug that blindness
            * hides — a week grid that needs horizontal scrolling at 400 px with
            * today's column scrolled off-screen — and the reviewer could not have
            * caught it, for want of a camera and not of judgement.

@@ -452,8 +452,15 @@
   },
   "meta": {
     "adapter": "local",
+    "engineDefault": "copilot",
+    "engineSource": "detected",
+    "enginesHere": [
+      "claude",
+      "copilot"
+    ],
     "mode": "read-write",
-    "repo": "acme/repo"
+    "repo": "acme/repo",
+    "workerEngine": "claude"
   },
   "missions": [
     {

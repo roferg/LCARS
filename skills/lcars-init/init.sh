@@ -17,6 +17,25 @@
 #
 set -uo pipefail
 
+die() { printf 'lcars init: %s\n' "$1" >&2; exit 1; }
+
+# --- args -----------------------------------------------------------------
+USAGE='usage: lcars init [--help|-h] [--dry-run]'
+DRY_RUN=0
+HELP=0
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --help|-h) HELP=1; shift ;;
+    --dry-run) DRY_RUN=1; shift ;;
+    -*) die "unknown option \"$1\" — $USAGE" ;;
+    *) die "unexpected argument \"$1\" — $USAGE" ;;
+  esac
+done
+if [ "$HELP" -eq 1 ]; then
+  printf '%s\n' "$USAGE"
+  exit 0
+fi
+
 # Kept as the named default for the header above; the engine actually verified
 # (and the bin actually run) is resolved below through lcars-common.sh's shared
 # detector, which reads this same $LCARS_CLAUDE_BIN seam.
@@ -27,8 +46,6 @@ DEFAULT_MODEL="${LCARS_MODEL:-claude-sonnet}"
 # Shared label set + merge-preserving config writer (also used by `lcars update`).
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$SCRIPT_DIR/lcars-common.sh"
-
-die() { printf 'lcars init: %s\n' "$1" >&2; exit 1; }
 
 # --- the running LCARS version (stamped into the repo's config) ------------
 # `lcars_running_version` is lcars-common.sh's (sourced above) — S207 moved the
@@ -68,37 +85,39 @@ CONFIG="$LCARS_DIR/config.json"
 # answer is claude and nothing about init changes. With NEITHER it is empty,
 # and THAT is the fatal case — named for both engines, since either one cures it.
 ENGINE_CHOSEN="$(lcars_default_engine "$CONFIG")"
-if [ -z "$ENGINE_CHOSEN" ]; then
-  die "no worker CLI found — LCARS drives missions with Claude Code (looked for '$(lcars_engine_bin claude)') or the GitHub Copilot CLI (looked for '$(lcars_engine_bin copilot)'). Install either one and re-run: https://claude.com/claude-code"
-fi
-ENGINE_BIN="$(lcars_engine_bin "$ENGINE_CHOSEN")"
-# Read the version of the engine we ACTUALLY picked. `$CLAUDE_BIN --version` is
-# never run when claude is absent — that shell-out was the second half of the
-# defect (it printed a resolution error into the readout).
-# S217 — and never run it at all if it is VS Code's re-invoking copilot shim
-# (lcars_worker_bin_guard, the one rule every worker start goes through).
-# The fix it names must be true HERE (fix round 1, D2): init resolves the bin
-# through LCARS_<ENGINE>_BIN / PATH — $LCARS_WORKER_BIN plays no part — so that
-# is the only variable it may offer.
-case "$ENGINE_CHOSEN" in
-  copilot) GUARD_HINT=LCARS_COPILOT_BIN ;;
-  claude)  GUARD_HINT=LCARS_CLAUDE_BIN ;;
-  *)       GUARD_HINT="" ;;
-esac
-GUARD_ERR="$(mktemp)"
-if GUARD_EFF="$(lcars_worker_bin_guard "$ENGINE_BIN" "$GUARD_HINT" 2>"$GUARD_ERR")"; then
-  [ -s "$GUARD_ERR" ] && cat "$GUARD_ERR" >&2       # S231 — surface the fallback notice
-  [ -n "$GUARD_EFF" ] && ENGINE_BIN="$GUARD_EFF"    # …and run the real CLI it chose
-  rm -f "$GUARD_ERR"
-else
-  GUARD_MSG="$(cat "$GUARD_ERR")"; rm -f "$GUARD_ERR"; die "$GUARD_MSG"
-fi
-ENGINE_VERSION="$("$ENGINE_BIN" --version 2>/dev/null | head -1)"
-# The fallback is ANNOUNCED, never silent: a captain whose laptop has no claude
-# must be told which engine his repo was set up on, at the moment it happens.
-ENGINE_FALLBACK_NOTE=""
-if [ "$ENGINE_CHOSEN" != "claude" ] && ! lcars_engine_available claude; then
-  ENGINE_FALLBACK_NOTE="claude not found — using $ENGINE_CHOSEN"
+if [ "$DRY_RUN" -eq 0 ]; then
+  if [ -z "$ENGINE_CHOSEN" ]; then
+    die "no worker CLI found — LCARS drives missions with Claude Code (looked for '$(lcars_engine_bin claude)') or the GitHub Copilot CLI (looked for '$(lcars_engine_bin copilot)'). Install either one and re-run: https://claude.com/claude-code"
+  fi
+  ENGINE_BIN="$(lcars_engine_bin "$ENGINE_CHOSEN")"
+  # Read the version of the engine we ACTUALLY picked. `$CLAUDE_BIN --version` is
+  # never run when claude is absent — that shell-out was the second half of the
+  # defect (it printed a resolution error into the readout).
+  # S217 — and never run it at all if it is VS Code's re-invoking copilot shim
+  # (lcars_worker_bin_guard, the one rule every worker start goes through).
+  # The fix it names must be true HERE (fix round 1, D2): init resolves the bin
+  # through LCARS_<ENGINE>_BIN / PATH — $LCARS_WORKER_BIN plays no part — so that
+  # is the only variable it may offer.
+  case "$ENGINE_CHOSEN" in
+    copilot) GUARD_HINT=LCARS_COPILOT_BIN ;;
+    claude)  GUARD_HINT=LCARS_CLAUDE_BIN ;;
+    *)       GUARD_HINT="" ;;
+  esac
+  GUARD_ERR="$(mktemp "${TMPDIR:-/tmp}/lcars-init-guard.XXXXXX")"
+  if GUARD_EFF="$(lcars_worker_bin_guard "$ENGINE_BIN" "$GUARD_HINT" 2>"$GUARD_ERR")"; then
+    [ -s "$GUARD_ERR" ] && cat "$GUARD_ERR" >&2       # S231 — surface the fallback notice
+    [ -n "$GUARD_EFF" ] && ENGINE_BIN="$GUARD_EFF"    # …and run the real CLI it chose
+    rm -f "$GUARD_ERR"
+  else
+    GUARD_MSG="$(cat "$GUARD_ERR")"; rm -f "$GUARD_ERR"; die "$GUARD_MSG"
+  fi
+  ENGINE_VERSION="$("$ENGINE_BIN" --version 2>/dev/null | head -1)"
+  # The fallback is ANNOUNCED, never silent: a captain whose laptop has no claude
+  # must be told which engine his repo was set up on, at the moment it happens.
+  ENGINE_FALLBACK_NOTE=""
+  if [ "$ENGINE_CHOSEN" != "claude" ] && ! lcars_engine_available claude; then
+    ENGINE_FALLBACK_NOTE="claude not found — using $ENGINE_CHOSEN"
+  fi
 fi
 
 # --- S182: seed the first commit on an UNBORN HEAD ------------------------
@@ -118,7 +137,7 @@ fi
 #
 # Idempotent: a repo that already has a HEAD is not touched at all.
 SEEDED_INITIAL_COMMIT=0
-if ! git -C "$TOPLEVEL" rev-parse --verify -q HEAD >/dev/null 2>&1; then
+if [ "$DRY_RUN" -eq 0 ] && ! git -C "$TOPLEVEL" rev-parse --verify -q HEAD >/dev/null 2>&1; then
   SEED_TREE="$(git -C "$TOPLEVEL" hash-object -w -t tree /dev/null 2>/dev/null)"
   SEED_COMMIT=""
   [ -n "$SEED_TREE" ] && SEED_COMMIT="$(git -C "$TOPLEVEL" commit-tree "$SEED_TREE" \
@@ -131,7 +150,7 @@ if ! git -C "$TOPLEVEL" rev-parse --verify -q HEAD >/dev/null 2>&1; then
 fi
 
 # --- LOCAL: scaffold .git/lcars/ -----------------------------------------
-mkdir -p "$MISSIONS_DIR"
+[ "$DRY_RUN" -eq 1 ] || mkdir -p "$MISSIONS_DIR"
 
 # --- detect CONTEXT.md ----------------------------------------------------
 if [ -f "$TOPLEVEL/CONTEXT.md" ]; then
@@ -405,7 +424,11 @@ STACK_VALUE="\"$(lcars_json_escape "$STACK")\""
 # desired schema: lcars_config_merge drops every key absent from that list, so
 # an unlisted cloneId would be silently deleted by the next `lcars init` or
 # `lcars update` and the clone's ids would jump. See lcars_clone_id.
-CLONE_ID="$(lcars_clone_id "$CONFIG")"
+if [ "$DRY_RUN" -eq 1 ]; then
+  CLONE_ID="$(lcars_clone_id "$CONFIG" --dry-run)"
+else
+  CLONE_ID="$(lcars_clone_id "$CONFIG")"
+fi
 # S207 — `workerBin`, the repo's engine pin, and it is CONDITIONAL by design.
 #
 # It is written when init had to fall back off claude (a copilot-only laptop:
@@ -421,7 +444,7 @@ CLONE_ID="$(lcars_clone_id "$CONFIG")"
 # every config would hand config.json a say in engine precedence it has never
 # had — which is the bug S196 spent a session reversing (adopt.sh:451-473).
 WORKERBIN_LINE=""
-if [ "$ENGINE_CHOSEN" != "claude" ] || lcars_config_has_key "$CONFIG" workerBin; then
+if { [ -n "$ENGINE_CHOSEN" ] && [ "$ENGINE_CHOSEN" != "claude" ]; } || lcars_config_has_key "$CONFIG" workerBin; then
   WORKERBIN_LINE="
 workerBin=\"$(lcars_json_escape "$ENGINE_CHOSEN")\""
 fi
@@ -447,6 +470,19 @@ worktreeSetupCommand=$WTSETUP_VALUE
 comprehensionBudget=1200
 numberOne={\"enabled\": false}$VERSION_LINE
 created=\"$CREATED\""
+if [ "$DRY_RUN" -eq 1 ]; then
+  printf 'lcars init: dry run — no changes made.\n'
+  printf 'Would write config: %s\n' "$CONFIG"
+  lcars_config_merge "$CONFIG" "$DESIRED_CONFIG" --dry-run
+  printf 'Would create missions directory: %s\n' "$MISSIONS_DIR"
+  if ! git -C "$TOPLEVEL" rev-parse --verify -q HEAD >/dev/null 2>&1; then
+    printf 'Would seed an empty initial commit (leaving staged files untouched).\n'
+  fi
+  printf 'Would verify an available worker CLI and add LCARS scratch patterns to .git/info/exclude.\n'
+  printf 'Would create missing GitHub labels (name|color; existing labels are not queried):\n'
+  lcars_all_labels
+  exit 0
+fi
 lcars_config_merge "$CONFIG" "$DESIRED_CONFIG"
 
 # The clone-id BRIDGE file has served its purpose: config.json now holds the

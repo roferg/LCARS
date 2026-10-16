@@ -193,6 +193,16 @@ body.lcars-serve{background:var(--lcars-black,#030608);color:var(--lcars-text,#c
 .version-banner .vb-band.vb-updating{background:var(--lcars-blue,#4499ff);color:#03131f}
 .version-banner .vb-band.vb-updating .vb-btn{background:rgba(0,0,0,.55);color:#eaf4ff}
 .version-banner .vb-band.vb-done{background:var(--lcars-teal,#00ccaa);color:#03131f}
+/* S275 — THE SAME BAND, READ AS A SENTENCE. The no-CLI band is the one message
+   in this host that is a whole sentence rather than a headline
+   ("No LCARS-capable CLI is installed on this machine — install Claude Code or
+   the GitHub Copilot CLI…"), and the band's display-font uppercase + .12em
+   tracking is built for three or four words. This is TYPOGRAPHY ONLY — no
+   colour, no new token, no second banner idiom: the band keeps the version
+   banner's amber, its pip, its pill and its ✕. */
+.version-banner .vb-band.vb-sentence{text-transform:none;letter-spacing:.015em}
+.version-banner .vb-band.vb-sentence .vb-msg{font-family:var(--font-body);
+  font-size:13.5px;font-weight:600;line-height:1.45}
 .version-banner .vb-pip{width:12px;height:12px;border-radius:50%;
   background:currentColor;flex:0 0 auto;animation:vb-blink 1.2s steps(2) infinite}
 @keyframes vb-blink{50%{opacity:.25}}
@@ -731,6 +741,23 @@ a.logbug-badge:hover{filter:brightness(1.08)}
    watching it is the entire reason it is on the board. Only the controls, which
    are the part that cannot be used, are quieted. */
 .card.remote{border-left-color:var(--lcars-violet,#9977ff)}
+/* S278 — a mission read back off GitHub, in the Done column of a clone that
+   never drove it. It is THE SAME remote card: the same violet edge, the same
+   framed-diamond pill, no new palette and no new token (ADR-007). Two
+   additions, both shape rather than hue:
+     * the whole card is a link, so it takes the pointer a link takes;
+     * the date it shipped reads as the quiet meta line the actuals it does not
+       have would have occupied — `.tk-more`'s idiom, already in the house. */
+.card.remote.remote-done{cursor:pointer}
+.card .no.shipped-on{color:var(--lcars-text-dim);text-transform:none;
+  letter-spacing:.04em;margin-top:2px}
+/* THE COLUMN HAS MORE ON THE FORGE. One quiet row after the last card, in the
+   same voice as the collapsed ticket affordance (`.tk-more`) and for the same
+   reason: it points somewhere else rather than claiming to be a thing itself. */
+.col-more{display:block;font-family:var(--font-mono);font-size:9.5px;
+  letter-spacing:.06em;color:var(--lcars-text-dim);font-style:italic;
+  text-decoration:none;padding:6px 2px 2px}
+.col-more:hover{color:var(--lcars-text-bright);text-decoration:underline}
 /* THE DIM IS GONE, AND SO ARE THE CONTROLS IT DIMMED (S196 B2/B3).
    `.card.remote .card-ctrl button[disabled]{opacity:.7}` used to live here. Two
    separate reasons it had to go, and both are worth writing down:
@@ -1227,6 +1254,34 @@ body.on-front-door #ownerFilter{display:none !important}
    text is the indicator, so suppress the REC pill (the .rec highlight stays). */
 .choice .opt.rec.no-pill::after{display:none}
 
+/* S275 — AN ENGINE THIS MACHINE DOES NOT HAVE. `.btn.locked` (up in the .btn
+   family) already says this for every button on the board: hollow, dashed, and
+   NOT dimmed. A `.choice .opt` is a span, so the same sentence is said here —
+   with the SAME declarations and the SAME token, never a second treatment.
+
+   NO NEW TOKEN (ADR-007): --lcars-blue is the one `.btn.locked` reads, with
+   the sheet's own existing fallback.
+
+   NOTHING DIMS IT, for the reason S190's D2 cost a round: an `opacity` makes a
+   compositing group and out-specifies `.btn.locked{opacity:1}`. The state is
+   carried by fill and edge, which is legible with the colour removed.
+
+   No `.sel` collision to out-specify: `engineOptions`' paint() skips a locked
+   option, so the amber fill can never land on one. */
+.choice .opt.locked{
+  background:transparent;
+  color:var(--lcars-blue,#4499ff);
+  border-color:var(--lcars-blue,#4499ff);
+  border-style:dashed;
+  cursor:default}
+.choice .opt.locked:hover{
+  color:var(--lcars-blue,#4499ff);
+  border-color:var(--lcars-blue,#4499ff)}
+/* …and the sentence a console shows instead of greying its submit out in
+   silence. The board's existing dim-note voice; no new colour. */
+.field .engine-none{margin-top:7px;font-size:12px;line-height:1.45;
+  color:var(--lcars-text-dim)}
+
 /* ── two-pane (align console — rendered-to-fidelity) ──
    UX-3: a balanced, squarer column ratio (≈ mock 1.3fr : 1fr) in a landscape
    frame. UX-4: the pane fills the height-capped modal body and each column
@@ -1643,7 +1698,27 @@ body.on-front-door #ownerFilter{display:none !important}
    unusably and never hidden. ── */
 @media (max-width:640px){
   .lcars-frame{--frame-rail-w:22px;--frame-top-h:52px;--frame-outer-r:30px;--frame-inner-r:18px}
-  .topbar{padding:0 12px 0 10px;gap:8px}
+  /* S288 (D4) — THE BAND MUST NOT SET THE WIDTH OF THE DOCUMENT.
+     MEASURED at a true 400x900 viewport: the band rendered 608 CSS px wide and
+     the whole page scrolled 230 px sideways, so every screen the captain read
+     on his phone sat on a canvas wider than his phone.
+
+     THE MECHANISM is the one S213 fix round 1 (D5) wrote down for the ◈ Number
+     One report, applied to the frame: the band is a grid item in a `1fr`
+     track, so the track's automatic minimum is the band's own MIN-CONTENT
+     width — and a row of nine controls that will not wrap has a big one. The
+     sibling `.frame-content` already carries `min-width:0` for exactly this
+     reason, which is why the nine board columns (a deliberate sideways swipe)
+     never widened the page while the band always did.
+
+     So: the floor comes off, and the thing that can be wide scrolls INSIDE ITS
+     OWN BOX — the third of S213's three options, chosen over wrapping because
+     the band's height is a frame constant (`--frame-top-h`) that the elbow and
+     the rail are both pinned to. Every control stays reachable: the band
+     swipes exactly as the columns do. PHONE ONLY — outside this breakpoint
+     the frame is byte-identical. */
+  .frame-top{min-width:0}
+  .topbar{padding:0 12px 0 10px;gap:8px;overflow-x:auto;overflow-y:hidden}
   .topbar .brand{font-size:16px;letter-spacing:.14em}
   .topbar .band-block.band-grow{min-width:8px}
   .board-wrap{padding:12px 14px}
@@ -2868,6 +2943,43 @@ body.on-front-door .frame-top #helpBtn{display:none !important}
   line-height:1.4;color:var(--lcars-text-dim);
   border-left:2px solid var(--lcars-peach,#ff9966);padding-left:7px;
   margin:0 0 2px;white-space:pre-wrap;word-break:break-word}
+
+/* ── S292: THE CARD SAYS IT IS A SUMMARY ─────────────────────────────────
+   The shortened note keeps the quotation rule above (same rule, same rail) and
+   gains ONE line saying what has been done to it. Display type, because it is
+   the BOARD talking about the quotation rather than more of the quotation —
+   the two voices must not look like one run-on paragraph.
+
+   FIX ROUND 2 — that line now has two readings, because the card has two ways
+   of being shorter than the note: a truncation of the prose ("… CLIPPED · N
+   MORE CHARACTERS") or the gate's own one-line summary standing in for it
+   ("SUMMARY · THE FULL NOTE IS N CHARACTERS"). Both are the same voice about
+   the same quotation, so they share this one rule. `.xo-note-summary` is a
+   HOOK, deliberately carrying no declarations of its own: what changed is
+   which sentence is quoted, not how a quotation looks, and the marker above
+   the ⊙ is what tells him which of the two he is reading. */
+.xo-note-cut{font-family:var(--font-display);text-transform:uppercase;
+  letter-spacing:.08em;font-size:9px;line-height:1.3;
+  color:var(--lcars-peach,#ff9966);padding-left:9px;margin:0 0 3px}
+
+/* ── S292: THE WHOLE ESCALATION, where there is room for it ───────────────
+   On the ◈ Number One tab and in the gate modal he answers from. The capture
+   that started this had the (a)/(b)/(c) options off the screen in a ~260px
+   column; here they get the window's width, a readable size, and the note's
+   own line breaks kept, so a lettered option stays on its own line. Nothing
+   clips it: no max-height, no overflow — it is the thing he came to read. */
+.xo-escalation{border-left:3px solid var(--lcars-peach,#ff9966);
+  padding:2px 0 2px 12px;margin:0 0 14px}
+.xo-escalation-label{display:block;font-family:var(--font-display);
+  text-transform:uppercase;letter-spacing:.08em;font-size:11px;
+  color:var(--lcars-peach,#ff9966);margin-bottom:6px}
+/* ONE frame, not two: the peach rail above already says where this block
+   starts and ends, so the quotation itself carries no slab of its own. */
+.xo-escalation-text{font-family:var(--font-mono,ui-monospace,monospace);
+  font-size:13px;line-height:1.6;color:var(--lcars-text-bright);
+  background:transparent;border:0;border-radius:0;padding:0;
+  margin:0;white-space:pre-wrap;overflow-wrap:anywhere;max-width:78ch}
+.xo-pane .xo-escalation-text{color:var(--xo-ink)}
 
 /* ── S203: THE INTENT-MATCH PILL ──────────────────────────────────────────
    The verdict Number One reached about the built thing, beside the pill that

@@ -80,6 +80,31 @@ UNKNOWN_UNCONFIGURED = {"status": "unknown", "suggestion": None,
 UNKNOWN_UNTESTED = {"status": "unknown", "suggestion": None,
                     "testCommand": None, "foundation": "untested",
                     "foundationWhy": "this repo has code and no test system"}
+# S299 FIX ROUND 2 — THE THIRD AXIS, and the one the board was contradicting.
+# `foundation`/`foundationWhy` claim a test system from the mere PRESENCE of an
+# artifact (that axis feeds the FILING gate, where a false negative kills a
+# mission before it starts, so it errs toward "something is here"). `inertWhy`
+# is the DETECTOR's refusal of that same artifact: it provably runs nothing.
+# Both are true at once, which is why one payload carries both — and why the
+# board, reading only the first, told the captain he HAS a test system on a repo
+# whose CLI line said the configuration cannot run. These two payloads are the
+# live pairing: identical but for `inertWhy`, and they must read DIFFERENTLY.
+# The phrases are copied from a real measured run of readiness.sh --json over a
+# repo whose only test declaration is a recipe-less `test:` target.
+INERT_MAKE_WHY = ("a Makefile `test:` target with no recipe and no "
+                  "prerequisites — `make test` prints \"Nothing to be done\" "
+                  "and runs no tests")
+UNKNOWN_INERT = {"status": "unknown", "suggestion": None, "testCommand": None,
+                 "foundation": "unconfigured",
+                 "foundationWhy": "a Makefile `test:` target",
+                 "inertWhy": INERT_MAKE_WHY}
+INERT_NPM_WHY = ("a package.json `test` script that names no test runner and "
+                 "only runs shell no-ops (`echo \"Error: no test specified\" "
+                 "&& exit 1`) — it runs no tests")
+UNTESTED_INERT = {"status": "unknown", "suggestion": None, "testCommand": None,
+                  "foundation": "untested",
+                  "foundationWhy": "this repo has code and no test system",
+                  "inertWhy": INERT_NPM_WHY}
 UNKNOWN_GREENFIELD = {"status": "unknown", "suggestion": None,
                       "testCommand": None, "foundation": "greenfield",
                       "foundationWhy": "this repo is empty"}
@@ -150,6 +175,32 @@ class TestMetaTestReadiness(unittest.TestCase):
         # other payload stays byte-identical to S146.
         self.assertNotIn("stacks", meta["testReadiness"])
         self.assertNotIn("candidates", meta["testReadiness"])
+
+    def test_inert_reason_is_forwarded_when_the_helper_sets_it(self):
+        """S299 fix round 2 — the daemon must RELAY the detector's refusal.
+        Without it the board can only print the foundation's half of the story,
+        which on a decoy repo is the opposite of what the CLI says."""
+        meta = self._meta(UNKNOWN_INERT)
+        self.assertEqual(meta["testReadiness"]["inertWhy"], INERT_MAKE_WHY)
+
+    def test_no_inert_reason_leaves_the_payload_byte_identical(self):
+        """The live CONTROL for the test above, and the no-drift rule every
+        other forwarded key here obeys: a repo with a REAL test system and no
+        command configured must serialise exactly as it did before S299 — no
+        `inertWhy` key at all, not a null one."""
+        meta = self._meta(UNKNOWN_UNCONFIGURED)
+        self.assertNotIn("inertWhy", meta["testReadiness"])
+        self.assertEqual(json.dumps(meta["testReadiness"], sort_keys=True),
+                         json.dumps(dict(UNKNOWN_UNCONFIGURED),
+                                    sort_keys=True))
+
+    def test_a_null_inert_reason_is_not_forwarded(self):
+        """readiness.sh prints `"inertWhy":null` on every repo with no inert
+        artifact, which is most of them. A null must not become a key."""
+        payload = dict(UNKNOWN_UNCONFIGURED)
+        payload["inertWhy"] = None
+        meta = self._meta(payload)
+        self.assertNotIn("inertWhy", meta["testReadiness"])
 
     def test_ambiguous_forwards_the_candidate_stacks(self):
         meta = self._meta(AMBIGUOUS)
@@ -449,6 +500,33 @@ class TestConfigEndpointFailure(ConfigEndpointBase):
         self.assertNotIn("exited", body["error"])
 
 
+class TestProbeOutcomeStatus(ConfigEndpointBase):
+    def test_a_real_failing_suite_is_a_409_not_a_server_fault(self):
+        subprocess.run(["git", "init", "-q", self.tmp], check=True)
+        cfg = os.path.join(self.tmp, ".git", "lcars", "config.json")
+        with open(cfg, "w") as fh:
+            json.dump({"testCommand": "printf 'suite failed\\n'; exit 1"}, fh)
+        self.actions.scripts["update"] = _UPDATE_SH
+        status, body = self._post("/api/config/probe-tests")
+        self.assertEqual(status, 409, body)
+        self.assertFalse(body["ok"])
+        self.assertIn("PROBE FAILED", body["error"])
+        self.assertIn("suite failed", body["error"])
+
+    def test_only_the_refusal_envelope_is_a_409(self):
+        for code, output, expected in (
+                (1, "lcars update: arbitrary refusal wording", 409),
+                (1, "a traceback that never went through die", 502),
+                (127, "lcars update: missing binary", 502),
+                (2, "lcars update: syntax error", 502)):
+            with self.subTest(code=code, output=output):
+                self.actions.scripts["update"] = _record_stub(
+                    self.record, code, output)
+                status, body = self._post("/api/config/probe-tests")
+                self.assertEqual(status, expected, body)
+                self.assertFalse(body["ok"])
+
+
 class TestConfigEndpointsReadOnly(unittest.TestCase):
     """A read-only build 403s every new write endpoint."""
 
@@ -566,6 +644,55 @@ class TestBannerRender(unittest.TestCase):
         self.assertIn("HAS a test system", txt)
         self.assertIn("a test framework in package.json", txt)
 
+    def test_an_inert_test_config_is_never_called_a_test_system(self):
+        """S299 FIX ROUND 2. MEASURED through the real chain — readiness.sh
+        --json → LocalAdapter → readinessCopy — on a repo whose only test
+        declaration is a `test:` target with no recipe: the band read
+        "⚠ TEST SYSTEMS OFFLINE — this repo HAS a test system but no test
+        command is configured", WORD FOR WORD identical to a repo carrying a
+        real jest config, while `lcars status` on that same repo said "the test
+        configuration at the repo root cannot run: …". The CLI was cured in fix
+        round 1; the board — the surface the captain actually works from — was
+        not. It must now name what is there and why it cannot run."""
+        txt = _texts(_run_harness("banner", UNKNOWN_INERT)["banner"])
+        self.assertNotIn("HAS a test system", txt)
+        self.assertIn("cannot run", txt)
+        self.assertIn(INERT_MAKE_WHY, txt)
+        # …and it is still the REPAIR voice, so the controls do not move: the
+        # one-click affordance renders exactly as it did before.
+        self.assertIn("⚡ FIX TEST SYSTEMS", txt)
+
+    def test_a_real_test_system_still_reads_HAS_a_test_system(self):
+        """THE LIVE CONTROL for the test above — the arm that must answer
+        DIFFERENTLY. A repo with a real framework and no configured command has
+        always been told it HAS a test system, and that sentence is TRUE there;
+        the cure above must not reach it. Same status, same foundation, same
+        voice — the ONLY difference in the payload is `inertWhy`."""
+        txt = _texts(_run_harness("banner", UNKNOWN_UNCONFIGURED)["banner"])
+        self.assertIn("⚠ TEST SYSTEMS OFFLINE — this repo HAS a test system "
+                      "but no test command is configured; missions cannot be "
+                      "proof-gated.", txt)
+        self.assertNotIn("cannot run", txt)
+        # and the two arms must not be able to print the same answer.
+        self.assertNotEqual(
+            txt, _texts(_run_harness("banner", UNKNOWN_INERT)["banner"]))
+
+    def test_untested_repo_names_the_inert_file_when_there_is_one(self):
+        """S299 fix round 2 — `untested` never CLAIMED a test system, so it was
+        not a contradiction; it was silent about the file someone deliberately
+        put there to be one (npm's generated placeholder lands exactly here).
+        The CLI line names it. Same clause, same payload field, so the two
+        surfaces cannot drift apart again."""
+        txt = _texts(_run_harness("banner", UNTESTED_INERT)["banner"])
+        self.assertIn(INERT_NPM_WHY, txt)
+        # the voice, the promise and the route are untouched.
+        self.assertIn("Establish Vision", txt)
+        self.assertNotIn("HAS a test system", txt)
+        # CONTROL: the same verdict with nothing inert says nothing about one.
+        plain = _texts(_run_harness("banner", UNKNOWN_UNTESTED)["banner"])
+        self.assertNotIn("runs no tests", plain)
+        self.assertNotEqual(txt, plain)
+
     def test_untested_repo_reads_as_code_without_tests(self):
         """`untested` is not greenfield either — the repo already exists."""
         txt = _texts(_run_harness("banner", UNKNOWN_UNTESTED)["banner"])
@@ -628,6 +755,21 @@ class TestBannerRender(unittest.TestCase):
         self.assertNotIn("⚡ FIX TEST SYSTEMS", txt)
         for cand in AMBIGUOUS["candidates"]:
             self.assertIn(cand, txt)
+
+    def test_inert_file_console_says_the_same_thing_as_the_band(self):
+        """S299 fix round 2 — the ADR-002 parity rule. The File console reads
+        the SAME readinessCopy, so this cannot drift by construction; it is
+        pinned because the console is the second place the captain meets this
+        sentence, at the moment he is about to file."""
+        ov = _run_harness("file", UNKNOWN_INERT)["overlay"]
+        txt = _texts(_find_cls(ov, "file-readiness")[0])
+        self.assertIn(INERT_MAKE_WHY, txt)
+        self.assertNotIn("HAS a test system", txt)
+        # CONTROL: the real-framework repo still gets the shipped sentence.
+        ov2 = _run_harness("file", UNKNOWN_UNCONFIGURED)["overlay"]
+        txt2 = _texts(_find_cls(ov2, "file-readiness")[0])
+        self.assertIn("HAS a test system", txt2)
+        self.assertNotEqual(txt, txt2)
 
     def test_ambiguous_file_console_pick_sets_the_command_no_worker(self):
         res = _run_harness("filepick", AMBIGUOUS_DOTNET)

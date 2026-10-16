@@ -1,6 +1,11 @@
 ---
 name: lcars-file
-description: File a new LCARS Mission. Captures a free-form idea from the captain, runs an Align session to produce a PRD, then persists the mission under .git/lcars/missions/ and opens a labelled GitHub issue at the align stage. Use when the user runs `lcars file`, asks to start / file / open a new LCARS mission, feature, or bug.
+description: >-
+  File a new LCARS Mission. Captures a free-form idea from the captain, runs
+  an Align session to produce a PRD, then persists the mission under
+  .git/lcars/missions/ and opens a labelled GitHub issue at the align stage.
+  Use when the user runs `lcars file`, asks to start / file / open a new
+  LCARS mission, feature, or bug.
 ---
 
 # lcars file

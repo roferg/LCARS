@@ -4,7 +4,7 @@
 #
 # WHY THIS FILE EXISTS (the measurement, not a hunch). On the Canvas weekend of
 # 26–29 Sep 2026, same product, 34 runs: Number One filed 0 of 31 bugs; the
-# captain's buddy found all 31. Every one of the 16 recorded misses
+# captain's EEH found all 31. Every one of the 16 recorded misses
 # (lcars-dev/canvas-weekend-2026-09-26/evidence/number-one-misses.jsonl) is a
 # REACH error and not a judgement error — there was no screen for a CLI, nothing
 # was seeded so the surface was never reached, or a stub made the seam
@@ -42,7 +42,7 @@ CRITERIA="$REPO_ROOT/skills/lcars-xo/xo-criteria.py"
 JOURNEY="$REPO_ROOT/skills/lcars-xo/xo-journey.py"
 XORUN="$REPO_ROOT/skills/lcars-xo/xo-run.py"
 OWNERSHIP="$REPO_ROOT/skills/lcars-run/ownership.sh"
-AUTOPILOT="$REPO_ROOT/skills/lcars-buddy/autopilot.sh"
+ECH="$REPO_ROOT/skills/lcars-eeh/ech.sh"
 LIVE_CHECK="$REPO_ROOT/skills/lcars-run/live-check"
 EVALUATE_MD="$REPO_ROOT/skills/lcars-xo/prompts/evaluate.md"
 PY="${LCARS_PYTHON_BIN:-python3}"

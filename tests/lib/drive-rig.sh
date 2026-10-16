@@ -8,7 +8,7 @@
 # an empty shim dir puts the REAL `claude` back on PATH and bills the captain.
 set -u
 
-LCARS_SRC="${LCARS_SRC:-/Users/roganferguson/Projects/LCARS}"
+LCARS_SRC="${LCARS_SRC:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
 RUN_SH="$LCARS_SRC/skills/lcars-run/run.sh"
 INIT_SH="$LCARS_SRC/skills/lcars-init/init.sh"
 UPDATE_SH="$LCARS_SRC/skills/lcars-update/update.sh"

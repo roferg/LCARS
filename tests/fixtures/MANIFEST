@@ -38,6 +38,7 @@
 100644 tests/fixtures/claims/swept-research/2.json
 100644 tests/fixtures/claims/swept-research/3.json
 100644 tests/fixtures/claims/swept-research/4.json
+100644 tests/fixtures/cost-corpus.json
 100644 tests/fixtures/decisions/budget-prd.md
 100644 tests/fixtures/decisions/measured-prd.md
 100644 tests/fixtures/decisions/no-questions-prd.md

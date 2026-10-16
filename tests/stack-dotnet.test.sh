@@ -260,13 +260,26 @@ R="$TMPROOT/vendor-top"; mkdir -p "$R"; mk_vendor "$R" App
 # dotnet TEST PROJECT was actually found; otherwise the pre-existing generic
 # fallbacks must still run.
 R="$TMPROOT/seed-mk"; mkdir -p "$R"; mk_proj "$R" App 0
-printf 'test:\n\t@echo ok\n' >"$R/Makefile"
+# S299 FIXTURE ONLY — the stand-in recipe now invokes a real program.
+# This leg has never been about the recipe's CONTENTS; it needed a `make test`
+# that exits deterministically without a runner installed, and `@echo` was the
+# cheapest way to get one. The inert filter refuses a recipe that is only shell
+# no-ops, so the stand-in runs the same thing THROUGH a shell — `sh` is a real
+# command, the exit status and the output are identical, and what this leg
+# locks is unchanged.
+printf 'test:\n\t@sh -c "echo ok"\n' >"$R/Makefile"
 CMD="$(TOPLEVEL="$R" detect_test_cmd)"
 [ "$CMD" = "make test" ] \
   && ok "1j. csproj + Makefile 'test:' still seeds 'make test' (pre-147 behaviour)" \
   || bad "1j. D7 REGRESSION: the dotnet arm swallowed the Makefile fallback, got: [$CMD]"
 R="$TMPROOT/seed-runsh"; mkdir -p "$R/tests"; mk_proj "$R" App 0
-printf '#!/usr/bin/env bash\n' >"$R/tests/run.sh"
+# S299 FIXTURE ONLY — the runner now has a BODY. This leg is about ARM
+# PRECEDENCE (the dotnet arm must not swallow the generic bash-runner fallback)
+# and the file's contents were incidental; it used to be a lone shebang. The
+# inert filter refuses a tests/run.sh that holds no command at all, so a
+# shebang-only file no longer stands in for "a runner exists" — one real line
+# does, and the precedence this leg locks is unchanged.
+printf '#!/usr/bin/env bash\nbash tests/suite.sh\n' >"$R/tests/run.sh"
 CMD="$(TOPLEVEL="$R" detect_test_cmd)"
 [ "$CMD" = 'bash tests/run.sh "${LCARS_TESTS_DIR:-tests}"' ] \
   && ok "1j'. csproj + tests/run.sh still seeds the bash-runner fallback" \

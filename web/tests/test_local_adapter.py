@@ -7,6 +7,9 @@ Behaviors covered:
 """
 import json
 import os
+from pathlib import Path
+import shutil
+import subprocess
 import sys
 import tempfile
 import time
@@ -79,6 +82,68 @@ class LocalAdapterTest(unittest.TestCase):
         self.assertTrue(m["awaiting"])
         self.assertEqual(m["stage"], "research")
         self.assertEqual(m["question"], "Global vs per-course leaderboard?")
+
+    def test_verify_inbox_actions_and_board_escalations_stay_distinct(self):
+        """Verify is reviewable without making every Verify card a red gate."""
+        self.addCleanup(shutil.rmtree, self.tmp)
+        subprocess.run(["git", "init", "-q", self.tmp], check=True)
+        for mid, pr in (("verify-null", None), ("verify-missing", None),
+                        ("verify-empty", ""), ("verify-open",
+                         "https://github.com/example/project/pull/77")):
+            d = fx.plant_simple(self.tmp, mid, stage="verify", pr_url=pr)
+            if mid == "verify-null":
+                path = os.path.join(d, "state.json")
+                with open(path) as fh:
+                    state = json.load(fh)
+                state["prUrl"] = None
+                fx.write_json(path, state)
+        fx.plant_simple(self.tmp, "verify-child", stage="verify",
+                        parent_mission="parent-mission", mtype="bug")
+        fx.plant_simple(self.tmp, "quiet", stage="implement")
+        for status in ("merging", "retesting", "healing"):
+            fx.plant_simple(self.tmp, status, stage="verify",
+                            reconcile_status=status)
+        fx.plant_simple(self.tmp, "reviewer", stage="plan-review")
+        self._lock("quiet", os.getpid())
+        self._lock("reviewer", os.getpid())
+        fx.plant_gated(self.tmp, "escalation", resume_stage="align",
+                       inflight_stage="research")
+
+        board = self._board()
+        for mid in ("verify-null", "verify-missing", "verify-empty",
+                    "verify-open", "verify-child", "quiet", "merging", "retesting",
+                    "healing", "reviewer"):
+            with self.subTest(board_card=mid):
+                self.assertFalse(self._by_id(board, mid)["awaiting"])
+        self.assertTrue(self._by_id(board, "escalation")["awaiting"])
+        self.assertTrue(self._by_id(board, "quiet")["running"])
+        self.assertTrue(self._by_id(board, "reviewer")["running"])
+        self.assertEqual(self._by_id(board, "verify-null")["stage"], "verify")
+        self.assertIsNone(self._by_id(board, "verify-null")["prUrl"])
+
+        answer = Path(__file__).resolve().parents[2] / "skills/lcars-answer/answer.sh"
+        result = subprocess.run(["bash", str(answer), "list"], cwd=self.tmp,
+                                capture_output=True, text=True, check=True)
+        self.assertNotIn("quiet (", result.stdout)
+        self.assertNotIn("reviewer (", result.stdout)
+        self.assertIn("escalation (#143) — research, awaiting your answer",
+                      result.stdout)
+        self.assertIn("lcars answer approve --mission verify-open", result.stdout)
+        for mid in ("verify-null", "verify-missing", "verify-empty"):
+            with self.subTest(inbox_card=mid):
+                card = result.stdout.split("  %s (" % mid, 1)[1].split("\n\n", 1)[0]
+                self.assertIn("ready for your review", card)
+                self.assertIn("approve: unavailable — no open PR recorded", card)
+                self.assertNotIn("lcars answer approve", card)
+                self.assertIn("lcars answer send-back --mission %s" % mid, card)
+                self.assertIn("lcars run %s" % mid, card)
+        child = result.stdout.split("  verify-child (", 1)[1].split("\n\n", 1)[0]
+        self.assertIn("approve: unavailable — no open PR recorded", child)
+        self.assertIn("ships via parent", child)
+        self.assertIn("lcars resolve-logs parent-mission", child)
+        self.assertNotIn("lcars run verify-child", child)
+        self.assertNotIn("lcars answer approve", child)
+        self.assertIn("lcars answer send-back --mission verify-child", child)
 
     def test_gate_envelope_fields_passed_through(self):
         # BUG-027: the harness writes a legible, type-aware gate envelope into
@@ -982,8 +1047,8 @@ class LocalAdapterTest(unittest.TestCase):
         os.makedirs(gitdir, exist_ok=True)
         with open(os.path.join(gitdir, "config"), "w") as fh:
             fh.write('[remote "origin"]\n'
-                     '\turl = git@github.com:roferg/lcars-sandbox.git\n')
-        self.assertEqual(self._board()["meta"]["repo"], "roferg/lcars-sandbox")
+                     '\turl = git@github.com:acme/widget.git\n')
+        self.assertEqual(self._board()["meta"]["repo"], "acme/widget")
 
     def test_board_meta_repo_worktree_safe_when_git_is_a_file(self):
         # Simulate a git WORKTREE: <root>/.git is a FILE (a gitdir: pointer),
@@ -1013,6 +1078,50 @@ class LocalAdapterTest(unittest.TestCase):
         reader = lambda root: None
         board = LocalAdapter(self.tmp, git_url_reader=reader).board()
         self.assertEqual(board["meta"]["repo"], os.path.basename(self.tmp))
+
+    def test_board_meta_repo_is_scoped_to_root_with_real_git(self):
+        with tempfile.TemporaryDirectory(dir=".") as root:
+            def git(*args):
+                subprocess.run(["git", "-C", root, *args], check=True,
+                               stdout=subprocess.DEVNULL,
+                               stderr=subprocess.PIPE, timeout=10)
+
+            git("init", "-q")
+            git("remote", "add", "origin", "https://github.com/outer/parent.git")
+            for name, remote in (("plain", None), ("incomplete", "acme/widget"),
+                                 ("initialized", None), ("own-remote", "child/own")):
+                with self.subTest(root=name):
+                    child = Path(root) / name
+                    child.mkdir()
+                    if name == "incomplete":
+                        (child / ".git").mkdir()
+                        (child / ".git" / "config").write_text(
+                            '[remote "origin"]\n'
+                            '\turl = git@github.com:acme/widget.git\n')
+                    elif name in ("initialized", "own-remote"):
+                        git("init", "-q", name)
+                        if remote:
+                            git("-C", name, "remote", "add", "origin",
+                                "https://github.com/child/own.git")
+                    self.assertEqual(LocalAdapter(str(child)).board()["meta"]["repo"],
+                                     remote or name)
+
+    def test_board_meta_repo_resolves_real_linked_worktree(self):
+        with tempfile.TemporaryDirectory(dir=".") as root:
+            def git(*args):
+                subprocess.run(["git", "-C", root, *args], check=True,
+                               stdout=subprocess.DEVNULL,
+                               stderr=subprocess.PIPE, timeout=10)
+
+            git("init", "-q")
+            git("remote", "add", "origin", "https://github.com/acme/worktree.git")
+            git("-c", "user.name=Test", "-c", "user.email=test@example.com",
+                "commit", "--allow-empty", "--no-gpg-sign", "-qm", "fixture")
+            git("worktree", "add", "--detach", "linked")
+            linked = Path(root) / "linked"
+            self.assertTrue((linked / ".git").is_file())
+            self.assertEqual(LocalAdapter(str(linked)).board()["meta"]["repo"],
+                             "acme/worktree")
 
     def test_board_meta_mode_read_only_when_flagged(self):
         board = LocalAdapter(self.tmp, read_only=True).board()

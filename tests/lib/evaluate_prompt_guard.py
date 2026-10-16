@@ -25,7 +25,7 @@ REQUIRED = (
     # S263 — THE HEADING CARRIES THE FRAME NOW. It read "## Something wrong that
     # NOBODY ASKED FOR — `volunteered`" until 2026-10-09. S262 measured a reviewer
     # that settled 54 of 65 rows itself and FILED NOTHING while the captain's
-    # buddy filed three, two of them with no criterion at all. Permission was not
+    # the EEH filed three, two of them with no criterion at all. Permission was not
     # enough; the heading says it is EXPECTED OUTPUT, and that is load-bearing.
     "## Something wrong that NOBODY ASKED FOR — `volunteered`, and it is EXPECTED OUTPUT",
     # …and the second severed lane: `"cause"` was named NOWHERE in the assembled
@@ -40,7 +40,7 @@ REQUIRED = (
     # read "You have no shell, and you are not getting one". The captain amended
     # the S168 fence that day (19:33 MDT): the reviewer gets a real shell in a
     # DISPOSABLE COPY, because three of the six failures measured against his
-    # buddy that morning were the fence and not the prompt. What has to survive
+    # the EEH that morning were the fence and not the prompt. What has to survive
     # is the INSTRUCTION TO GO AND LOOK — a prompt that merely stops refusing is
     # the same form-filler with better manners.
     "Go and look. Run it yourself",

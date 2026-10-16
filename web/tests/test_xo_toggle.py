@@ -120,7 +120,8 @@ class CardPayloadIsAdditive(unittest.TestCase):
 
     def test_only_recorded_fields_appear(self):
         plant_number_one(self.tmp, "m-xo", {"status": "engaged"})
-        self.assertEqual({"status": "engaged"}, self.card("m-xo")["numberOne"])
+        self.assertEqual({"status": "engaged", "reportKind": "none"},
+                         self.card("m-xo")["numberOne"])
 
     def test_the_score_rides_when_recorded(self):
         plant_number_one(self.tmp, "m-xo",
@@ -534,6 +535,86 @@ class TheEngagedCard(unittest.TestCase):
 
 
 @unittest.skipUnless(NODE, "node is required for the board.js vm harness")
+class DoneMissionsDoNotHaveTheConn(unittest.TestCase):
+
+    def test_pause_posture_is_only_live_before_done(self):
+        note = "Number One stood down 01:14 · you have the conn"
+        for stage in ("done", "implement", "verify"):
+            for running in (False, True):
+                with self.subTest(stage=stage, running=running):
+                    tree = _render_card(card(
+                        stage=stage, paused=True, running=running,
+                        numberOne={"status": "stood-down", "note": note}))
+                    self.assertIn(note, _texts(tree))
+                    self.assertFalse(_cls(tree, "running"),
+                                     "a retained pause must not become running")
+                    self.assertEqual(stage != "done", _cls(tree, "paused"),
+                                     "only nonterminal cards are dimmed")
+                    labels = [n["text"] for n in _find(
+                        tree, lambda n: _cls(n, "pause-status"))]
+                    expected = [] if stage == "done" else [
+                        "◐ PAUSING — stopping at next safe boundary"
+                        if running else "⏸ paused"]
+                    self.assertEqual(expected, labels)
+
+    def test_done_cards_offer_no_first_officer_write_controls(self):
+        for score in (None, "high"):
+            with self.subTest(score=score):
+                xo = {"status": "engaged", "engine": "copilot"}
+                if score:
+                    xo["score"] = score
+                tree = _render_card(card(stage="done", numberOne=xo))
+                buttons = _find(tree, lambda n: n.get("tag") == "button")
+                self.assertTrue(all(n.get("attrs", {}).get("data-act")
+                                    == "xo-report" for n in buttons),
+                                "a done card offers a write control: %r" %
+                                [n["text"] for n in buttons])
+
+    def test_done_unscored_cards_make_no_live_engagement_claim(self):
+        tree = _render_card(card(stage="done", numberOne={
+            "status": "engaged", "engine": "copilot"}))
+        self.assertNotIn("◈ NUMBER ONE · ENGAGED", _texts(tree))
+        self.assertFalse(any("has the conn" in t for t in _texts(tree)))
+        self.assertFalse(_cls(tree, "xo-engaged"))
+
+    def test_done_scored_cards_keep_the_grade_and_report_not_a_live_lock(self):
+        tree = _render_card(card(stage="done", numberOne={
+            "status": "engaged", "score": "high",
+            "meaning": "Every stated criterion is met."}))
+        self.assertEqual(["◈ NUMBER ONE · HIGH"], [
+            n["text"] for n in _find(tree, lambda n: _cls(n, "xo-score"))])
+        self.assertTrue(_find(tree, lambda n:
+                             n.get("attrs", {}).get("data-act") == "xo-report"
+                             and not n.get("disabled")))
+        self.assertFalse(any("stand it down" in (n.get("title") or "")
+                             for n in _nodes(tree)))
+        self.assertFalse(_cls(tree, "xo-engaged"))
+
+    def test_done_scored_cards_do_not_resurface_the_engaged_transcript(self):
+        tree = _render_card(card(stage="done", numberOne={
+            "status": "engaged", "score": "high",
+            "note": "Historical worker transcript, not a current activity."}))
+        self.assertFalse(_find(tree, lambda n: _cls(n, "xo-note")))
+
+    def test_nonterminal_stages_keep_engaged_controls_even_when_paused(self):
+        for stage in ("research", "implement", "verify"):
+            with self.subTest(stage=stage):
+                tree = _render_card(card(stage=stage, paused=True,
+                                         numberOne={"status": "engaged"}))
+                self.assertTrue(_cls(tree, "xo-engaged"))
+                self.assertTrue(any("has the conn" in t for t in _texts(tree)))
+                self.assertTrue(_find(tree, lambda n:
+                                     _cls(n, "xo-stand-down")
+                                     and not n.get("disabled")))
+
+    def test_done_cards_keep_recorded_finished_history(self):
+        tree = _render_card(card(stage="done", numberOne={
+            "status": "finished", "note": "Number One completed the review."}))
+        self.assertIn("◈ NUMBER ONE · FINISHED", _texts(tree))
+        self.assertIn("Number One completed the review.", _texts(tree))
+
+
+@unittest.skipUnless(NODE, "node is required for the board.js vm harness")
 class TheIntentMatchPill(unittest.TestCase):
     """S203 — the SCORE on the card, and the one thing that makes it readable.
 
@@ -918,11 +999,26 @@ class TheDefaultEngineHasOneSource(unittest.TestCase):
                          "an engine CLI was executed to answer a question "
                          "about whether it is installed")
 
-    def test_a_repo_with_no_numberOne_block_gains_no_key(self):
+    def test_a_repo_with_no_numberOne_block_gains_no_numberOne_key(self):
+        """S274 CHANGED THIS ONE ASSERTION, deliberately.
+
+        Until S274 `engineDefault` and `enginesHere` lived inside
+        `if xo is not None`, so the ONLY repos that could say which engines
+        this laptop has were the ones that had already run `lcars xo`. But
+        "which CLIs are installed here" is a fact about the LAPTOP, not about a
+        repo's first officer, and every surface that needs an engine needs it —
+        the Align grill, the holodeck's New Program dialog, Adopt, and the
+        banner a laptop with no CLI at all shows. They are published on EVERY
+        board now.
+
+        What this test still guards is the thing it was written for: a repo
+        that has never run `lcars xo` gains NO `numberOne` key, so the board
+        shows no toggle rather than a toggle that says the wrong thing."""
         write_config(self.tmp, {"model": "claude-sonnet"})
         meta = LocalAdapter(self.tmp).board()["meta"]
-        self.assertNotIn("engineDefault", meta)
         self.assertNotIn("numberOne", meta)
+        # …and the laptop's engines ARE there, numberOne block or not (S274).
+        self.assertIn("enginesHere", meta)
 
 
 if __name__ == "__main__":

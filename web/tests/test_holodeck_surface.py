@@ -4730,5 +4730,131 @@ class InheritedBasisIsNotThisProjectsGroundingTest(unittest.TestCase):
         self.assertIn("basis.md", out["groundChipTitle"])
 
 
+# ════════════════════════════════════════════════════════════════════════════
+# S275 — ⬡ NEW PROGRAM OFFERS ONLY THE CLIs THIS MACHINE HAS
+#
+# The picker above was copied from the File console's, and it inherited the
+# File console's defect with it: two hardcoded options, a default from
+# `holoDefaultEngine()`, and no read of the detector's answer. On a laptop with
+# only Claude, `⬡ Copilot` sat there live and preselected (holoDefaultEngine()
+# falls to copilot on an unconfigured daemon) and the start died in the daemon.
+#
+# The cure is the ONE shared `engineOptions` helper the ◈ Number One and Adopt
+# pickers' treatment was extracted into, so the missing engine looks the same
+# in every picker on this board: disabled, `.locked` (hollow + dashed, `⊘`),
+# titled "<Name> is not installed on this machine".
+#
+# `holoDefaultEngine()` is UNCHANGED and still the preference — it only loses
+# when this machine does not have what it asks for.
+# ════════════════════════════════════════════════════════════════════════════
+NOT_HERE = " is not installed on this machine"
+
+
+@unittest.skipIf(NODE is None, "node not installed")
+class NewProgramInstalledEnginesTest(unittest.TestCase):
+    def opts(self, out):
+        """[(label, disabled, title, classes)] in render order."""
+        return list(zip(out["engineOpts"], out["engineDisabled"],
+                        out["engineTitles"], out["engineCls"]))
+
+    def find(self, out, name):
+        hits = [o for o in self.opts(out) if name in o[0].lower()]
+        self.assertEqual(len(hits), 1, out["engineOpts"])
+        return hits[0]
+
+    def test_a_claude_only_laptop_preselects_claude(self):
+        out = _harness({"act": "newProgram", "enginesHere": ["claude"],
+                        "engineDefault": "claude", "engineName": "claude",
+                        "models": MODELS})
+        self.assertEqual(len(out["engineSel"]), 1, out["engineOpts"])
+        self.assertIn("claude", out["engineSel"][0].lower())
+
+    def test_a_claude_only_laptop_locks_copilot(self):
+        out = _harness({"act": "newProgram", "enginesHere": ["claude"],
+                        "engineDefault": "claude", "engineName": "claude",
+                        "models": MODELS})
+        label, disabled, title, cls = self.find(out, "copilot")
+        self.assertTrue(disabled, label)
+        self.assertIn("locked", cls.split())
+        self.assertEqual(title, "Copilot" + NOT_HERE)
+        self.assertIn("\u2298", label)
+
+    def test_the_locked_option_is_not_a_tab_stop(self):
+        out = _harness({"act": "newProgram", "enginesHere": ["claude"],
+                        "engineDefault": "claude", "models": MODELS})
+        i = [n for n, t in enumerate(out["engineOpts"])
+             if "copilot" in t.lower()][0]
+        self.assertIsNone(out["engineTabIndex"][i])
+        self.assertIsNone(out["engineRoles"][i])
+
+    def test_the_start_body_carries_the_claude_bin(self):
+        """THE WHOLE POINT: what the daemon is handed. The daemon's OWN binary
+        still wins over the bare name (the S127 guarantee)."""
+        out = _harness({"act": "newProgramSubmit", "pick": "grounding",
+                        "enginesHere": ["claude"], "engineDefault": "claude",
+                        "engineName": "claude", "engineBin": "/opt/wrap/claude",
+                        "models": MODELS})
+        self.assertEqual(out["path"], "/api/holodeck/start")
+        self.assertEqual(out["body"]["engine"], "/opt/wrap/claude", out["body"])
+
+    def test_a_copilot_only_laptop_starts_on_copilot_with_no_click(self):
+        out = _harness({"act": "newProgramSubmit", "pick": "grounding",
+                        "enginesHere": ["copilot"], "engineDefault": "copilot",
+                        "engineName": "", "models": MODELS})
+        self.assertEqual(out["body"]["engine"], "copilot", out["body"])
+
+    def test_a_daemon_default_this_machine_lacks_is_overruled(self):
+        """A daemon started on claude whose claude has since been uninstalled.
+        The INSTALLED list wins — the dialog may not open on a dead CLI."""
+        out = _harness({"act": "newProgramSubmit", "pick": "grounding",
+                        "enginesHere": ["copilot"], "engineDefault": "copilot",
+                        "engineName": "claude", "engineBin": "/opt/wrap/claude",
+                        "models": MODELS})
+        self.assertEqual(out["body"]["engine"], "copilot", out["body"])
+
+    def test_the_daemons_engine_is_still_the_preference_when_it_IS_here(self):
+        """holoDefaultEngine() is untouched: with both installed, the daemon's
+        own engine is what sits preselected, exactly as it does today."""
+        for name in ("claude", "copilot"):
+            out = _harness({"act": "newProgram",
+                            "enginesHere": ["claude", "copilot"],
+                            "engineName": name, "models": MODELS})
+            self.assertEqual(len(out["engineSel"]), 1, out["engineOpts"])
+            self.assertIn(name, out["engineSel"][0].lower())
+            self.assertEqual(out["engineDisabled"], [False, False])
+
+    def test_nothing_installed_locks_both_and_says_why(self):
+        out = _harness({"act": "newProgram", "enginesHere": [],
+                        "engineName": "", "models": MODELS})
+        self.assertEqual(out["engineDisabled"], [True, True])
+        self.assertEqual(out["engineSel"], [])
+        self.assertEqual(len(out["engineNote"]), 1, out["engineNote"])
+        self.assertIn("Claude Code", out["engineNote"][0])
+
+    def test_nothing_installed_locks_the_run_control_too(self):
+        """A press the daemon can only answer with a 502 is not an offer."""
+        out = _harness({"act": "newProgram", "enginesHere": [],
+                        "engineName": "", "models": MODELS})
+        self.assertTrue(out["runDisabled"])
+        self.assertIn("Claude Code", out["runTitle"])
+
+    def test_an_installed_engine_leaves_the_run_control_live(self):
+        out = _harness({"act": "newProgram", "enginesHere": ["copilot"],
+                        "engineDefault": "copilot", "models": MODELS})
+        self.assertFalse(out["runDisabled"])
+        self.assertEqual(out["engineNote"], [])
+
+    def test_a_daemon_that_never_answered_leaves_the_dialog_as_it_was(self):
+        """`enginesHere` ABSENT is "I could not ask", not "it is not here".
+        Both options live, holoDefaultEngine() preselected — byte-identical to
+        every dialog before S275."""
+        out = _harness({"act": "newProgram", "engineName": "", "model": "",
+                        "models": MODELS})
+        self.assertEqual(out["engineDisabled"], [False, False])
+        self.assertEqual(out["engineTitles"], ["", ""])
+        self.assertEqual(len(out["engineSel"]), 1)
+        self.assertIn("copilot", out["engineSel"][0].lower())
+
+
 if __name__ == "__main__":
     unittest.main()

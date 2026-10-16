@@ -16,7 +16,7 @@
 #                                 (the default — bare `lcars answer` lists.)
 #   respond  [--mission <sel>] --answer "<text>"
 #                                 Record the captain's answer to an escalation.
-#   approve  [--mission <sel>]    Ship a Verify card — open the PR, mark Done.
+#   approve  [--mission <sel>]    Ship a Verify card — merge its open PR, mark Done.
 #   send-back [--mission <sel>] --feedback "<text>"
 #                                 Send a Verify card back to Align with a note.
 #
@@ -116,7 +116,7 @@ cmd_list() {
     exit 0
   fi
 
-  local found=0 s id title stage awaiting issue pend pq q
+  local found=0 s id title stage awaiting issue pend pq q pr_url parent
   shopt -s nullglob
   for s in "$MISSIONS_DIR"/*/state.json; do
     id="$(json_str "$s" id)"; [ -n "$id" ] || id="$(basename "$(dirname "$s")")"
@@ -162,7 +162,18 @@ cmd_list() {
       echo
       printf '  %s (%s) — verify, ready for your review\n' "$id" "$issue"
       printf '    %s\n' "$title"
-      printf '    → approve:   lcars answer approve --mission %s\n' "$id"
+      pr_url="$(json_str "$s" prUrl)"
+      case "$pr_url" in
+        http*|*/pull/*)
+          printf '    → approve:   lcars answer approve --mission %s\n' "$id" ;;
+        *)
+          parent="$(json_str "$s" parentMission)"
+          if [ -n "$parent" ]; then
+            printf '    → approve: unavailable — no open PR recorded; this logged bug ships via parent %s. Run `lcars resolve-logs %s` for the consolidated parent review.\n' "$parent" "$parent"
+          else
+            printf '    → approve: unavailable — no open PR recorded; run `lcars run %s` so Verify opens the PR first.\n' "$id"
+          fi ;;
+      esac
       printf '    → send back: lcars answer send-back --mission %s --feedback "…"\n' "$id"
     fi
   done

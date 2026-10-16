@@ -215,6 +215,7 @@ refusals=()   # "id\tissue\tpart\twhy\tfix"
 failures=()   # "id\tissue\tstage\tlog" — S218: a Stage that stopped on a failure
 carried=()    # "id\tissue\tlabel\tfix" — parts a push CARRIED rather than rebuilt
 any_glyph=0   # did any rendered row carry a status glyph? gates the legend
+any_paused=0  # did any row carry the live pause glyph?
 any_standby=0 # did any row carry the standby (parked / awaiting-alignment) glyph?
 any_failed=0  # did any row carry the failed glyph? (S218)
 for s in "${states[@]}"; do
@@ -222,6 +223,7 @@ for s in "${states[@]}"; do
   [ -n "$id" ] || id="$(basename "$(dirname "$s")")"
   title="$(json_str "$s" title)"
   stage="$(json_str "$s" stage)"
+  state_stage="$stage"
   created="$(json_str "$s" created)"
   issue="$(json_raw "$s" githubIssue)"
   paused="$(json_raw "$s" paused)"
@@ -258,7 +260,10 @@ for s in "${states[@]}"; do
 
   # status glyph: paused and/or awaiting-human (awaiting requires a question)
   glyph=""
-  [ "$paused" = "true" ] && glyph="$PAUSE_GLYPH"
+  if [ "$paused" = "true" ] && [ "$state_stage" != "done" ]; then
+    glyph="$PAUSE_GLYPH"
+    any_paused=1
+  fi
   if [ -n "$question" ]; then
     glyph="${glyph:+$glyph}$ASK_GLYPH"
     questions+=("$id"$'\t'"$issue_disp"$'\t'"$question")
@@ -357,7 +362,9 @@ echo "$RULE"
 # line that reads as if a mission has that status. "Legend:" makes it unmistakably
 # a key, not state.
 if [ "$any_glyph" -eq 1 ]; then
-  legend="Legend: $PAUSE_GLYPH paused    $ASK_GLYPH awaiting your input"
+  legend="Legend: "
+  [ "$any_paused" -eq 1 ] && legend="$legend$PAUSE_GLYPH paused    "
+  legend="$legend$ASK_GLYPH awaiting your input"
   [ "$any_standby" -eq 1 ] && legend="$legend    $STANDBY_GLYPH awaiting alignment"
   [ "$any_failed" -eq 1 ] && legend="$legend    $FAILED_GLYPH stage failed"
   printf '%s\n' "$legend"

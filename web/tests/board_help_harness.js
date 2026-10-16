@@ -627,6 +627,17 @@ function projectStage() {
       return o.textContent;
     }),
     inputs: stageQuery("input").map(function (i) { return i.value; }),
+    text: visibleText(overlayBodyEl),
+    acts: stageQuery("[data-act]").map(function (n) {
+      return {
+        act: n.getAttribute("data-act"), text: n.textContent,
+        cls: n.className, disabled: !!n.disabled, title: n.title || "",
+        clickable: (n._listeners.click || []).length > 0,
+      };
+    }),
+    links: stageQuery("a").map(function (n) {
+      return { text: n.textContent, href: n.href };
+    }),
     focus: focusMark(),
   };
 }
