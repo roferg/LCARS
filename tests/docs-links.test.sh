@@ -224,16 +224,43 @@ ALLOWED = [
 ]
 CITE = re.compile(r'\b20\d\d\.\d+\.\d+\b|\]\(')
 
+# Sentence boundary: . ! or ? followed by whitespace or end-of-unit. The
+# lookahead is what keeps `2026.7.20` and `$4.86` in one piece — their dots are
+# followed by a digit, never by a space.
+SENT_SPLIT = re.compile(r'(?<=[.!?])(?=\s)')
+
+# A magnitude claim SPELLED OUT in words — "roughly six times", "between four
+# and ten times", "a threefold drop". A digits-only sweep cannot see these, and
+# the uncited figure that actually shipped ("low by something between four and
+# ten times") was exactly this shape. Deliberately narrow: only the
+# <number-word> + times/fold/× form, never a bare "three rounds" or "one at a
+# time", because those are ordinary narrative counts and flagging them floods.
+NUMWORD = (r'(?:one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|'
+           r'fifteen|twenty|thirty|forty|fifty|hundred|dozen)')
+WORDMAG = re.compile(r'\b%s[\s-]*(?:times|fold|×)\b' % NUMWORD, re.I)
+
+def sentences(p):
+    """A paragraph as sentences, with a leading list bullet / heading marker
+    stripped so a one-sentence bullet is still one unit."""
+    p = re.sub(r'^\s*[-*]\s+', '', p)
+    return [s.strip() for s in SENT_SPLIT.split(p) if s.strip()]
+
 def cmd_cited(f):
+    # Per SENTENCE, not per paragraph. The paragraph-wide version passed a
+    # paragraph that cited one figure and left a second one beside it
+    # uncited — the citation at the end of sentence two covered the number in
+    # sentence one for free. A citation only vouches for its own sentence.
     hits = []
     for p in prose(f):
-        if CITE.search(p):
-            continue
-        masked = p
-        for pat in ALLOWED:
-            masked = re.sub(pat, ' ', masked, flags=re.I)
-        if re.search(r'\$\s?\d', masked) or re.search(r'\d', masked):
-            hits.append('uncited number in: "%s…"' % ' '.join(p.split())[:90])
+        for s in sentences(p):
+            if CITE.search(s):
+                continue
+            masked = s
+            for pat in ALLOWED:
+                masked = re.sub(pat, ' ', masked, flags=re.I)
+            if re.search(r'\$\s?\d', masked) or re.search(r'\d', masked) \
+               or WORDMAG.search(masked):
+                hits.append('uncited number in: "%s"' % ' '.join(s.split())[:110])
     for h in hits:
         print(h)
     return 1 if hits else 0
@@ -515,6 +542,43 @@ printf 'It found 5 bugs and filed 3 of them (2026.10.2).\n\nOn 2026-10-11 it ran
 docs_guard cited "$TMP/cited.md" >/dev/null 2>&1 \
   && ok "control: the citation guard accepts a cited count, a date and a duration" \
   || bad "control: the citation guard rejected a cited count / a bare date / a duration"
+
+# 12b. MIXED PARAGRAPH — one cited figure and one uncited figure, together.
+#      This is the shape that got through: the guard reasoned per PARAGRAPH, so
+#      the version string vouching for sentence one also vouched for the bare
+#      number in sentence two. A citation only covers its own sentence.
+printf 'The estimator undercalled by roughly six times (2026.7.20). Today it is out by 4 to 10 times.\n' >"$TMP/mixed.md"
+mixed_out="$(docs_guard cited "$TMP/mixed.md" 2>&1)"; mixed_rc=$?
+{ [ "$mixed_rc" -ne 0 ] && printf '%s' "$mixed_out" | grep -q '4 to 10'; } \
+  && ok "control: the citation guard detects an uncited figure beside a cited one" \
+  || bad "control: an uncited figure sharing a paragraph with a cited one was NOT detected (rc=$mixed_rc: $mixed_out)"
+{ [ "$mixed_rc" -ne 0 ] && ! printf '%s' "$mixed_out" | grep -q 'roughly six times (2026.7.20).$'; } \
+  && ok "control: it does not also flag the sentence that carries the citation" \
+  || bad "control: the citation guard flagged the properly cited sentence too ($mixed_out)"
+
+# 12d. THE SHAPE THAT ACTUALLY SHIPPED — a magnitude written in words. The
+#      sentence that got through said the estimator was low "by something
+#      between four and ten times" with no citation; it carries no digit at
+#      all, so no digits-only sweep could ever have seen it.
+printf 'It under-reads spend by something between four and ten times.\n' >"$TMP/wordmag.md"
+docs_guard cited "$TMP/wordmag.md" >/dev/null 2>&1 \
+  && bad "control: the citation guard did NOT detect an uncited magnitude written in words" \
+  || ok "control: the citation guard detects an uncited magnitude written in words"
+printf 'It under-read spend by roughly six times (2026.7.20).\n' >"$TMP/wordmagok.md"
+docs_guard cited "$TMP/wordmagok.md" >/dev/null 2>&1 \
+  && ok "control: a word magnitude WITH a citation is left alone" \
+  || bad "control: the citation guard rejected a properly cited word magnitude"
+printf 'It was removed after three rounds, and one worker at a time ran on four benches.\n' >"$TMP/narr.md"
+docs_guard cited "$TMP/narr.md" >/dev/null 2>&1 \
+  && ok "control: ordinary narrative counts in words are NOT flagged (no flood)" \
+  || bad "control: the word sweep flooded on ordinary narrative counts"
+
+# 12c. A version string / a dollar figure must NOT be split into two sentences
+#      by its own full stops, or every one of them reads as uncited.
+printf 'It cost $4.86 against $150.07 actual, recorded in 2026.7.20 and unchanged since.\n' >"$TMP/dots.md"
+docs_guard cited "$TMP/dots.md" >/dev/null 2>&1 \
+  && ok "control: dots inside \$4.86 and 2026.7.20 do not split the sentence" \
+  || bad "control: the sentence splitter broke on a decimal point or a version string"
 
 n="$(grep -cEi 'session [0-9]|\.dev/|grill' "$TMP/leaky.md")"
 [ "$n" -ge 1 ] \

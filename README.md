@@ -21,9 +21,12 @@ feature work.
 
 ## What it does
 
-Each piece of work is a **Mission**: one human intent, on its own branch,
-mirrored as a GitHub issue, moving through eight Stages as a card on the board.
-Many Missions run at once and merge one at a time, when you say so.
+LCARS is laid out like a small factory, and its words are the factory's. A
+**Mission** is a **work order**: one human intent, admitted at one end, on its
+own branch and mirrored as a GitHub issue. The eight **Stages** are the
+stations it passes through, and the **board** is the floor — every work order
+showing at the station it is standing at. Several are on the line at once; they
+merge one at a time, when you say so.
 
 ```mermaid
 flowchart LR
@@ -47,11 +50,11 @@ flowchart LR
 | **Align** | 🧑 you | A structured interview — one question at a time, each with a recommended answer — that turns a rough idea into a written spec, then prices the work before anything is spent. |
 | **Research** | 🤖 auto | Up to twenty open questions, each sent to its own independent agent that comes back with a recommendation and its reasons. |
 | **Validate** | 🤖 auto | The findings are synthesised into a plan. It stops for you only if a finding changes *what* gets built, not *how*. |
-| **Plan** | 🤖 auto | The plan becomes small tickets, each one a vertical slice owning a single behaviour. |
-| **Plan Review** | 🤖 auto | A fresh reviewer with no memory of the planning audits every ticket for size, coupling and testability, and sends bad ones back. |
-| **Schedule** | 🤖 auto | Tickets are ordered into waves by their dependencies, and each becomes a sub-issue under the Mission. |
-| **Implement** | 🤖 auto | One test-first worker per ticket, checked afterwards by machine: its new tests must fail before its change and pass after it, any edit to an existing test must be declared with a reason, and the whole suite must stay green. |
-| **Verify** | 🧑 you | You read the diff, run the app, and either approve — which merges the existing open pull request — or send it back with a note. |
+| **Plan** | 🤖 auto | The plan is cut into **tickets** — the parts the line actually builds, each a vertical slice owning a single behaviour. |
+| **Plan Review** | 🤖 auto | Incoming inspection on the cut: a fresh reviewer with no memory of the planning audits every ticket for size, coupling and testability, and sends bad ones back. |
+| **Schedule** | 🤖 auto | Tickets are ordered by their dependencies into **waves** — the batches the floor can run side by side — and each becomes a sub-issue under the Mission. |
+| **Implement** | 🤖 auto | One test-first worker per ticket, one bench each, checked afterwards by machine: its new tests must fail before its change and pass after it, any edit to an existing test must be declared with a reason, and the whole suite must stay green. |
+| **Verify** | 🧑 you | Final inspection, and the one station you staff. You read the diff, run the app, and either approve — which merges the existing open pull request — or send it back with a note. |
 
 ## Install
 
@@ -216,19 +219,17 @@ rather than beside it. Fix them all for **one** re-verify gate, not one per bug.
 
 ### The ECH — handing over the loop
 
-A **software factory** is the shape this pipeline already has: signals in,
-triaged into planned changes, built, tested, reviewed, out as merged pull
-requests. The ECH is what lets you hand the *running* of it over. You give it a
-goal, it holds one alignment round with you to agree what to build, and then it
-works milestone after milestone, coming back only when it genuinely needs you.
+Normally you run the floor: you write the work orders, answer what the line
+asks, and take final inspection. The ECH is what lets you hand the *running* of
+it over. You give it a goal, it holds one alignment round with you to agree what
+to build, and then it works milestone after milestone — writing its own work
+orders, clearing its own gates — coming back only when it genuinely needs you.
 
-The hard part of running a factory is not making the change — it is
-**believing** it. Producing a change is the cheap half now; verifying one you did
-not write is the expensive half, and that cost does not fall because the suite
-came back green. So the ECH does not ask to be trusted: it *uses* what it built,
-files what it finds with a reproduction quoting the real output, re-proves each
-fix on deliberately different data, writes down every decision it made alone, and
-says so plainly when a check found nothing.
+A shift nobody watched is worth only the evidence it left behind, so the ECH
+does not ask to be trusted: it *uses* what it built, files what it finds with a
+reproduction quoting the real output, re-proves each fix on deliberately
+different data, writes down every decision it made alone, and says so plainly
+when a check found nothing.
 
 On the run that proved it, across one night, it built a working command-line
 tool, a page and a CI workflow, needed its operator **once** (the opening

@@ -4,8 +4,9 @@ This is the story of why LCARS exists, what actually happened while I built it
 over a year, what I got wrong, and where it is going. It is deliberately not a
 manual. [`README.md`](README.md) tells you what LCARS does and how to install
 it, [`CONTEXT.md`](CONTEXT.md) defines every word, and each command explains
-itself in its own `skills/<name>/SKILL.md`. Nothing on this page is repeated
-there.
+itself in its own `skills/<name>/SKILL.md`. Where this page touches the same
+ground as those, it is here for the *why* — what was measured, what it cost to
+learn, and what changed because of it. Go there for what the thing does.
 
 Every number below is cited to the [`CHANGELOG.md`](CHANGELOG.md) entry that
 recorded it, so you can check me. Where something is true but not yet in the
@@ -42,17 +43,27 @@ cold isolated worker, on either supported CLI — is `2026.7.1` in the changelog
 ### The shape the thesis took: a factory
 
 Once there were stages and artifacts, what I had stopped resembling an assistant
-and started resembling a **factory**: signals come in, they are triaged into
-planned changes, the changes get built and tested and reviewed, and merged pull
-requests come out. That framing turned out to matter more than the pipeline
-diagram, because it put the real cost in the right place.
+and started resembling a **factory** — and the factory's vocabulary turned out
+to be the product's, so learning one teaches the other. A **Mission** is the
+work order: one intent, admitted at one end of the line. The **Stages** are the
+stations it passes, each taking the previous station's output off the belt as a
+file on disk and putting its own back, which is why a Stage that cannot write
+down what it decided has not finished its part. A **Wave** is a batch of
+**tickets** the line can run side by side without them fouling each other.
+**Verify** is final inspection. The board is the floor: every work order visible
+at the station it is standing at, which is the whole reason it is a board and
+not a log.
 
-Writing the change is the cheap half now. Deciding whether to *believe* a change
-you did not write is the expensive half, and it does not get cheaper because a
-test run came back green. So almost everything LCARS has grown since then is
-some form of evidence production: artifacts a later stage can be audited
-against, gates that must show their work, screenshots of the running thing,
-reports that are required to admit what they could not check.
+Naming it that way turned out to matter more than the pipeline diagram, because
+it decides where the real cost sits. On this line the machining is cheap and the
+inspection is not. Writing the change is the cheap half now; deciding whether to
+*believe* a change you did not write is the expensive half, and it does not get
+cheaper because a test run came back green.
+
+So almost everything LCARS has grown since then is a way of instrumenting the
+line so that inspection can be quick and still honest: artifacts a later stage
+can be audited against, gates that must show their work, photographs of the
+running product, reports that are required to admit what they could not check.
 
 ---
 
@@ -94,13 +105,20 @@ editor and a shell (`2026.8.7`). It had survived a year because a comment next
 to the flag asserted a guarantee the flag did not deliver. The fences are real
 now, proven with negative controls, and the false comments were deleted.
 
+They are real only as far as a flag reaches, and the same entry says where that
+stops: on one engine the path sandbox does not cover the scratch directory
+workers actually write in, and five of six wrote there with no grant; the
+Research fan-out agents run unaudited; and the one role that must hold a shell
+cannot be fenced by any tool list at all, so what contains it is an isolated
+worktree and a post-commit scope check rather than a fence (`2026.8.7`).
+
 **If you only take one rule from this page, take this one: never fake the layer
 you are changing.** Every expensive round I have had came from testing a real
 change against a fake version of the thing it changed.
 
 ### August — the holodeck, and handing over a drawing
 
-Some things are easier to draw than to describe. The holodeck is a room on the
+A paragraph is a poor way to specify a screen. The holodeck is a room on the
 board where you talk a mockup into existence against your real project, see it
 rendered live, and then hand the finished drawing to Align as a Mission
 (`2026.8.3`).
@@ -161,12 +179,16 @@ one milestone at a time on its own (`2026.10.1`).
 ![The ECH's own status in a terminal: the spec it is working to, the missions in scope with their stages and gates, the parallel slots in use, and the one question it has parked for you.](docs/assets/ech-status.png)
 
 Over one night it produced a command line, a page that renders its state, and a
-workflow that republishes that page — needing its operator exactly once, and
-catching two genuine bugs a fully green suite had waved through (`2026.10.1`).
-What makes that
-reasonable is not that it was clever. It is that it *used* what it built, filed
-what it found with a reproduction quoting the real output, re-proved each fix on
-deliberately different data, and said plainly when a check found nothing.
+workflow that republishes that page — needing its operator exactly once during
+the shift, and catching two genuine bugs a fully green suite had waved through
+(`2026.10.1`). One step was still mine, and the same entry says so: on the final
+milestone a human ran the landing (`2026.10.1`). It is not claimed to ship with
+nobody there.
+
+What makes the rest of it worth anything is not that it was clever. It is that
+the evidence was first-hand — nothing in that night's report was a prediction
+about the build, and every claim in it was something the ECH had watched happen
+on the running thing.
 
 A few weeks later, left running unattended with the authority to merge, it used
 that authority to *refuse* a merge — on evidence, because the build could
@@ -175,25 +197,26 @@ for, and it is the moment I stopped thinking of it as an automation.
 
 ### October — the factory builds the thing it reviewed
 
-On 2026-10-15 and 2026-10-16 both engines were pointed at real private repos
-with real workers and no human in the loop. The Copilot arm took two missions
-from nothing to merged in 2h06m, every merge verified at GitHub rather than
-taken from the worker's own report. Separately, a design made in the holodeck
-was promoted into a Mission that the factory then built on top of the code it
-had just merged — the first time LCARS has built the thing it had reviewed.
+On 2026-10-15 and 2026-10-16 both engines were pointed at real private repos,
+with real workers and nobody in the loop. Both took a product from nothing to
+merged, every merge confirmed at GitHub rather than taken from a worker's own
+report. Separately, a design made in the holodeck was promoted into a Mission,
+and the line then built it on top of code it had itself reviewed and merged —
+the floor finally running work it had produced, rather than work handed to it.
 
-**These two runs are not in the changelog yet**, so I am giving you no counts to
-check here; they land with the release that carries them. The run also produced
+**These runs are not in the changelog yet**, so I am giving you no counts to
+check here; they land with the release that carries them. They also produced
 most of the open items in the next section, which is the honest half of it.
 
 ### Then and now
 
 The same board, July and October of the same year:
 
-![The LCARS viewscreen in July 2026: six columns beginning at Validate, a handful of cards carrying only an estimate pill, and no ownership strip or hologram controls in the band.](docs/assets/viewscreen-board-2026-07.png)
+![The LCARS viewscreen in July 2026: seven columns beginning at Validate, cards carrying a cost estimate and two difficulty pills but nothing showing what a run really cost, and no ownership strip or hologram controls in the band.](docs/assets/viewscreen-board-2026-07.png)
 
-*July — six columns starting at Validate, one estimate pill per card, and no
-notion of whose Mission it is.*
+*July — seven columns, the first of them Validate, so the two stages before it
+had nowhere to show. A card priced the work ahead and never said what it came
+to. Nothing recorded whose Mission it was.*
 
 ![The LCARS viewscreen in October 2026: every stage column from Align to Done populated, an ownership filter strip, hologram and deploy controls in the band, and cards carrying actuals beside estimates.](docs/assets/viewscreen-board.png)
 
@@ -235,9 +258,10 @@ These are the ones that earned their place by being expensive to learn.
 No hedging on this list. Each one is a real, current, reproducible problem.
 
 **The cost estimate is wrong, and there is no spend meter.** The estimator
-reads a spec and prices the run, and it under-reads actual spend by something
-between four and ten times. This is not new — the same failure was recorded at
-roughly six times as far back as `2026.7.20` — and the diagnosis is now known:
+reads a spec and prices the run, and it under-reads what the run actually
+costs. The last time that gap was measured and written down it was roughly six
+times (`2026.7.20`), and it has not been re-measured since, so read the figure
+on the card as a floor rather than a prediction. The diagnosis is now known:
 it cannot see cached-token volume, and it cannot see the first officer's own
 spend at all. Worse than the inaccuracy: **there is nowhere in the product that
 shows you what you have spent.** Not on the card, not on the board, not in the
