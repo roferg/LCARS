@@ -4,6 +4,41 @@ All notable changes to LCARS are recorded here, newest first. The version
 scheme is `YYYY.M.N` (calendar year, month with no leading zero, per-month
 counter). Every PR into `main` bumps `VERSION` and adds its entry here.
 
+## 2026.10.5 — the holograms, and a first commit worth keeping
+
+Start a new project and its first commit is clean. The greenfield foundation
+now writes a stack-appropriate `.gitignore`, and if you already have one it
+asks **git** which rules you are actually missing and adds only those, in a
+dated block marked top and bottom that you can delete in one gesture. Your own
+lines stay exactly as you wrote them — and if you deliberately un-ignored one
+file inside an ignored folder, that exception survives (S298).
+
+A file that only *looks* like test configuration stops counting as a test
+system. A `Makefile` target with no recipe, an empty `tests/run.sh`, a
+`package.json` test script that is a shell no-op — none of them can satisfy the
+gate any more, and the refusal names the file and says why it runs nothing. The
+terminal, `lcars update --fix-tests` and the viewscreen now all tell you the
+same story in the same words (S299).
+
+An unattended run asks what it needs while you are still there, and will not
+hang when you are not. With no terminal it prints the question it would have
+asked and the value it is proceeding on, or stops on a question it records for
+you — one that settles when you answer it and withdraws itself once the cause
+is fixed. It now checks the things that actually killed overnight runs:
+`COPILOT_ALLOW_ALL`, a forge login, and whether your remote genuinely answers
+rather than merely having a name (S300).
+
+`lcars-buddy` is now **`lcars-eeh`**, the Emergency Engineering Hologram that
+rides along with you, and `lcars-autopilot` is **`lcars-ech`**, the Emergency
+Command Hologram you hand the loop to. Each announces itself. Nothing else
+changed — proven by diffing twenty-four verb pairs old against new (S301).
+
+And an escalation is a question you can answer rather than a wall to scroll
+past. The card tells you *which* decision is waiting and how much more there is
+to read; the full text, its options and the answer box now sit together in one
+place. Previously the options were only legible on the card *behind* the box
+you were typing into.
+
 ## 2026.10.4 — release Number One's stop after merge
 
 Successful approval and GitHub-merge detection now release only the mission

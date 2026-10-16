@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- lcars-docs-src: README.md sha256:a6d66d70534fd6641c8e4b405e373b42129e6d93cf9027417cacc1916da7a1c9 -->
+<!-- lcars-docs-src: README.md sha256:d1347325e43dbbed41a401da8ac037a8fc50b2e818e1b22782101e8222d1710a -->
 <!-- lcars-docs-src: vision.md sha256:47e72d57920148ce26dfd168416acb81b20d517ca26f7da8c5df81e029bb02ba -->
 <html lang="en">
 <head>
@@ -174,8 +174,8 @@ flowchart LR
       green.</p>
 
       <h3><span class="stage-num">8</span>Verify <span class="lcars-status warning" style="margin-left:8px">you</span></h3>
-      <p>You read the diff, run the app, and either approve — which opens the
-      pull request — or send it back with a note.</p>
+      <p>You read the diff, run the app, and either approve — which merges the
+      pull request already open — or send it back with a note.</p>
     </section>
 
 
@@ -210,12 +210,22 @@ cd LCARS
       <code>PATH</code> at <code>~/.local/bin</code>:
       <strong><code>lcars-viewscreen</code></strong> (alias
       <strong><code>lcars-serve</code></strong>) opens the board,
-      <strong><code>lcars-launch</code></strong> runs a Mission's app, and
-      <strong><code>lcars-eeh</code></strong> and
-      <strong><code>lcars-ech</code></strong> are the companion and the
-      hand-over-the-loop mode. If <code>~/.local/bin</code> is not on your
+      <strong><code>lcars-launch</code></strong> runs a Mission's app,
+      <strong><code>lcars-eeh</code></strong> is the Emergency Engineering
+      Hologram (EEH) that rides along with you, and
+      <strong><code>lcars-ech</code></strong> is the Emergency Command Hologram
+      (ECH) you hand the loop to. If <code>~/.local/bin</code> is not on your
       <code>PATH</code>, the installer says so loudly and prints the exact line
       to add to your shell profile.</p>
+
+      <div class="lcars-alert amber">
+        <div><strong>The closing verdict is the exit contract.</strong>
+        <strong>READY exits 0; NOT READY exits 1</strong>, so
+        <code>./install.sh &amp;&amp; next-command</code> never continues with
+        unusable commands — fix what it reports and re-run.
+        <strong>PARTIAL exits 0</strong> too: the commands work, but something is
+        unfinished, such as a refused Copilot registration.</div>
+      </div>
 
       <p>Then, <strong>inside the project you want to ship work in</strong> (not
       this repo):</p>
@@ -228,14 +238,55 @@ lcars init          # one-time: per-repo state + the GitHub labels</pre>
         <code>lcars &lt;verb&gt;</code> (<code>lcars init</code>,
         <code>lcars file</code>, <code>lcars answer</code>, …) are
         <em>skills</em> — you type them to your AI CLI inside the repo, not into
-        a shell. <code>lcars-viewscreen</code> is a real program and runs in any
-        plain terminal.</div>
+        a shell. In particular, shell <code>lcars status</code> is not an
+        installed executable: ask Claude Code or Copilot for it. The five
+        hyphenated names above are real programs and run in any plain terminal;
+        <code>lcars-launch --help</code> and
+        <code>lcars-viewscreen --help</code> (also <code>-h</code>) are safe
+        shell reads that start neither an app nor a board, even inside an
+        agent.</div>
       </div>
 
       <p><strong>Updating</strong> is <code>git pull</code> here — the skills are
       symlinked, so they update in place. Re-run <code>./install.sh</code> only
       for brand-new commands, and <code>lcars update</code> inside a project to
       absorb new labels and config keys.</p>
+
+      <p>To <strong>try LCARS without touching HOME</strong>, set
+      <code>LCARS_INSTALL_PREFIX</code>: it redirects all five install
+      destinations beneath that one directory. Get its <code>bin</code> onto
+      <code>PATH</code> <strong>before</strong> installing so readiness can pass,
+      and <code>unset</code> the five individual overrides below — each one wins
+      over the prefix — for a genuinely isolated trial.</p>
+
+      <div class="lcars-panel">
+        <div class="lcars-panel-header">The five install destinations</div>
+        <div class="lcars-panel-body">
+          <ul>
+            <li><code>LCARS_SKILLS_DEST</code> — the Claude Code skills
+            directory. Default <code>~/.claude/skills</code>; under a prefix,
+            <code>$LCARS_INSTALL_PREFIX/claude-skills</code>.</li>
+            <li><code>LCARS_BIN_DEST</code> — where the five programs land.
+            Default <code>~/.local/bin</code>; under a prefix,
+            <code>$LCARS_INSTALL_PREFIX/bin</code>.</li>
+            <li><code>LCARS_COPILOT_PLUGINS_DIR</code> — the Copilot plugin
+            registration. Default
+            <code>~/.copilot/installed-plugins/_direct</code>; under a prefix,
+            <code>$LCARS_INSTALL_PREFIX/copilot-plugins</code>.</li>
+            <li><code>LCARS_COPILOT_CONFIG</code> — Copilot's config file.
+            Default <code>~/.copilot/config.json</code>; under a prefix,
+            <code>$LCARS_INSTALL_PREFIX/copilot-config.json</code>.</li>
+            <li><code>LCARS_VERSION_STAMP</code> — the staleness-check stamp,
+            written later by the version checker rather than the installer.
+            Default <code>~/.claude/lcars-version-check</code>; under a prefix,
+            <code>$LCARS_INSTALL_PREFIX/version-check</code>.</li>
+          </ul>
+        </div>
+      </div>
+
+      <p>A relative prefix such as <code>./.lcars-try</code> holds only while the
+      shell stays in that directory, and no trial registers skills in the CLIs'
+      default HOME directories.</p>
     </section>
 
 
@@ -267,9 +318,10 @@ lcars init          # one-time: per-repo state + the GitHub labels</pre>
       and the ticket it is on. Nothing needs you until something does.</p>
 
       <h3>4 · Answer what it asks</h3>
-      <p>When LCARS genuinely needs you, the card turns red and says so, and you
-      get a notification. Everything waiting on you is also in one list — on the
-      board, or in the terminal with <code>lcars answer</code>.</p>
+      <p>An escalation turns the card red, says what needs your answer, and sends
+      a notification; reaching Verify alone does not turn a card red. Escalations
+      and Verify reviews are both listed on the board, and in the terminal with
+      <code>lcars answer</code>.</p>
       <figure class="screenshot">
         <img src="assets/answer-inbox.png" alt="The lcars answer inbox in a terminal: every decision LCARS is waiting on, each written in plain English with the exact command to approve it, send it back, or answer it." />
         <figcaption>The answer inbox: every decision LCARS is waiting on, in plain English, each with the exact command to clear it.</figcaption>
@@ -277,9 +329,14 @@ lcars init          # one-time: per-repo state + the GitHub labels</pre>
 
       <h3>5 · Approve it</h3>
       <p>At Verify you see what you asked for beside what was built, the estimate
-      beside the real cost, and the open pull request. <strong>⚡ RUN</strong>
-      starts the built app so you can look at it before you decide. Then merge
-      it, or send it back with a note.</p>
+      beside the real cost, and the pull request when one is recorded.
+      <strong>⚡ RUN</strong> starts the built app so you can look at it before
+      you decide. Then merge the open PR, or send it back with a note; approval
+      never opens and merges a PR in one step. With no PR recorded the inbox says
+      approval is unavailable: run <code>lcars run &lt;mission-id&gt;</code> so
+      Verify opens one — or, for a logged-bug child, which has no PR of its own
+      and ships via its parent,
+      <code>lcars resolve-logs &lt;parent&gt;</code>.</p>
       <figure class="screenshot">
         <img src="assets/launch-run.png" alt="The Verify gate: the acceptance criteria, what was built, the estimate beside what the run actually cost, the open pull request, a RUN control that launches the built app, and the send-back and merge buttons." />
         <figcaption>The Verify gate: what you asked for, what was built, estimate against actual, the pull request — and the RUN control that starts the app before you decide.</figcaption>
