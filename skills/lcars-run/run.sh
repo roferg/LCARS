@@ -16051,14 +16051,24 @@ alias_for_tier() { # cli tier → flag string (stdout; may be empty)
       case "$tier" in sonnet) printf 'sonnet' ;; opus) printf 'opus' ;; esac ;;
     copilot)
       # S78 — copilot is OPUS-SAFE BY DEFAULT: BOTH the sonnet AND the opus tier
-      # resolve to `claude-opus-4.8`, so a Copilot mission runs opus on EVERY
+      # resolve to `claude-opus-4.8` (RETIRED 2026-10-16 — see the note below;
+      # the id is now `claude-opus-5.5`), so a Copilot mission runs opus on EVERY
       # stage regardless of the estimator's tier. WHY: Copilot's `create` tool
       # cannot overwrite an existing file (or mkdir) on a non-opus tier, so a
       # sonnet-tier Implement stage breaks the run. Pinning opus everywhere keeps
       # Copilot end-to-end-safe. This is the ONE home for the policy. Both tiers
       # stay config-overridable via modelAliases.copilot.<tier> (handled above):
       # a repo that sets modelAliases.copilot.sonnet still wins over this default.
-      case "$tier" in sonnet) printf 'claude-opus-4.8' ;; opus) printf 'claude-opus-4.8' ;; esac ;;
+      # 2026-10-16 — THE NAME MOVED, THE POLICY DID NOT. GitHub RETIRED
+      # `claude-opus-4.8` from Copilot: the CLI now answers `Error: Model
+      # "claude-opus-4.8" from --model flag is not available.` and exits 1, so
+      # every copilot cold worker was spawned against a model that no longer
+      # exists (a read-only role got no write tool, saved nothing, exited 0 —
+      # it killed a live run at Research). BOTH tiers move together to
+      # `claude-opus-5.5` so S78's opus-safe default above is preserved exactly;
+      # re-tiering the sonnet arm onto a real sonnet model would be a POLICY
+      # change, not a rename, and is deliberately not done here.
+      case "$tier" in sonnet) printf 'claude-opus-5.5' ;; opus) printf 'claude-opus-5.5' ;; esac ;;
   esac
 }
 

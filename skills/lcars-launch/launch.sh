@@ -901,7 +901,8 @@ LAUNCH_WT_BEFORE=""
 #   (a) $LCARS_WORKER_MODEL — the env pin, verbatim.
 #   (d) config.json workerModel — global, verbatim.
 #   (e) the write-capable alias: copilot → modelAliases.copilot.opus, else S78's
-#       claude-opus-4.8. claude → EMPTY, so the adapter emits no --model and its
+#       claude-opus-5.5 (was claude-opus-4.8 until GitHub retired it from
+#       Copilot on 2026-10-16). claude → EMPTY, so the adapter emits no --model and its
 #       argv stays byte-for-byte what it was.
 launch_worker_model() { # cli → flag string (stdout; may be empty)
   local cli="$1" m=""
@@ -911,7 +912,10 @@ launch_worker_model() { # cli → flag string (stdout; may be empty)
   case "$cli" in
     copilot)
       [ -f "$LCARS_CFG" ] && m="$(json_scoped_str "$LCARS_CFG" modelAliases.copilot.opus)"
-      printf '%s' "${m:-claude-opus-4.8}" ;;
+      # 2026-10-16 — `claude-opus-4.8` was RETIRED from Copilot (the CLI now
+      # rejects the flag outright). Moved to the live opus id, in lockstep with
+      # run.sh's alias_for_tier, which stays the ONE home of the policy.
+      printf '%s' "${m:-claude-opus-5.5}" ;;
   esac
 }
 WORKER_MODEL="$(launch_worker_model "$CLI")"

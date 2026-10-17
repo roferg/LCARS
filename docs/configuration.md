@@ -59,7 +59,9 @@ you rarely touch these. When you want to, all of them are optional:
 - `stages.<key>.model` — pin one Stage to a tier (`sonnet` / `opus`).
 - `modelAliases.<cli>.<tier>` — change how a logical tier maps to a real CLI
   flag. The defaults are `sonnet` / `opus` on Claude Code and
-  `claude-sonnet-4.6` / `claude-opus-4.8` on the Copilot CLI.
+  `claude-opus-5.5` for BOTH tiers on the Copilot CLI — Copilot is opus-safe by
+  default (see below). (The opus id was `claude-opus-4.8` until GitHub retired
+  that model from Copilot on 2026-10-16.)
 - `estimatorModel` — the tier the estimator itself runs on (default `opus`).
 
 ## What a run costs, and how that figure is reached

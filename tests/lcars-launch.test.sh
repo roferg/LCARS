@@ -1558,8 +1558,8 @@ rec_stub() { # engine → a recording stub path whose basename is the cli id
 R31="$(make_repo m31 copilot)"
 S31="$(rec_stub copilot)"; A31="$TMPROOT/argv31"; make_rec_worker "$S31" "$A31"
 ( cd "$R31" && LCARS_WORKER_BIN="$S31" bash "$LAUNCH_SH" m31 >/dev/null 2>&1 )
-check "31a. copilot launch argv CARRIES --model claude-opus-4.8 (write floor)" \
-  "[ \"\$(argv_model \"$A31\")\" = 'claude-opus-4.8' ]"
+check "31a. copilot launch argv CARRIES --model claude-opus-5.5 (write floor)" \
+  "[ \"\$(argv_model \"$A31\")\" = 'claude-opus-5.5' ]"
 
 R31b="$(make_repo m31b claude)"
 S31b="$(rec_stub claude)"; A31b="$TMPROOT/argv31b"; make_rec_worker "$S31b" "$A31b"
@@ -1593,7 +1593,7 @@ printf '{"mainBranch":"trunk"}\n' > "$R31f/.git/lcars/config.json"
 S31f="$(rec_stub copilot)"; A31f="$TMPROOT/argv31f"; make_rec_worker "$S31f" "$A31f"
 ( cd "$R31f" && LCARS_WORKER_BIN="$S31f" bash "$LAUNCH_SH" --main >/dev/null 2>&1 )
 check "31f. the --main deploy's copilot inspector gets the write floor too" \
-  "[ \"\$(argv_model \"$A31f\")\" = 'claude-opus-4.8' ]"
+  "[ \"\$(argv_model \"$A31f\")\" = 'claude-opus-5.5' ]"
 
 # --- 32. A HINT IS PROSE, NOT ARGV (S215) ---------------------------------
 # THE DEFECT. The board's ▸ Deploy Main sent the captain's sentence through
@@ -1696,7 +1696,7 @@ check "34b. …and it is the COPILOT adapter's argv (--available-tools), not cla
 check "34c. …and never claude's (--allowedTools)" \
   "! grep -qx -- '--allowedTools' \"$A34\""
 check "34d. …and the copilot write floor still applies to it" \
-  "[ \"\$(argv_model \"$A34\")\" = 'claude-opus-4.8' ]"
+  "[ \"\$(argv_model \"$A34\")\" = 'claude-opus-5.5' ]"
 check "34e. …and it never complained about a claude that is not there" \
   "! printf '%s' \"\$OUT34\" | grep -q 'definitely-not-installed'"
 

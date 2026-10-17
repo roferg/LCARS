@@ -90,7 +90,9 @@ directory (a repo can host more than one), pass that as the free-form **hint**.
    model does not — without a pin the inspector writes nothing and every launch
    fails with "the inspector reported nothing back". The model is
    `$LCARS_WORKER_MODEL`, else config `workerModel`, else
-   `modelAliases.copilot.opus`, else `claude-opus-4.8`. Claude gets no model flag.
+   `modelAliases.copilot.opus`, else `claude-opus-5.5` (it was `claude-opus-4.8`
+   until GitHub retired that model from Copilot on 2026-10-16). Claude gets no
+   model flag.
 4. **Launch it (the skill does this, not the worker).** The skill reads
    `launch.json` and runs the discovered `command` in `<worktree>/<cwd>`,
    **detached as its own process group**, capturing output to

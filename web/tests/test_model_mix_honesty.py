@@ -12,7 +12,7 @@ WHICH ONE IS RIGHT: THE TIER. It is not a fallback and not a default — it is a
 RESOLUTION. `estimate.json.models` really does say `sonnet` on all six stages,
 and `effective_tier` maps the mission's engine and that logical tier through
 the alias policy the harness itself uses (`skills/lcars-run/run.sh`'s
-`alias_for_tier`). On copilot BOTH logical tiers resolve to `claude-opus-4.8`,
+`alias_for_tier`). On copilot BOTH logical tiers resolve to `claude-opus-5.5`,
 so Opus is genuinely what runs.
 
 WHY THEY DISAGREED. They are two facts from two records that never met. The

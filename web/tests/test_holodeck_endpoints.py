@@ -19,7 +19,7 @@ engines, 2026-08-04), not guesses:
                        --available-tools view,grep,glob,create,edit
                        --allow-all-tools --no-ask-user --disable-builtin-mcps
                        --no-custom-instructions --add-dir <sidecar>
-                       --model claude-opus-4.8  cwd = the program dir
+                       --model claude-opus-5.5  cwd = the program dir
   either  grounding READ-ONLY tools, NO write tool at all, NO --add-dir of the
                     target repo, cwd = the target repo; the DAEMON writes basis.md.
 
@@ -417,7 +417,7 @@ class DesignPostureTest(HolodeckBase):
                     os.path.realpath(g).startswith(
                         os.path.realpath(self._sidecar())), g)
             self.assertEqual(self._flag_value(argv, "--model"),
-                             "claude-opus-4.8")
+                             "claude-opus-5.5")
 
     def test_unknown_session_and_bad_mode_are_refused(self):
         st, body = self._post_raw("/api/holodeck/nope/say", {"text": "hi"})

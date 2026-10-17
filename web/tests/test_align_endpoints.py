@@ -894,7 +894,7 @@ class AlignCopilotFlagsTest(AlignBase):
 class AlignModelParityTest(AlignBase):
     """S78 CHANGE 3 — the Align grill must pass `--model <m>` resolved from the
     mission ENGINE, mirroring alias_for_tier's per-engine DEFAULT (copilot is
-    opus-safe → claude-opus-4.8; claude → its sonnet default). Previously the
+    opus-safe → claude-opus-5.5; claude → its sonnet default). Previously the
     grill ran each CLI's BARE default (no --model), so the grill was not at CLI
     parity with the pipeline. The flag is ADDITIVE (space-form for both engines);
     the S72 tools-denied / session flags stay intact.
@@ -927,9 +927,9 @@ class AlignModelParityTest(AlignBase):
                    {"idea": "Gamify", "engine": copilot_bin})
         opening = self._argvs()[0]
         toks = opening.split()
-        self.assertEqual(self._model_of(opening), "claude-opus-4.8",
+        self.assertEqual(self._model_of(opening), "claude-opus-5.5",
                          "copilot Align grill must run opus-safe (--model "
-                         "claude-opus-4.8), mirroring alias_for_tier")
+                         "claude-opus-5.5), mirroring alias_for_tier")
         # the S72 tools-denied flags must still be present (additive --model).
         self.assertIn("--available-tools=", toks)
         self.assertIn("--no-ask-user", toks)

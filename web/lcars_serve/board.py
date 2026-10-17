@@ -351,7 +351,9 @@ _MODEL_STAGE_LABELS = {
 # Kept beside effective_tier so the two move together.
 DEFAULT_MODEL_ALIASES = {
     "claude":  {"sonnet": "sonnet",           "opus": "opus"},
-    "copilot": {"sonnet": "claude-opus-4.8",  "opus": "claude-opus-4.8"},
+    # 2026-10-16: the id moved 4.8 → 5.5 (GitHub retired claude-opus-4.8 from
+    # Copilot). Kept in lockstep with run.sh's alias_for_tier; policy unchanged.
+    "copilot": {"sonnet": "claude-opus-5.5",  "opus": "claude-opus-5.5"},
 }
 
 

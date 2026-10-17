@@ -1180,14 +1180,16 @@ def _holodeck_model(engine):
     silently re-tier every grill in the product.
 
     claude  → "sonnet"           (the captain's pre-authorized S124 tier)
-    copilot → "claude-opus-4.8"  (free; kept for output quality)
+    copilot → "claude-opus-5.5"  (free; kept for output quality)
 
     NB the spike REFUTED the old justification for the copilot opus pin: on CLI
     1.0.79-1 `claude-sonnet-4.6` created AND edited files fine, and `create`
     cannot overwrite on opus either. The pin is a quality choice now, not a
     capability one.
     """
-    return "claude-opus-4.8" if _is_copilot(engine) else "sonnet"
+    # 2026-10-16: was claude-opus-4.8 until GitHub retired it from Copilot —
+    # the CLI now rejects that flag outright, so the holodeck turn never ran.
+    return "claude-opus-5.5" if _is_copilot(engine) else "sonnet"
 
 
 # ── S128 (FL-002 / FL-004) — the words that go with an in-flight turn ───────
@@ -14540,7 +14542,7 @@ def _grill_model(engine):
 
     Mirrors alias_for_tier's per-engine DEFAULT (skills/lcars-run/run.sh) so the
     grill is NOT a bare CLI default and stays at CLI parity with the pipeline:
-      * copilot → "claude-opus-4.8" (OPUS-SAFE — copilot's create-tool can't
+      * copilot → "claude-opus-5.5" (OPUS-SAFE — copilot's create-tool can't
         overwrite on a non-opus tier, so the whole engine runs opus by default).
       * claude  → "sonnet" (its default reasoning tier).
     Engine is the worker bin path; selection is by basename (same idiom as
@@ -14549,7 +14551,9 @@ def _grill_model(engine):
     """
     base = os.path.basename(engine or "").lower()
     if "copilot" in base:
-        return "claude-opus-4.8"
+        # 2026-10-16: the id moved 4.8 → 5.5 (claude-opus-4.8 retired from
+        # Copilot); mirrors run.sh alias_for_tier, policy unchanged.
+        return "claude-opus-5.5"
     return "sonnet"
 
 

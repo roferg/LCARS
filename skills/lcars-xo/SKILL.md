@@ -146,7 +146,8 @@ removed once an empty census says so. Every action is appended to `<mission>/num
 
 The model is the captain's Opus pin: the S194 write floor
 (`write_capable_alias` → `modelAliases.copilot.opus`, default
-`claude-opus-4.8`), overridable by config `numberOne.model`, outranked by
+`claude-opus-5.5` — it was `claude-opus-4.8` until GitHub retired that model
+from Copilot on 2026-10-16), overridable by config `numberOne.model`, outranked by
 `LCARS_WORKER_MODEL`. The prompt is `skills/lcars-xo/prompts/answer.md`.
 
 ## `evaluate` — the Verify look (S203)

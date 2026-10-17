@@ -590,7 +590,7 @@ class ListHeaderTest(SurfaceBase):
     """What the SURFACE needs before a program exists: where the sidecar is (D6
     wants the full path, not a basename) and what will actually run (the New
     Program dialog printed a hardcoded `sonnet tier`, which is false on
-    copilot — `_holodeck_model` returns claude-opus-4.8 there)."""
+    copilot — `_holodeck_model` returns claude-opus-5.5 there)."""
 
     def test_the_empty_list_still_names_the_sidecar_path_in_full(self):
         _s, body = self._get_json("/api/holodeck")
@@ -618,7 +618,7 @@ class ListHeaderTest(SurfaceBase):
 
     def test_the_model_is_the_daemons_own_source_of_truth_per_engine(self):
         from lcars_serve.actions import _holodeck_model
-        self.assertEqual(_holodeck_model("/usr/bin/copilot"), "claude-opus-4.8")
+        self.assertEqual(_holodeck_model("/usr/bin/copilot"), "claude-opus-5.5")
         self.assertEqual(_holodeck_model("/usr/bin/claude"), "sonnet")
 
     def test_the_list_publishes_the_tier_of_EVERY_engine_the_dialog_offers(self):
@@ -633,7 +633,7 @@ class ListHeaderTest(SurfaceBase):
                                           "copilot": _holodeck_model("copilot")})
         # …and it really is the per-engine truth, not the daemon's one tier.
         self.assertEqual(body["models"]["claude"], "sonnet")
-        self.assertEqual(body["models"]["copilot"], "claude-opus-4.8")
+        self.assertEqual(body["models"]["copilot"], "claude-opus-5.5")
 
     def test_the_published_tiers_do_not_follow_the_daemons_own_engine(self):
         """The daemon here runs CLAUDE. If `models` were derived from
@@ -1115,11 +1115,11 @@ class DeckCopyAndChromeTest(unittest.TestCase):
 
     def test_the_dialog_states_the_model_that_will_actually_run(self):
         """`One cheap pass · sonnet tier · read-only` was HARDCODED and is false
-        on copilot, where `_holodeck_model` returns claude-opus-4.8. The readout
+        on copilot, where `_holodeck_model` returns claude-opus-5.5. The readout
         must come from the daemon."""
         out = _harness({"act": "newProgram", "engineName": "copilot",
-                        "model": "claude-opus-4.8"})
-        self.assertIn("claude-opus-4.8", out["footText"])
+                        "model": "claude-opus-5.5"})
+        self.assertIn("claude-opus-5.5", out["footText"])
         self.assertIn("copilot", out["footText"])
         self.assertNotIn("sonnet", out["footText"].lower())
 
@@ -1659,7 +1659,7 @@ class WarmPillTellsTheTruthTest(unittest.TestCase):
 # aria-pressed / keyActivable — because that is the picker he already knows,
 # and S140 made it keyboard-operable.
 # ════════════════════════════════════════════════════════════════════════════
-MODELS = {"claude": "sonnet", "copilot": "claude-opus-4.8"}
+MODELS = {"claude": "sonnet", "copilot": "claude-opus-5.5"}
 
 
 @unittest.skipIf(NODE is None, "node not installed")
@@ -1753,7 +1753,7 @@ class NewProgramFooterIsOneSentenceTest(unittest.TestCase):
         first, second = out["foots"][0], out["foots"][1]
         self.assertNotEqual(first, second, out["foots"])
         self.assertIn("sonnet", first.lower())
-        self.assertIn("claude-opus-4.8", second)
+        self.assertIn("claude-opus-5.5", second)
         self.assertNotIn("sonnet", second.lower())
 
     def test_picking_back_returns_the_sentence_it_started_with(self):
@@ -1792,7 +1792,7 @@ class NewProgramFooterIsOneSentenceTest(unittest.TestCase):
                         "clicks": [{"mode": "design"}, {"engine": "copilot"}]})
         self.assertEqual(out["footHints"], 1, out["foots"])
         last = out["foots"][3 - 1]
-        self.assertIn("claude-opus-4.8", last)
+        self.assertIn("claude-opus-5.5", last)
         self.assertNotIn("read-only", last.lower())
         self.assertEqual(len(set(out["foots"])), 3, out["foots"])
 
