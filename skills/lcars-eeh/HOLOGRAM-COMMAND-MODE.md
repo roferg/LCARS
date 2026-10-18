@@ -670,6 +670,32 @@ plus the evidence to capture plus what counts as a defect, and carries a fenced
 `run:`/`workflow:`/`read:` template beside the prose so a fenced worker with no
 shell can lift it.
 
+**Everything you make yourself goes inside the repository, under
+`.git/lcars/tmp/`.** `live-check` already puts the worktree and the throwaway
+HOME it hands you there. The checklists then ask you for things it cannot make
+for you — a *second* throwaway HOME, an ad-hoc input file, somewhere to
+redirect output — and they never say WHERE, because they cannot know your repo.
+You do. You are trusted only inside the repository you are building in, and a
+**write** outside it raises `Allow path access` and stops an unattended run
+dead on a dialog nothing in the run can answer (measured, 2026-10-18: a seat
+stalled twice, on `/tmp/home2-XXXX` and on `/tmp/good.json`). So never `/tmp`,
+never a bare `mktemp -d` with no template, never a `>` target outside the repo.
+
+The **second actor** (cli checklist item 4, whose `<throwaway-home-2>` has no
+location in the checklist) is the one measured to bite. Give it one, from the
+repository root:
+
+```bash
+mkdir -p .git/lcars/tmp
+H2="$(mktemp -d "$PWD/.git/lcars/tmp/lcars-ap-home2-XXXXXX")"
+HOME="$H2" <cli> <the-main-verb> <the-same-value-actor-A-used>
+```
+
+Scratch inputs go the same way — `.git/lcars/tmp/good.json`, never
+`/tmp/good.json` — and so does every log you redirect, the Holodeck daemon's
+included: start it with `>.git/lcars/tmp/lcars-viewscreen.log` in place of the
+`/tmp` path § 5 shows, and read it back from there.
+
 Pick **every** type the milestone touches. A CLI that writes a page published by
 a workflow is all three. The items that found the bugs, by name:
 

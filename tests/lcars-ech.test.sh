@@ -4826,6 +4826,120 @@ check "S305-R1-D5. CONTROL: the captain's own question still parks" \
 check "S305-R1-D5. CONTROL: and it is NOT dressed up as maybe-dead" \
   "! printf '%s' \"\$nr1c\" | qgrep -qi 'may already be dead'"
 
+echo "-- S305-R3-D7. the scratch the SEAT makes stays inside the repo --"
+# MEASURED LIVE, 2026-10-18. A Copilot seat with a SCOPED grant (product repo +
+# LCARS source + the Holodeck sidecar, nothing else) stalled twice on
+# `Allow path access / This action may read or write the following paths
+# outside the paths currently allowed for this session.` — at 09:23 and again
+# at 09:37, each needing a human keypress. An unattended run dies at the first.
+#
+# LCARS IS NOT AT FAULT: `ech.sh live-check` takes its worktree and throwaway
+# HOME from the recorded `launchDir`, and on that run both landed in
+# `$PWD/.git/lcars/tmp/`. The culprit was scratch the SEAT created itself —
+# `/tmp/home2-XXXX` (a SECOND throwaway HOME) and `/tmp/good.json` — because
+# the live-check checklist's item 4 ("Two actors — two HOMEs") says to make a
+# second HOME and never says WHERE.
+#
+# WHAT IS MEASURED HERE, and what is not. This is NOT a grep for a sentence.
+# The playbook's cure carries a concrete, copyable command block; the test
+# EXTRACTS that block, RUNS its placeholder-free lines in a throwaway repo from
+# the repository root, and asks of the directory it really created: does this
+# resolve INSIDE the repo? The same extractor and the same predicate are then
+# turned on the two paths the live seat actually used, which must come back
+# OUTSIDE — so a predicate that answered "inside" to everything cannot read as
+# a pass. What it does NOT establish: that a live model obeys the instruction.
+# No test here can; the honest claim is that the shape the playbook hands a
+# reader is one that resolves in-repo, and that the shape it replaces does not.
+APMSRC="$REPO_ROOT/skills/lcars-eeh/HOLOGRAM-COMMAND-MODE.md"
+
+# scratch_block — the fenced bash block the cure hands the reader, scraped out
+# of the playbook by its anchor. Empty output makes every control below red,
+# which is the point.
+scratch_block() {
+  awk '
+    /^\*\*Everything you make yourself goes inside the repository/ {f=1}
+    f && /^```bash$/ {g=1; next}
+    g && /^```$/ {exit}
+    g {print}
+  ' "$APMSRC"
+}
+# The lines a test can execute verbatim: the ones with no <placeholder> in them.
+scratch_exec() { scratch_block | grep -v '<'; }
+
+# inside_repo <repo> <path> -> yes|no. Resolves symlinks on BOTH sides (macOS
+# /tmp is a symlink to /private/tmp, and a test that forgot that would call
+# every /tmp path "inside" nothing).
+inside_repo() {
+  local r p d
+  r="$(cd "$1" 2>/dev/null && pwd -P)" || { echo no; return; }
+  p="$2"
+  case "$p" in /*) ;; *) p="$1/$p" ;; esac
+  if [ -d "$p" ]; then
+    p="$(cd "$p" && pwd -P)"
+  else
+    d="$(cd "$(dirname "$p")" 2>/dev/null && pwd -P)" || { echo no; return; }
+    p="$d/$(basename "$p")"
+  fi
+  case "$p/" in "$r"/*) echo yes ;; *) echo no ;; esac
+}
+
+SB="$(scratch_block)"
+SX="$(scratch_exec)"
+
+check "S305-R3-D7. the cure hands the reader an extractable command block" \
+  "[ -n \"\$SB\" ]"
+check "S305-R3-D7. and that block has lines runnable as-is (no placeholders)" \
+  "[ -n \"\$SX\" ] && printf '%s' \"\$SX\" | qgrep -q 'mktemp'"
+
+# RUN IT. A throwaway git repo, cwd at its root, exactly as a seat would.
+RSC="$TMPROOT/scratch-repo"; mkdir -p "$RSC"; ( cd "$RSC" && git init -q . )
+H2VAL="$( cd "$RSC" && eval "$SX
+printf '%s' \"\$H2\"" 2>"$TMPROOT/scratch-err.txt" )"; h2rc=$?
+echo "    [extracted block] H2=$H2VAL (exit $h2rc)"
+
+check "S305-R3-D7. the block the playbook teaches RUNS clean from the repo root" \
+  "[ $h2rc -eq 0 ] && [ -n \"\$H2VAL\" ]"
+check "S305-R3-D7. and it really created a directory" "[ -d \"\$H2VAL\" ]"
+# (1) THE DEFECT ITSELF — the second HOME the seat makes resolves in-repo.
+check "S305-R3-D7. the second throwaway HOME it produces is INSIDE the repo" \
+  "[ -n \"\$H2VAL\" ] && [ \"\$(inside_repo \"\$RSC\" \"\$H2VAL\")\" = yes ]"
+check "S305-R3-D7. and specifically under .git/lcars/tmp/" \
+  "[ \"\$(inside_repo \"\$RSC/.git/lcars/tmp\" \"\$H2VAL\")\" = yes ]"
+check "S305-R3-D7. it is a real HOME a CLI could be pointed at (writable dir)" \
+  "( HOME=\"\$H2VAL\" sh -c 'printf x >\"\$HOME/.probe\"' ) && [ -f \"\$H2VAL/.probe\" ]"
+
+# (2) POSITIVE CONTROL — the SAME predicate on the two paths the live seat
+# really used. If these came back `yes` the assertions above would be measuring
+# nothing at all.
+check "S305-R3-D7. CONTROL: /tmp/home2-XXXX (measured 09:23) is judged OUTSIDE" \
+  "[ \"\$(inside_repo \"\$RSC\" /tmp/home2-XXXX)\" = no ]"
+check "S305-R3-D7. CONTROL: /tmp/good.json (measured 09:37) is judged OUTSIDE" \
+  "[ \"\$(inside_repo \"\$RSC\" /tmp/good.json)\" = no ]"
+check "S305-R3-D7. CONTROL: a bare mktemp -d (no template) is judged OUTSIDE" \
+  "[ \"\$(inside_repo \"\$RSC\" \"\$(mktemp -d)\")\" = no ]"
+# (3) ANTI-VACUITY — the same extracted block with the in-repo prefix rewritten
+# back to the natural /tmp shape must FAIL the same predicate. This proves the
+# green above comes from the playbook's wording and not from the harness.
+SXTMP="$(printf '%s\n' "$SX" | sed 's|\$PWD/\.git/lcars/tmp|/tmp|g; s|\.git/lcars/tmp|/tmp|g')"
+H2TMP="$( cd "$RSC" && eval "$SXTMP
+printf '%s' \"\$H2\"" 2>/dev/null )"
+check "S305-R3-D7. CONTROL: the /tmp rewrite of the same block still runs" \
+  "[ -n \"\$H2TMP\" ] && [ -d \"\$H2TMP\" ]"
+check "S305-R3-D7. CONTROL: and THAT one is judged OUTSIDE the repo" \
+  "[ \"\$(inside_repo \"\$RSC\" \"\$H2TMP\")\" = no ]"
+rm -rf "$H2TMP" 2>/dev/null || true
+
+# (4) COVERAGE — the cure has to be reachable by the seat that needs it: in the
+# live-check section (§ 6), and naming the second-actor case the checklist
+# cannot be edited to fix.
+sec6="$(awk '/^## 6\. The Verify gate/{f=1} f&&/^## 6a\./{exit} f' "$APMSRC")"
+check "S305-R3-D7. the cure sits inside § 6, the live-check section" \
+  "printf '%s' \"\$sec6\" | qgrep -qF 'Everything you make yourself goes inside the repository'"
+check "S305-R3-D7. it names the second-actor item the checklist leaves blank" \
+  "printf '%s' \"\$sec6\" | qgrep -qF '<throwaway-home-2>'"
+check "S305-R3-D7. it says WHY — a write outside the grant stops the run" \
+  "printf '%s' \"\$sec6\" | qgrep -qi 'Allow path access'"
+
 echo
 echo "=== lcars-ech: $pass passed, $fail failed ==="
 [ "$fail" -eq 0 ]
