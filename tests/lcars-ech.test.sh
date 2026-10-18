@@ -4630,6 +4630,126 @@ check "S305-R1-D4. it says the GET 404s once the program is ended" \
 check "S305-R1-D4. and it no longer claims that GET is one Program plus its transcript, full stop" \
   "! qgrep -qF 'is one Program plus its transcript' '$PB'"
 
+echo "-- S305-R2-D6. the documented wait DEGRADES on a reply that is not JSON --"
+# THE SNIPPET IS RUN, NOT GREPPED. Round 1 gave step 4a a bound and proved it
+# returns; it left the PARSER naked. Two non-answers are normal on that GET and
+# NEITHER is "still working":
+#   * the daemon dies mid-wait   -> curl prints NOTHING, json.load raises, and
+#     the loop prints a Python traceback every 5s for the full ~450s bound
+#     (measured: ~90 tracebacks). That noise is exactly what made four of four
+#     live seats conclude the harness was broken and stop.
+#   * the session has been ended -> HTTP 404 {"error": "no such holodeck
+#     program: ..."}, which parses but carries no derive block, so the old
+#     snippet read it as "not done yet" and burnt the whole bound in silence.
+# Both are measured below against the SAME extracted snippet, and the two
+# round-1 behaviours (break on `done`, say so on expiry) are measured as
+# CONTROLS in the same breath.
+DPOLL_RAW="$TMPROOT/documented-poll-raw.sh"
+python3 - "$PB" "$DPOLL_RAW" <<'PYPOLL2'
+import re, sys
+src = open(sys.argv[1]).read()
+m = re.search(r"\n(# 4a\..*?)\n# 5\.", src, re.S)
+open(sys.argv[2], "w").write((m.group(1) if m else "") + "\n")
+PYPOLL2
+check "S305-R2-D6. the WAIT step is still extractable from the playbook" \
+  "[ -s '$DPOLL_RAW' ]"
+
+# mkpoll <out> <port> <sid> — the same snippet, time-scaled to 3 tries 1s
+# apart. Nothing else about it is touched.
+mkpoll() {
+  cp "$DPOLL_RAW" "$1"
+  python3 - "$1" "$2" "$3" <<'PYSCALE2'
+import re, sys
+p, port, sid = sys.argv[1], sys.argv[2], sys.argv[3]
+s = open(p).read()
+s = re.sub(r"seq 1 \d+", "seq 1 3", s)
+s = re.sub(r"sleep \d+", "sleep 1", s)
+s = s.replace("8765", port).replace("<sessionId>", sid)
+open(p, "w").write(s)
+PYSCALE2
+}
+# runpoll <script> [stub-body] — runs it, leaves output in $rpout and wall
+# seconds in $rpel. A stub body shadows `curl` ONLY (python3 stays real), which
+# is how a reply shape is served without a daemon per case.
+CURLSTUB="$TMPROOT/curl-stub"
+runpoll() {
+  local sc="$1" body="${2-}" pathpfx="" t0
+  if [ -n "$body" ]; then
+    rm -rf "$CURLSTUB"; mkdir -p "$CURLSTUB"
+    { echo '#!/usr/bin/env bash'; printf '%s\n' "$body"; } >"$CURLSTUB/curl"
+    chmod +x "$CURLSTUB/curl"
+    pathpfx="$CURLSTUB:"
+  fi
+  t0="$(date +%s)"
+  rpout="$(PATH="$pathpfx$PATH" bash "$sc" 2>&1)"
+  rpel=$(( $(date +%s) - t0 ))
+}
+
+# M1 — THE GET ANSWERS HTML. The defect, reproduced at its narrowest.
+PNJ="$TMPROOT/poll-nonjson.sh"; mkpoll "$PNJ" "$VSPORT" "deadbeef"
+runpoll "$PNJ" "printf '<!doctype html><title>404</title>not found\n'"
+echo "    [M1 non-JSON reply] ${rpel}s, output: $(printf '%s' "$rpout" | head -1)"
+check "S305-R2-D6. M1 a non-JSON reply prints NO Python traceback" \
+  "! printf '%s' \"\$rpout\" | qgrep -q 'Traceback'"
+check "S305-R2-D6. M1 and no JSONDecodeError" \
+  "! printf '%s' \"\$rpout\" | qgrep -q 'JSONDecodeError'"
+check "S305-R2-D6. M1 it says the daemon STOPPED ANSWERING, not 'still working'" \
+  "printf '%s' \"\$rpout\" | qgrep -qi 'stopped answering'"
+check "S305-R2-D6. M1 and it gives up AT ONCE instead of burning the bound" \
+  "[ $rpel -le 2 ]"
+
+# M2 — THE DAEMON IS GONE: curl prints nothing and exits non-zero. This is the
+# case a seat hits when the viewscreen dies mid-derive.
+PDD="$TMPROOT/poll-dead-daemon.sh"; mkpoll "$PDD" "$VSPORT" "deadbeef"
+runpoll "$PDD" "exit 7"
+echo "    [M2 dead daemon] ${rpel}s, output: $(printf '%s' "$rpout" | head -1)"
+check "S305-R2-D6. M2 a dead daemon prints NO Python traceback either" \
+  "! printf '%s' \"\$rpout\" | qgrep -q 'Traceback'"
+check "S305-R2-D6. M2 and it reads as the daemon having stopped answering" \
+  "printf '%s' \"\$rpout\" | qgrep -qi 'stopped answering'"
+check "S305-R2-D6. M2 and it returns at once" "[ $rpel -le 2 ]"
+
+# M3 — LIVE, AND THE SESSION IS THE ONE `end` KILLED IN D4. A real 404 whose
+# body IS valid JSON: the silent-burn half of the defect.
+PEND="$TMPROOT/poll-ended-session.sh"
+rpout=""; rpel=9999
+if [ -n "$HSID" ] && [ $vsbound -eq 1 ]; then
+  mkpoll "$PEND" "$VSPORT" "$HSID"
+  runpoll "$PEND"
+fi
+echo "    [M3 live daemon, ended session] ${rpel}s, output: $(printf '%s' "$rpout" | head -1)"
+check "S305-R2-D6. M3 an ended session is not mistaken for a derive in flight" \
+  "printf '%s' \"\$rpout\" | qgrep -qi 'stopped answering'"
+check "S305-R2-D6. M3 and it stops rather than polling a dead session out" \
+  "[ $rpel -le 2 ]"
+check "S305-R2-D6. M3 no traceback against the real 404" \
+  "! printf '%s' \"\$rpout\" | qgrep -q 'Traceback'"
+
+# CONTROL 1 — IT STILL BREAKS ON `done`, ON ITERATION ONE. Without this the
+# three above would pass against a snippet that gave up on everything.
+PDONE="$TMPROOT/poll-done.sh"; mkpoll "$PDONE" "$VSPORT" "deadbeef"
+runpoll "$PDONE" "printf '{\"derive\":{\"state\":\"done\"}}\n'"
+echo "    [CONTROL done] ${rpel}s, output: $(printf '%s' "$rpout" | head -1)"
+check "S305-R2-D6. CONTROL: \`done\` still breaks the loop on the first pass" \
+  "[ $rpel -le 1 ]"
+check "S305-R2-D6. CONTROL: and \`done\` prints no complaint of any kind" \
+  "[ -z \"\$rpout\" ]"
+
+# CONTROL 2 — A DERIVE THAT IS GENUINELY IN FLIGHT MUST STILL RUN TO THE BOUND
+# and still print the expiry guidance. This is the round-1 cure, re-measured:
+# the new no-answer road must not swallow the real wait.
+PRUN="$TMPROOT/poll-running.sh"; mkpoll "$PRUN" "$VSPORT" "deadbeef"
+runpoll "$PRUN" "printf '{\"derive\":{\"state\":\"running\"}}\n'"
+echo "    [CONTROL running] ${rpel}s, output: $(printf '%s' "$rpout" | head -1)"
+check "S305-R2-D6. CONTROL: a running derive is waited out to the bound" \
+  "[ $rpel -ge 2 ]"
+check "S305-R2-D6. CONTROL: and expiry still names the bound and says it gave up" \
+  "printf '%s' \"\$rpout\" | qgrep -qi 'gave up\|give up\|did not finish'"
+check "S305-R2-D6. CONTROL: and still offers promote-anyway or re-derive" \
+  "printf '%s' \"\$rpout\" | qgrep -qi 'promote' && printf '%s' \"\$rpout\" | qgrep -qi 'force'"
+check "S305-R2-D6. CONTROL: a running derive is NOT called a dead daemon" \
+  "! printf '%s' \"\$rpout\" | qgrep -qi 'stopped answering'"
+
 # Stop the daemon the moment the measurements are taken — a suite that leaks a
 # daemon corrupts every later reading (S208/S209).
 { [ -n "${VSPID:-}" ] && kill "$VSPID" && wait "$VSPID"; } 2>/dev/null || true

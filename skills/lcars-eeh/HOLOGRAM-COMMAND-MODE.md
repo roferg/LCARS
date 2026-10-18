@@ -437,13 +437,36 @@ curl -s -X POST http://127.0.0.1:8765/api/holodeck/<sessionId>/derive \
 #     {"state": "done", "ok": false, "why": ...}, which means the pass DID NOT
 #     ANSWER and not "the mockup changes nothing". A seat that waits for ever
 #     is indistinguishable from a dead one, so this loop gives up and says so.
+#
+#     READ THE REPLY DEFENSIVELY. Two answers on this GET are NOT "still
+#     working" and the parser must not fall over them: the daemon can die
+#     mid-wait (curl prints NOTHING and a naive json.load then prints a Python
+#     traceback every 5s for the whole 7.5 minutes — measured, ~90 of them),
+#     and an ENDED session answers HTTP 404 {"error": "no such holodeck
+#     program: ..."}, which parses fine but carries no derive block. Both mean
+#     NOTHING IS COMING, so this loop calls them `no-answer`, stops at once,
+#     and says which it was. A seat that can tell a dead daemon from a slow
+#     one does not have to guess.
 for i in $(seq 1 90); do
   st="$(curl -s http://127.0.0.1:8765/api/holodeck/<sessionId> \
-        | python3 -c 'import json,sys; print((json.load(sys.stdin).get("derive") or {}).get("state",""))')"
+        | python3 -c 'import json, sys
+try:
+    reply = json.load(sys.stdin)   # nothing, or not JSON, lands in the except
+except Exception:
+    print("no-answer"); raise SystemExit
+print((reply.get("derive") or {}).get("state", "")
+      or ("no-answer" if reply.get("error") else "running"))' 2>/dev/null)"
   [ "$st" = "done" ] && break
+  [ "$st" = "no-answer" ] && break
   sleep 5
 done
-[ "$st" = "done" ] || echo "derive gave up after 90 tries of 5s (~7.5 min); state=$st. Promote anyway — a brief with no derived section is still a brief he can send — or re-run derive with force true."
+case "$st" in
+  done) : ;;   # the `changes` list is on that same GET. Go to step 5.
+  no-answer)
+    echo "the holodeck daemon STOPPED ANSWERING (it died, or this session was ended — after /end that GET 404s for ever). This is NOT 'still working': nothing is coming, so do not keep polling. Read /tmp/lcars-viewscreen.log, restart the daemon, and get back in by ROOM name (step 7)." ;;
+  *)
+    echo "derive gave up after 90 tries of 5s (~7.5 min); state=$st. The daemon is alive and still working — it just outran the bound. Promote anyway — a brief with no derived section is still a brief he can send — or re-run derive with force true." ;;
+esac
 
 # 5. POST /api/holodeck/<sessionId>/promote — SEND TO ALIGN. `scope` is the
 #    BUILD SCOPE, never the milestone label: {"scope":"M0"} is REFUSED with
