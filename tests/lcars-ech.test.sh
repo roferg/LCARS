@@ -4940,6 +4940,128 @@ check "S305-R3-D7. it names the second-actor item the checklist leaves blank" \
 check "S305-R3-D7. it says WHY — a write outside the grant stops the run" \
   "printf '%s' \"\$sec6\" | qgrep -qi 'Allow path access'"
 
+# ───────────────────────────────────────────────────────────────────────────────
+# S305-R4-D8 — A DESIGN IS HANDED OVER BY `promote`, NEVER BY HAND
+#
+# MEASURED on a live Claude/Opus seat. It authored a real design in the
+# Holodeck (program `m1-board`, four turns, concept.md + mockup.html both on
+# disk), and then did `promote`'s job itself: it wrote the design into the
+# mission's own prd.md, referenced the sidecar files by absolute path, and
+# reproduced by hand the boilerplate promote injects (the whole "How to read
+# the attached mockup" block, look-versus-behaviour precedence, escalate on
+# disagreement). The BUILD was right — the mockup's colours are in the shipped
+# code and a control colour absent from the mockup is nowhere. The RECORD was
+# never written: no `Sent to Align:` header line, the room never marked handed
+# over or read-only, nothing linking the mission to the program, the viewscreen
+# unable to draw the connection. A successful hand-off became indistinguishable
+# from no hand-off at all. The playbook already handed the seat the promote
+# command (step 5); it simply chose not to use it, so the cure is a
+# PROHIBITION WITH ITS REASON, not a better explanation.
+#
+# WHAT IS MEASURED HERE, and what is not. Three independent facets, not one
+# sentence: (a) the rule is REACHABLE — it sits inside the same `##` section
+# the promote call sits in, sliced by section boundaries rather than line
+# numbers, and it comes BEFORE the promote curl inside that section, so a seat
+# reading top-down meets it before it could act; (b) its CLAIMS CHECK OUT
+# against the product, read-only — the route it names is really dispatched by
+# the daemon, and the record it says goes missing is really the one promote
+# writes; (c) CONTROLS — the same predicate on the sections that do NOT carry
+# this rule comes back `no`, the merge precedent's predicate discriminates the
+# other way, and § 4 with the new lines stripped out goes red again, so the
+# green cannot be coming from text that was already there.
+# WHAT IT DOES NOT ESTABLISH: that a live model obeys. No test here can — only
+# the seats can measure that. The honest claim is that the prohibition, its
+# replacement call and its reason are present, reachable before the act, and
+# truthful about the product.
+HOCM="$REPO_ROOT/skills/lcars-eeh/HOLOGRAM-COMMAND-MODE.md"
+SRVPY="$REPO_ROOT/web/lcars_serve/server.py"
+ACTPY="$REPO_ROOT/web/lcars_serve/actions.py"
+
+# section <start-regex> <stop-regex> — one `##` slice of the playbook.
+hocm_section() { awk -v s="$1" -v e="$2" '$0 ~ s {f=1} f && $0 ~ e {exit} f' "$HOCM"; }
+
+# has_handoff_rule <text> -> yes|no. All three facets or it is not the rule:
+# the prohibition, the call that replaces it, and the record that goes missing.
+has_handoff_rule() {
+  local t="$1"
+  printf '%s\n' "$t" | qgrep -qiE 'never hand (a|the) design over by hand' || { echo no; return; }
+  printf '%s\n' "$t" | qgrep -qF '/promote' || { echo no; return; }
+  printf '%s\n' "$t" | qgrep -qiF 'Sent to Align' || { echo no; return; }
+  echo yes
+}
+# has_merge_rule <text> -> yes|no. The precedent this rule is written to match,
+# used here only as a discriminator for the slicer.
+has_merge_rule() {
+  if printf '%s\n' "$1" | qgrep -qiF 'You never merge by hand'; then echo yes; else echo no; fi
+}
+
+S4="$(hocm_section '^## 4\. File a milestone' '^## 4a\.')"
+S6="$(hocm_section '^## 6\. The Verify gate' '^## 6a\.')"
+S7="$(hocm_section '^## 7\. Land it' '^## 8\.')"
+
+check "S305-R4-D8. the slicer really slices (§ 4 is non-empty)" "[ -n \"\$S4\" ]"
+check "S305-R4-D8. § 4 is the section that carries the promote call" \
+  "printf '%s\n' \"\$S4\" | qgrep -qE 'curl .*api/holodeck/.*/promote'"
+
+# (1) THE DEFECT ITSELF — the rule exists, in that same section.
+check "S305-R4-D8. the hand-off prohibition sits in § 4, with promote" \
+  "[ \"\$(has_handoff_rule \"\$S4\")\" = yes ]"
+
+# ORDERING: a seat reading § 4 top-down meets the rule BEFORE the promote line.
+RULE_LN="$(printf '%s\n' "$S4" | grep -niE 'never hand (a|the) design over by hand' | head -1 | cut -d: -f1)"
+PROM_LN="$(printf '%s\n' "$S4" | grep -nE 'curl .*api/holodeck/.*/promote' | head -1 | cut -d: -f1)"
+echo "    [§ 4 line offsets] rule=${RULE_LN:-none} promote-curl=${PROM_LN:-none}"
+check "S305-R4-D8. and it is read BEFORE the promote call, not after it" \
+  "[ -n \"\$RULE_LN\" ] && [ -n \"\$PROM_LN\" ] && [ \"\$RULE_LN\" -lt \"\$PROM_LN\" ]"
+
+# It must say WHAT TO CALL (the route, not a vague 'use the surface') and WHY --
+# and it must say so IN THE RULE. Asserting these of § 4 as a whole would be
+# vacuous: step 5's own comment already names the route. So the rule's own
+# paragraph is cut out (the contiguous non-blank run around the prohibition)
+# and the three questions are put to THAT.
+RULEPARA="$(awk 'BEGIN{RS=""} tolower($0) ~ /never hand (a|the) design over by hand/' <<<"$S4")"
+check "S305-R4-D8. the rule is one self-contained paragraph, extractable" \
+  "[ -n \"\$RULEPARA\" ]"
+check "S305-R4-D8. the RULE itself names the route the playbook documents" \
+  "printf '%s\n' \"\$RULEPARA\" | qgrep -qF '/api/holodeck/<sessionId>/promote'"
+check "S305-R4-D8. the RULE pre-empts the rationalisation: a faithful brief is NOT equivalent" \
+  "printf '%s\n' \"\$RULEPARA\" | qgrep -qiF 'equivalent'"
+check "S305-R4-D8. the RULE gives the reason: right build, NO RECORD left behind" \
+  "printf '%s\n' \"\$RULEPARA\" | qgrep -qiE 'indistinguishable from no hand-?off'"
+check "S305-R4-D8. the RULE names the record that went missing" \
+  "printf '%s\n' \"\$RULEPARA\" | qgrep -qiF 'Sent to Align'"
+check "S305-R4-D8. CONTROL: the merge precedent's paragraph is a DIFFERENT paragraph" \
+  "printf '%s\n' \"\$RULEPARA\" | qgrep -qivF 'You never merge by hand'"
+
+# (2) ITS CLAIMS CHECK OUT AGAINST THE PRODUCT (read-only cross-check). A rule
+# that pointed at a route the daemon does not serve, or blamed a record promote
+# does not write, would be reachable and still wrong.
+check "S305-R4-D8. CROSS-CHECK: the promote route it names is really dispatched" \
+  "qgrep -qF 'promote' '$SRVPY' && qgrep -qE 'parts\[1\] == \"promote\"' '$SRVPY'"
+check "S305-R4-D8. CROSS-CHECK: the missing record is really the one promote writes" \
+  "qgrep -qF '_Sent to Align: mission' '$ACTPY'"
+check "S305-R4-D8. CROSS-CHECK: and that same line is what marks the room READ-ONLY" \
+  "qgrep -qF 'over and is READ-ONLY' '$ACTPY'"
+
+# (3) CONTROLS — the predicate can come back `no`, and the slicer discriminates.
+check "S305-R4-D8. CONTROL: § 6 (the Verify gate) does NOT carry this rule" \
+  "[ \"\$(has_handoff_rule \"\$S6\")\" = no ]"
+check "S305-R4-D8. CONTROL: § 7 (Land it) does NOT carry it either" \
+  "[ \"\$(has_handoff_rule \"\$S7\")\" = no ]"
+check "S305-R4-D8. CONTROL: the merge precedent IS in § 7 (the slicer is real)" \
+  "[ \"\$(has_merge_rule \"\$S7\")\" = yes ]"
+check "S305-R4-D8. CONTROL: and the merge precedent is NOT in § 4" \
+  "[ \"\$(has_merge_rule \"\$S4\")\" = no ]"
+
+# (4) ANTI-VACUITY — strip the added rule out of § 4 and the predicate must go
+# red. This is what proves the green above comes from the new text and not from
+# something § 4 already said.
+S4_STRIPPED="$(printf '%s\n' "$S4" | grep -viE 'never hand (a|the) design over by hand|indistinguishable from no hand-?off')"
+check "S305-R4-D8. CONTROL: § 4 with the prohibition stripped out fails the predicate" \
+  "[ \"\$(has_handoff_rule \"\$S4_STRIPPED\")\" = no ]"
+check "S305-R4-D8. CONTROL: and the strip left the rest of § 4 intact" \
+  "printf '%s\n' \"\$S4_STRIPPED\" | qgrep -qE 'curl .*api/holodeck/.*/promote'"
+
 echo
 echo "=== lcars-ech: $pass passed, $fail failed ==="
 [ "$fail" -eq 0 ]

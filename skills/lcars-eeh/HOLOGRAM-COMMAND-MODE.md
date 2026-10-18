@@ -388,6 +388,19 @@ sidecar. A hand-authored `mockup.html` attached at CLI filing is an
 **attachment-only** path: it never passes through the surface, so the Holodeck
 stays empty. **State which path you took.**
 
+**You never hand a design over by hand.** Not by writing the brief into the
+mission's PRD yourself, not by pasting the sidecar paths in, not with a better
+version of the boilerplate than the one `promote` injects. The hand-off is ONE
+call — `POST /api/holodeck/<sessionId>/promote`, step 5 below — and nothing
+else is one. Writing it yourself reproduces the content and skips the
+bookkeeping, so it is not **equivalent**, however faithful it reads: measured,
+a seat did exactly this and got the RIGHT BUILD with NO RECORD — no
+`Sent to Align:` line in the transcript, the room never marked handed over and
+read-only, nothing tying the Mission to the Program it came from, the
+viewscreen unable to draw the connection. That leaves a real hand-off
+indistinguishable from no hand-off at all, which is the exact failure class
+this whole mode exists to remove.
+
 **HOW TO CALL IT: the Holodeck is HTTP on the viewscreen daemon.**
 `holodeck_start` / `holodeck_say` / `holodeck_end` are **not shell verbs** —
 they are routes on the board's own daemon, and this is the one thing this file
