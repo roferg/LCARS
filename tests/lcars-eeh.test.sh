@@ -1036,6 +1036,23 @@ check "28. never redirect through parent path components" \
   "printf '%s' \"\$d28rule\" | qgrep -qF 'Never redirect through parent path components'"
 check "28. the route is refused even with blanket trust" \
   "printf '%s' \"\$d28rule\" | qgrep -qF 'route is refused even with' && printf '%s' \"\$d28rule\" | qgrep -qF 'COPILOT_ALLOW_ALL=true'"
+# S303: AND THAT SENTENCE IS THE ONLY WAY THE VARIABLE MAY APPEAR — as a fact
+# about what copilot refuses, never as a thing the seat is told to arrange. The
+# preflight stopped REQUIRING `COPILOT_ALLOW_ALL=true` (S303 measured a seat
+# strip it from 21 child calls and still ship), because demanding it is what
+# made a Claude seat's own safety classifier block the brief for instructing it
+# to self-grant trust, and made a GPT seat refuse on policy. The trust section
+# above the command section stays — the ordering check needs it and the fact is
+# still worth explaining — but it may not hand out the export line.
+d28trustsec="$(sed -n '/^## Unattended Copilot setup:/,/^## Unattended Copilot commands:/p' "$AUTOP277")"
+check "28b the trust setup section does NOT instruct the seat to export the variable" \
+  "! printf '%s' \"\$d28trustsec\" | qgrep -qF 'export COPILOT_ALLOW_ALL'"
+check "28b it says instead that no blanket trust is required" \
+  "printf '%s' \"\$d28trustsec\" | qgrep -qi 'does not require' && printf '%s' \"\$d28trustsec\" | qgrep -qi 'blanket trust'"
+check "28b CONTROL: that section was really extracted (not a vacuous empty match)" \
+  "[ \"\$(printf '%s\\n' \"\$d28trustsec\" | grep -c .)\" -ge 5 ]"
+check "28b CONTROL: and the whole file still carries the export line nowhere at all" \
+  "! qgrep -qF 'export COPILOT_ALLOW_ALL' '$AUTOP277'"
 check "28. the reason does not blame the destination or test tooling" \
   "printf '%s' \"\$d28rule\" | qgrep -qF 'not the destination, .git, Python, or the test runner'"
 check "28. unattended refusal ends the run rather than inviting a retry" \

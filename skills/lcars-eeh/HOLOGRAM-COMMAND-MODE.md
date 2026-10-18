@@ -18,34 +18,42 @@ checks, writing bug PRDs and the merge call. Everything sequenceable is
 > hits an LCARS bug it works around it with another verb and ledgers it, or it
 > stops and asks. Fixing LCARS is `lcars eeh` § 2, under `ORCHESTRATION.md`.
 
-## Unattended Copilot setup: trust the working directory before launch
+## Unattended Copilot setup: no blanket trust is required
 
-For an unattended Copilot EEH or ECH run, set **`COPILOT_ALLOW_ALL=true`
-in the launching environment, with exactly the string `true`**:
+**An unattended EEH or ECH run does not require `COPILOT_ALLOW_ALL=true`, and
+nothing here asks you — or the run — to arrange blanket trust.** Preflight
+reports whatever the environment happens to carry and proceeds either way. If
+your environment already carries the variable it is honoured; if it does not,
+start the run anyway.
 
-```bash
-export COPILOT_ALLOW_ALL=true
-# Launch Copilot from the repository whose provenance you control.
-```
+**Measured 2026-10-16:** a seat running the real pipeline stripped the variable
+from every child call it made (`env -u COPILOT_ALLOW_ALL`, 21 times) and the
+build still completed and merged. Blanket trust is not load-bearing for the
+work. Requiring it, by contrast, broke three seat models before they began: one
+refused on policy rather than rely on it, and another was blocked by its own
+safety classifier for being instructed to self-grant that authority and to
+launch a fully-trusted agent. A prerequisite that stops the engines meant to
+satisfy it is the fault, not the fix.
 
-`--allow-all-tools` only auto-approves tools; it does **not** trust the working
-directory. `COPILOT_ALLOW_ALL=true` additionally trusts that directory. Other
-truthy spellings (`1`, `yes`, `on`, `y`) only auto-approve tools, like the flag,
-and are not enough for an unattended run.
+**What the variable actually does, for the record.** `--allow-all-tools`
+auto-approves tools; it does not trust the working directory.
+`COPILOT_ALLOW_ALL=true` additionally trusts that directory, and only that exact
+string does — `1`, `yes`, `on` and `y` auto-approve tools like the flag.
+**Trust is executable configuration, not just permission to read files:**
+trusting a directory also loads its skills, plugins, MCP servers and hooks,
+**including hooks that run shell commands.** That is a decision for the person
+who owns the environment to make, in a repository whose provenance they control,
+before any run starts — never something a run grants itself, and never
+appropriate in a repository of unknown provenance.
 
-**Trust is executable configuration, not just permission to read files.**
-Trusting a directory also loads its skills, plugins, MCP servers and hooks,
-**including hooks that run shell commands**. This is acceptable in a repository
-whose provenance you control. It is **not acceptable in a repository of unknown
-provenance**; do not use this blanket trust there.
-
-**Measured 2026-10-13:** with `--allow-all-tools` already set, an EEH round was
-refused on every command, including read-only commands, with
+**Measured 2026-10-13, and still true:** with `--allow-all-tools` set and the
+directory untrusted, one EEH round was refused on every command, including
+read-only commands, with
 `Permission denied because no interactive user response was available.` Four
-rounds had worked before the fifth failed without warning. From outside, a
-blocked run and a healthy idle run look identical; nothing inside the blocked
-run can detect or recover from it. Set the exact environment value **before
-launch**, rather than relying on a flag or on earlier rounds having worked.
+rounds had worked before the fifth failed without warning, and from outside a
+blocked run and a healthy idle run look identical. So if commands start coming
+back refused, that is the shape of it — stop and say so rather than retrying;
+it is not something the run can fix from the inside.
 
 ## Unattended Copilot commands: start at the repository root and write downward
 
@@ -208,7 +216,7 @@ settle for itself later:
 | 2 | the test command the push gate runs | PROCEEDS: `next` already names the `foundation` step for a repo with no suite |
 | 3 | somewhere to push — and whether that remote **answers**, probed with a bounded `git ls-remote` | STOPS |
 | 4 | the forge login a pull request needs (`gh auth status`) | STOPS |
-| 5 | the engine's unattended permission — `COPILOT_ALLOW_ALL=true`, on a copilot run | STOPS |
+| 5 | the engine's unattended permission — whatever `COPILOT_ALLOW_ALL` the environment carries, on a copilot run | PROCEEDS: reported, never required (see the setup section above) |
 
 1 and 2 carry a RECOMMENDED default, so `yes` answers the block. Re-run
 `lcars-ech preflight` any time; a prerequisite already recorded is not
@@ -216,8 +224,9 @@ asked about again.
 
 3 is a **reachability** check, not a name check: a deleted repo, a typo'd host
 and revoked auth all leave `origin` in the config and die at the pull-request
-gate at 03:00. 5 is the fact this file's own opening section is about, and it is
-checked here because three of the four dead nights were that one variable.
+gate at 03:00. 5 is **reported, not required**: it used to STOP, which cost
+three seat models before they began, and S303 measured that the work ships
+without the variable anyway. Preflight names the value it found and moves on.
 
 **A deadline is not a refusal.** If the probe runs out its bound (`rc 124`) the
 stop says the remote *may simply be slow* and blames nothing: a cold VPN

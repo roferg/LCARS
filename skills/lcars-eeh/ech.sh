@@ -720,6 +720,12 @@ PF_Q_UNREACHABLE='the push remote does not answer: git cannot reach `origin`, so
 # support.
 PF_Q_SLOW_REMOTE='the push remote did not answer inside the probe deadline: it may simply be slow rather than wrong, and only you can tell which.'
 PF_Q_FORGE_LOGIN='the forge CLI is not logged in, so no pull request can be opened however well the run builds.'
+# WITHDRAWAL-ONLY SINCE S303, AND FROZEN. Nothing raises this question any more
+# — blanket trust stopped being a prerequisite (see `pf_q_engine_permission`) —
+# but the build that DID require it wrote this exact text into real
+# autopilot.json files, and `ap_withdraw` matches on the text. So the key stays
+# BYTE-IDENTICAL to what the old build wrote: change a character and a captain
+# mid-run keeps a dead stop in his inbox for ever, with no way to retire it.
 PF_Q_ALLOW_ALL='the engine has no unattended permission: COPILOT_ALLOW_ALL is not exactly `true`, so an unattended copilot run is refused on every command.'
 PF_Q_NO_LAUNCH_DIR='there is nowhere to make the launch copies: no writable directory could be found for the throwaway worktrees every live check runs from.'
 
@@ -1573,30 +1579,42 @@ pf_q_forge_login() {
   return 0
 }
 
-# --- question 5: the engine's unattended permission ------------------------
-# THE BIGGEST GAP OF THE FOUR DEAD NIGHTS, and the subject of this playbook's
-# OPENING SECTION: with COPILOT_ALLOW_ALL unset, a measured EEH round was
-# refused on every command — including read-only ones — with "Permission denied
-# because no interactive user response was available", after four rounds had
-# worked. From outside, that blocked run and a healthy idle one are identical,
-# and nothing inside it can detect or recover from it. Three of the four nights
-# are this one fact, and the preflight that exists to prevent them did not
-# mention it.
+# --- question 5 (REPORTED, NEVER A STOP): the engine's unattended permission -
+# IT USED TO STOP HERE, and for four nights that looked right: with
+# COPILOT_ALLOW_ALL unset, a measured EEH round was refused on every command —
+# including read-only ones — with "Permission denied because no interactive user
+# response was available", after four rounds had worked. From outside, that
+# blocked run and a healthy idle one are identical. So this question demanded the
+# exact string `true` before anything started.
 #
-# STOPS DELIBERATELY, and never prompts. There is nothing to default to and
-# nothing he can type HERE that would help: the variable must be exported in the
-# shell that LAUNCHES the run — this process's parent — and a child cannot set
-# its parent's environment. So the honest move is to stop at second zero with
-# the one command that fixes it. `answered <id> "…"` is his override, and it is
-# consumed on the next run.
+# S303 MEASURED THE REQUIREMENT AWAY, which is why it is no longer one. A seat
+# running the real pipeline stripped the variable from every child call it made
+# (`env -u COPILOT_ALLOW_ALL`, 21 times) and the build still completed and
+# merged: blanket trust is NOT load-bearing for the work. And demanding it had a
+# measured cost of its own — it broke three seat models before they began. A GPT
+# seat refused on policy rather than rely on it; a Claude Sonnet seat was blocked
+# by its own safety classifier for being told to self-grant that authority
+# ("Instruction Poisoning") and to launch a fully-trusted agent ("Create Unsafe
+# Agents"). A prerequisite that stops the engines that would satisfy it is not a
+# prerequisite, it is the fault.
 #
-# ENGINE-AWARE: a copilot fact. A claude run is unaffected and says so.
-# EXACTLY `true`: this playbook's own setup section is explicit that `1`, `yes`,
-# `on` and `y` auto-approve TOOLS without trusting the working directory, so a
-# truthy-but-wrong spelling is a FAILING value and is named as one. That is the
-# hardest version of this to debug at 03:00 and the cheapest to catch here.
+# SO THIS NOW REPORTS AND PROCEEDS. It still NAMES the variable and the value it
+# found, because an instrument that silently drops a fact is worse than one that
+# states it — including the `1`/`yes`/`on`/`y` distinction, which is still TRUE
+# of copilot and still the hardest thing to debug at 03:00. What it no longer
+# does is REFUSE TO START over it, or print a command telling anybody to grant
+# trust to anything. It never prompted and still does not.
+#
+# AND IT WITHDRAWS THE OLD QUESTION ON EVERY PATH. A captain who ran the
+# requiring build has that stop sitting OPEN in his inbox; curing the
+# requirement has to retire it, or he is answering a question that is no longer
+# true in order to unstick his own run. `PF_Q_ALLOW_ALL` therefore SURVIVES as a
+# withdrawal-only ledger key and its text must stay byte-identical to what the
+# old build wrote, or `ap_withdraw` cannot find the question it has to close.
+#
+# ENGINE-AWARE, as before: a copilot fact. A claude run says so.
 pf_q_engine_permission() {
-  local eng val how
+  local eng val
   eng="$(ap_j engine)"
   [ -n "$eng" ] || eng="$(jfile "$CFG" engine)"
   if [ "$eng" != "copilot" ]; then
@@ -1607,40 +1625,22 @@ pf_q_engine_permission() {
     return 0
   fi
   val="${COPILOT_ALLOW_ALL-}"
-  if [ "$val" = "true" ]; then
-    say ""
-    say "5. The engine's unattended permission: COPILOT_ALLOW_ALL=true is exported — not asking."
-    pf_withdraw_say "$PF_Q_ALLOW_ALL" "withdrawn by preflight: COPILOT_ALLOW_ALL=true is exported in this environment."
-    return 0
-  fi
   say ""
-  if [ -n "$val" ]; then
-    say "5. The engine's unattended permission: COPILOT_ALLOW_ALL is set to \"$val\", which"
-    say "   is NOT the string \`true\`. Other truthy spellings (1, yes, on, y) only"
-    say "   auto-approve tools; they do not TRUST the working directory, so an"
-    say "   unattended copilot run is still refused on every command."
+  if [ "$val" = "true" ]; then
+    say "5. The engine's unattended permission: COPILOT_ALLOW_ALL=true is already in"
+    say "   this environment, and is honoured. NOT a prerequisite either way — the"
+    say "   run does not need it and does not ask for it."
+  elif [ -n "$val" ]; then
+    say "5. The engine's unattended permission: COPILOT_ALLOW_ALL is set to \"$val\"."
+    say "   NOT a prerequisite — the run proceeds either way. For the record, only the"
+    say "   exact string \`true\` trusts the working directory; other spellings (1, yes,"
+    say "   on, y) auto-approve tools only. Neither is required here."
   else
-    say "5. The engine's unattended permission: COPILOT_ALLOW_ALL is not set, so an"
-    say "   unattended copilot run is refused on every command — including read-only"
-    say "   ones — with \"Permission denied because no interactive user response was"
-    say "   available\". Nothing inside a blocked run can detect or recover from it."
+    say "5. The engine's unattended permission: COPILOT_ALLOW_ALL is not set."
+    say "   NOT a prerequisite — the run proceeds either way, and nothing here asks"
+    say "   you, or the run itself, to grant blanket trust to anything."
   fi
-  if pf_settled "$PF_Q_ALLOW_ALL"; then
-    say "   SETTLED BY YOU [$PF_SETTLED_ID] — \"$PF_SETTLED\". Proceeding on your answer;"
-    say "   nothing is re-asked and no new question is raised."
-    return 0
-  fi
-  say "   STOPPING deliberately. This is what killed three of the four nights, and a"
-  say "   child process cannot export a variable into the shell that launched it."
-  if [ -n "$val" ]; then
-    how="set to \"$val\" rather than the string true"
-  else
-    how="not set at all"
-  fi
-  pf_stop "$PF_Q_ALLOW_ALL" \
-    "the engine is copilot and COPILOT_ALLOW_ALL is $how. An unattended copilot run is then refused on every command, with no interactive user to approve it and no way for the run to recover." \
-    "export COPILOT_ALLOW_ALL=true   # in the shell you launch from, then: $SELF_CMD preflight" \
-    "nothing has run, so there is nothing to undo; unset the variable to reverse it."
+  pf_withdraw_say "$PF_Q_ALLOW_ALL" "withdrawn by preflight: blanket trust is not a prerequisite, so this question can no longer hold up the run."
   return 0
 }
 

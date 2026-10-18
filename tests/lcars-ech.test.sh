@@ -3081,42 +3081,101 @@ check "F2b it says the probe outran its bound, rather than inventing a reason" \
 check "F2b and it leaves no orphan ls-remote behind (the bound kills the group)" \
   "[ \"\$(ps -eo command= | grep -c '[l]s-remote --exit-code origin' || true)\" = 0 ]"
 
-# --- F3: the environment the nights actually died on ----------------------
-# 1. COPILOT_ALLOW_ALL. This playbook's OPENING SECTION is about it: with it
-#    unset a measured EEH round was refused on every command, including
-#    read-only ones, with "Permission denied because no interactive user
-#    response was available", and nothing inside a blocked run can detect or
-#    recover from it. Three of the four dead nights are this one fact, and a
-#    grep of the whole init+preflight output for COPILOT_ALLOW_ALL, allow-all,
-#    permission and authenticat found ZERO mentions.
+# --- F3: the unattended permission is NOT a prerequisite -------------------
+# S303 MEASURED THE REQUIREMENT AWAY. For four nights this preflight STOPPED a
+# copilot run whose COPILOT_ALLOW_ALL was not exactly `true`, on the belief that
+# a run without that blanket trust is refused on every command. One S303 seat
+# then stripped the variable from every child call it made (`env -u
+# COPILOT_ALLOW_ALL`, 21 times) and the build still completed and merged: the
+# flag is NOT load-bearing for the work. Demanding it, meanwhile, cost three
+# seat models — a GPT seat refused on policy rather than rely on it, and a
+# Claude Sonnet seat was blocked by its own safety classifier for being told to
+# self-grant that authority and to launch a fully-trusted agent.
+#
+# THE NEW CONTRACT, one arm below per clause:
+#   * a seat WITHOUT the flag PROCEEDS — it is not a stop, and no question is
+#     recorded for the captain to answer;
+#   * nothing printed instructs anyone to export it or arrange that authority;
+#   * the flag is still HONOURED when the environment happens to carry it;
+#   * a question an OLDER version already recorded is WITHDRAWN, so a captain
+#     who ran the requiring build is not left holding a dead question.
+# Every arm keeps a CONTROL, because the only way this regresses is someone
+# re-introducing the stop, and a test that cannot go red would not see it.
 PF3="$(new_repo)"
 pf3="$(PF_ALLOW_ALL= ap_caged 40 "$PF3" init --spec "$TMPROOT/pf-spec.md" --scope M0)"
 echo "    [engine copilot, COPILOT_ALLOW_ALL unset] $(cage_first "$pf3")"
-check "F3a COPILOT_ALLOW_ALL unset on a copilot run is CAUGHT" \
+check "F3a COPILOT_ALLOW_ALL unset on a copilot run PROCEEDS — it is not a prerequisite" \
+  "cage_first \"\$pf3\" | qgrep -q 'EXIT 0' && printf '%s' \"\$pf3\" | qgrep -qF 'NOT a prerequisite'"
+check "F3a it is still NAMED, so a reader can see it was considered and dismissed" \
   "printf '%s' \"\$pf3\" | qgrep -q 'COPILOT_ALLOW_ALL'"
-check "F3a it STOPS deliberately rather than starting a run that is refused on every command" \
-  "cage_first \"\$pf3\" | qgrep -q 'EXIT 10' && printf '%s' \"\$pf3\" | qgrep -qi 'STOPPING'"
-check "F3a the stop names the exact command that fixes it, in the shell he launches from" \
-  "printf '%s' \"\$pf3\" | qgrep -qF 'export COPILOT_ALLOW_ALL=true'"
-check "F3a and it is RECORDED as a settleable question" \
-  "python3 -c 'import json,sys;d=json.load(open(sys.argv[1]));sys.exit(0 if [q for q in d[\"questions\"].values() if not q.get(\"answeredAt\") and \"COPILOT_ALLOW_ALL\" in q[\"what\"]] else 1)' '$PF3/.git/lcars/autopilot.json'"
-check "F3a it says what a blocked run looks like from outside (why nobody notices)" \
-  "printf '%s' \"\$pf3\" | qgrep -qi 'Permission denied'"
-# CONTROL: the same repo, the same command, the variable exported — it proceeds.
+check "F3a it does NOT instruct anyone to export it (nothing self-grants trust)" \
+  "! printf '%s' \"\$pf3\" | qgrep -qF 'export COPILOT_ALLOW_ALL'"
+check "F3a and NO question is recorded for the captain to answer" \
+  "python3 -c 'import json,sys;d=json.load(open(sys.argv[1]));sys.exit(1 if [q for q in d.get(\"questions\",{}).values() if not q.get(\"answeredAt\") and \"COPILOT_ALLOW_ALL\" in q.get(\"what\",\"\")] else 0)' '$PF3/.git/lcars/autopilot.json'"
+# CONTROL 1: a captain whose environment DOES carry it is told it is honoured,
+# and that arm proceeds too — the two arms now AGREE, which is the whole point.
 pf3c="$(ap_caged 40 "$PF3" preflight)"
-check "F3a CONTROL: with COPILOT_ALLOW_ALL=true exported the same run proceeds" \
-  "cage_first \"\$pf3c\" | qgrep -q 'EXIT 0' && printf '%s' \"\$pf3c\" | qgrep -qi 'not asking'"
-check "F3a CONTROL: the two arms disagree about whether this is a stop" \
-  "cage_first \"\$pf3\" | qgrep -q 'EXIT 10' && cage_first \"\$pf3c\" | qgrep -q 'EXIT 0'"
-# TRUTHY-BUT-WRONG is a FAILING value, and HOLOGRAM-COMMAND-MODE.md says so: `1`, `yes`, `on`
-# and `y` auto-approve TOOLS without trusting the working directory. It is the
-# hardest version of this to debug at 03:00 and the cheapest to catch here.
+check "F3a CONTROL: with COPILOT_ALLOW_ALL=true exported the same run also proceeds" \
+  "cage_first \"\$pf3c\" | qgrep -q 'EXIT 0' && printf '%s' \"\$pf3c\" | qgrep -qi 'honoured'"
+check "F3a CONTROL: the two arms AGREE — neither the presence nor the absence is a stop" \
+  "cage_first \"\$pf3\" | qgrep -q 'EXIT 0' && cage_first \"\$pf3c\" | qgrep -q 'EXIT 0'"
+# CONTROL 2, AND THIS ONE IS THE NON-VACUOUS GUARD. `EXIT 0` only means
+# something if this same preflight, this same harness, can still return EXIT 10
+# on a prerequisite that IS load-bearing. F2's unreachable-remote arm is that
+# proof: a run with nowhere to push still stops dead. If someone neutered
+# `pf_stop` rather than this one question, THIS is the check that goes red.
+check "F3a NOT VACUOUS: the same preflight still STOPS on a genuinely fatal gap" \
+  "cage_first \"\$pf2\" | qgrep -q 'EXIT 10' && printf '%s' \"\$pf2\" | qgrep -qi 'STOPPING'"
+# TRUTHY-BUT-WRONG used to be a FAILING value that stopped the run: `1`, `yes`,
+# `on` and `y` auto-approve TOOLS without trusting the working directory. The
+# distinction is still TRUE of copilot and still worth reporting — it is just
+# not a reason to refuse to start, because no spelling of it is required.
 PF3T="$(new_repo)"
 ap "$PF3T" init --spec "$TMPROOT/pf-spec.md" --scope M0 >/dev/null 2>&1
 pf3t="$(PF_ALLOW_ALL=1 ap_caged 40 "$PF3T" preflight)"
-check "F3b COPILOT_ALLOW_ALL=1 is NOT accepted (only the string true trusts the directory)" \
-  "cage_first \"\$pf3t\" | qgrep -q 'EXIT 10' && printf '%s' \"\$pf3t\" | qgrep -qF 'NOT the string'"
-# ENGINE-AWARE: a claude run is not affected, and says so. Third answer.
+check "F3b COPILOT_ALLOW_ALL=1 no longer refuses the run (no spelling is required)" \
+  "cage_first \"\$pf3t\" | qgrep -q 'EXIT 0'"
+check "F3b it still REPORTS the value it found rather than hiding it" \
+  "printf '%s' \"\$pf3t\" | qgrep -qF '\"1\"'"
+check "F3b CONTROL: and it does not demand the string true as a remedy" \
+  "! printf '%s' \"\$pf3t\" | qgrep -qF 'export COPILOT_ALLOW_ALL'"
+# MIGRATION: a captain who ran the REQUIRING build has the old question sitting
+# open in his inbox. Curing the requirement must retire it, or he is left
+# answering a question that is no longer true to unstick his own run — the
+# defect `pf_withdraw_say` exists to prevent. The `what` below is the literal
+# legacy ledger key, as it is written in the autopilot.json files on disk.
+PF3W="$(new_repo)"
+ap "$PF3W" init --spec "$TMPROOT/pf-spec.md" --scope M0 >/dev/null 2>&1
+python3 - "$PF3W/.git/lcars/autopilot.json" <<'PFW'
+import json, sys
+p = sys.argv[1]
+try:
+    d = json.load(open(p))
+except Exception:
+    d = {}
+qs = d.setdefault("questions", {})
+qs["q99"] = {
+    "id": "q99",
+    "mission": "-",
+    "what": "the engine has no unattended permission: COPILOT_ALLOW_ALL is not exactly `true`, so an unattended copilot run is refused on every command.",
+    "why": "recorded by the build that still required it",
+    "command": "export COPILOT_ALLOW_ALL=true",
+    "rollback": "nothing has run",
+    "raisedAt": "2026-10-13T00:00:00Z",
+}
+json.dump(d, open(p, "w"))
+PFW
+pf3w="$(PF_ALLOW_ALL= ap_caged 40 "$PF3W" preflight)"
+check "F3d MIGRATION: a question the requiring build recorded is WITHDRAWN" \
+  "printf '%s' \"\$pf3w\" | qgrep -qF 'WITHDRAWN [q99]'"
+check "F3d MIGRATION: and it is closed on the record, not just un-printed" \
+  "python3 -c 'import json,sys;d=json.load(open(sys.argv[1]));sys.exit(0 if d[\"questions\"][\"q99\"].get(\"answeredAt\") else 1)' '$PF3W/.git/lcars/autopilot.json'"
+check "F3d CONTROL: that arm really did start with the question OPEN (not vacuous)" \
+  "python3 -c 'import json,sys;d=json.load(open(sys.argv[1]));sys.exit(0 if \"q99\" in d[\"questions\"] else 1)' '$PF3W/.git/lcars/autopilot.json'"
+# ENGINE-AWARE: a claude run never had the variable in play, and still says so.
+# The engine distinction survives the cure — it is now about WHAT IS SAID
+# rather than about who stops, and the control pins that it is still a real
+# difference and not the same sentence twice.
 PF3E="$(new_repo)"
 python3 - "$PF3E/.git/lcars/config.json" <<'PFE'
 import json, sys
@@ -3126,10 +3185,10 @@ d["engine"] = "claude"
 json.dump(d, open(p, "w"))
 PFE
 pf3e="$(PF_ALLOW_ALL= ap_caged 40 "$PF3E" init --spec "$TMPROOT/pf-spec.md" --scope M0)"
-check "F3c engine-aware: a CLAUDE run is not stopped by a copilot variable" \
+check "F3c engine-aware: a CLAUDE run says the variable is a copilot fact" \
   "cage_first \"\$pf3e\" | qgrep -q 'EXIT 0' && printf '%s' \"\$pf3e\" | qgrep -qi 'engine is claude'"
-check "F3c CONTROL: the identical gap on a COPILOT run does stop" \
-  "cage_first \"\$pf3\" | qgrep -q 'EXIT 10'"
+check "F3c CONTROL: the COPILOT arm does NOT claim to be a claude run" \
+  "cage_first \"\$pf3\" | qgrep -q 'EXIT 0' && ! printf '%s' \"\$pf3\" | qgrep -qi 'engine is claude'"
 
 # 2. `gh auth status`. No authentication, no pull request — the same class and
 #    the same cost as having no remote, and a one-line check.
@@ -3559,8 +3618,24 @@ check "F13 CONTROL: the two refusals print DIFFERENT advice (neither in both)" \
   "! printf '%s' \"\$pf5u\" | qgrep -qi 'nothing to create' && ! printf '%s' \"\$pf5\" | qgrep -qi 'make it writable'"
 
 # --- F6: the playbook has to carry the same contract ----------------------
-check "F6 HOLOGRAM-COMMAND-MODE.md names COPILOT_ALLOW_ALL as something preflight CHECKS" \
-  "qgrep -q 'COPILOT_ALLOW_ALL' '$APM' && qgrep -qi 'preflight' '$APM'"
+# S303: THE PLAYBOOK MUST NOT TELL THE SEAT TO GRANT ITSELF AUTHORITY. Two of
+# the three seat models that failed S303 failed HERE, on the page rather than in
+# the code: a Claude Sonnet seat was blocked by its own safety classifier for
+# being instructed to export a blanket-trust variable ("Instruction Poisoning")
+# and to launch a fully-trusted agent ("Create Unsafe Agents"), and a GPT seat
+# refused on policy rather than rely on it. The page may still EXPLAIN the
+# variable — it is a real copilot fact, and one command route is refused even
+# with it — but it may not instruct anyone to arrange it.
+check "F6 HOLOGRAM-COMMAND-MODE.md does NOT instruct the seat to export COPILOT_ALLOW_ALL" \
+  "! qgrep -qF 'export COPILOT_ALLOW_ALL' '$APM'"
+check "F6 and it does not tell the seat to rely on blanket trust for an unattended run" \
+  "! qgrep -qi 'set .*COPILOT_ALLOW_ALL=true.*in the launching environment' '$APM'"
+check "F6 it says in so many words that no blanket trust is REQUIRED" \
+  "qgrep -qi 'does not require' '$APM' && qgrep -qi 'blanket trust' '$APM'"
+check "F6 CONTROL: the page was really read and still carries the setup section" \
+  "qgrep -q '^## Unattended Copilot setup:' '$APM' && qgrep -qi 'preflight' '$APM'"
+check "F6 CONTROL: it still EXPLAINS the variable, so the cure removed a demand not a fact" \
+  "qgrep -qF 'COPILOT_ALLOW_ALL' '$APM'"
 check "F6b HOLOGRAM-COMMAND-MODE.md says a deadline is not a refusal, and names both ways out" \
   "qgrep -qi 'deadline is not a refusal' '$APM' && qgrep -qF 'LCARS_ECH_PROBE_TIMEOUT=60' '$APM'"
 check "F6b it promises local-only costs ONE command, and names \`record localOnly\`" \
