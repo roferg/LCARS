@@ -2858,6 +2858,41 @@ live_check_stage() {
   done
 }
 
+# ==========================================================================
+# THE BUG PRD TEMPLATE — THE SAME PROBLEM, ONE LINE FURTHER ON (S304)
+# ==========================================================================
+# `live-check`'s last line handed the seat
+#
+#   (template: <abs>/skills/lcars-eeh/bug-prd.md)
+#
+# and `file-bug`'s two refusals named the same path. That is a read into LCARS's
+# installed source tree, so it raises the identical permission dialog the
+# checklists did — and it raises it at the single worst moment available: the
+# seat has FOUND a bug and is reaching for the template to file it. The
+# captain's stopping rule for a measurement needs one filed bug carried through
+# to merged, so a seat that freezes here cannot satisfy it at all.
+#
+# Same cure, same reasoning as live_check_stage: stage into the repo, hand out
+# the staged path. The template is 131 lines and its value is that it is READ
+# while the PRD is being written, so it is a file on disk and not pasted prose.
+BUG_PRD_SRC="$SKILLS_DIR/lcars-eeh/bug-prd.md"
+BUG_PRD_LOCAL="$LCARS_DIR/bug-prd.md"
+
+# bug_prd_stage — refresh $BUG_PRD_LOCAL from $BUG_PRD_SRC.
+#
+# COPIED EVERY TIME, NEVER TRUSTED-IF-PRESENT, for live_check_stage's reason: a
+# repo staged by an older LCARS would shadow the newer template for ever, and a
+# silently out-of-date bug template is a bug that comes back re-filed. The
+# source is read-only here — `lcars-eeh docs bug-prd` and Number One read that
+# same file, and a round that rewrote it in place would change what they teach.
+# It DIES rather than name a path it failed to create.
+bug_prd_stage() {
+  [ -f "$BUG_PRD_SRC" ] || die "bug-prd: no template at $BUG_PRD_SRC — is LCARS installed?"
+  mkdir -p "$LCARS_DIR" || die "bug-prd: could not make $LCARS_DIR"
+  cp -f "$BUG_PRD_SRC" "$BUG_PRD_LOCAL" \
+    || die "bug-prd: could not stage bug-prd.md into $BUG_PRD_LOCAL"
+}
+
 # label_for <mission-id> → the milestone label in scope that names it, or "".
 label_for() {
   local ms
@@ -2946,6 +2981,9 @@ cmd_live_check() {
   # STAGE BEFORE ANYTHING IS PRINTED, so every path this command names is one
   # the seat can read. See live_check_stage.
   live_check_stage $tlist
+  # The bug template goes with them: the LAST line this command prints points at
+  # it, and a seat that cannot read it cannot file what it just found.
+  bug_prd_stage
   say "LIVE CHECK — $m"
   say "  types:    $tlist"
   wt_say "$wt" "$home" "$br"
@@ -2971,7 +3009,7 @@ cmd_live_check() {
     say ""
   done
   say "WHEN DONE:  $SELF live-check done $m --verdict pass|bugs"
-  say "A BUG:      $SELF file-bug --parent $m --prd <bug-prd.md>   (template: $SKILLS_DIR/lcars-eeh/bug-prd.md)"
+  say "A BUG:      $SELF file-bug --parent $m --prd <bug-prd.md>   (template: $BUG_PRD_LOCAL)"
 }
 
 cmd_live_check_done() {
@@ -3406,8 +3444,12 @@ cmd_file_bug() {
     esac
   done
   require_state
+  # BOTH REFUSALS BELOW NAME THE TEMPLATE, so it is staged before either can
+  # fire: a refusal that freezes is worse than a success that freezes — the seat
+  # is already mid-filing and has nowhere else to go.
+  bug_prd_stage
   [ -n "$parent" ] || die "file-bug: --parent <mission> is required — a logged bug is always a CHILD of the mission it was found in, and grounding needs the parent's code."
-  [ "$n" -gt 0 ] || die "file-bug: --prd <file> is required (once per bug). The template is $SKILLS_DIR/lcars-eeh/bug-prd.md."
+  [ "$n" -gt 0 ] || die "file-bug: --prd <file> is required (once per bug). The template is $BUG_PRD_LOCAL."
   mexists "$parent" || die "file-bug: no parent mission $parent in $MISSIONS"
   [ -x "$LOG_SCRIPT" ] || [ -f "$LOG_SCRIPT" ] || die "file-bug: no lcars log at $LOG_SCRIPT"
 
@@ -3420,7 +3462,7 @@ cmd_file_bug() {
     if ! msg="$(bug_prd_problems "$p")"; then
       printf 'lcars ech: file-bug: %s is not an evidence-first bug PRD.\n' "$p" >&2
       printf '%s\n' "$msg" >&2
-      printf 'Nothing was filed. The template is %s/lcars-eeh/bug-prd.md.\n' "$SKILLS_DIR" >&2
+      printf 'Nothing was filed. The template is %s.\n' "$BUG_PRD_LOCAL" >&2
       exit 1
     fi
     i=$((i + 1))

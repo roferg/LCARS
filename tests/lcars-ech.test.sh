@@ -2020,6 +2020,12 @@ printf 'STALE-FROM-AN-OLDER-LCARS\n' >"$RLS/.git/lcars/live-check/cli.md"
 SRC_CLI_SUM="$(cksum <"$SRCLC/cli.md")"
 SRC_WEB_SUM="$(cksum <"$SRCLC/web.md")"
 SRC_WF_SUM="$(cksum <"$SRCLC/workflow.md")"
+# S304 (1c): the BUG TEMPLATE's source sum, same reason — the copy must not
+# write back into LCARS's own tree.
+SRCBP="$REPO_ROOT/skills/lcars-eeh/bug-prd.md"
+SRC_BPRD_SUM="$(cksum <"$SRCBP")"
+# A STALE staged template from "an older LCARS", planted before the run.
+printf 'STALE-BUG-PRD-FROM-AN-OLDER-LCARS\n' >"$RLS/.git/lcars/bug-prd.md"
 
 LSOUT="$(ap "$RLS" live-check lcars-20261001-003 --type cli,web,workflow 2>&1)"; lsrc=$?
 ls_wt="$(printf '%s\n' "$LSOUT" | sed -n 's/^WORKTREE: //p' | head -1)"
@@ -2123,7 +2129,127 @@ check "S304. the playbook names the in-repo copy instead" \
 check "S304. CONTROL: the playbook still has a § 6 live-check section to carry it" \
   "qgrep -qF 'lcars-ech live-check' '$REPO_ROOT/skills/lcars-eeh/HOLOGRAM-COMMAND-MODE.md'"
 
-for w in "$ls_wt" "$ls_wt2" "$ls_wt3"; do
+echo "-- S304 the bug TEMPLATE the seat can read --"
+
+# THE SAME DEFECT, ONE LINE FURTHER ON. `live-check`'s last line handed the seat
+#   (template: <abs>/skills/lcars-eeh/bug-prd.md)
+# — a path into LCARS's own installed source tree — at the exact moment the seat
+# has FOUND a bug and is reaching for the template to file it. A seat is trusted
+# only inside the repository it is building in, so that read raises the same
+# permission dialog that froze the Verify gate on 2026-10-17, and it freezes the
+# run at its single most expensive moment. The captain's stopping rule for a
+# measurement needs one filed bug carried to merged, so a seat that cannot reach
+# the template cannot satisfy it.
+
+# bp_path — the template path a run HANDED OUT, scraped from its own output.
+# Reads stdin. If this returns nothing the controls below go red, which is the
+# point: an extractor that finds no path proves nothing.
+bp_path() { sed -n 's/^A BUG:.*(template: \(.*\))$/\1/p'; }
+# bp_reaches_source — "yes" if the given path reaches into LCARS's own installed
+# source tree. THIS is the predicate the defect would trip.
+bp_reaches_source() {
+  if printf '%s\n' "$1" | qgrep -q 'skills/lcars-eeh/bug-prd.md'; then echo yes; else echo no; fi
+}
+
+BPPATH="$(printf '%s\n' "$LSOUT" | bp_path)"
+BPREPO="$RLS/.git/lcars/bug-prd.md"
+
+check "S304. live-check hands out exactly ONE bug-template path" \
+  "[ \"\$(printf '%s\n' \"\$BPPATH\" | grep -c . )\" -eq 1 ]"
+
+# (1) THE DEFECT ITSELF.
+check "S304. the bug-template path it hands out does NOT reach LCARS's source tree" \
+  "[ \"\$(bp_reaches_source \"\$BPPATH\")\" = no ]"
+check "S304. the bug-template path it hands out is INSIDE the repo's own .git/lcars" \
+  "[ \"\$BPPATH\" = '$BPREPO' ]"
+check "S304. and the path it named really is a readable file" \
+  "[ -f \"\$BPPATH\" ] && [ -r \"\$BPPATH\" ]"
+check "S304. the whole successful output names the bug template's SOURCE nowhere" \
+  "! printf '%s\n' \"\$LSOUT\" | qgrep -q 'skills/lcars-eeh/bug-prd.md'"
+
+# (5) CONTROLS — mandatory, and the same shape as the checklist half above.
+# First: the extractor matches something at all, so a green (1) is never a
+# vacuous zero about the wrong population.
+check "S304. CONTROL: the extractor finds a template path at all" \
+  "[ -n \"\$BPPATH\" ]"
+check "S304. CONTROL: the output really does carry an 'A BUG:' line to scrape" \
+  "printf '%s\n' \"\$LSOUT\" | qgrep -q '^A BUG:'"
+# Second: substitute the SOURCE path back into the real output and require the
+# same extractor + the same predicate to answer "yes". If this says `no`, the
+# assertion above is measuring nothing and its green is a lie.
+BPFAKE="$(printf '%s\n' "$LSOUT" | sed "s|$BPREPO|$SRCBP|g")"
+BPFAKEPATH="$(printf '%s\n' "$BPFAKE" | bp_path)"
+check "S304. CONTROL: the extractor still finds the path when it IS the source" \
+  "[ \"\$(printf '%s\n' \"\$BPFAKEPATH\" | grep -c . )\" -eq 1 ]"
+check "S304. CONTROL: the predicate says YES when the path IS the source tree" \
+  "[ \"\$(bp_reaches_source \"\$BPFAKEPATH\")\" = yes ]"
+check "S304. CONTROL: the output-wide grep also fires on a source-path output" \
+  "printf '%s\n' \"\$BPFAKE\" | qgrep -q 'skills/lcars-eeh/bug-prd.md'"
+
+# (2) THE COPY IS THE REAL TEMPLATE, NOT A STUB OR A SUMMARY.
+check "S304. the staged bug-prd.md is byte-identical to the source template" \
+  "cmp -s '$BPREPO' '$SRCBP'"
+check "S304. it is the FULL template, not an excerpt" \
+  "[ \"\$(wc -l <'$BPREPO' | tr -d ' ')\" -eq \"\$(wc -l <'$SRCBP' | tr -d ' ')\" ]"
+check "S304. the staged copy carries the mandatory AC #1 the validator reads" \
+  "qgrep -qF 'Observed live:' '$BPREPO'"
+check "S304. CONTROL: a stub copy would fail the byte-identical check" \
+  "printf 'stub\n' >'$TMPROOT/bp-stub.md'; ! cmp -s '$TMPROOT/bp-stub.md' '$SRCBP'"
+
+# (4) THE STALE STAGED COPY IS REFRESHED, NEVER TRUSTED-IF-PRESENT. Copy-if-
+# missing lets a repo staged by an older LCARS shadow a newer template for ever,
+# and a silently out-of-date bug template is a bug that gets re-filed.
+check "S304. a stale template from an older LCARS was REFRESHED, not trusted" \
+  "! qgrep -q 'STALE-BUG-PRD-FROM-AN-OLDER-LCARS' '$BPREPO'"
+check "S304. CONTROL: the stale marker was genuinely detectable before the run" \
+  "qgrep -q 'STALE-BUG-PRD' <<<'STALE-BUG-PRD-FROM-AN-OLDER-LCARS'"
+printf 'STALE-BUG-PRD-AGAIN\n' >"$BPREPO"
+BPOUT2="$(ap "$RLS" live-check lcars-20261001-003 --type cli 2>&1)"
+ls_wt4="$(printf '%s\n' "$BPOUT2" | sed -n 's/^WORKTREE: //p' | head -1)"
+check "S304. and refreshed on EVERY run, not just the first" \
+  "cmp -s '$BPREPO' '$SRCBP'"
+
+# (3) THE SOURCE IS READ-ONLY HERE — it is still where `lcars-eeh docs bug-prd`
+# and Number One look for it, byte-for-byte as it was.
+check "S304. the SOURCE template is still at its own location" "[ -f '$SRCBP' ]"
+check "S304. and the source template is UNMODIFIED by the copy" \
+  "[ \"\$(cksum <'$SRCBP')\" = '$SRC_BPRD_SUM' ]"
+
+# `file-bug`'s OWN refusals are the other moment the seat needs the template,
+# and they named the source path too. A refusal that freezes is worse than a
+# success that freezes: the seat is already mid-filing.
+BPFB1="$(ap "$RLS" file-bug --parent lcars-20261001-003 2>&1)"; bpfb1=$?
+check "S304. file-bug with no --prd still refuses" "[ $bpfb1 -ne 0 ]"
+check "S304. file-bug's no-PRD refusal names the in-repo template, not the source" \
+  "printf '%s\n' \"\$BPFB1\" | qgrep -qF '$BPREPO'"
+check "S304. file-bug's no-PRD refusal names LCARS's source tree nowhere" \
+  "! printf '%s\n' \"\$BPFB1\" | qgrep -q 'skills/lcars-eeh/bug-prd.md'"
+check "S304. CONTROL: that refusal does still point at a template at all" \
+  "printf '%s\n' \"\$BPFB1\" | qgrep -qiF 'template'"
+
+printf 'not a bug PRD at all\n' >"$TMPROOT/bp-junk.md"
+BPFB2="$(ap "$RLS" file-bug --parent lcars-20261001-003 --prd "$TMPROOT/bp-junk.md" 2>&1)"; bpfb2=$?
+check "S304. file-bug still refuses a PRD that is not evidence-first" "[ $bpfb2 -ne 0 ]"
+check "S304. that refusal names the in-repo template, not the source" \
+  "printf '%s\n' \"\$BPFB2\" | qgrep -qF '$BPREPO'"
+check "S304. that refusal names LCARS's source tree nowhere" \
+  "! printf '%s\n' \"\$BPFB2\" | qgrep -q 'skills/lcars-eeh/bug-prd.md'"
+check "S304. CONTROL: it still says nothing was filed" \
+  "printf '%s\n' \"\$BPFB2\" | qgrep -qF 'Nothing was filed'"
+
+# The playbook is the other route back: a seat that reads "bug-prd.md, beside
+# this file" out of § 6 goes hunting in the source tree, having never run the
+# command. § 6.1 was cured the same way for the checklists.
+check "S304. the playbook sends the seat at the in-repo bug template" \
+  "qgrep -qF '.git/lcars/bug-prd.md' '$REPO_ROOT/skills/lcars-eeh/HOLOGRAM-COMMAND-MODE.md'"
+check "S304. the playbook no longer says the template is 'beside this file'" \
+  "! qgrep -qF 'bug-prd.md\`, beside this file' '$REPO_ROOT/skills/lcars-eeh/HOLOGRAM-COMMAND-MODE.md'"
+check "S304. the playbook hands the seat NO source-tree bug-template path at all" \
+  "! qgrep -q 'skills/lcars-eeh/bug-prd' '$REPO_ROOT/skills/lcars-eeh/HOLOGRAM-COMMAND-MODE.md'"
+check "S304. CONTROL: the playbook still carries the bug-PRD contract it had" \
+  "qgrep -qF 'Observed live:' '$REPO_ROOT/skills/lcars-eeh/HOLOGRAM-COMMAND-MODE.md' && qgrep -qF 'round-trip' '$REPO_ROOT/skills/lcars-eeh/HOLOGRAM-COMMAND-MODE.md'"
+
+for w in "$ls_wt" "$ls_wt2" "$ls_wt3" "$ls_wt4"; do
   [ -n "$w" ] || continue
   git -C "$RLS"  worktree remove --force "$w" 2>/dev/null || true
   git -C "$RLS2" worktree remove --force "$w" 2>/dev/null || true

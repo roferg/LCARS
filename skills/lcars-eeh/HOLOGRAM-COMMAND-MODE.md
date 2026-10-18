@@ -632,7 +632,13 @@ lcars-ech exec lcars-respond/respond.sh answer --mission <mission> --answer "<th
 lcars-ech land <mission>
 ```
 
-The bug PRD template is `bug-prd.md`, beside this file. AC #1 is mandatorily
+The bug PRD template is `.git/lcars/bug-prd.md`, **inside the repository you
+are building in** — `live-check` and `file-bug` both refresh it there from the
+installed LCARS on every run, and `live-check`'s last line prints the path.
+**Read it there, and read it while you write the PRD.** It is in-repo on
+purpose: a seat is trusted only inside the product repository, and on 2026-10-17
+a seat handed a path into LCARS's own tree froze on a permission dialog mid-run.
+AC #1 is mandatorily
 `Observed live: <the exact output>` with the real identifiers, and a bug at a
 producer/consumer seam needs a **round-trip** criterion using both real halves
 with no hand-written fixture between them. `file-bug` refuses a PRD without
