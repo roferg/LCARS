@@ -4335,6 +4335,377 @@ check "S305-5. CONTROL: a clean preflight exits 0" "[ $rcpp5b -eq 0 ]"
 check "S305-5. CONTROL: and prints no STOPPING line" \
   "! printf '%s' \"\$pp5b\" | qgrep -q 'STOPPING'"
 
+# ==========================================================================
+# S305 FIX ROUND 1 — the five defects a fresh tester drove out from outside
+# ==========================================================================
+# R1-D1..D4 are all in ONE new block of HOLOGRAM-COMMAND-MODE.md: the block
+# added this session to say HOW to reach the Holodeck. The block WORKS — a seat
+# following it alone started a program and authored a real mockup — but four of
+# its documented calls were wrong, and the first one was fatal.
+#
+# THESE ARE NOT GREP TESTS. S305-3 above asserted that strings were present in
+# the file, and every one of those eight passed while the documented daemon
+# launch bound nothing at all. So the four below DRIVE THE REAL DAEMON with the
+# values the playbook teaches, extracted FROM the playbook, and assert the
+# daemon accepts them. A rule-exists test passes while the screen is grey.
+echo "-- S305-R1-D1. the DOCUMENTED daemon launch actually binds --"
+
+PB="$REPO_ROOT/skills/lcars-eeh/HOLOGRAM-COMMAND-MODE.md"
+
+# A free port, asked of the OS rather than guessed — the suite must not fight
+# the captain's own boards (two were live on this box while this was written).
+free_port() {
+  python3 - <<'PYFP'
+import socket
+s = socket.socket()
+s.bind(("127.0.0.1", 0))
+print(s.getsockname()[1])
+s.close()
+PYFP
+}
+
+# bound_within <port> <secs> — 0 as soon as something LISTENS there.
+bound_within() {
+  python3 - "$1" "$2" <<'PYBW'
+import socket, sys, time
+port, secs = int(sys.argv[1]), float(sys.argv[2])
+deadline = time.time() + secs
+while time.time() < deadline:
+    s = socket.socket(); s.settimeout(0.4)
+    try:
+        s.connect(("127.0.0.1", port)); sys.exit(0)
+    except Exception:
+        time.sleep(0.25)
+    finally:
+        s.close()
+sys.exit(1)
+PYBW
+}
+
+# THE LINE THE PLAYBOOK TEACHES, taken out of the playbook itself. The only
+# substitutions are the ones a test MUST make: the installed launcher name ->
+# this checkout's own script, the documented port -> a free one, and the
+# documented /tmp log -> one inside $TMPROOT. The env, the flags and the
+# backgrounding are the file's own words.
+VS_LINE="$(grep -F 'lcars-viewscreen' "$PB" | grep -F -- '--port' | head -1)"
+check "S305-R1-D1. the playbook still carries a daemon launch line at all" \
+  "[ -n \"\$VS_LINE\" ]"
+
+VSPORT="$(free_port)"
+VSLOG="$TMPROOT/vs-asdocumented.log"
+VSREPO="$(new_repo)"
+# ORDER MATTERS: the documented line says `lcars-viewscreen` TWICE — once as
+# the command and once inside `/tmp/lcars-viewscreen.log`. Rewrite the LOG
+# first, then the command name, FIRST OCCURRENCE ONLY, or the log path is
+# rewritten into nonsense and this test watches a file nothing ever writes.
+VS_CMD="${VS_LINE/\/tmp\/lcars-viewscreen.log/$VSLOG}"
+VS_CMD="${VS_CMD/lcars-viewscreen/bash $REPO_ROOT/skills/lcars-viewscreen/viewscreen.sh}"
+VS_CMD="${VS_CMD//8765/$VSPORT}"
+
+# CLAUDECODE=1 IS THE MEASUREMENT, not a convenience: the viewscreen's own
+# headless gate fires on it, and it is set in every seat this playbook is
+# written for. A test that unset it would be testing the one environment in
+# which the defect cannot happen.
+#
+# LCARS_HOLODECK_HANDOFF_CHECK=0 is this suite's spend fuse reaching the
+# daemon: `derive` is the one endpoint that may spawn a worker, and `off` means
+# no path through these tests can bill.
+run_documented_daemon() {
+  cd "$VSREPO" || return 1
+  CLAUDECODE=1 \
+  LCARS_HOLODECK_HANDOFF_CHECK=0 \
+  LCARS_SERVE_NO_OPEN=1 \
+  LCARS_VERSION_CHECK_BIN="$TMPROOT/no-such-version-check" \
+  eval "$1"
+  printf '%s' "$!" >"$TMPROOT/vs.pid"
+  cd "$REPO_ROOT" || return 1
+}
+
+run_documented_daemon "$VS_CMD"
+VSPID="$(cat "$TMPROOT/vs.pid" 2>/dev/null || true)"
+[ -n "${VSPID:-}" ] && BG_PIDS="$BG_PIDS $VSPID"
+if bound_within "$VSPORT" 25; then vsbound=1; else vsbound=0; fi
+check "S305-R1-D1. the command the playbook documents BINDS a port" \
+  "[ $vsbound -eq 1 ]"
+check "S305-R1-D1. its log exists and is not empty (a missing log passes vacuously)" \
+  "[ -s '$VSLOG' ]"
+check "S305-R1-D1. and it does not print the headless refusal" \
+  "[ -s '$VSLOG' ] && ! qgrep -q 'NOT started' '$VSLOG'"
+check "S305-R1-D1. the playbook names the bypass the gate requires" \
+  "qgrep -qF 'LCARS_VIEWSCREEN_ALLOW_AI' '$PB'"
+check "S305-R1-D1. and SAYS it is the viewscreen's own headless gate, not a hack" \
+  "qgrep -qiE 'own (headless )?gate|gate of its own|viewscreen.s own' '$PB'"
+
+# CONTROL — THE SAME LINE WITH THE BYPASS STRIPPED MUST FAIL. Without this the
+# test above cannot tell a cured playbook from a viewscreen that stopped
+# gating, which is exactly how this defect survived S305-3's eight green greps.
+VSPORT2="$(free_port)"
+VSLOG2="$TMPROOT/vs-nobypass.log"
+VS_CMD2="$(printf '%s' "$VS_CMD" | sed 's/LCARS_VIEWSCREEN_ALLOW_AI=1 //')"
+VS_CMD2="$(printf '%s' "$VS_CMD2" | sed "s#$VSLOG#$VSLOG2#; s#--port $VSPORT#--port $VSPORT2#")"
+run_documented_daemon "$VS_CMD2"
+VSPID2="$(cat "$TMPROOT/vs.pid" 2>/dev/null || true)"
+[ -n "${VSPID2:-}" ] && BG_PIDS="$BG_PIDS $VSPID2"
+if bound_within "$VSPORT2" 6; then vsbound2=1; else vsbound2=0; fi
+check "S305-R1-D1. CONTROL: strip the bypass and the very same line binds NOTHING" \
+  "[ $vsbound2 -eq 0 ]"
+check "S305-R1-D1. CONTROL: and it prints the gate's own refusal" \
+  "[ -s '$VSLOG2' ] && qgrep -q 'NOT started' '$VSLOG2'"
+
+echo "-- S305-R1-D2/D3/D4. the documented holodeck calls, against the real daemon --"
+# ONE ROOM ON DISK, no worker, no spend. `open` warm-restarts a program from
+# its room, and it is the one holodeck road that mints a session WITHOUT
+# spawning a turn — so D2 and D4 are measured against a LIVE daemon for free.
+HROOM=""
+if [ $vsbound -eq 1 ]; then
+  HSIDE="$(dirname "$VSREPO")/$(basename "$VSREPO")-holodeck"
+  HROOM="$HSIDE/m0-screens"
+  mkdir -p "$HROOM"
+  printf '# M0 screens\n\n## Turn 1 - captain\nmock up the two M0 screens\n' >"$HROOM/transcript.md"
+  printf '<!doctype html><title>M0</title><h1>M0</h1>\n' >"$HROOM/mockup.html"
+  printf '# M0 screens\n\n## WHAT IT MUST DO\nShow the two M0 screens.\n\n## Open questions\n- none\n' >"$HROOM/concept.md"
+fi
+
+# hpost <path> <json> -> body, then the http code on its own last line.
+hpost() { curl -s -m 20 -w '\n%{http_code}' -X POST \
+  "http://127.0.0.1:$VSPORT$1" -H 'Content-Type: application/json' -d "$2"; }
+hget()  { curl -s -m 20 -w '\n%{http_code}' "http://127.0.0.1:$VSPORT$1"; }
+hcode() { printf '%s' "$1" | tail -1; }
+hbody() { printf '%s' "$1" | sed '$d'; }
+hsid()  { hbody "$1" | python3 -c 'import json,sys
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    print(""); raise SystemExit
+print(((d.get("state") or d) or {}).get("sessionId") or "")' 2>/dev/null || true; }
+
+HSID=""
+if [ -n "$HROOM" ]; then
+  HOPEN="$(hpost /api/holodeck/open '{"room":"m0-screens"}')"
+  HSID="$(hsid "$HOPEN")"
+fi
+check "S305-R1-D2. a live holodeck session exists to measure against" \
+  "[ -n \"\$HSID\" ]"
+
+# THE SCOPE VALUE THE PLAYBOOK TEACHES, read out of the playbook's own promote
+# line and POSTed to the real daemon. It taught "M0" — the MILESTONE label —
+# and the daemon answers HTTP 400 "unknown build scope".
+# READ IT OFF THE CURL A SEAT WOULD COPY, not off the prose around it. The
+# first cut of this test grepped the first `"scope"` within three lines of
+# `/promote` and picked up the new block's own "{\"scope\":\"M0\"} is REFUSED"
+# sentence — i.e. it measured the explanation instead of the command.
+PB_SCOPE="$(python3 - "$PB" <<'PYSCOPE'
+import json, re, sys
+lines = open(sys.argv[1]).read().splitlines()
+for i, ln in enumerate(lines):
+    if not (ln.lstrip().startswith("curl") or ln.lstrip().startswith("-H")):
+        continue
+    if "/promote" not in "\n".join(lines[i:i + 3]):
+        continue
+    m = re.search(r"-d '(\{[^']*\})'", "\n".join(lines[i:i + 3]))
+    if m:
+        try:
+            print(json.loads(m.group(1)).get("scope", ""))
+        except ValueError:
+            print("")
+        break
+PYSCOPE
+)"
+check "S305-R1-D2. the playbook's promote example still declares a scope" \
+  "[ -n \"\$PB_SCOPE\" ]"
+HPROM=""
+if [ -n "$HSID" ] && [ -n "$PB_SCOPE" ]; then
+  HPROM="$(hpost "/api/holodeck/$HSID/promote" "{\"scope\":\"$PB_SCOPE\"}")"
+fi
+check "S305-R1-D2. the daemon ACCEPTS the scope the playbook documents" \
+  "[ \"\$(hcode \"\$HPROM\")\" = 200 ]"
+check "S305-R1-D2. and it answers with the Align brief, not an error" \
+  "hbody \"\$HPROM\" | qgrep -qF '\"brief\"'"
+# CONTROL: the value the playbook USED to teach must still be refused, or the
+# test above would pass against a daemon that validates nothing.
+HPROMBAD=""
+[ -n "$HSID" ] && HPROMBAD="$(hpost "/api/holodeck/$HSID/promote" '{"scope":"M0"}')"
+check "S305-R1-D2. CONTROL: a milestone label is still refused (400)" \
+  "[ \"\$(hcode \"\$HPROMBAD\")\" = 400 ]"
+check "S305-R1-D2. CONTROL: and the refusal names it as a build scope" \
+  "hbody \"\$HPROMBAD\" | qgrep -qF 'unknown build scope'"
+# BOTH LEGAL VALUES ARE NAMED, with what each one means — the playbook taught
+# one value and it was the wrong one, so naming the set is the cure.
+check "S305-R1-D2. the playbook names look+behaviour" \
+  "qgrep -qF 'look+behaviour' '$PB'"
+check "S305-R1-D2. the playbook names look-only" \
+  "qgrep -qF 'look-only' '$PB'"
+check "S305-R1-D2. and says what look-only means (a reskin, no functional change)" \
+  "qgrep -qiE 'reskin|no functional change' '$PB'"
+
+# D3 — `derive` RETURNS INSTANTLY with {"derive":{"state":"running"}} and the
+# playbook showed `promote` on the very next line. Completion IS observable on
+# the already-documented GET, which carries the same `derive` block.
+HSTATE=""
+[ -n "$HSID" ] && HSTATE="$(hget "/api/holodeck/$HSID")"
+check "S305-R1-D3. the GET the playbook names really carries the derive block" \
+  "hbody \"\$HSTATE\" | qgrep -qF '\"derive\"'"
+check "S305-R1-D3. and that block carries a state to poll on" \
+  "hbody \"\$HSTATE\" | qgrep -qF '\"state\"'"
+check "S305-R1-D3. the playbook says derive is ASYNCHRONOUS" \
+  "qgrep -qi 'asynchronous' '$PB'"
+check "S305-R1-D3. it names the two derive states a seat waits through" \
+  "qgrep -qF '\"state\": \"running\"' '$PB' && qgrep -qF '\"state\": \"done\"' '$PB'"
+# AND THE DOCUMENTED WAIT IS RUN. A bound you can only grep for is a bound
+# nobody has watched expire — and "a seat that waits forever is
+# indistinguishable from a dead one" is this whole session's theme. So the
+# poll snippet is EXTRACTED from the playbook, time-scaled (its own iteration
+# count and sleep, nothing else), pointed at the LIVE daemon — whose derive
+# state is `off` and will therefore NEVER say `done` — and must still RETURN.
+DPOLL="$TMPROOT/documented-poll.sh"
+python3 - "$PB" "$DPOLL" <<'PYPOLL'
+import re, sys
+src = open(sys.argv[1]).read()
+# The snippet is the fenced lines from the WAIT step up to the next numbered
+# step comment. Markers are the playbook's own numbering, not a test fixture.
+m = re.search(r"\n(# 4a\..*?)\n# 5\.", src, re.S)
+open(sys.argv[2], "w").write((m.group(1) if m else "") + "\n")
+PYPOLL
+check "S305-R1-D3. the playbook carries an extractable WAIT step (step 4a)" \
+  "[ -s '$DPOLL' ]"
+# Time-scale it: 3 tries, 1s apart. Nothing else about it is touched.
+if [ -s "$DPOLL" ]; then
+  python3 - "$DPOLL" "$VSPORT" "$HSID" <<'PYSCALE'
+import re, sys
+p, port, sid = sys.argv[1], sys.argv[2], sys.argv[3]
+s = open(p).read()
+s = re.sub(r"seq 1 \d+", "seq 1 3", s)
+s = re.sub(r"sleep \d+", "sleep 1", s)
+s = s.replace("8765", port).replace("<sessionId>", sid)
+open(p, "w").write(s)
+PYSCALE
+  dstart="$(date +%s)"
+  dout="$(bash "$DPOLL" 2>&1)"; drc=$?
+  delapsed=$(( $(date +%s) - dstart ))
+else
+  dout=""; drc=0; delapsed=9999
+fi
+check "S305-R1-D3. the documented wait RETURNS instead of hanging for ever" \
+  "[ $delapsed -lt 30 ]"
+check "S305-R1-D3. and when it gives up it SAYS so, naming the bound" \
+  "printf '%s' \"\$dout\" | qgrep -qi 'gave up\|give up\|did not finish'"
+# CONTROL: an UNBOUNDED wait is the one thing this session exists to remove, so
+# the documented poll must not be a `while true`.
+check "S305-R1-D3. CONTROL: the documented poll is not an infinite loop" \
+  "! qgrep -qF 'while true' '$PB'"
+
+# D4 — AFTER `end` THERE WAS NO DOCUMENTED WAY BACK IN. `end` is final for that
+# sessionId (the GET 404s for ever), and the refusal on re-starting the same
+# name tells the reader to click something in a program list, which a headless
+# seat does not have. `POST /api/holodeck/open` with the ROOM is the real road.
+HEND=""; HAFTER=""; HLIST=""; HREOPEN=""; HSID2=""
+if [ -n "$HSID" ]; then
+  HEND="$(hpost "/api/holodeck/$HSID/end" '{}')"
+  HAFTER="$(hget "/api/holodeck/$HSID")"
+  HLIST="$(hget /api/holodeck)"
+  HREOPEN="$(hpost /api/holodeck/open '{"room":"m0-screens"}')"
+  HSID2="$(hsid "$HREOPEN")"
+fi
+check "S305-R1-D4. end succeeds" "[ \"\$(hcode \"\$HEND\")\" = 200 ]"
+check "S305-R1-D4. CONTROL: that sessionId is DEAD afterwards (404)" \
+  "[ \"\$(hcode \"\$HAFTER\")\" = 404 ]"
+check "S305-R1-D4. the room and its program still read from the LIST route" \
+  "hbody \"\$HLIST\" | qgrep -qF 'm0-screens'"
+check "S305-R1-D4. the documented way back in WORKS headlessly (open by room)" \
+  "[ \"\$(hcode \"\$HREOPEN\")\" = 200 ]"
+check "S305-R1-D4. and it hands back a NEW sessionId, not the dead one" \
+  "[ -n \"\$HSID2\" ] && [ \"\$HSID2\" != \"\$HSID\" ]"
+check "S305-R1-D4. the playbook names the open route" \
+  "qgrep -qF '/api/holodeck/open' '$PB'"
+# STEP 7 IS ONLY USABLE IF THE SEAT CAN READ THE NEW sessionId OUT OF THE REPLY,
+# and every holodeck POST nests it: {"ok":true,"state":{"sessionId":...}}. The
+# playbook said "THE REPLY CARRIES sessionId", which reads as a top-level key.
+# MEASURED against the live daemon, below, not asserted.
+check "S305-R1-D4. the reply really does nest sessionId under state" \
+  "hbody \"\$HREOPEN\" | qgrep -qF '\"state\"' && hbody \"\$HREOPEN\" | python3 -c 'import json,sys; d=json.load(sys.stdin); raise SystemExit(0 if (d.get(\"state\") or {}).get(\"sessionId\") and not d.get(\"sessionId\") else 1)'"
+check "S305-R1-D4. and the playbook says to read .state.sessionId" \
+  "qgrep -qF '.state.sessionId' '$PB'"
+check "S305-R1-D4. it says the GET 404s once the program is ended" \
+  "qgrep -qF '404' '$PB'"
+check "S305-R1-D4. and it no longer claims that GET is one Program plus its transcript, full stop" \
+  "! qgrep -qF 'is one Program plus its transcript' '$PB'"
+
+# Stop the daemon the moment the measurements are taken — a suite that leaks a
+# daemon corrupts every later reading (S208/S209).
+{ [ -n "${VSPID:-}" ] && kill "$VSPID" && wait "$VSPID"; } 2>/dev/null || true
+{ [ -n "${VSPID2:-}" ] && kill "$VSPID2" && wait "$VSPID2"; } 2>/dev/null || true
+
+echo "-- S305-R1-D5. a park on a PROBE-DEPENDENT question cannot read as a halt --"
+# MEASURED IN TWO REPOS. A repo init'd with no origin records "there is nowhere
+# to push"; add a WORKING origin and `next` — the FIRST verb the loop runs —
+# still prints `NEXT: answer-pending` on that dead question, because the
+# withdrawals that need a PROBE deliberately live in `preflight` (ech.sh's
+# "WHAT IS DELIBERATELY NOT HERE"). That choice is RIGHT: `next` is the hot
+# verb and must not reach the network. The defect is that the CONSEQUENCE is
+# invisible, and four of four live models have stalled by reading a wait as a
+# halt.
+Q_R1_PROBE='there is nowhere to push: this repo has no origin remote, so nothing can be pushed and no pull request can be opened.'
+RR1="$(new_repo)"      # new_repo already carries a working local bare origin
+ap "$RR1" init --spec "$TMPROOT/spec.md" --scope M0 >/dev/null 2>&1
+APR1="$RR1/.git/lcars/autopilot.json"
+python3 - "$APR1" "$Q_R1_PROBE" <<'PYR1'
+import json, sys
+f, what = sys.argv[1], sys.argv[2]
+d = json.load(open(f))
+d["questions"] = {"q1": {"id": "q1", "mission": "-", "what": what,
+                         "why": "recorded before the remote was added",
+                         "raisedAt": 1}}
+d["pending"] = {"id": "q1", "mission": "-", "what": what}
+json.dump(d, open(f, "w"), indent=2)
+PYR1
+# A GIT THAT LOGS EVERY CALL, so "no network probe in `next`" is INSPECTED
+# rather than assumed. It forwards to the real git, so the run is otherwise
+# unchanged.
+GITSPY="$TMPROOT/gitspy"; mkdir -p "$GITSPY"
+GITSPY_LOG="$TMPROOT/git-calls.log"; : >"$GITSPY_LOG"
+REALGIT="$(command -v git)"
+cat >"$GITSPY/git" <<SHSPY
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >>"$GITSPY_LOG"
+exec "$REALGIT" "\$@"
+SHSPY
+chmod +x "$GITSPY/git"
+nr1="$(PATH="$GITSPY:$PATH" ap "$RR1" next 2>&1)"
+check "S305-R1-D5. it still parks (the design is NOT reversed)" \
+  "printf '%s' \"\$nr1\" | qgrep -q '^NEXT: answer-pending'"
+check "S305-R1-D5. \`next\` still runs NO network probe" \
+  "! qgrep -q 'ls-remote' '$GITSPY_LOG'"
+check "S305-R1-D5. it says the question MAY ALREADY BE DEAD" \
+  "printf '%s' \"\$nr1\" | qgrep -qi 'may already be dead'"
+check "S305-R1-D5. it names preflight as the verb that settles it" \
+  "printf '%s' \"\$nr1\" | qgrep -q 'preflight'"
+check "S305-R1-D5. it says to run preflight BEFORE treating this as a stop" \
+  "printf '%s' \"\$nr1\" | qgrep -qi 'before you treat this as a stop'"
+check "S305-R1-D5. it says plainly that this is NOT a halt" \
+  "printf '%s' \"\$nr1\" | qgrep -qi 'not a halt'"
+check "S305-R1-D5. and it names the question it is talking about" \
+  "printf '%s' \"\$nr1\" | qgrep -q 'q1'"
+# AND THE PROBE REALLY DOES SETTLE IT — the claim the new block makes has to be
+# true, or it sends the seat somewhere useless.
+pr1="$(ap "$RR1" preflight 2>&1)"
+check "S305-R1-D5. preflight does withdraw it, exactly as the new block claims" \
+  "printf '%s' \"\$pr1\" | qgrep -q 'WITHDRAWN \[q1\]'"
+nr1b="$(ap "$RR1" next 2>&1)"
+check "S305-R1-D5. and the next \`next\` has moved on to real work" \
+  "! printf '%s' \"\$nr1b\" | qgrep -q '^NEXT: answer-pending'"
+# CONTROL — A GENUINELY OPEN QUESTION MUST STILL READ AS GENUINELY OPEN. If the
+# maybe-dead block printed under every park it would be noise, and the captain's
+# own product call would read as something a probe could clear.
+RR1b="$(new_repo)"
+ap "$RR1b" init --spec "$TMPROOT/spec.md" --scope M0 >/dev/null 2>&1
+ap "$RR1b" ask "ship M0 as the CLI only?" --mission - \
+  --why "a product call only you can make" --command "-" --rollback "nothing" >/dev/null 2>&1
+nr1c="$(ap "$RR1b" next 2>&1)"
+check "S305-R1-D5. CONTROL: the captain's own question still parks" \
+  "printf '%s' \"\$nr1c\" | qgrep -q '^NEXT: answer-pending'"
+check "S305-R1-D5. CONTROL: and it is NOT dressed up as maybe-dead" \
+  "! printf '%s' \"\$nr1c\" | qgrep -qi 'may already be dead'"
+
 echo
 echo "=== lcars-ech: $pass passed, $fail failed ==="
 [ "$fail" -eq 0 ]

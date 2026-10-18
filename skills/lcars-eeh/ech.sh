@@ -1084,6 +1084,66 @@ withdraw_obsolete() {
 }
 
 # ==========================================================================
+# PROBE-DEPENDENT QUESTIONS — the ones only `preflight` can settle (S305 R1)
+# ==========================================================================
+# THE OTHER HALF OF `withdraw_obsolete`, and it exists because of what that
+# function DELIBERATELY LEAVES OUT. The withdrawals that need a network probe
+# stay inside `preflight`, on purpose: `next` is the loop's hot verb and must
+# not reach the network to answer "what do I do now", and these very verbs have
+# a measured silent-hang problem. That design is NOT reversed here.
+#
+# What was wrong is that the CONSEQUENCE was invisible. MEASURED IN TWO REPOS:
+# a repo init'd before its remote was added — the likeliest order of events —
+# records "there is nowhere to push", and after a WORKING origin is added
+# (`git ls-remote origin` answers) `next` STILL prints `NEXT: answer-pending`
+# on it, because only `preflight` runs the probe that retires it. `preflight`
+# in the same repo in the same state prints `WITHDRAWN [q1]` and the next
+# `next` advances to real work.
+#
+# `next`'s output did say "re-run preflight", so a seat that reads carefully
+# escapes. FOUR OF FOUR live models stalled by treating a wait as a halt, so a
+# park that MIGHT be dead has to say so in words that cannot be read as "stop
+# and wait for the captain". That is all this adds: no probe, no new state, no
+# change to which questions park.
+PF_PROBE_DEPENDENT_QS="$PF_Q_NOPUSH
+$PF_Q_UNREACHABLE
+$PF_Q_SLOW_REMOTE
+$PF_Q_FORGE_LOGIN"
+
+# probe_dependent_open_ids → the ids of the OPEN questions whose cause only a
+# preflight probe can re-check. Empty when there are none, which is what keeps
+# a genuinely open question reading as genuinely open.
+probe_dependent_open_ids() {
+  local qid qmission qwhat hit=""
+  while IFS="$(printf '\t')" read -r qid qmission qwhat; do
+    [ -n "${qid:-}" ] || continue
+    case "$PF_PROBE_DEPENDENT_QS" in
+      *"$qwhat"*) hit="$hit $qid" ;;
+    esac
+  done <<EOF
+$(open_questions)
+EOF
+  printf '%s' "${hit# }"
+}
+
+# say_probe_dependent_warning — printed under a `NEXT: answer-pending` whose
+# question only a probe can settle. Loud on purpose: this is the output the
+# whole loop reads first.
+say_probe_dependent_warning() {
+  local ids="$1"
+  say "THIS MAY ALREADY BE DEAD [$ids]: that question's cause is one only a PROBE can"
+  say "  re-check (does the remote answer, is the forge CLI logged in), and \`$SELF_CMD next\`"
+  say "  deliberately never touches the network — so it cannot tell you whether the cause"
+  say "  was fixed after the question was recorded. A repo set up before its remote was"
+  say "  added lands here every time."
+  say "RUN THIS FIRST: \`$SELF_CMD preflight\`. It runs the probe and either prints"
+  say "  \`WITHDRAWN [$ids]\` and frees the run, or re-states the stop as still true."
+  say "THIS IS NOT A HALT. Run that preflight and then \`$SELF_CMD next\` again"
+  say "  before you treat this as a stop. Do not stop here, and do not raise it with the"
+  say "  captain: only a question still open AFTER that preflight is his to answer."
+}
+
+# ==========================================================================
 # THE WAY OUT OF A WAIT (S305) — a limit, a re-check, and an expiry action
 # ==========================================================================
 # wait_started → the recorded start of the CURRENT wait, writing it on first
@@ -2160,6 +2220,11 @@ EOF
     IFS="$(printf '\t')" read -r r_action r_arg r_why <<EOF
 $(printf '%s\n' "$plan" | grep -v '^answer-pending' | head -1)
 EOF
+    # A PARK WHOSE CAUSE ONLY A PROBE CAN RE-CHECK IS NOT A HALT (S305 R1).
+    # Said BEFORE the "nothing else is offered" line below, because that line
+    # is the one a seat reads as the stop. See `say_probe_dependent_warning`.
+    local pdq; pdq="$(probe_dependent_open_ids)"
+    [ -n "$pdq" ] && say_probe_dependent_warning "$pdq"
     # EXCEPT a RUN-WIDE PREREQUISITE, which parks everything (S300 fix1).
     # `--mission -` is how a question says it belongs to no milestone, and every
     # preflight stop is exactly that: nowhere to push, no login, no engine

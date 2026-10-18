@@ -398,12 +398,21 @@ screen), then POST to it:
 
 ```bash
 # 1. the daemon, headless, in the background. It prints the URL it bound.
-lcars-viewscreen --port 8765 >/tmp/lcars-viewscreen.log 2>&1 &
+#    `LCARS_VIEWSCREEN_ALLOW_AI=1` IS REQUIRED HERE AND IT IS NOT A PERMISSIONS
+#    HACK: the viewscreen has a headless gate of its own that refuses to start
+#    inside an AI session, because from in here it cannot reach the macOS
+#    desktop and DEPLOY MAIN / `lcars launch` would be dead buttons. The
+#    Holodeck needs neither of those, so the gate's own documented bypass is
+#    how automation says so. WITHOUT the variable the line below EXITS, BINDS
+#    NOTHING, and logs "LCARS viewscreen — NOT started".
+LCARS_VIEWSCREEN_ALLOW_AI=1 lcars-viewscreen --port 8765 >/tmp/lcars-viewscreen.log 2>&1 &
 
 # 2. POST /api/holodeck/start — open a named Program. `mode` is `grounding`
 #    (recommended: the opening pass reads the project's own language) or
 #    `design`. THE REPLY CARRIES `sessionId` — record it, every later call
-#    needs it. `repo` is the ABSOLUTE path of the product repository.
+#    needs it — but it is NESTED: every holodeck POST answers
+#    {"ok": true, "state": {"sessionId": ..., ...}}, so read `.state.sessionId`
+#    and not a top-level key. `repo` is the ABSOLUTE path of the product repo.
 curl -s -X POST http://127.0.0.1:8765/api/holodeck/start \
   -H 'Content-Type: application/json' \
   -d '{"repo":"/abs/path/to/product-repo","program":"M0 screens","mode":"grounding"}'
@@ -415,20 +424,63 @@ curl -s -X POST http://127.0.0.1:8765/api/holodeck/<sessionId>/say \
   -d '{"text":"<what to build or change>","intent":"build"}'
 
 # 4. POST /api/holodeck/<sessionId>/derive — the change list, which is the gate
-#    before the hand-off; then /promote sends it to Align.
+#    before the hand-off. IT IS ASYNCHRONOUS. It returns AT ONCE with
+#    {"derive": {"state": "running"}} and the pass behind it takes MINUTES
+#    (measured at 154–220s; the daemon allows it up to 420s). Do NOT put
+#    /promote on the next line — that was this file's own mistake.
 curl -s -X POST http://127.0.0.1:8765/api/holodeck/<sessionId>/derive \
   -H 'Content-Type: application/json' -d '{}'
-curl -s -X POST http://127.0.0.1:8765/api/holodeck/<sessionId>/promote \
-  -H 'Content-Type: application/json' -d '{"scope":"M0"}'
 
-# 5. POST /api/holodeck/<sessionId>/end — closes the worker. The room and the
+# 4a. WAIT FOR IT, ON A BOUND. The same `derive` block rides on the GET below:
+#     {"state": "running"} while the pass is in flight, then
+#     {"state": "done", "ok": true, "changes": [...]} when it lands — or
+#     {"state": "done", "ok": false, "why": ...}, which means the pass DID NOT
+#     ANSWER and not "the mockup changes nothing". A seat that waits for ever
+#     is indistinguishable from a dead one, so this loop gives up and says so.
+for i in $(seq 1 90); do
+  st="$(curl -s http://127.0.0.1:8765/api/holodeck/<sessionId> \
+        | python3 -c 'import json,sys; print((json.load(sys.stdin).get("derive") or {}).get("state",""))')"
+  [ "$st" = "done" ] && break
+  sleep 5
+done
+[ "$st" = "done" ] || echo "derive gave up after 90 tries of 5s (~7.5 min); state=$st. Promote anyway — a brief with no derived section is still a brief he can send — or re-run derive with force true."
+
+# 5. POST /api/holodeck/<sessionId>/promote — SEND TO ALIGN. `scope` is the
+#    BUILD SCOPE, never the milestone label: {"scope":"M0"} is REFUSED with
+#    HTTP 400 "unknown build scope". There are exactly two legal values:
+#      "look+behaviour" — build it for real: backend, state, persistence, the
+#                         lot. The mockup says how it LOOKS; the brief says
+#                         what it must DO. This is also the default if `scope`
+#                         is omitted.
+#      "look-only"      — a reskin: match the mockup visually and make NO
+#                         functional change. Same data, same actions.
+#    The reply carries the whole Align brief.
+curl -s -X POST http://127.0.0.1:8765/api/holodeck/<sessionId>/promote \
+  -H 'Content-Type: application/json' -d '{"scope":"look+behaviour"}'
+
+# 6. POST /api/holodeck/<sessionId>/end — closes the worker. The room and the
 #    Program survive in the sidecar.
 curl -s -X POST http://127.0.0.1:8765/api/holodeck/<sessionId>/end \
   -H 'Content-Type: application/json' -d '{}'
 
-# READS are GETs: /api/holodeck is the Program list and
-# /api/holodeck/<sessionId> is one Program plus its transcript. No holodeck
-# WRITE is reachable over GET, by design.
+# 7. GETTING BACK IN AFTER `end`. `end` IS FINAL FOR THAT sessionId: from then
+#    on GET /api/holodeck/<sessionId> answers HTTP 404, for ever. What survives
+#    is the ROOM — mockup.html, concept.md, transcript.md — and the Program
+#    list still shows it, with "sessionId": null and its `room` name. Starting
+#    the same Program name again can be refused with "switch to it in the
+#    program list", which is a GUI a headless seat does not have. THIS is the
+#    headless road back in: POST /api/holodeck/open with the ROOM name (not a
+#    session id). It WARM-RESTARTS the program — a FRESH sessionId, the whole
+#    transcript replayed in as context, the mockup exactly as it was left.
+curl -s -X POST http://127.0.0.1:8765/api/holodeck/open \
+  -H 'Content-Type: application/json' -d '{"room":"m0-screens"}'
+
+# READS are GETs. /api/holodeck is the Program list — every program in this
+# repo's sidecar, live or on disk, each with its `room`. /api/holodeck/<sessionId>
+# is one LIVE Program plus its transcript, and it is live ONLY while that
+# program is open: after `end` it is 404 and the list route is the only place
+# that program can still be read. No holodeck WRITE is reachable over GET, by
+# design.
 ```
 
 File through the real verb, with a real PRD on disk:
