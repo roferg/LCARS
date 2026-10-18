@@ -55,6 +55,51 @@ blocked run and a healthy idle run look identical. So if commands start coming
 back refused, that is the shape of it — stop and say so rather than retrying;
 it is not something the run can fix from the inside.
 
+**What to launch the seat with, then.** The capability `COPILOT_ALLOW_ALL=true`
+would hand over in one switch, named directory by named directory instead, and
+arriving from outside **before the seat starts** — so the run is never asked to
+grant itself anything:
+
+```bash
+# copilot — the working directory is NOT trusted by the flag, so name the repo
+copilot --model <model> --allow-all-tools \
+        --add-dir <product-repo> \
+        --add-dir <holodeck-sidecar> \
+        --add-dir /tmp
+# claude — its cwd IS the repo already, so only the other two need naming
+claude --add-dir <holodeck-sidecar> \
+       --add-dir /tmp
+```
+
+Grant whichever directory your seat's `mktemp` and `>` targets really land in —
+`/tmp` on macOS and Linux, `$TMPDIR` where the platform puts it elsewhere.
+
+**Why the temp directory is in there**, when § 6.1 tells the seat to keep every
+throwaway HOME, scratch file and redirect target inside the repo under
+`.git/lcars/tmp/` and never `/tmp`: because § 6.1 is an *instruction*, and an
+instruction is model-bound. Measured 2026-10-18, back to back,
+**same code, same hour**: a seat on `claude-opus-5.5` took **one** permission
+stall (the unavoidable folder-trust prompt at startup); a seat on `gpt-6.1-sol`
+— Copilot's **default**, and what a stranger gets — took **six**. Every one of
+the six was the seat writing its own scratch to `/tmp` (`/tmp/lcars-suite-r2.txt`,
+`/tmp/lcars-cli-r2.txt`, both real files on disk, both outside the grant), and
+every one froze the run on a dialog nobody was awake to answer. § 6.1 existed on
+that run: the strong model obeyed it, the default model did not. That gap will
+exist for every rule we write by instruction. A launch-time grant does not have
+it.
+
+**The trade, named rather than sold.** `/tmp` is world-writable, so this is
+genuinely wider than granting the repo alone, and it is not free. It is also
+**one more named directory** — nothing like `--allow-all-paths`, and nothing
+like `COPILOT_ALLOW_ALL`, which trusts a directory and therefore loads its
+skills, hooks and MCP servers too. Decide it for your own environment; drop it
+and expect a weaker seat to stall on its own scratch instead.
+
+**§ 6.1 stays either way — belt and braces.** In-repo scratch is still the
+better hygiene: it keeps the product tree clean and leaves the evidence beside
+the mission. The grant is only the backstop for the run where a model ignores
+the rule.
+
 ## Unattended Copilot commands: start at the repository root and write downward
 
 **Run commands from the repository root and write DOWNWARD** into its

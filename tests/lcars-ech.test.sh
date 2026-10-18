@@ -5062,6 +5062,164 @@ check "S305-R4-D8. CONTROL: § 4 with the prohibition stripped out fails the pre
 check "S305-R4-D8. CONTROL: and the strip left the rest of § 4 intact" \
   "printf '%s\n' \"\$S4_STRIPPED\" | qgrep -qE 'curl .*api/holodeck/.*/promote'"
 
+# ───────────────────────────────────────────────────────────────────────────────
+# S305-R5-D9 — THE SCRATCH DIRECTORY IS IN THE LAUNCH GRANT, NOT ONLY IN A RULE
+#
+# MEASURED LIVE, 2026-10-18, back to back, same code, same hour. A Copilot seat
+# on `claude-opus-5.5` took ONE permission stall (the unavoidable folder-trust
+# prompt at startup). A Copilot seat on `gpt-6.1-sol` — Copilot's DEFAULT, and
+# what a stranger gets — took SIX in one hour. Every one of the six was the seat
+# writing its OWN scratch to /tmp (`/tmp/lcars-suite-r2.txt`,
+# `/tmp/lcars-cli-r2.txt`, both real files on disk, both outside the scoped
+# grant), and every one froze the run on a dialog nobody was awake to answer.
+#
+# § 6.1's in-repo-scratch rule (S305-R3-D7, above) already existed on that run.
+# The strong model obeyed it; the default model did not. A file-location rule
+# enforced by INSTRUCTION is model-bound by nature; one enforced by LAUNCH-TIME
+# CONFIGURATION is not. So the playbook's documented launch grant now names the
+# system temp directory as well, for both CLIs the mode supports.
+#
+# WHAT IS MEASURED HERE, and what is not. Not a grep for a sentence: the
+# documented launch block is EXTRACTED, its backslash continuations joined, and
+# its `--add-dir` values PARSED OUT as argv tokens, then the scratch token is
+# EVALUATED and the resolved directory compared against this host's real system
+# temp dir (`pwd -P` on both sides, so the /tmp -> /private/tmp symlink cannot
+# fool it) and against a throwaway repo, which it must be OUTSIDE of — if it
+# resolved in-repo the grant would be redundant and the assertion vacuous.
+# Controls: the same predicate on the same block with the scratch grant stripped
+# must come back `no`; on § 6.1's scratch block, which is not a launch grant at
+# all, `no`; and the blanket switches must be ABSENT from the launch line,
+# because the whole point is that this stays scoped.
+# WHAT IT DOES NOT ESTABLISH: that any model stalls less. Only a seat can
+# measure that, and the six-versus-one above is that measurement, not this test.
+# It also cannot establish that a reader launches with the line as written, nor
+# that the grant covers whatever path a future model invents — only that the
+# launch line the playbook hands a stranger names the temp directory alongside
+# the repo and the sidecar, is still scoped, and keeps § 6.1 beside it.
+
+SETUP_SEC="$(hocm_section '^## Unattended Copilot setup' '^## Unattended Copilot commands')"
+check "S305-R5-D9. the setup section slices non-empty" "[ -n \"\$SETUP_SEC\" ]"
+check "S305-R5-D9. and it is the section that argues COPILOT_ALLOW_ALL is not required" \
+  "printf '%s\n' \"\$SETUP_SEC\" | qgrep -qF 'COPILOT_ALLOW_ALL'"
+
+# fence_bash <text>      -> the first fenced ```bash block inside that text.
+fence_bash() { printf '%s\n' "$1" | awk '/^```bash$/{g=1;next} g&&/^```$/{exit} g{print}'; }
+# join_cont <text>       -> comments dropped, backslash continuations joined, so
+#                           each command becomes ONE logical line (real argv).
+join_cont() {
+  printf '%s\n' "$1" | sed 's/[[:space:]]*#.*$//' | awk '
+    { line = $0
+      sub(/^[[:space:]]+/, "", line)
+      if (buf != "") buf = buf " " line; else buf = line
+      if (buf ~ /\\$/) { sub(/[[:space:]]*\\$/, "", buf); next }
+      if (buf != "") print buf
+      buf = ""
+    }'
+}
+# add_dirs <text> <cli>  -> every --add-dir VALUE on that cli's launch line.
+add_dirs() {
+  join_cont "$(fence_bash "$1")" | grep -E "^$2([[:space:]]|$)" \
+    | tr ' ' '\n' | awk 'p=="--add-dir" && $0!=""{print} {p=$0}'
+}
+TMP_REAL="$(cd /tmp && pwd -P)"
+TMPDIR_REAL="$(cd "${TMPDIR:-/tmp}" && pwd -P)"
+echo "    [this host] /tmp -> $TMP_REAL ; \$TMPDIR -> $TMPDIR_REAL"
+# names_scratch <text> <cli> -> yes|no. A grant token that really resolves to
+# this host's system temp directory. Placeholder tokens are skipped, not
+# guessed at.
+names_scratch() {
+  local tok p
+  while IFS= read -r tok; do
+    case "$tok" in *'<'*|'') continue ;; esac
+    p="$(eval "printf '%s' $tok" 2>/dev/null)" || continue
+    [ -d "$p" ] || continue
+    p="$(cd "$p" && pwd -P)"
+    { [ "$p" = "$TMP_REAL" ] || [ "$p" = "$TMPDIR_REAL" ]; } && { echo yes; return; }
+  done <<EOF2
+$(add_dirs "$1" "$2")
+EOF2
+  echo no
+}
+
+COP_DIRS="$(add_dirs "$SETUP_SEC" copilot)"
+CLA_DIRS="$(add_dirs "$SETUP_SEC" claude)"
+echo "    [copilot grant] $(printf '%s' "$COP_DIRS" | tr '\n' ' ')"
+echo "    [claude grant ] $(printf '%s' "$CLA_DIRS" | tr '\n' ' ')"
+
+# (1) THE CHANGE ITSELF — a concrete launch grant, for both CLIs, naming repo,
+# sidecar and scratch.
+check "S305-R5-D9. the setup section hands the reader a runnable launch block" \
+  "[ -n \"\$(fence_bash \"\$SETUP_SEC\")\" ]"
+check "S305-R5-D9. the copilot launch line is scoped with --allow-all-tools" \
+  "join_cont \"\$(fence_bash \"\$SETUP_SEC\")\" | qgrep -qE '^copilot .*--allow-all-tools'"
+check "S305-R5-D9. the copilot grant names the product repo" \
+  "printf '%s\n' \"\$COP_DIRS\" | qgrep -qF '<product-repo>'"
+check "S305-R5-D9. the copilot grant names the Holodeck sidecar" \
+  "printf '%s\n' \"\$COP_DIRS\" | qgrep -qF '<holodeck-sidecar>'"
+check "S305-R5-D9. the copilot grant names the system temp directory, resolved" \
+  "[ \"\$(names_scratch \"\$SETUP_SEC\" copilot)\" = yes ]"
+check "S305-R5-D9. and it is THREE named directories, not a widened sweep" \
+  "[ \"\$(printf '%s\n' \"\$COP_DIRS\" | grep -c .)\" -eq 3 ]"
+check "S305-R5-D9. the claude launch line names the sidecar (its cwd is the repo)" \
+  "printf '%s\n' \"\$CLA_DIRS\" | qgrep -qF '<holodeck-sidecar>'"
+check "S305-R5-D9. the claude launch line names the system temp directory too" \
+  "[ \"\$(names_scratch \"\$SETUP_SEC\" claude)\" = yes ]"
+check "S305-R5-D9. and the claude line does NOT re-name the repo (cwd already)" \
+  "! printf '%s\n' \"\$CLA_DIRS\" | qgrep -qF '<product-repo>'"
+
+# The grant has to be WIDER than the repo or it would change nothing: the
+# resolved scratch dir must land OUTSIDE a real repo. (inside_repo and $RSC come
+# from S305-R3-D7 above — same predicate, reused deliberately.)
+SCR_TOK="$(printf '%s\n' "$COP_DIRS" | grep -v '<' | head -1)"
+SCR_RES="$(eval "printf '%s' $SCR_TOK" 2>/dev/null)"
+echo "    [scratch token] $SCR_TOK -> $SCR_RES"
+check "S305-R5-D9. the scratch grant resolves to a real directory" "[ -d \"\$SCR_RES\" ]"
+check "S305-R5-D9. and it is OUTSIDE the repo — so the grant is not redundant" \
+  "[ \"\$(inside_repo \"\$RSC\" \"\$SCR_RES\")\" = no ]"
+
+# (2) STILL SCOPED — the blanket switches stay absent from the launch line.
+GRANT_LINES="$(join_cont "$(fence_bash "$SETUP_SEC")")"
+check "S305-R5-D9. the launch line carries NO --allow-all-paths" \
+  "! printf '%s\n' \"\$GRANT_LINES\" | qgrep -qF -- '--allow-all-paths'"
+check "S305-R5-D9. the launch line carries NO COPILOT_ALLOW_ALL=true" \
+  "! printf '%s\n' \"\$GRANT_LINES\" | qgrep -qF 'COPILOT_ALLOW_ALL=true'"
+check "S305-R5-D9. the launch line carries NO --dangerously-skip-permissions" \
+  "! printf '%s\n' \"\$GRANT_LINES\" | qgrep -qF -- '--dangerously-skip-permissions'"
+
+# (3) THE REASON TRAVELS WITH IT — a grant without its cost gets undone by a
+# reader who does not know what it bought. These three ARE content assertions,
+# and are claimed as nothing more.
+check "S305-R5-D9. the section carries the measurement: six stalls against one" \
+  "printf '%s\n' \"\$SETUP_SEC\" | qgrep -qiE 'six' && printf '%s\n' \"\$SETUP_SEC\" | qgrep -qF 'gpt-6.1-sol'"
+check "S305-R5-D9. it says the difference was the MODEL, same code same hour" \
+  "printf '%s\n' \"\$SETUP_SEC\" | qgrep -qiF 'same hour'"
+check "S305-R5-D9. it names the trade honestly: /tmp is world-writable" \
+  "printf '%s\n' \"\$SETUP_SEC\" | qgrep -qiF 'world-writable'"
+check "S305-R5-D9. and it points at § 6.1, which stays" \
+  "printf '%s\n' \"\$SETUP_SEC\" | qgrep -qF '6.1'"
+
+# (4) § 6.1 IS NOT WEAKENED — belt and braces, so the grant is the backstop and
+# the instruction is still the hygiene.
+check "S305-R5-D9. § 6.1 still tells the seat never to use /tmp" \
+  "printf '%s\n' \"\$S6\" | qgrep -qiF 'So never' && printf '%s\n' \"\$S6\" | qgrep -qiF 'never a bare'"
+check "S305-R5-D9. § 6.1's in-repo scratch block is still extractable and runnable" \
+  "[ -n \"\$(scratch_block)\" ] && printf '%s' \"\$(scratch_exec)\" | qgrep -q 'mktemp'"
+
+# (5) CONTROLS — the predicate can fail.
+SETUP_STRIPPED="$(printf '%s\n' "$SETUP_SEC" | grep -vF -- '--add-dir /tmp')"
+check "S305-R5-D9. CONTROL: the strip really removed lines" \
+  "[ \"\$(printf '%s\n' \"\$SETUP_STRIPPED\" | wc -l)\" -lt \"\$(printf '%s\n' \"\$SETUP_SEC\" | wc -l)\" ]"
+check "S305-R5-D9. CONTROL: with the scratch grant stripped, copilot fails the predicate" \
+  "[ \"\$(names_scratch \"\$SETUP_STRIPPED\" copilot)\" = no ]"
+check "S305-R5-D9. CONTROL: and so does claude" \
+  "[ \"\$(names_scratch \"\$SETUP_STRIPPED\" claude)\" = no ]"
+check "S305-R5-D9. CONTROL: but the stripped block still names the repo — only the scratch went" \
+  "printf '%s\n' \"\$(add_dirs \"\$SETUP_STRIPPED\" copilot)\" | qgrep -qF '<product-repo>'"
+check "S305-R5-D9. CONTROL: § 6.1's section is not a launch grant and fails the predicate" \
+  "[ \"\$(names_scratch \"\$S6\" copilot)\" = no ]"
+check "S305-R5-D9. CONTROL: § 7 (Land it) carries no launch grant either" \
+  "[ \"\$(names_scratch \"\$S7\" copilot)\" = no ]"
+
 echo
 echo "=== lcars-ech: $pass passed, $fail failed ==="
 [ "$fail" -eq 0 ]
