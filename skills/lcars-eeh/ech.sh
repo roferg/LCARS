@@ -2812,6 +2812,52 @@ cmd_heartbeat() {
 LIVE_CHECK_DIR="${LCARS_LIVE_CHECK_DIR:-$SKILLS_DIR/lcars-run/live-check}"
 LIVE_CHECK_TYPES="cli web workflow"
 
+# ...BUT THE SEAT IS NEVER POINTED AT THAT SOURCE. Measured live 2026-10-17
+# 18:18: a copilot seat driving an unattended mission reached the Verify gate,
+# ran `grep '^### ' …/skills/lcars-run/live-check/cli.md` — a path THIS SCRIPT
+# had just handed it — and froze on
+#
+#   "This action may read or write the following path outside the paths
+#    currently allowed for this session."
+#
+# The seat was not browsing. It is trusted inside the PRODUCT REPOSITORY it is
+# building in, and LCARS's installed source tree is a different directory, so
+# every checklist read is an out-of-world read. Unattended, that is the whole
+# night, and nothing inside the blocked run can detect or recover from it.
+#
+# SO THE CHECKLIST IS STAGED INTO THE REPO AND THE SEAT IS POINTED AT THE COPY.
+# Not inlined into a prompt: cli.md is 313 lines and its entire value is that
+# the seat RE-READS the item at the moment it performs it, so the item cannot be
+# forgotten as the seat's context grows. Pasted text loses exactly that; a file
+# on disk keeps it. `.git/` is never tracked, so the product's working tree
+# stays clean — the same reason every other piece of mission state lives there.
+LIVE_CHECK_LOCAL="$LCARS_DIR/live-check"
+
+# live_check_stage <type…> — refresh $LIVE_CHECK_LOCAL from $LIVE_CHECK_DIR.
+#
+# COPIED EVERY TIME, NEVER TRUSTED-IF-PRESENT. The alternative (copy only when
+# missing) means a repo staged by an older LCARS silently shadows the newer
+# checklist for ever, and the one thing a checklist must never be is quietly out
+# of date — the items ARE the proof surface. A `cp` of four small files costs
+# nothing, so there is no honest reason to cache it.
+#
+# THE SOURCE IS READ-ONLY HERE. This copies out of $LIVE_CHECK_DIR and never
+# writes back into it: Number One and lcars-run read those same files, and a
+# round that edited the shared checklist in place would change what the other
+# reader proves.
+live_check_stage() {
+  mkdir -p "$LIVE_CHECK_LOCAL" || die "live-check: could not make $LIVE_CHECK_LOCAL"
+  local t
+  # README.md goes with them: it is the "two readers, one file" note that
+  # explains what the items are for, and a staged dir that cannot answer that
+  # question sends the seat back to the source tree to find out.
+  for t in "$@" README; do
+    [ -f "$LIVE_CHECK_DIR/$t.md" ] || continue
+    cp -f "$LIVE_CHECK_DIR/$t.md" "$LIVE_CHECK_LOCAL/$t.md" \
+      || die "live-check: could not stage $t.md into $LIVE_CHECK_LOCAL"
+  done
+}
+
 # label_for <mission-id> → the milestone label in scope that names it, or "".
 label_for() {
   local ms
@@ -2897,6 +2943,9 @@ cmd_live_check() {
   br="$(mstate "$m" branch)"
 
   local tlist; tlist="$(printf '%s' "$types" | tr ',' ' ')"
+  # STAGE BEFORE ANYTHING IS PRINTED, so every path this command names is one
+  # the seat can read. See live_check_stage.
+  live_check_stage $tlist
   say "LIVE CHECK — $m"
   say "  types:    $tlist"
   wt_say "$wt" "$home" "$br"
@@ -2912,9 +2961,13 @@ cmd_live_check() {
   ap_set "liveChecks.$m.worktree" "$wt"
   ap_set "liveChecks.$m.home"     "$home"
 
+  say "CHECKLISTS: $LIVE_CHECK_LOCAL"
+  say "  inside this repository, refreshed from the installed LCARS on every run."
+  say "  re-read the item you are on — that is what the file is for; do not work from memory."
+  say ""
   for t in $tlist; do
-    say "===== CHECKLIST: $t ($LIVE_CHECK_DIR/$t.md) ====="
-    cat "$LIVE_CHECK_DIR/$t.md"
+    say "===== CHECKLIST: $t ($LIVE_CHECK_LOCAL/$t.md) ====="
+    cat "$LIVE_CHECK_LOCAL/$t.md"
     say ""
   done
   say "WHEN DONE:  $SELF live-check done $m --verdict pass|bugs"

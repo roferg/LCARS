@@ -1970,6 +1970,164 @@ LCDONE2="$(ap "$RLC" live-check done lcars-20261001-001 --verdict pass 2>&1)"
 check "a second done OVERWRITES the verdict (a re-verify round can clear it)" \
   "[ \"\$(jget '$APLC' 'd[\"liveChecks\"][\"lcars-20261001-001\"][\"verdict\"]')\" = pass ]"
 git -C "$RLC" worktree remove --force "$lc_wt" 2>/dev/null || true
+# ==========================================================================
+# S304 — THE CHECKLIST THE SEAT CAN ACTUALLY READ
+# ==========================================================================
+# MEASURED LIVE 2026-10-17 18:18. A Copilot seat driving an unattended mission
+# reached the Verify gate, ran `grep '^### ' …/skills/lcars-run/live-check/cli.md`
+# — a path THIS SCRIPT handed it, one line above — and froze on:
+#
+#   "This action may read or write the following path outside the paths
+#    currently allowed for this session."
+#
+# The seat was not browsing. It is trusted inside the PRODUCT REPOSITORY it is
+# building in; LCARS's own installed source tree is a different directory, so
+# every checklist read was an out-of-world read and, unattended, a frozen night.
+#
+# THE CURE IS A COPY, NOT A SHORTER PROMPT. The checklist is 313 lines and its
+# whole value is that the seat RE-READS it at the moment it needs each item, so
+# it cannot be forgotten as the seat's context grows. Inlining it into a brief
+# destroys exactly that. A copy on disk inside the repo keeps it.
+#
+# WHAT IS PINNED HERE: the path handed out is in-repo, its CONTENT is the real
+# checklist (not a stub), the SOURCE is untouched, a STALE copy from an older
+# LCARS is refreshed rather than used, and LCARS_LIVE_CHECK_DIR still overrides
+# the SOURCE. Every one carries a control, because a guard that cannot go red
+# reads exactly like a pass.
+echo "-- S304 the checklist the seat can read --"
+
+SRCLC="$REPO_ROOT/skills/lcars-run/live-check"
+
+# lc_paths — the checklist paths a live-check run HANDED OUT, scraped from its
+# own output. Reads stdin. If this ever returns nothing the controls below go
+# red, which is the point: an extractor that finds no paths proves nothing.
+lc_paths() { sed -n 's/^===== CHECKLIST: [a-z][a-z]* (\(.*\)) =====$/\1/p'; }
+# lc_reaches_source — "yes" if ANY of the given paths reaches into LCARS's own
+# installed source tree. THIS is the predicate the defect would trip.
+lc_reaches_source() {
+  if printf '%s\n' "$1" | qgrep -q 'skills/lcars-run'; then echo yes; else echo no; fi
+}
+
+RLS="$(new_repo)"
+ap "$RLS" init --spec "$TMPROOT/spec.md" --scope M0 >/dev/null 2>&1
+new_mission "$RLS" lcars-20261001-003 verify
+
+# A STALE COPY FROM "AN OLDER LCARS", planted before the run.
+mkdir -p "$RLS/.git/lcars/live-check"
+printf 'STALE-FROM-AN-OLDER-LCARS\n' >"$RLS/.git/lcars/live-check/cli.md"
+
+# The source checksums, taken BEFORE the run, so "unmodified" is measured.
+SRC_CLI_SUM="$(cksum <"$SRCLC/cli.md")"
+SRC_WEB_SUM="$(cksum <"$SRCLC/web.md")"
+SRC_WF_SUM="$(cksum <"$SRCLC/workflow.md")"
+
+LSOUT="$(ap "$RLS" live-check lcars-20261001-003 --type cli,web,workflow 2>&1)"; lsrc=$?
+ls_wt="$(printf '%s\n' "$LSOUT" | sed -n 's/^WORKTREE: //p' | head -1)"
+LSPATHS="$(printf '%s\n' "$LSOUT" | lc_paths)"
+LSREPO="$RLS/.git/lcars/live-check"
+
+check "S304. live-check still exits 0" "[ $lsrc -eq 0 ]"
+check "S304. it handed out one path per type asked for" \
+  "[ \"\$(printf '%s\n' \"\$LSPATHS\" | grep -c . )\" -eq 3 ]"
+
+# (1) THE DEFECT ITSELF.
+check "S304. NO path it handed out reaches into LCARS's own source tree" \
+  "[ \"\$(lc_reaches_source \"\$LSPATHS\")\" = no ]"
+check "S304. every path it handed out is INSIDE the repo's own .git/lcars" \
+  "[ \"\$(printf '%s\n' \"\$LSPATHS\" | grep -c \"^$LSREPO/\")\" -eq 3 ]"
+check "S304. and each one really is a readable file there" \
+  "[ -f '$LSREPO/cli.md' ] && [ -f '$LSREPO/web.md' ] && [ -f '$LSREPO/workflow.md' ]"
+check "S304. the whole successful output names LCARS's checklist source nowhere" \
+  "! printf '%s\n' \"\$LSOUT\" | qgrep -q 'skills/lcars-run/live-check'"
+
+# (3) CONTROL — the same extractor + the same predicate, over an output in
+# which the path IS the source path. If this says `no`, the assertion above is
+# measuring nothing and its green is a lie.
+LSFAKE="$(printf '%s\n' "$LSOUT" | sed "s|$LSREPO|$SRCLC|g")"
+LSFAKEPATHS="$(printf '%s\n' "$LSFAKE" | lc_paths)"
+check "S304. CONTROL: the extractor finds paths at all (3 of them)" \
+  "[ \"\$(printf '%s\n' \"\$LSFAKEPATHS\" | grep -c . )\" -eq 3 ]"
+check "S304. CONTROL: the predicate says YES when the path IS the source tree" \
+  "[ \"\$(lc_reaches_source \"\$LSFAKEPATHS\")\" = yes ]"
+check "S304. CONTROL: the output-wide grep also fires on a source-path output" \
+  "printf '%s\n' \"\$LSFAKE\" | qgrep -q 'skills/lcars-run/live-check'"
+
+# (2) THE COPY IS REAL, NOT A STUB OR A SUMMARY.
+check "S304. the local cli.md is byte-identical to the source checklist" \
+  "cmp -s '$LSREPO/cli.md' '$SRCLC/cli.md'"
+check "S304. so is web.md"      "cmp -s '$LSREPO/web.md'      '$SRCLC/web.md'"
+check "S304. so is workflow.md" "cmp -s '$LSREPO/workflow.md' '$SRCLC/workflow.md'"
+check "S304. README.md is staged with them (so the staged dir can explain itself)" \
+  "cmp -s '$LSREPO/README.md' '$SRCLC/README.md'"
+check "S304. the local copy is the FULL 313-line cli checklist, not an excerpt" \
+  "[ \"\$(wc -l <'$LSREPO/cli.md' | tr -d ' ')\" -eq \"\$(wc -l <'$SRCLC/cli.md' | tr -d ' ')\" ]"
+check "S304. it still PRINTS the checklist, so a seat with no file read is unharmed" \
+  "printf '%s' \"\$LSOUT\" | qgrep -qF 'host of every outbound call'"
+check "S304. CONTROL: a stub copy would fail the byte-identical check" \
+  "printf 'stub\n' >'$TMPROOT/lc-stub.md'; ! cmp -s '$TMPROOT/lc-stub.md' '$SRCLC/cli.md'"
+
+# (4) THE STALE COPY IS REFRESHED, NEVER USED AS-IS.
+check "S304. a stale copy from an older LCARS was REFRESHED, not trusted" \
+  "! qgrep -q 'STALE-FROM-AN-OLDER-LCARS' '$LSREPO/cli.md'"
+check "S304. CONTROL: the stale marker was genuinely there before the run" \
+  "qgrep -q 'STALE-FROM-AN-OLDER-LCARS' <<<'STALE-FROM-AN-OLDER-LCARS'"
+# and it is refreshed EVERY time, not once: re-stale it and run again.
+printf 'STALE-AGAIN\n' >"$LSREPO/cli.md"
+LSOUT2="$(ap "$RLS" live-check lcars-20261001-003 --type cli 2>&1)"
+ls_wt2="$(printf '%s\n' "$LSOUT2" | sed -n 's/^WORKTREE: //p' | head -1)"
+check "S304. and refreshed on EVERY run, not just the first" \
+  "cmp -s '$LSREPO/cli.md' '$SRCLC/cli.md'"
+
+# (3, second half) THE SOURCE IS READ-ONLY — it still exists where Number One
+# and lcars-run look for it, byte-for-byte as it was.
+check "S304. the SOURCE checklists are still at their own shared home" \
+  "[ -f '$SRCLC/cli.md' ] && [ -f '$SRCLC/web.md' ] && [ -f '$SRCLC/workflow.md' ]"
+check "S304. and the source cli.md is UNMODIFIED by the copy" \
+  "[ \"\$(cksum <'$SRCLC/cli.md')\" = '$SRC_CLI_SUM' ]"
+check "S304. source web.md unmodified" \
+  "[ \"\$(cksum <'$SRCLC/web.md')\" = '$SRC_WEB_SUM' ]"
+check "S304. source workflow.md unmodified" \
+  "[ \"\$(cksum <'$SRCLC/workflow.md')\" = '$SRC_WF_SUM' ]"
+
+# (5) LCARS_LIVE_CHECK_DIR STILL OVERRIDES THE **SOURCE** LOCATION.
+LCOVR="$TMPROOT/lc-override"
+mkdir -p "$LCOVR"
+printf '# OVERRIDE CHECKLIST\n\nOVERRIDE-MARKER-9f3\n' >"$LCOVR/cli.md"
+RLS2="$(new_repo)"
+ap "$RLS2" init --spec "$TMPROOT/spec.md" --scope M0 >/dev/null 2>&1
+new_mission "$RLS2" lcars-20261001-004 verify
+export LCARS_LIVE_CHECK_DIR="$LCOVR"
+LSOVR="$(ap "$RLS2" live-check lcars-20261001-004 --type cli 2>&1)"; lsovrc=$?
+unset LCARS_LIVE_CHECK_DIR
+ls_wt3="$(printf '%s\n' "$LSOVR" | sed -n 's/^WORKTREE: //p' | head -1)"
+LSOVRPATHS="$(printf '%s\n' "$LSOVR" | lc_paths)"
+check "S304. LCARS_LIVE_CHECK_DIR run exits 0" "[ $lsovrc -eq 0 ]"
+check "S304. the override is read AS THE SOURCE (its content reaches the seat)" \
+  "printf '%s' \"\$LSOVR\" | qgrep -qF 'OVERRIDE-MARKER-9f3'"
+check "S304. the override's content is what landed in the in-repo copy" \
+  "cmp -s '$RLS2/.git/lcars/live-check/cli.md' '$LCOVR/cli.md'"
+check "S304. the override does NOT move the handed-out path out of the repo" \
+  "[ \"\$(printf '%s\n' \"\$LSOVRPATHS\")\" = '$RLS2/.git/lcars/live-check/cli.md' ]"
+check "S304. CONTROL: without the override the real checklist is used, not the marker" \
+  "! printf '%s' \"\$LSOUT\" | qgrep -qF 'OVERRIDE-MARKER-9f3'"
+check "S304. a MISSING checklist in an override dir is still refused, loudly" \
+  "export LCARS_LIVE_CHECK_DIR='$LCOVR'; o=\"\$(ap '$RLS2' live-check lcars-20261001-004 --type web 2>&1)\"; r=\$?; unset LCARS_LIVE_CHECK_DIR; [ \$r -ne 0 ] && ! printf '%s' \"\$o\" | qgrep -q 'CHECKLIST:'"
+
+# The playbook is the other route back to the source path: a seat that reads
+# `skills/lcars-run/live-check/cli.md` out of the prose freezes exactly the same
+# way, having never run the command.
+check "S304. the playbook hands the seat NO source-tree checklist path" \
+  "! qgrep -q 'skills/lcars-run/live-check/' '$REPO_ROOT/skills/lcars-eeh/HOLOGRAM-COMMAND-MODE.md'"
+check "S304. the playbook names the in-repo copy instead" \
+  "qgrep -qF '.git/lcars/live-check/' '$REPO_ROOT/skills/lcars-eeh/HOLOGRAM-COMMAND-MODE.md'"
+check "S304. CONTROL: the playbook still has a § 6 live-check section to carry it" \
+  "qgrep -qF 'lcars-ech live-check' '$REPO_ROOT/skills/lcars-eeh/HOLOGRAM-COMMAND-MODE.md'"
+
+for w in "$ls_wt" "$ls_wt2" "$ls_wt3"; do
+  [ -n "$w" ] || continue
+  git -C "$RLS"  worktree remove --force "$w" 2>/dev/null || true
+  git -C "$RLS2" worktree remove --force "$w" 2>/dev/null || true
+done
 
 # ==========================================================================
 # S234.2 workflow-run — the real entrypoint, exactly as CI runs it
@@ -2519,8 +2677,20 @@ check "HOLOGRAM-COMMAND-MODE.md does NOT point at the archive PRD the validator 
 
 check "HOLOGRAM-COMMAND-MODE.md's live-verification section is no longer an S234 STUB" \
   "! qgrep -qiE 'S234 — STUB|S234 - STUB' '$APM'"
-check "HOLOGRAM-COMMAND-MODE.md points at the shared checklists by path" \
-  "qgrep -qF 'lcars-run/live-check' '$APM'"
+# S304 INVERTED THIS ONE. It used to assert the playbook points at the SHARED
+# source path (`lcars-run/live-check`) — and that is precisely the instruction
+# that froze a measured unattended run on 2026-10-17: a seat is trusted inside
+# the repository it is building in, so a read of LCARS's installed source tree
+# stops it dead on a permission prompt nothing in the run can answer. The
+# command now stages the checklists into `.git/lcars/live-check/` and the prose
+# must send the seat THERE. The source home is unchanged and unmoved; only the
+# reader's route to it is.
+check "HOLOGRAM-COMMAND-MODE.md points the seat at the IN-REPO staged checklists" \
+  "qgrep -qF '.git/lcars/live-check/' '$APM'"
+check "HOLOGRAM-COMMAND-MODE.md hands the seat NO path into LCARS's own source tree" \
+  "! qgrep -qF 'lcars-run/live-check' '$APM'"
+check "CONTROL: the installed playbook is a real file with the live-check section in it" \
+  "[ -s '$APM' ] && qgrep -qF 'lcars-ech live-check' '$APM'"
 # S277: command-name literal ONLY. HOLOGRAM-COMMAND-MODE.md now names the on-PATH `lcars-ech <verb>` (a Copilot user has no ~/.claude/skills path). The asserted BEHAVIOUR is unchanged -- do not revert to `ech.sh`.
 check "HOLOGRAM-COMMAND-MODE.md names the live-check verb" \
   "qgrep -qF 'lcars-ech live-check' '$APM'"

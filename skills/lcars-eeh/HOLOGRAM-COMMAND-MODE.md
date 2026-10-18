@@ -537,11 +537,20 @@ evidence dir at `.git/lcars/missions/<id>/live-check/`, and prints the
 checklist(s) for the product types the milestone touches.
 
 **The script owns the setup, the evidence paths and the record. The looking is
-yours.** The checklists live at `skills/lcars-run/live-check/{cli,web,workflow}.md`
-— that shared home, and not under the EEH, because the rebuilt Number One
-reads the same files. Every item is an action plus the evidence to capture plus
-what counts as a defect, and carries a fenced `run:`/`workflow:`/`read:`
-template beside the prose so a fenced worker with no shell can lift it.
+yours.** It also stages the checklists **into this repository**, at
+`.git/lcars/live-check/{cli,web,workflow}.md`, refreshed from the installed
+LCARS on every run, and that staged copy is the one it names and the only one
+you read. **Re-read the item you are on, from that file, as you do it** — the
+cli list alone is 313 lines and the point of a file is that the item cannot
+quietly fall out of your context. Never reach into LCARS's own installed
+directory for it: you are trusted inside the repository you are building in,
+and a read outside it stops an unattended run dead on a permission prompt
+nothing in the run can answer (measured, 2026-10-17). The shared source home
+lives under `lcars-run`, not under the EEH, because the rebuilt Number One
+reads the same files — you just never have to go there. Every item is an action
+plus the evidence to capture plus what counts as a defect, and carries a fenced
+`run:`/`workflow:`/`read:` template beside the prose so a fenced worker with no
+shell can lift it.
 
 Pick **every** type the milestone touches. A CLI that writes a page published by
 a workflow is all three. The items that found the bugs, by name:
