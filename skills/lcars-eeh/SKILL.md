@@ -275,11 +275,21 @@ lcars-ech playbook  # action → HOLOGRAM-COMMAND-MODE.md heading
    captain-only steps (tokens, secrets, SSO, renames) and the
    pre-authorisations. HOLOGRAM-COMMAND-MODE.md §§ 1–2 has the exact list.
 5. `lcars-ech init --spec … --scope …`, record every answer, then
-   `lcars-ech heartbeat install`. **Durable state is
-   `.git/lcars/autopilot.json`, never the transcript** — after a context
-   compaction, re-read it first.
+   `lcars-ech heartbeat install`. **If that refuses (exit 11), carry on without
+   it** — the heartbeat is optional and its message says so; you lose only the
+   automatic stalled-driver check, which `lcars-ech stalled` does by hand.
+   **Durable state is `.git/lcars/autopilot.json`, never the transcript** —
+   after a context compaction, re-read it first.
 
 Then loop on `lcars-ech next` and follow the heading it names.
+
+**A `wait` is never the end of the loop.** `next` prints the wait's LIMIT
+(30 min), how to RE-CHECK, and what to do when the limit passes.
+`lcars-ech await` blocks on the recorded driver processes and exits 124 at its
+bound.
+Four seat models in three families died sitting on an unbounded wait — when the
+limit passes, run `lcars-ech stalled` and act, or raise it with `lcars-ech ask`.
+HOLOGRAM-COMMAND-MODE.md § 8 has all three.
 
 **It never edits LCARS.** An LCARS bug is ledgered and worked around with
 another verb, or it becomes a question for the captain. If he wants LCARS

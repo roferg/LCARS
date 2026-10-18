@@ -388,6 +388,49 @@ sidecar. A hand-authored `mockup.html` attached at CLI filing is an
 **attachment-only** path: it never passes through the surface, so the Holodeck
 stays empty. **State which path you took.**
 
+**HOW TO CALL IT: the Holodeck is HTTP on the viewscreen daemon.**
+`holodeck_start` / `holodeck_say` / `holodeck_end` are **not shell verbs** —
+they are routes on the board's own daemon, and this is the one thing this file
+used to leave out. Measured: the strongest seat reverse-engineered them on its
+own; the weaker seats never found them and never reached the Holodeck at all.
+Start the daemon **headless** (no `--open`, so nothing steals the captain's
+screen), then POST to it:
+
+```bash
+# 1. the daemon, headless, in the background. It prints the URL it bound.
+lcars-viewscreen --port 8765 >/tmp/lcars-viewscreen.log 2>&1 &
+
+# 2. POST /api/holodeck/start — open a named Program. `mode` is `grounding`
+#    (recommended: the opening pass reads the project's own language) or
+#    `design`. THE REPLY CARRIES `sessionId` — record it, every later call
+#    needs it. `repo` is the ABSOLUTE path of the product repository.
+curl -s -X POST http://127.0.0.1:8765/api/holodeck/start \
+  -H 'Content-Type: application/json' \
+  -d '{"repo":"/abs/path/to/product-repo","program":"M0 screens","mode":"grounding"}'
+
+# 3. POST /api/holodeck/<sessionId>/say — ONE authoring turn. `intent` is
+#    "build" or "ask"; omitted it means "build".
+curl -s -X POST http://127.0.0.1:8765/api/holodeck/<sessionId>/say \
+  -H 'Content-Type: application/json' \
+  -d '{"text":"<what to build or change>","intent":"build"}'
+
+# 4. POST /api/holodeck/<sessionId>/derive — the change list, which is the gate
+#    before the hand-off; then /promote sends it to Align.
+curl -s -X POST http://127.0.0.1:8765/api/holodeck/<sessionId>/derive \
+  -H 'Content-Type: application/json' -d '{}'
+curl -s -X POST http://127.0.0.1:8765/api/holodeck/<sessionId>/promote \
+  -H 'Content-Type: application/json' -d '{"scope":"M0"}'
+
+# 5. POST /api/holodeck/<sessionId>/end — closes the worker. The room and the
+#    Program survive in the sidecar.
+curl -s -X POST http://127.0.0.1:8765/api/holodeck/<sessionId>/end \
+  -H 'Content-Type: application/json' -d '{}'
+
+# READS are GETs: /api/holodeck is the Program list and
+# /api/holodeck/<sessionId> is one Program plus its transcript. No holodeck
+# WRITE is reachable over GET, by design.
+```
+
 File through the real verb, with a real PRD on disk:
 
 ```bash
@@ -738,6 +781,45 @@ overlap. Two was measured safe on a 10-core Mac; three drove load average to 170
 and killed workers. `lcars-ech next` enforces it and tells you to wait;
 `lcars-ech status` shows the slots in use.
 
+### A WAIT HAS A LIMIT, A RE-CHECK, AND AN ACTION ON EXPIRY
+
+**This step killed four seat models out of four**, across three model families.
+They were told to wait, and this section did not say for how long, how to
+re-check, or what to do if the wait never ended — so they sat there until they
+were killed. **A seat that waits for ever is indistinguishable from a dead
+one.** Never wait without all three of these.
+
+1. **The limit is 30 minutes** (`LCARS_ECH_WAIT_LIMIT`, in seconds).
+   `lcars-ech next` prints it under every `NEXT: wait`, records when the wait
+   began (`waitingSince`) and tells you how far into it you are. The start is a
+   **record**, not something you work out of your own transcript.
+
+2. **Re-check by asking `lcars-ech next` again.** Never poll a log, and never
+   wrap an LCARS verb in a timeout — § 5's rule stands, and the drive in flight
+   already has a waiter blocked on its PROCESS. With nothing else to do, block
+   on those same recorded processes:
+
+   ```bash
+   lcars-ech await               # 0 the moment a slot frees
+   lcars-ech await --limit 600   # …and it CANNOT outlive its bound
+   ```
+
+   `await` exits **124** when the bound passes and names the command to run
+   then. It watches processes, not a clock-wrapped verb, and it never sits for
+   ever.
+
+3. **When the limit passes, STOP WAITING** and run:
+
+   ```bash
+   lcars-ech stalled     # a driver that ended with nobody picking it up
+   ```
+
+   It decides from the **recorded pid**, not from a log. Act on what it names,
+   then `lcars-ech record drivers.<id>.pickedUpAt <ts>`. If it names **nothing**
+   while the slots stay full, that is an **LCARS bug with no verb-level
+   workaround** — § 9's fourth category. Raise it with `lcars-ech ask` and carry
+   on with the other milestone. Do not sit on it until morning.
+
 **The heartbeat is `crontab`.** One line, minute 17:
 
 ```bash
@@ -747,6 +829,16 @@ lcars-ech heartbeat install    # … remove / status
 It calls `lcars-ech stalled`, which reports a mission whose driver ended with
 nobody picking it up — decided from the **recorded pid**, not by grepping a log.
 Act on it, then `lcars-ech record drivers.<id>.pickedUpAt <ts>`.
+
+**If `heartbeat install` refuses, carry on without it.** The crontab WRITE is
+bounded (`LCARS_ECH_CRONTAB_TIMEOUT`, 10s): a seat reported it "produced no
+output and remained running until terminated", and on macOS the table lands in
+`/var/at/tabs`, which needs Full Disk Access for the writing process — without
+it the permission request blocks with nobody there to answer. `install` now
+says exactly that and exits **11** instead of hanging. **The heartbeat is
+OPTIONAL**: you lose only the automatic stalled-driver check, which you can run
+yourself with `lcars-ech stalled` each time round the loop. Do not stop the run
+over it and do not raise it with the captain.
 
 Why a crontab line and not the host harness's own cron tool: LCARS ships to
 people who are not inside Claude Code, so a harness-only tool cannot be this
@@ -884,7 +976,8 @@ loop:
     drive      → lcars-ech drive <id>        (backgrounded; waiter on the process)
     verify-gate→ xo report + your live check    → policy → land or the send-back loop
     land       → lcars-ech land <id>         (approve + hygiene; exit 10 = ask)
-    wait       → two at a time is the ceiling
+    wait       → two at a time is the ceiling. 30-MIN LIMIT, then `stalled`.
+                 `lcars-ech await` blocks on the PROCESS and exits 124 at the bound.
   lcars-ech status                        # the one screen, any time
 done:
   lcars-ech heartbeat remove; wrap up (§ 10)

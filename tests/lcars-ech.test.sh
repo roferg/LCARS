@@ -4079,6 +4079,262 @@ TMPDIR="$TMPROOT/tmp" LCARS_ECH_CWD="$R301" STUB_LOG="$STUB_LOG" \
 check "S301-fix1. only the literal 1 is quiet (=yes does not silence it)" \
   "qgrep -q 'Emergency Command Hologram' '$y301'"
 
+# ==========================================================================
+# S305 — FIVE CURES TO THE EMERGENCY COMMAND HOLOGRAM
+# ==========================================================================
+echo "-- S305-1. the wait step has a way out --"
+# MEASURED, AND IT IS THE BIGGEST ITEM. `next` told the seat to wait and § 8
+# never said FOR HOW LONG, HOW TO RE-CHECK, or WHAT TO DO IF THE WAIT DOES NOT
+# END. Four of four seat models, across three model families, stopped dead
+# there. A seat that waits for ever is indistinguishable from a dead one.
+#
+# THE CURE IS CONSISTENT WITH § 5, not a contradiction of it: nothing here
+# polls a log and nothing wraps an LCARS verb in a timeout. The WAIT ITSELF is
+# bounded, and the bound is measured against a RECORDED timestamp
+# (`waitingSince`), not re-derived from prose.
+# TWO LIVE PIDS, NOT TWO BUSY LOOPS. `driver_live` is a `kill -0` on a RECORDED
+# pid, so a sleeping process is exactly as live as a spinning one — and the
+# older fixtures' `while :; do :; done` pair burns two cores for as long as the
+# section runs, which on a box also running a seat measurement is a tax on
+# somebody else's reading.
+s305w1=""; s305w2=""
+sleep 600 </dev/null >/dev/null 2>&1 &
+s305w1=$!; BG_PIDS="$BG_PIDS $s305w1"
+sleep 600 </dev/null >/dev/null 2>&1 &
+s305w2=$!; BG_PIDS="$BG_PIDS $s305w2"
+RW5="$(new_repo)"
+ap "$RW5" init --spec "$TMPROOT/spec.md" --scope M0,M1,M2 >/dev/null 2>&1
+new_mission "$RW5" lcars-w1 plan
+new_mission "$RW5" lcars-w2 plan
+ap "$RW5" record 'missions.M0.id' lcars-w1 >/dev/null 2>&1
+ap "$RW5" record 'missions.M1.id' lcars-w2 >/dev/null 2>&1
+ap "$RW5" record "drivers.lcars-w1.pid" "$s305w1" >/dev/null 2>&1
+ap "$RW5" record "drivers.lcars-w2.pid" "$s305w2" >/dev/null 2>&1
+APW5="$RW5/.git/lcars/autopilot.json"
+nw5="$(ap "$RW5" next 2>&1)"
+check "S305-1. two live drivers still → NEXT: wait (unchanged)" \
+  "printf '%s' \"\$nw5\" | qgrep -q '^NEXT: wait'"
+check "S305-1. the wait names a TIME LIMIT" \
+  "printf '%s' \"\$nw5\" | qgrep -q '^LIMIT: '"
+check "S305-1. the limit is a real number of minutes, not 'a while'" \
+  "printf '%s' \"\$nw5\" | qgrep -qE '^LIMIT: .*[0-9]+ ?min'"
+check "S305-1. the wait says HOW to re-check" \
+  "printf '%s' \"\$nw5\" | qgrep -q '^RE-CHECK: '"
+check "S305-1. the re-check is \`next\` again, never a log poll" \
+  "printf '%s' \"\$nw5\" | qgrep -qE '^RE-CHECK: .*(next|await)'"
+check "S305-1. the wait says what to do WHEN THE LIMIT PASSES" \
+  "printf '%s' \"\$nw5\" | qgrep -q '^IF THE LIMIT PASSES: '"
+check "S305-1. the expiry action names the \`stalled\` verb" \
+  "printf '%s\n' \"\$nw5\" | grep -A3 'IF THE LIMIT PASSES' | qgrep -q 'stalled'"
+check "S305-1. the expiry action ends at \`ask\` (§ 9), not at silence" \
+  "printf '%s\n' \"\$nw5\" | grep -A4 'IF THE LIMIT PASSES' | qgrep -q 'ask'"
+# RECORD, DON'T INFER: when the wait began is WRITTEN DOWN the first time it is
+# seen, so neither the seat nor the script has to work it out of a transcript.
+check "S305-1. the first wait RECORDS waitingSince" \
+  "[ -n \"\$(jget '$APW5' 'd.get(\"waitingSince\")')\" ]"
+ws5a="$(jget "$APW5" 'd.get("waitingSince")')"
+ap "$RW5" next >/dev/null 2>&1
+check "S305-1. a second wait does NOT restart the clock (the record is kept)" \
+  "[ \"\$(jget '$APW5' 'd.get(\"waitingSince\")')\" = \"$ws5a\" ]"
+
+# PAST THE LIMIT IT IS NO LONGER A WAIT. Back-date the recorded start instead
+# of sleeping: the limit is read off the record, which is exactly why it was
+# recorded.
+ap "$RW5" record waitingSince 1 >/dev/null 2>&1
+nw5x="$(ap "$RW5" next 2>&1)"
+check "S305-1. past the limit \`next\` SAYS the limit has passed" \
+  "printf '%s' \"\$nw5x\" | qgrep -qi 'the limit has passed'"
+check "S305-1. past the limit it names the ONE command to run now" \
+  "printf '%s' \"\$nw5x\" | qgrep -q 'stalled'"
+check "S305-1. past the limit it still prints exactly ONE action line" \
+  "[ \"\$(printf '%s\n' \"\$nw5x\" | grep -c '^NEXT: ')\" = 1 ]"
+
+# --- the bounded re-check verb --------------------------------------------
+# A seat with nothing else to do needs something it can BLOCK on that cannot
+# outlive its bound. `await` watches the recorded driver PROCESSES (§ 5's rule:
+# the process, never a clock, never a log) and returns the moment a slot frees.
+export LCARS_ECH_WAIT_LIMIT=2
+aw5="$(ap "$RW5" await 2>&1)"; rcaw5=$?
+unset LCARS_ECH_WAIT_LIMIT
+check "S305-1. \`await\` RETURNS (it is bounded, it cannot sit for ever)" \
+  "[ -n \"\$aw5\" ]"
+check "S305-1. \`await\` reports 124 when its bound passes with the slots full" \
+  "[ $rcaw5 -eq 124 ]"
+check "S305-1. the expired \`await\` names \`stalled\` as the next command" \
+  "printf '%s' \"\$aw5\" | qgrep -q 'stalled'"
+check "S305-1. the expired \`await\` says this is not the run failing" \
+  "printf '%s' \"\$aw5\" | qgrep -qi 'not a failure\|is not the run failing'"
+# CONTROL: with a slot free it comes straight back, successfully.
+kill -9 "$s305w1" "$s305w2" 2>/dev/null || true
+sleep 1
+aw5b="$(ap "$RW5" await 2>&1)"; rcaw5b=$?
+check "S305-1. CONTROL: with a slot free \`await\` returns 0 at once" \
+  "[ $rcaw5b -eq 0 ]"
+check "S305-1. CONTROL: and it says a slot is free" \
+  "printf '%s' \"\$aw5b\" | qgrep -qi 'slot'"
+# CONTROL: a repo that is NOT waiting prints none of the wait furniture, and
+# the recorded start is cleared so a later wait is timed from ITS own start.
+nw5c="$(ap "$RW5" next 2>&1)"
+check "S305-1. CONTROL: not waiting → no RE-CHECK furniture" \
+  "! printf '%s' \"\$nw5c\" | qgrep -q '^RE-CHECK: '"
+check "S305-1. CONTROL: not waiting → waitingSince is cleared" \
+  "[ -z \"\$(jget '$APW5' 'd.get(\"waitingSince\")')\" ]"
+
+echo "-- S305-2. heartbeat install fails FAST instead of hanging --"
+# REPORTED BY A SEAT, VERBATIM: "heartbeat install produced no output and
+# remained running until terminated; heartbeat status confirms not installed."
+# REPRODUCED on this box: `crontab -l` answers in 0.0s but the WRITE
+# (`crontab -` AND `crontab <file>`) never returns at all — so it is the write
+# itself, not an inherited-stdin read. Unattended, that is the whole night.
+HANGCRON="$STUBS/crontab-hangs"
+cat >"$HANGCRON" <<'SH'
+#!/usr/bin/env bash
+if [ "${1:-}" = "-l" ]; then cat "$CRONFILE"; exit 0; fi
+# the measured macOS behaviour: the READ answers, the WRITE never returns
+exec sleep 600
+SH
+chmod +x "$HANGCRON"
+RHB5="$(new_repo)"
+ap "$RHB5" init --spec "$TMPROOT/spec.md" --scope M0 >/dev/null 2>&1
+: >"$CRONFILE"
+hb5start="$(date +%s)"
+hb5="$(TMPDIR="$TMPROOT/tmp" LCARS_ECH_CWD="$RHB5" STUB_LOG="$STUB_LOG" LCARS_ECH_CRONTAB_TIMEOUT=3 \
+       LCARS_CRONTAB_BIN="$HANGCRON" bash "$SCRIPT" heartbeat install 2>&1 </dev/null)"; rchb5=$?
+hb5elapsed=$(( $(date +%s) - hb5start ))
+check "S305-2. install RETURNS against a crontab whose write never does" \
+  "[ $hb5elapsed -lt 30 ]"
+check "S305-2. it does not claim success"            "[ $rchb5 -ne 0 ]"
+check "S305-2. it is NOT a captain question (exit 10 is reserved)" \
+  "[ $rchb5 -ne 10 ]"
+check "S305-2. it SAYS something (the seat got no output at all)" \
+  "[ -n \"\$hb5\" ]"
+check "S305-2. it names crontab as what did not return" \
+  "printf '%s' \"\$hb5\" | qgrep -qi 'crontab'"
+check "S305-2. it says the heartbeat is OPTIONAL so the seat does not stop" \
+  "printf '%s' \"\$hb5\" | qgrep -qi 'optional'"
+check "S305-2. it names the one verb to run by hand instead" \
+  "printf '%s' \"\$hb5\" | qgrep -q 'stalled'"
+check "S305-2. it names the macOS cause it can actually be fixed by" \
+  "printf '%s' \"\$hb5\" | qgrep -qi 'full disk access'"
+# `remove` is the SAME write through the SAME door, and § 10 tells the seat to
+# run it at wrap-up.
+: >"$CRONFILE"
+rm5start="$(date +%s)"
+rm5="$(TMPDIR="$TMPROOT/tmp" LCARS_ECH_CWD="$RHB5" STUB_LOG="$STUB_LOG" LCARS_ECH_CRONTAB_TIMEOUT=3 \
+       LCARS_CRONTAB_BIN="$HANGCRON" bash "$SCRIPT" heartbeat remove 2>&1 </dev/null)"; rcrm5=$?
+rm5elapsed=$(( $(date +%s) - rm5start ))
+check "S305-2. remove RETURNS too"                   "[ $rm5elapsed -lt 30 ]"
+check "S305-2. remove does not claim success"        "[ $rcrm5 -ne 0 ]"
+check "S305-2. remove says what did not return"      "printf '%s' \"\$rm5\" | qgrep -qi 'crontab'"
+# CONTROL: the working crontab still installs, exits 0, and keeps one line.
+: >"$CRONFILE"
+hb5ok="$(ap "$RHB5" heartbeat install 2>&1)"; rchb5ok=$?
+check "S305-2. CONTROL: a crontab that WORKS still installs and exits 0" \
+  "[ $rchb5ok -eq 0 ] && qgrep -q 'LCARS-ECH' '$CRONFILE'"
+check "S305-2. CONTROL: and it still says it installed" \
+  "printf '%s' \"\$hb5ok\" | qgrep -qi 'installed'"
+ap "$RHB5" heartbeat remove >/dev/null 2>&1
+check "S305-2. CONTROL: a crontab that WORKS still removes the line" \
+  "! qgrep -q 'LCARS-ECH' '$CRONFILE'"
+
+echo "-- S305-3. the playbook says HOW to reach the Holodeck --"
+# HOLOGRAM-COMMAND-MODE.md named `holodeck_start` / `holodeck_say` /
+# `holodeck_end` as if they were callable verbs and carried ZERO lines on how
+# to call them, beside 42 concrete `lcars-ech` / `lcars-file` command lines —
+# so the omission was specific, not a house style. MEASURED: the strongest seat
+# reverse-engineered the HTTP routes itself (9 `api/holodeck` references in its
+# log); the weaker seats never found them and never reached the Holodeck.
+check "S305-3. the playbook names the holodeck START route" \
+  "qgrep -qF '/api/holodeck/start' '$REPO_ROOT/skills/lcars-eeh/HOLOGRAM-COMMAND-MODE.md'"
+check "S305-3. the playbook names the SAY route" \
+  "qgrep -qF '/say' '$REPO_ROOT/skills/lcars-eeh/HOLOGRAM-COMMAND-MODE.md'"
+check "S305-3. the playbook names the END route" \
+  "qgrep -qF '/end' '$REPO_ROOT/skills/lcars-eeh/HOLOGRAM-COMMAND-MODE.md'"
+check "S305-3. the playbook names the PROMOTE route (the hand-off)" \
+  "qgrep -qF '/promote' '$REPO_ROOT/skills/lcars-eeh/HOLOGRAM-COMMAND-MODE.md'"
+check "S305-3. the playbook says these are POSTs, not shell verbs" \
+  "qgrep -qF 'POST /api/holodeck/start' '$REPO_ROOT/skills/lcars-eeh/HOLOGRAM-COMMAND-MODE.md'"
+check "S305-3. it gives a CONCRETE command line, in the file's own style" \
+  "qgrep -qE 'curl .*api/holodeck/start' '$REPO_ROOT/skills/lcars-eeh/HOLOGRAM-COMMAND-MODE.md'"
+check "S305-3. it says how to start the daemon HEADLESS first" \
+  "qgrep -qF 'lcars-viewscreen' '$REPO_ROOT/skills/lcars-eeh/HOLOGRAM-COMMAND-MODE.md'"
+check "S305-3. it names the key the start response hands back" \
+  "qgrep -qF 'sessionId' '$REPO_ROOT/skills/lcars-eeh/HOLOGRAM-COMMAND-MODE.md'"
+check "S305-3. CONTROL: the old verb names are still there (nothing was lost)" \
+  "qgrep -qF 'holodeck_start' '$REPO_ROOT/skills/lcars-eeh/HOLOGRAM-COMMAND-MODE.md'"
+
+echo "-- S305-4. \`next\` withdraws a stale question, exactly as preflight does --"
+# PROVEN DIRECTLY: a repo set up by an OLDER build records a stop that the new
+# build has cured; `preflight` prints `WITHDRAWN [q1]` and `next` routed to
+# answer-pending anyway. `next` is the FIRST verb the playbook's loop tells a
+# seat to run, so an existing repo that takes this update and is then driven
+# normally meets a stop that no longer applies.
+Q305_DEAD='the engine has no unattended permission: COPILOT_ALLOW_ALL is not exactly `true`, so an unattended copilot run is refused on every command.'
+RN5="$(new_repo)"
+ap "$RN5" init --spec "$TMPROOT/spec.md" --scope M0 >/dev/null 2>&1
+APN5="$RN5/.git/lcars/autopilot.json"
+python3 - "$APN5" "$Q305_DEAD" <<'PY'
+import json, sys
+f, what = sys.argv[1], sys.argv[2]
+d = json.load(open(f))
+d["questions"] = {"q1": {"id": "q1", "mission": "-", "what": what,
+                         "why": "written by the build that REQUIRED it",
+                         "raisedAt": 1}}
+d["pending"] = {"id": "q1", "mission": "-", "what": what}
+json.dump(d, open(f, "w"), indent=2)
+PY
+nn5="$(ap "$RN5" next 2>&1)"
+check "S305-4. \`next\` no longer routes to answer-pending on the dead stop" \
+  "! printf '%s' \"\$nn5\" | qgrep -q '^NEXT: answer-pending'"
+check "S305-4. \`next\` SAYS it withdrew it (silence would be a second mystery)" \
+  "printf '%s' \"\$nn5\" | qgrep -q 'WITHDRAWN \[q1\]'"
+check "S305-4. the withdrawal is on the RECORD, not just in the output" \
+  "[ -n \"\$(jget '$APN5' 'd[\"questions\"][\"q1\"].get(\"withdrawnAt\")')\" ]"
+check "S305-4. and it is NOT recorded as the captain's own decision" \
+  "[ -n \"\$(jget '$APN5' 'd[\"questions\"][\"q1\"].get(\"answeredAt\")')\" ]"
+check "S305-4. the derived pending mirror is emptied with it" \
+  "[ -z \"\$(jget '$APN5' 'd.get(\"pending\",{}).get(\"id\")')\" ]"
+# ONE CODE PATH, NOT TWO. `preflight` and `next` must withdraw through the SAME
+# function, or they drift again: the proof is that preflight run against an
+# ALREADY-withdrawn record finds nothing left to retire and says nothing.
+pn5="$(ap "$RN5" preflight 2>&1)"
+check "S305-4. preflight finds nothing left to withdraw (one shared path)" \
+  "! printf '%s' \"\$pn5\" | qgrep -q 'WITHDRAWN \[q1\]'"
+# CONTROL: a question that is STILL TRUE must still park the run. Without this
+# the cure above is indistinguishable from `next` ignoring questions.
+RN5b="$(new_repo)"
+ap "$RN5b" init --spec "$TMPROOT/spec.md" --scope M0 >/dev/null 2>&1
+ap "$RN5b" ask "ship M0 as the CLI only?" --mission - \
+  --why "a product call only you can make" --command "-" --rollback "nothing" >/dev/null 2>&1
+nn5b="$(ap "$RN5b" next 2>&1)"
+check "S305-4. CONTROL: a LIVE question still routes to answer-pending" \
+  "printf '%s' \"\$nn5b\" | qgrep -q '^NEXT: answer-pending'"
+check "S305-4. CONTROL: and it is NOT withdrawn behind the captain's back" \
+  "! printf '%s' \"\$nn5b\" | qgrep -q 'WITHDRAWN'"
+
+echo "-- S305-5. no preflight error path reports a problem and exits 0 --"
+# S305 WAS ASKED TO CURE "preflight prints its error and exits 0" AND IT DID
+# NOT REPRODUCE: every error path measured exits 1 (a `die`) or 10 (a recorded
+# stop). This is the GUARD that keeps it that way — the class is real even
+# though this instance was not.
+RP5="$(new_repo)"
+ap "$RP5" init --spec "$TMPROOT/spec.md" --scope M0 >/dev/null 2>&1
+git -C "$RP5" remote remove origin >/dev/null 2>&1 || true
+pp5="$(ap "$RP5" preflight 2>&1)"; rcpp5=$?
+check "S305-5. a preflight that prints STOPPING does NOT exit 0" \
+  "printf '%s' \"\$pp5\" | qgrep -q 'STOPPING' && [ $rcpp5 -ne 0 ]"
+check "S305-5. and it exits 10, the recorded-question code" "[ $rcpp5 -eq 10 ]"
+# CONTROL: a preflight with nothing to report really does exit 0, so the guard
+# above is not passing because preflight never succeeds.
+RP5b="$(new_repo)"
+ap "$RP5b" init --spec "$TMPROOT/spec.md" --scope M0 >/dev/null 2>&1
+ap "$RP5b" record launchDir "$TMPROOT/tmp" >/dev/null 2>&1
+ap "$RP5b" record push.mode local-only >/dev/null 2>&1
+pp5b="$(ap "$RP5b" preflight 2>&1)"; rcpp5b=$?
+check "S305-5. CONTROL: a clean preflight exits 0" "[ $rcpp5b -eq 0 ]"
+check "S305-5. CONTROL: and prints no STOPPING line" \
+  "! printf '%s' \"\$pp5b\" | qgrep -q 'STOPPING'"
+
 echo
 echo "=== lcars-ech: $pass passed, $fail failed ==="
 [ "$fail" -eq 0 ]

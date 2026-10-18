@@ -31,6 +31,7 @@
 #                     [--deadline <iso>] [--force]
 #   ech.sh status
 #   ech.sh next [--all]
+#   ech.sh await [--limit <secs>]
 #   ech.sh drive <mission>
 #   ech.sh stalled
 #   ech.sh land <mission>
@@ -153,6 +154,10 @@ usage() {
                        prerequisite nobody can default — nowhere to push
   status               one screen: scope, stages, gates, slots, EVERY open question, next action
   next [--all]         the ONE next mechanical step, and the HOLOGRAM-COMMAND-MODE.md heading for it
+  await [--limit <s>]  block until a parallel slot frees, watching the RECORDED driver
+                       PROCESSES. Returns 0 on a free slot, 124 when the bound passes
+                       (default 30 min) with the one command to run then. A wait has
+                       a way out: it can never sit for ever.
   playbook             the action -> heading table the contract test locks
   record <k.k> <v>     write one key (JSON value if it parses; empty value deletes)
   answered <id> "<a>"  close ONE open question (ids come from `status`); never deletes it
@@ -691,6 +696,38 @@ PF_SETTLED_ID=""
 # none), so `pf_bounded` below is the bound.
 PROBE_TIMEOUT="${LCARS_ECH_PROBE_TIMEOUT:-15}"
 
+# THE BOUND ON THE CRONTAB WRITE (S305). A seat reported this verbatim through
+# the sanctioned feedback channel: "heartbeat install produced no output and
+# remained running until terminated; heartbeat status confirms not installed."
+# Two more seats hit it in an earlier session.
+#
+# MEASURED on the captain's own box, not guessed. `crontab -l` answers in 0.0s;
+# the WRITE never returns at all, and it never returns for `crontab -` AND for
+# `crontab <file>` alike. That rules out BOTH documented hang mechanisms: it is
+# not a bare read on inherited stdin (the file form reads no stdin and hangs
+# identically) and it is not the version check's `git fetch` (a `bash -x` trace
+# shows no git call on this path, and `heartbeat status` runs the same script
+# preamble in 0.0s). What is left is the write itself: on macOS the table lands
+# in /var/at/tabs, which needs Full Disk Access for the writing process, and the
+# permission request blocks with nobody there to answer it.
+#
+# So the write is BOUNDED and SAYS SO. It must either work or come back with
+# something actionable: unattended, a verb that never returns is the whole night.
+CRONTAB_TIMEOUT="${LCARS_ECH_CRONTAB_TIMEOUT:-10}"
+
+# THE BOUND ON A WAIT (S305). THE BIGGEST MEASURED DEFECT IN THIS MODE: § 8
+# told the seat to wait and never said for how long, how to re-check, or what to
+# do when the wait did not end. Four of four seat models, across three model
+# families, stopped dead there. A seat that waits for ever is indistinguishable
+# from a dead one.
+#
+# IT DOES NOT CONTRADICT § 5 ("the waiter watches the PROCESS, never a clock").
+# The DRIVE's waiter is untouched and still blocks on its child; nothing here
+# polls a log and nothing wraps an LCARS verb in a timeout. What is bounded is
+# the SEAT's own idleness, and it is measured against a RECORDED start
+# (`waitingSince`) rather than reconstructed from a transcript.
+WAIT_LIMIT="${LCARS_ECH_WAIT_LIMIT:-1800}"
+
 # THE SENTINEL for question 2's default. It is a PHRASE, never a command, and it
 # is never written to `testCommand`: `push-gated` eval's that string, and a
 # guessed suite is strictly worse than none (it either refuses every push or
@@ -766,14 +803,37 @@ PF_Q_NO_LAUNCH_DIR='there is nowhere to make the launch copies: no writable dire
 # shell that REAPS the job, so the job is reaped inside a subshell whose stderr
 # is discarded. The commands themselves were already fully redirected, so
 # nothing legible is lost.
+#
+# TWO OPTIONAL SEAMS, EACH DEFAULTING TO EXACTLY TODAY'S BEHAVIOUR (S305).
+# $PF_BOUNDED_STDIN is where the caged command reads from (default /dev/null,
+# i.e. closed, which is what every network probe wants) and $PF_BOUNDED_OUT is
+# where its stdout+stderr go (default /dev/null). The crontab WRITE needs both:
+# it is fed a table on stdin and its refusal message is the one a human acts
+# on. A SECOND bounded runner for it would have been a clone of this one, and
+# the two would have drifted on exactly the process-group kill semantics that
+# cost S300 three rounds to get right — so the seams live here instead.
 pf_bounded() {
   local secs="$1"; shift
   local mark; mark="$(mktemp "${TMPDIR:-/tmp}/lcars-pf-bound.XXXXXX")"
   rm -f "$mark"
+  local _in="${PF_BOUNDED_STDIN:-/dev/null}"
+  local _out="${PF_BOUNDED_OUT:-/dev/null}"
   local rc=0
   (
     set -m
-    "$@" >/dev/null 2>&1 </dev/null &
+    # TWO BRANCHES, AND THE DEFAULT ONE IS BYTE-IDENTICAL TO THE OLD LINE.
+    # `tests/lcars-ech.test.sh` asserts, textually, that every `… &` spawn in
+    # this file closes stdin with a literal `</dev/null` (the S208 guard — a
+    # background job that inherits a terminal's stdin is one of the two
+    # mechanisms that hangs a suite). Collapsing both cases into one
+    # `<"$_in"` line is CORRECT at runtime but makes that guard uncountable,
+    # and a guard you cannot count is a guard you have quietly removed. So the
+    # unseamed path keeps the literal and the seamed path is its own line.
+    if [ "$_in" = /dev/null ]; then
+      "$@" >"$_out" 2>&1 </dev/null &
+    else
+      "$@" >"$_out" 2>&1 <"$_in" &
+    fi
     local p=$!
     # THE WHOLE GROUP: `git ls-remote` execs a transport helper (and over ssh an
     # `ssh` of its own), and killing only the parent leaves it holding the
@@ -975,6 +1035,105 @@ pf_withdraw_say() {
   say "   closed on the record — you do not have to answer a question that is no"
   say "   longer true to unstick your own run."
   return 0
+}
+
+# ==========================================================================
+# withdraw_obsolete — THE STALE-STOP SWEEP THAT `preflight` AND `next` SHARE
+# ==========================================================================
+# PROVEN DIRECTLY (S305). A repo set up by an OLDER build carries a stop the
+# NEW build has cured. `preflight` printed `WITHDRAWN [q1]` correctly; `next`
+# routed to `answer-pending` anyway — and `next` is the FIRST verb the
+# playbook's loop tells a seat to run. So an existing repo that takes an update
+# and is then driven normally meets a stop that no longer applies, with nothing
+# in `next`'s output hinting that another verb would clear it.
+#
+# ONE FUNCTION, TWO CALLERS, ON PURPOSE. Cloning the withdrawals into `next` is
+# the drift that produced this defect in the first place, so the withdrawals
+# that need NO terminal, NO network and NO prompt — every one of them a read of
+# this repo's own record — live here, and both verbs call it.
+#
+# WHAT IS DELIBERATELY NOT HERE: the withdrawals that need a PROBE (origin
+# answers again; `$GH_BIN auth status` reports a login). `next` is the loop's
+# cheap verb and must not reach the network to answer "what do I do now". Those
+# stay inside the preflight checks that own the probe.
+withdraw_obsolete() {
+  [ -f "$APJSON" ] || return 0
+  # 1. BLANKET TRUST STOPPED BEING A PREREQUISITE (S303), so EVERY copy of that
+  #    question on disk is dead — whatever the engine is and whatever the
+  #    environment says. Nothing raises it any more; this is its only reader.
+  pf_withdraw_say "$PF_Q_ALLOW_ALL" \
+    "withdrawn: blanket trust is not a prerequisite, so this question can no longer hold up the run."
+  # 2. A RUN RECORDED AS LOCAL-ONLY cannot be blocked on a remote or on a login.
+  if pf_local_only_recorded; then
+    pf_withdraw_say "$PF_Q_NOPUSH" \
+      "withdrawn: the run is recorded as local-only ($PF_LOCAL_ONLY_WHY), so there is nothing to push."
+    pf_withdraw_say "$PF_Q_UNREACHABLE" \
+      "withdrawn: the run is recorded as local-only, so the remote is not used."
+    pf_withdraw_say "$PF_Q_SLOW_REMOTE" \
+      "withdrawn: the run is recorded as local-only, so the remote is not used."
+    pf_withdraw_say "$PF_Q_FORGE_LOGIN" \
+      "withdrawn: the run is local-only, so no pull request is opened and no login is needed."
+  fi
+  # 3. A RECORDED, WRITABLE launchDir satisfies the launch-copies question.
+  local ld; ld="$(ap_j launchDir)"
+  if [ -n "$ld" ] && pf_dir_usable "$ld"; then
+    pf_withdraw_say "$PF_Q_NO_LAUNCH_DIR" \
+      "withdrawn: launchDir is recorded as $ld and is writable."
+  fi
+  return 0
+}
+
+# ==========================================================================
+# THE WAY OUT OF A WAIT (S305) — a limit, a re-check, and an expiry action
+# ==========================================================================
+# wait_started → the recorded start of the CURRENT wait, writing it on first
+# sight. Shared by `next` and `await` so the two cannot disagree about when
+# this wait began, and so neither has to infer it from its own output.
+wait_started() {
+  local since; since="$(ap_j waitingSince)"
+  case "${since:-}" in
+    ''|*[!0-9]*) since="$(now)"; ap_set waitingSince "$since" ;;
+  esac
+  printf '%s' "$since"
+}
+
+# wait_clear — this is no longer a wait, so the recorded start goes. Without
+# this a wait an hour ago would make the NEXT wait read as already expired.
+wait_clear() {
+  [ -n "$(ap_j waitingSince)" ] || return 0
+  ap_set waitingSince ""
+}
+
+# wait_say_way_out — the three things § 8 never said: the LIMIT, the RE-CHECK,
+# and WHAT TO DO WHEN THE LIMIT PASSES. Printed under every `NEXT: wait`.
+wait_say_way_out() {
+  local since elapsed mins emins
+  since="$(wait_started)"
+  elapsed=$(( $(now) - since ))
+  [ "$elapsed" -ge 0 ] || elapsed=0
+  mins=$(( WAIT_LIMIT / 60 ))
+  emins=$(( elapsed / 60 ))
+  say "LIMIT: ${mins} min, and you are ${emins} min into it (recorded as waitingSince, not"
+  say "  worked out of your own transcript)."
+  say "RE-CHECK: run \`$SELF_CMD next\` again when the drive in flight ends. Never poll a"
+  say "  log and never wrap an LCARS verb in a timeout (§ 5) — that drive already has a"
+  say "  waiter blocked on its PROCESS. With nothing else to do, \`$SELF_CMD await\`"
+  say "  blocks on those same recorded processes and CANNOT outlive the limit."
+  if [ "$elapsed" -lt "$WAIT_LIMIT" ]; then
+    say "IF THE LIMIT PASSES: stop waiting and run \`$SELF_CMD stalled\` — it reports a"
+    say "  driver that ended with nobody picking it up, decided from the RECORDED pid."
+    say "  Act on what it names, then \`$SELF_CMD record drivers.<id>.pickedUpAt <ts>\`."
+    say "  If it names NOTHING while the slots stay full, that is an LCARS bug with no"
+    say "  verb-level workaround (§ 9's fourth category): raise it with \`$SELF_CMD ask\`"
+    say "  and carry on with the other work. Never sit on a wait past its limit."
+  else
+    say "IF THE LIMIT PASSES: THE LIMIT HAS PASSED — ${emins} min of a ${mins} min wait."
+    say "  Do NOT wait again. Run \`$SELF_CMD stalled\` NOW and act on what it names,"
+    say "  then \`$SELF_CMD record drivers.<id>.pickedUpAt <ts>\`."
+    say "  If it names nothing while the slots stay full, that is an LCARS bug with no"
+    say "  verb-level workaround (§ 9's fourth category): raise it with \`$SELF_CMD ask\`"
+    say "  and carry on with the other work."
+  fi
 }
 
 # pf_settled <what>
@@ -1678,6 +1837,11 @@ cmd_preflight() {
     say "  WOULD have asked and the value it proceeds on, or stops on."
   fi
 
+  # THE SHARED STALE-STOP SWEEP, run BEFORE anything is asked: a question the
+  # new build has cured must never be counted, printed or answered. `next` runs
+  # the very same function, which is the whole point of it being one function.
+  withdraw_obsolete
+
   pf_q_launch_dir
   pf_q_test_command
   pf_q_somewhere_to_push
@@ -1958,6 +2122,9 @@ PY
 
 cmd_next() {
   require_state
+  # A STOP THE NEW BUILD HAS CURED MUST NOT PARK THE LOOP'S FIRST VERB (S305).
+  # The same function `preflight` runs — see `withdraw_obsolete`.
+  withdraw_obsolete
   local all=0
   [ "${1:-}" = "--all" ] && all=1
   local plan; plan="$(build_plan)"
@@ -1965,6 +2132,7 @@ cmd_next() {
     say "NEXT: wait"
     say "WHY: every milestone in scope has a driver in flight."
     say "PLAYBOOK: $(playbook_heading wait)"
+    wait_say_way_out
     return 0
   fi
   local action arg why
@@ -2014,6 +2182,14 @@ EOF
       say "  ($r_why — a question on one milestone does not park the others.)"
     fi
   fi
+  # A WAIT IS NOT A DEAD END (S305). Every `NEXT: wait` carries its limit, its
+  # re-check and its expiry action; anything else clears the recorded start so a
+  # later wait is timed from ITS own beginning.
+  if [ "$action" = "wait" ]; then
+    wait_say_way_out
+  else
+    wait_clear
+  fi
   if [ "$all" = 1 ]; then
     say ""
     say "PLAN (in order):"
@@ -2030,6 +2206,52 @@ EOF
 $(printf '%s\n' "$plan")
 EOF
   fi
+}
+
+# ==========================================================================
+# await — THE BOUNDED WAY OUT OF A WAIT (S305)
+# ==========================================================================
+# It watches the recorded driver PROCESSES — § 5's rule, and the same evidence
+# `stalled` decides from — never a log and never a clock wrapped round an LCARS
+# verb. It returns the moment a slot frees, and it CANNOT outlive its bound:
+# past it the seat is handed the one command to run, not another wait.
+#
+# 124 IS DELIBERATE, AND IT IS NOT A RUN FAILURE. It is `timeout(1)`'s own
+# convention for "outran the deadline", which is the one thing this verb ever
+# observes; the message says plainly that the run has not failed and names the
+# next command, because a bare non-zero is how a seat talks itself into a stop.
+cmd_await() {
+  require_state
+  local limit="$WAIT_LIMIT" since elapsed used
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --limit)   limit="${2:-}"; shift 2 ;;
+      --limit=*) limit="${1#--limit=}"; shift ;;
+      *) die "await: unknown argument $1" ;;
+    esac
+  done
+  case "$limit" in ''|*[!0-9]*) die "await: --limit takes whole seconds" ;; esac
+  since="$(now)"
+  while :; do
+    used="$(slots_in_use)"
+    if [ "$used" -lt "$MAX_SLOTS" ]; then
+      wait_clear
+      say "await: a slot is free ($used/$MAX_SLOTS in use) after $(( $(now) - since ))s — run \`$SELF_CMD next\`."
+      return 0
+    fi
+    elapsed=$(( $(now) - since ))
+    [ "$elapsed" -lt "$limit" ] || break
+    sleep 5
+  done
+  say "await: ${limit}s passed and all $MAX_SLOTS slots are still held. THE WAIT IS OVER."
+  say "  This is NOT a failure of the run, and it is not a question for the captain yet."
+  say "  Run \`$SELF_CMD stalled\` now: it reports a driver that ended with nobody picking"
+  say "  it up, decided from the RECORDED pid rather than from a log. Act on what it"
+  say "  names, then \`$SELF_CMD record drivers.<id>.pickedUpAt <ts>\`."
+  say "  If it names nothing while the slots stay held, that is an LCARS bug with no"
+  say "  verb-level workaround (§ 9's fourth category): raise it with \`$SELF_CMD ask\`"
+  say "  and carry on with the other work."
+  return 124
 }
 
 # ==========================================================================
@@ -2746,6 +2968,58 @@ hb_without_ours() {
   printf '%s\n' "$cur" | grep -vF -- "$HB_MARK $CWD" || true
 }
 
+# hb_hung_say <what> — the actionable message a hung crontab write earns.
+# A verb that returns nothing and never exits is the single worst thing in an
+# unattended run: from outside, it and a dead machine are the same. So the
+# bound fires, the kill happens, and this gets SAID.
+hb_hung_say() {
+  say "heartbeat: $1 did NOT complete — \`$CRONTAB_BIN\` was still running after"
+  say "  ${CRONTAB_TIMEOUT}s, so it was killed and NOTHING was written. (\`$CRONTAB_BIN -l\`"
+  say "  answers instantly on this box; it is the WRITE that blocks.)"
+  say "  MOST LIKELY CAUSE, and it is fixable: on macOS the table lands in"
+  say "  /var/at/tabs, and the process doing the writing needs FULL DISK ACCESS."
+  say "  Without it the permission request blocks with nobody there to answer it,"
+  say "  which is exactly \"no output, still running\"."
+  say "  THE HEARTBEAT IS OPTIONAL — nothing else in this mode needs it. You lose"
+  say "  only the automatic stalled-driver check. DO NOT STOP THE RUN over it, and"
+  say "  do not raise it with the captain."
+  say "  Either:  grant Full Disk Access to your terminal (System Settings ->"
+  say "           Privacy & Security -> Full Disk Access), then re-run"
+  say "           \`$SELF_CMD heartbeat install\`"
+  say "  Or:      carry on without it and run \`$SELF_CMD stalled\` yourself every time"
+  say "           you run \`$SELF_CMD next\` — that is all the heartbeat was doing."
+  say "  (nothing was written, so there is nothing to undo.)"
+}
+
+# hb_write <what> <file-holding-the-new-table> — the ONE door every crontab
+# WRITE goes through, bounded by $CRONTAB_TIMEOUT.
+#   0    crontab took the table
+#   124  it never came back inside the bound (hb_hung_say has already spoken)
+#   *    crontab refused it — its own message is printed, because that message
+#        is the one a human acts on and `pf_bounded` would otherwise eat it.
+#
+# IT WRITES THE TABLE TO A FILE FIRST and feeds that file in as the bounded
+# command's stdin. The old shape was `{ … } | "$CRONTAB_BIN" -`, which no
+# bounded runner can wrap: a pipeline is not a command. The table is identical
+# either way — `crontab -` still reads it on stdin.
+hb_write() {
+  local what="$1" tbl="$2" err rc
+  err="$(mktemp "${TMPDIR:-/tmp}/lcars-ech-cron.XXXXXX")"
+  PF_BOUNDED_STDIN="$tbl" PF_BOUNDED_OUT="$err" \
+    pf_bounded "$CRONTAB_TIMEOUT" "$CRONTAB_BIN" -
+  rc=$?
+  if [ "$rc" = 124 ]; then
+    rm -f "$err"
+    hb_hung_say "$what"
+    return 124
+  fi
+  if [ "$rc" != 0 ] && [ -s "$err" ]; then
+    sed 's/^/  /' "$err" >&2
+  fi
+  rm -f "$err"
+  return "$rc"
+}
+
 cmd_heartbeat() {
   local sub="${1:-status}"
   case "$sub" in
@@ -2753,8 +3027,18 @@ cmd_heartbeat() {
       require_state
       mkdir -p "$APDIR"
       local keep; keep="$(hb_without_ours)"
-      { [ -n "$keep" ] && printf '%s\n' "$keep"; hb_line; } | "$CRONTAB_BIN" - \
-        || die "heartbeat: crontab refused the new table"
+      local tbl wrc
+      tbl="$(mktemp "${TMPDIR:-/tmp}/lcars-ech-tbl.XXXXXX")"
+      { if [ -n "$keep" ]; then printf '%s\n' "$keep"; fi; hb_line; } >"$tbl"
+      hb_write install "$tbl"; wrc=$?
+      rm -f "$tbl"
+      if [ "$wrc" = 124 ]; then
+        # 11 is this driver's "a mechanical pre-check refused" code: NOT 10,
+        # which is reserved for a question recorded for the captain, and not 0,
+        # which would claim an install that did not happen.
+        exit 11
+      fi
+      [ "$wrc" = 0 ] || die "heartbeat: crontab refused the new table"
       say "heartbeat installed (one crontab line, minute 17):"
       hb_line | sed 's/^/  /'
       say "  it calls \`$SELF_CMD stalled\` and acts only when a pipeline ended with nobody picking it up."
@@ -2770,8 +3054,15 @@ cmd_heartbeat() {
       # below is unchanged: it still refuses to CLAIM a removal that did not
       # happen.
       local rest; rest="$(hb_without_ours)"
-      { if [ -n "$rest" ]; then printf '%s\n' "$rest"; fi; } | "$CRONTAB_BIN" - \
-        || die "heartbeat: crontab refused the new table"
+      local rtbl rwrc
+      rtbl="$(mktemp "${TMPDIR:-/tmp}/lcars-ech-tbl.XXXXXX")"
+      { if [ -n "$rest" ]; then printf '%s\n' "$rest"; fi; } >"$rtbl"
+      hb_write remove "$rtbl"; rwrc=$?
+      rm -f "$rtbl"
+      if [ "$rwrc" = 124 ]; then
+        exit 11
+      fi
+      [ "$rwrc" = 0 ] || die "heartbeat: crontab refused the new table"
       if hb_current | grep -qF -- "$HB_MARK $CWD"; then
         die "heartbeat: the line is still present after remove — refusing to claim it is gone."
       fi
@@ -4013,6 +4304,7 @@ case "$SUB" in
   preflight)   cmd_preflight "$@" ;;
   status)      cmd_status "$@" ;;
   next)        cmd_next "$@" ;;
+  await)       cmd_await "$@" ;;
   playbook)    cmd_playbook "$@" ;;
   record)      cmd_record "$@" ;;
   answered)    cmd_answered "$@" ;;
