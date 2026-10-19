@@ -61,20 +61,24 @@ arriving from outside **before the seat starts** — so the run is never asked t
 grant itself anything:
 
 ```bash
-# Before either CLI starts: keep `lcars launch`'s deploy checkout INSIDE the
-# repo, so the seat's own deployed files land inside the grant below and not in
-# the repo's PARENT directory, which is where the default puts them.
-export LCARS_LAUNCH_ROOT="$(git rev-parse --show-toplevel)/.lcars-launch"
+# `lcars launch` deploys to a SIBLING of the repo, so that one directory has to
+# be named too. It may not exist at launch time — a grant for a directory that
+# does not exist is not a grant — so create it first, exactly as the Holodeck
+# sidecar's own grant does.
+LAUNCH_ROOT="$(dirname "$(git rev-parse --show-toplevel)")/.lcars-launch"
+mkdir -p "$LAUNCH_ROOT"
 # copilot — the working directory is NOT trusted by the flag, so name the repo
 copilot --model <model> --allow-all-tools \
         --add-dir <product-repo> \
         --add-dir <holodeck-sidecar> \
+        --add-dir "$LAUNCH_ROOT" \
         --add-dir /tmp \
         --add-dir /usr/bin \
         --add-dir /bin \
         --add-dir /usr/sbin
 # claude — its cwd IS the repo already, so only the others need naming
 claude --add-dir <holodeck-sidecar> \
+       --add-dir "$LAUNCH_ROOT" \
        --add-dir /tmp \
        --add-dir /usr/bin \
        --add-dir /bin \
@@ -140,37 +144,40 @@ better hygiene: it keeps the product tree clean and leaves the evidence beside
 the mission. The grant is only the backstop for the run where a model ignores
 the rule.
 
-**Why the deploy checkout goes inside the repo: `$LCARS_LAUNCH_ROOT`.**
-Measured live, 2026-10-18: a seat on `gpt-6-luna` stalled **four times in
-nineteen minutes**, and **three of the four were this one cause** — the seat was
-blocked **reading its own deployed code**, the dialog naming
-`.lcars-launch/<repo>/<mission>/jot/cli.py`, `store.py` and `README.md`. By
-default `lcars launch` puts the deploy checkout in the repo's **parent**
-directory (`<repo-parent>/.lcars-launch/<repo>/`), and the parent is not in the
-grant above. Every one of those stalls froze an unattended run.
+**Why the launch checkout's directory is in there.** Measured live,
+2026-10-18: a seat on `gpt-6-luna` stalled **five times in twenty-one minutes**,
+and **four of the five were this one cause** — the seat was blocked **reading its
+own deployed code**, the dialog naming
+`.lcars-launch/<repo>/<mission>/jot/cli.py`, `store.py` and `README.md`.
+`lcars launch` puts the deploy checkout **beside** the repo, at
+`<repo-parent>/.lcars-launch/<repo-name>/`, and that sibling was not in the grant
+above. Every one of those stalls froze an unattended run.
 
-**Why not just grant the parent directory.** Granting a repo's parent hands the
-seat **every sibling repository on the machine** — by far the widest thing in
-that list, and the one grant above that nobody could check the way `/usr/bin`
-was checked. So the grant stays exactly as it is and **the files move instead**:
-`lcars launch` already honours `$LCARS_LAUNCH_ROOT`, and pointing it at
-`<repo>/.lcars-launch` puts the checkout inside the directory the seat was
-already given. No new permission, no change to `lcars launch`.
+**Grant the one named directory — `<repo-parent>/.lcars-launch` — and nothing
+else.** It is **one named directory, not the parent**: naming the parent would
+hand the seat **every sibling repository on the machine**, by far the widest
+thing in that list and the one grant nobody could check the way `/usr/bin` was
+checked. Naming `.lcars-launch` exposes **zero** sibling repositories. And the
+checkout **stays outside the repo**, which is what `lcars launch` designed for:
+a second copy of the repo *inside* it gets swept up by the parent's own test
+globs and watchers, and `.git/info/exclude` does not stop a glob — so moving the
+checkout in-repo would trade a permission stall for a dirty **product tree**
+(nothing gitignores `.lcars-launch` at a repo root, so a bulk `git add` could
+commit it). Keep the files where they are and name the directory. No change to
+`lcars launch`, and `$LCARS_LAUNCH_ROOT` stays unset.
 
-**Why that path and not `.git/lcars/tmp/`,** where § 6.1 sends scratch: `lcars
-launch` **refuses** any root under `.git/` on purpose — file watchers ignore
-`.git/`, so a deployed app there could never see its own writes. The checkout has
-to be a repo-root path. `.lcars-launch` keeps the default's own directory name,
-sits outside `.git/`, and is a dot-directory, so the parent's test globs and
-watchers mostly skip it. **Mostly, not certainly** — that glob risk is the
-reason the default lives outside the repo at all, and it is the price of this
-cure. Export is per-run and persists nothing.
+**It may not exist yet, so create it before you grant it** — `mkdir -p` in the
+block above. The directory appears on the first `lcars launch`, which is *after*
+the seat starts, and a grant for a directory that does not exist is not a grant.
+This is the same step the Holodeck sidecar's grant already takes.
 
 **This is the third instance of one pattern.** LCARS deliberately places things
 *beside* the repo to keep the product tree clean — the Holodeck sidecar, the
 seat's scratch (§ 6.1 above, and the `/tmp` grant that backs it), and now the
-launch checkout — and a scoped grant does not reach any of them. When a seat
-stalls on a path it created itself, check that list first.
+launch checkout — and a scoped grant does not reach any of them. All three are
+cured the same way: name that one directory, create it first, change nothing
+about where the files go. When a seat stalls on a path it created itself, check
+that list first.
 
 ## Unattended Copilot commands: start at the repository root and write downward
 
