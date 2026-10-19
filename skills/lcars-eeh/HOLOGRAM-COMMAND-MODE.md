@@ -71,12 +71,32 @@ mkdir -p "$LAUNCH_ROOT"
 # destination, and the seat runs them constantly — so name that directory too.
 # Resolved from install.sh's own variable, never a hardcoded /Users/<name>.
 LAUNCHER_DIR="${LCARS_BIN_DEST:-$HOME/.local/bin}"
+# § 6.1 requires driving a REAL headless browser, and this grant named none —
+# so the seat asked for one, was refused, and then WORKED DOWN A LIST, asking
+# again for the next name (measured 2026-10-19: Google Chrome refused, then
+# Chromium). Resolve exactly ONE, BY A CHECK rather than a hardcoded path — a
+# stranger's machine may not have the browser this one has — and grant the
+# directory it was found in. Google Chrome first; the first match wins and no
+# second browser is ever tried.
+CHROME_BIN=""
+for c in "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" \
+         "/Applications/Chromium.app/Contents/MacOS/Chromium" \
+         "$(command -v google-chrome 2>/dev/null)" \
+         "$(command -v chromium 2>/dev/null)"; do
+  [ -n "$c" ] && [ -x "$c" ] && { CHROME_BIN="$c"; break; }
+done
+BROWSER_DIR="${CHROME_BIN%/*}"
+# Nothing found: § 6.1 cannot drive a browser on this machine. Say so, and fall
+# back to a directory that is granted below anyway, so the launch line stays
+# valid instead of failing on an empty --add-dir.
+[ -n "$CHROME_BIN" ] || { echo "WARNING: no Chrome-family browser found; § 6.1 cannot drive one" >&2; BROWSER_DIR=/tmp; }
 # copilot — the working directory is NOT trusted by the flag, so name the repo
 copilot --model <model> --allow-all-tools \
         --add-dir <product-repo> \
         --add-dir <holodeck-sidecar> \
         --add-dir "$LAUNCH_ROOT" \
         --add-dir "$LAUNCHER_DIR" \
+        --add-dir "$BROWSER_DIR" \
         --add-dir /tmp \
         --add-dir /usr/bin \
         --add-dir /bin \
@@ -85,6 +105,7 @@ copilot --model <model> --allow-all-tools \
 claude --add-dir <holodeck-sidecar> \
        --add-dir "$LAUNCH_ROOT" \
        --add-dir "$LAUNCHER_DIR" \
+       --add-dir "$BROWSER_DIR" \
        --add-dir /tmp \
        --add-dir /usr/bin \
        --add-dir /bin \
@@ -93,6 +114,14 @@ claude --add-dir <holodeck-sidecar> \
 
 Grant whichever directory your seat's `mktemp` and `>` targets really land in —
 `/tmp` on macOS and Linux, `$TMPDIR` where the platform puts it elsewhere.
+
+**And drive the browser the block resolved, by name.** `$CHROME_BIN` is
+**Google Chrome** wherever it exists, and that is the one § 6.1's live check
+uses — not "a Chrome-family browser", not whichever one comes to mind. The
+stall this closes was not the refusal itself: it was the seat being refused one
+browser and then WORKING DOWN A LIST, raising a fresh dialog for the next name.
+One browser is resolved, once, before the seat starts; the seat asks for no
+other.
 
 **Why the temp directory is in there**, when § 6.1 tells the seat to keep every
 throwaway HOME, scratch file and redirect target inside the repo under
@@ -226,6 +255,19 @@ keys, every other project on the machine, and the loadable configuration under
 **Run commands from the repository root and write DOWNWARD** into its
 descendants. Never redirect through parent path components (`..`), even when
 the resolved destination would remain inside the repository.
+
+**Every path in a command you compose yourself is ABSOLUTE and under one of the
+approved roots.** Never `..` in any path — not in a redirect, not in a read,
+not inside a `find`, `ls`, `grep`, `cat` or `cp` argument, and not when the
+climb would land back inside the repository. The shell resolves `..` before the
+grant is checked, so a climbing path is tested against whatever it resolves to,
+which is outside every approved root — and that raises `Allow path access` and
+stops an unattended run dead. Measured 2026-10-19: a seat composed its own
+inspection command ("Inspect repository files and permitted evidence
+directories") containing a `..` traversal and stalled the run on it. Nothing
+underneath put it there; the seat wrote it. When you need a directory beside
+the repo, name it by the absolute path the launch grant already resolved
+(`$LAUNCH_ROOT`, `$BROWSER_DIR`, the sidecar), never by climbing to it.
 
 This command route is refused even with `COPILOT_ALLOW_ALL=true`: the problem
 is the upward traversal, not the destination, .git, Python, or the test runner.
@@ -541,6 +583,16 @@ shape is accepted per section — a bold inline label (`**Goal:** …`) or the l
 owning its own line as a heading (`## Goal`). (A complex mission filed with
 `--adr` needs each ADR to carry **Context**, **Decision**, **Alternatives
 considered** and **Consequences** too.)
+
+**The mission title is a plain sentence — never a markdown heading, and never
+the field label.** Write the outcome the way you would say it: `Add a jot CLI
+that publishes a shareable web page`. The `##`, the `**`, and the words
+"Mission title" belong to the PRD's LABEL and never travel into the VALUE.
+Measured 2026-10-19: one seat filed a mission whose title was literally the
+string `## Mission title` — on disk and, because filing opens an issue, as the
+public GitHub issue title everybody can see. Six of seven seats got this right;
+it is a one-in-seven leak with a public consequence, which is why it is written
+down here.
 
 For each unfiled milestone, `next` prints mutually exclusive branches: judge
 **its own spec/brief**. If it **has screens**, take `holodeck` before filing;
@@ -886,17 +938,42 @@ Scratch inputs go the same way — `.git/lcars/tmp/good.json`, never
 included: start it with `>.git/lcars/tmp/lcars-viewscreen.log` in place of the
 `/tmp` path § 5 shows, and read it back from there.
 
+The **invalid path** is the other one measured to bite. cli checklist item 2
+("Give it bad input, and no input") tells you to feed the product *a path that
+does not exist*, and that path has no location in the checklist either. Give it
+one INSIDE an already-approved folder, from the repository root:
+
+```bash
+<cli> <the-verb-that-takes-a-path> .git/lcars/tmp/not-a-real-path
+```
+
+A path that does not exist **outside** the repository is outside every grant
+**by definition**, so no `--add-dir` can ever cover it — it is not a grant that
+is missing, it is a request that **can never be granted**, which makes an
+out-of-tree bad path a guaranteed stall (measured 2026-10-19: a seat stopped on
+exactly this, on `/missing`). An invalid path inside an approved folder
+exercises the **same error handling** and raises nothing.
+
 Pick **every** type the milestone touches. A CLI that writes a page published by
 a workflow is all three. The items that found the bugs, by name:
 
-- run `--help` and bad input; a subcommand missing from `--help` is a defect
+- run `--help`, and bad input **whose invalid path sits inside an
+  already-approved folder** — `.git/lcars/tmp/not-a-real-path`, never
+  `/missing`. A path that does not exist is outside every grant BY DEFINITION,
+  so no `--add-dir` can ever cover it and an out-of-tree bad path is a
+  GUARANTEED permission stall (measured 2026-10-19, a seat stopped on exactly
+  that). An invalid path inside an approved folder exercises the same
+  error-handling and raises nothing. A subcommand missing from `--help` is a defect
 - **two actors**, two HOMEs
 - **make the identities that usually coincide differ** — owner ≠ login, draft
   name ≠ title
 - **follow one record end to end**, through every real half (no hand-written
   fixture between a producer and its consumer)
 - **check the host of every outbound call**, with a non-default host configured
-- real headless Chrome, and the **400 px iframe** recipe for phone width
+- real headless Chrome — specifically **Google Chrome**, the one the launch
+  grant resolved into `$CHROME_BIN`. Drive that one and no other: a browser
+  outside the grant raises `Allow path access`, and asking for the next name on
+  a list raises it again. Plus the **400 px iframe** recipe for phone width
   (headless will not lay out below 500 px)
 - **read the deployed artifact**, not "deploy succeeded"
 - **re-verify after every fix round with different data**

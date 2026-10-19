@@ -5176,9 +5176,12 @@ check "S305-R5-D9. the copilot grant names the system temp directory, resolved" 
 # checkout's own sibling directory) and S305-R9-D13 an EIGHTH (the on-PATH
 # launcher directory install.sh writes to). The intent asserted here is
 # unchanged -- an ENUMERATED set, never a sweep -- so the count moved and the
-# exact set is asserted in R7-D11, R8-D12 and R9-D13 below. Do not revert to 3.
+# exact set is asserted in R7-D11, R8-D12 and R9-D13 below. S306 added a NINTH
+# -- the directory the resolved headless BROWSER lives in, because § 6.1 requires
+# driving a real one and the grant named none (measured 2026-10-19: a seat was
+# refused Chrome, then asked again for Chromium). Do not revert to 3.
 check "S305-R5-D9. and it is NAMED directories, not a widened sweep" \
-  "[ \"\$(printf '%s\n' \"\$COP_DIRS\" | grep -c .)\" -eq 8 ]"
+  "[ \"\$(printf '%s\n' \"\$COP_DIRS\" | grep -c .)\" -eq 9 ]"
 check "S305-R5-D9. the claude launch line names the sidecar (its cwd is the repo)" \
   "printf '%s\n' \"\$CLA_DIRS\" | qgrep -qF '<holodeck-sidecar>'"
 check "S305-R5-D9. the claude launch line names the system temp directory too" \
@@ -5451,10 +5454,12 @@ check "S305-R7-D11. the copilot grant names the system toolchain, resolved" \
   "[ \"\$(names_toolchain \"\$SETUP_SEC\" copilot)\" = yes ]"
 check "S305-R7-D11. the claude grant names the system toolchain too" \
   "[ \"\$(names_toolchain \"\$SETUP_SEC\" claude)\" = yes ]"
-# The count is 8 since S305-R8-D12 added the launch checkout's sibling directory
-# and S305-R9-D13 the launcher directory on PATH.
+# The count is 9: S305-R8-D12 added the launch checkout's sibling directory,
+# S305-R9-D13 the launcher directory on PATH, and S306 the resolved browser's
+# directory (§ 6.1 requires a real headless browser and the grant named none;
+# measured 2026-10-19).
 check "S305-R7-D11. the copilot grant is still an ENUMERATED set, not a sweep" \
-  "[ \"\$(printf '%s\n' \"\$COP_DIRS\" | grep -c .)\" -eq 8 ] && printf '%s\n' \"\$COP_DIRS\" | qgrep -qF '<product-repo>'"
+  "[ \"\$(printf '%s\n' \"\$COP_DIRS\" | grep -c .)\" -eq 9 ] && printf '%s\n' \"\$COP_DIRS\" | qgrep -qF '<product-repo>'"
 
 # (2) THE LINE NOT CROSSED — $HOME stays out, and the blanket switches stay out.
 check "S305-R7-D11. \$HOME is NOT granted to copilot" \
@@ -5767,10 +5772,11 @@ check "S305-R8-D12. \$HOME is still NOT granted, nor any directory containing it
   "! printf '%s\n' \"\$R8_COP\" \"\$R8_CLA\" | while IFS= read -r d; do [ -n \"\$d\" ] || continue; case \"\$HOME_REAL/\" in \"\$d\"/*) echo hit ;; esac; done | qgrep -q hit"
 check "S305-R8-D12. the grant block still carries NO blanket switch" \
   "! printf '%s\n' \"\$(fence_bash \"\$SETUP_SEC\")\" | qgrep -qE -- '--allow-all-paths|COPILOT_ALLOW_ALL=true|--dangerously-skip-permissions'"
-# Counts moved to 8/7 in S305-R9-D13 (the launcher directory). An enumerated
-# set, as before -- the number is the enumeration, not a sweep.
-check "S305-R8-D12. the grant is still an ENUMERATED set: copilot 8, claude 7" \
-  "[ \"\$(add_dirs \"\$SETUP_SEC\" copilot | grep -c .)\" -eq 8 ] && [ \"\$(add_dirs \"\$SETUP_SEC\" claude | grep -c .)\" -eq 7 ]"
+# Counts moved to 8/7 in S305-R9-D13 (the launcher directory) and to 9/8 in S306
+# (the resolved browser directory § 6.1 needs). An enumerated set, as before --
+# the number is the enumeration, not a sweep.
+check "S305-R8-D12. the grant is still an ENUMERATED set: copilot 9, claude 8" \
+  "[ \"\$(add_dirs \"\$SETUP_SEC\" copilot | grep -c .)\" -eq 9 ] && [ \"\$(add_dirs \"\$SETUP_SEC\" claude | grep -c .)\" -eq 8 ]"
 
 # (5) THE JUSTIFICATION TRAVELS WITH IT. Content checks, claimed as nothing more.
 #     Sliced by its NEIGHBOURS -- it starts after the 6.1-stays paragraph and
@@ -5931,8 +5937,8 @@ check "S305-R9-D13. no grant token hardcodes a user's home path" \
 # (4) STILL SCOPED — the blanket switches stay absent.
 check "S305-R9-D13. the grant block still carries NO blanket switch" \
   "! printf '%s\n' \"\$(fence_bash \"\$SETUP_SEC\")\" | qgrep -qE -- '--allow-all-paths|COPILOT_ALLOW_ALL=true|--dangerously-skip-permissions'"
-check "S305-R9-D13. the grant is still an ENUMERATED set: copilot 8, claude 7" \
-  "[ \"\$(add_dirs \"\$SETUP_SEC\" copilot | grep -c .)\" -eq 8 ] && [ \"\$(add_dirs \"\$SETUP_SEC\" claude | grep -c .)\" -eq 7 ]"
+check "S305-R9-D13. the grant is still an ENUMERATED set: copilot 9, claude 8" \
+  "[ \"\$(add_dirs \"\$SETUP_SEC\" copilot | grep -c .)\" -eq 9 ] && [ \"\$(add_dirs \"\$SETUP_SEC\" claude | grep -c .)\" -eq 8 ]"
 
 # (5) CONTROLS — falsifiable in every direction.
 HOCM_BASE_SHA9="9fb9e0a"
