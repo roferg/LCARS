@@ -5511,6 +5511,186 @@ check "S305-R7-D11. CONTROL: § 6.1 is not a launch grant and fails the predicat
 check "S305-R7-D11. CONTROL: § 7 (Land it) carries no launch grant either" \
   "[ \"\$(names_toolchain \"\$S7\" copilot)\" = no ]"
 
+# ==========================================================================
+# S305-R8-D12 — THE DEPLOY CHECKOUT GOES INSIDE THE REPO, SO IT IS INSIDE THE
+#               GRANT ($LCARS_LAUNCH_ROOT)
+#
+# MEASURED LIVE, 2026-10-18. A Copilot seat on `gpt-6-luna` STALLED FOUR TIMES
+# IN NINETEEN MINUTES; taps 2, 3 and 4 were all ONE cause — the seat blocked
+# READING ITS OWN DEPLOYED CODE. The dialog named
+# `.lcars-launch/<repo>/<mission>/jot/cli.py`, `store.py`, `README.md`.
+# ROOT CAUSE, in the product: `skills/lcars-launch/launch.sh` defaults
+# LAUNCH_ROOT to `$(dirname "$REPO_TOP")/.lcars-launch/$(basename "$REPO_TOP")`
+# — the repo's PARENT directory, which no unattended seat is granted. This is
+# the THIRD instance of one pattern (sidecar, scratch, launch checkout): LCARS
+# places things beside the repo to keep the product tree clean and the scoped
+# grant does not reach them.
+# THE CURE IS NOT A WIDER GRANT. `launch.sh` already honours the override
+# `$LCARS_LAUNCH_ROOT`, so the documented setup exports it at an IN-REPO path
+# and the files move instead of the permissions. `lcars-launch` is untouched.
+#
+# WHAT IS MEASURED HERE, and what is not. NOT a grep for a sentence this session
+# wrote. The documented `export LCARS_LAUNCH_ROOT=` line is EXTRACTED from the
+# playbook, and the `LAUNCH_ROOT=` expression is EXTRACTED FROM THE PRODUCT's own
+# `launch.sh` (never copied into this test, so a change there cannot leave this
+# test asserting a fossil). Both are then EVALUATED inside a throwaway
+# `git init` repo under `mktemp -d`, exactly as launch.sh resolves them
+# (REPO_TOP via `git rev-parse --show-toplevel` then `pwd -P`), and the
+# resulting path is compared against the repo root with BOTH SIDES resolved
+# through `pwd -P` — because on macOS `/tmp` is a symlink to `/private/tmp` and
+# a textual prefix test would be fooled by it.
+# CONTROLS: the SAME expression with the override UNSET must resolve OUTSIDE the
+# throwaway repo (so "inside" is a real discriminator, and the defect is
+# reproduced here rather than asserted); the documented path must not be under
+# `.git/`, which launch.sh refuses; and the PRE-CHANGE playbook, PINNED to the
+# literal commit a59748e (NOT to HEAD — a HEAD-pinned control in this suite went
+# stale the moment its own change landed), must carry no such export and must
+# FAIL the predicate while still being a real, non-empty slice.
+# WHAT IT DOES NOT ESTABLISH: that any seat stalls less. Only a live seat can
+# measure that, and the four stalls above ARE that measurement, not this test.
+# It does not exercise `lcars launch` end to end, does not prove a reader
+# actually exports the line, and says nothing about whether a checkout inside
+# the repo is swept up by a parent's test globs (named as the trade in the
+# passage, not tested here). The prose checks in (4) are content checks and are
+# claimed as nothing more.
+
+# launch_root_export <text> -> the documented export line(s), verbatim.
+launch_root_export() {
+  printf '%s\n' "$1" | grep -E '^[[:space:]]*export[[:space:]]+LCARS_LAUNCH_ROOT='
+}
+# THE PRODUCT's own resolution expression, read out of launch.sh (READ-ONLY).
+LR_SRC="$REPO_ROOT/skills/lcars-launch/launch.sh"
+LR_EXPR="$(grep -m1 '^LAUNCH_ROOT=' "$LR_SRC")"
+echo "    [product expr] $LR_EXPR"
+
+# A throwaway repo, created once and reused by every case below.
+R8REPO="$TMPROOT/r8-repo"
+mkdir -p "$R8REPO"
+( cd "$R8REPO" && git init -q . && git config user.email t@t && git config user.name t ) >/dev/null 2>&1
+R8REAL="$( cd "$R8REPO" && pwd -P )"
+echo "    [throwaway repo] $R8REPO -> $R8REAL"
+
+# resolve_launch_root <export-line-or-empty> -> the LAUNCH_ROOT the product
+# would use in that repo, fully resolved. Empty second case = no override.
+resolve_launch_root() {
+  ( cd "$R8REPO" 2>/dev/null || exit 1
+    unset LCARS_LAUNCH_ROOT
+    GIT_BIN=git
+    REPO_TOP="$(git rev-parse --show-toplevel 2>/dev/null)" || exit 1
+    REPO_TOP="$( cd "$REPO_TOP" && pwd -P )" || exit 1
+    if [ -n "$1" ]; then eval "$1" || exit 1; fi
+    eval "$LR_EXPR" || exit 1
+    mkdir -p "$LAUNCH_ROOT" 2>/dev/null || exit 1
+    ( cd "$LAUNCH_ROOT" && pwd -P ) )
+}
+# inside_repo <path> -> yes|no. Both sides already resolved with pwd -P.
+inside_repo() {
+  case "${1:-}/" in "$R8REAL"/*) echo yes ;; *) echo no ;; esac
+}
+
+R8_EXPORT="$(launch_root_export "$SETUP_SEC")"
+R8_WITH="$(resolve_launch_root "$R8_EXPORT")"
+R8_WITHOUT="$(resolve_launch_root "")"
+echo "    [with override   ] ${R8_WITH:-<unresolved>}"
+echo "    [without override] ${R8_WITHOUT:-<unresolved>}"
+
+# (1) THE EXPRESSION IS THERE AT ALL, in the section that carries the grant.
+check "S305-R8-D12. the setup section exports \$LCARS_LAUNCH_ROOT" \
+  "[ -n \"\$R8_EXPORT\" ]"
+check "S305-R8-D12. exactly one such export (no competing copies to pick between)" \
+  "[ \"\$(printf '%s\n' \"\$R8_EXPORT\" | grep -c .)\" -eq 1 ]"
+check "S305-R8-D12. it rides in the SAME fenced block as the launch grant" \
+  "launch_root_export \"\$(fence_bash \"\$SETUP_SEC\")\" | qgrep -q LCARS_LAUNCH_ROOT"
+
+# (2) THE BEHAVIOUR — evaluate it with the PRODUCT's own expression, in a real
+#     throwaway git repo, and the deploy checkout lands INSIDE that repo.
+check "S305-R8-D12. the product's LAUNCH_ROOT expression was found in launch.sh" \
+  "printf '%s' \"\$LR_EXPR\" | qgrep -qF 'LCARS_LAUNCH_ROOT:-'"
+check "S305-R8-D12. the documented export EVALUATES (it is runnable, not prose)" \
+  "[ -n \"\$R8_WITH\" ]"
+check "S305-R8-D12. BEHAVIOUR: the resolved deploy root is INSIDE the repo" \
+  "[ \"\$(inside_repo \"\$R8_WITH\")\" = yes ]"
+check "S305-R8-D12. and it is NOT the repo root itself (a real subdirectory)" \
+  "[ -n \"\$R8_WITH\" ] && [ \"\$R8_WITH\" != \"\$R8REAL\" ]"
+# launch.sh DIES on any root under .git/ -- file watchers ignore .git, so the
+# scratch home of 6.1 is not available to the checkout. Prove the path dodges it.
+check "S305-R8-D12. the resolved root is NOT under .git/ (launch.sh refuses those)" \
+  "case \"/\$R8_WITH/\" in */.git/*) false ;; *) true ;; esac"
+
+# (3) THE CONTROLS — the predicate is falsifiable and the defect reproduces.
+check "S305-R8-D12. CONTROL: the default expression resolves at all" \
+  "[ -n \"\$R8_WITHOUT\" ]"
+check "S305-R8-D12. CONTROL: with the override UNSET it lands OUTSIDE the repo" \
+  "[ \"\$(inside_repo \"\$R8_WITHOUT\")\" = no ]"
+check "S305-R8-D12. CONTROL: and OUTSIDE is the repo's PARENT — the measured shape" \
+  "[ \"\$R8_WITHOUT\" != \"\${R8_WITHOUT#\$(dirname \"\$R8REAL\")/}\" ]"
+check "S305-R8-D12. CONTROL: so the two differ (the export is what moves it)" \
+  "[ \"\$R8_WITH\" != \"\$R8_WITHOUT\" ]"
+# PINNED to the literal pre-change commit, NOT HEAD: HEAD stops being
+# "pre-change" the instant this lands, which is how R6-D10's control went stale.
+HOCM_BASE_SHA8="a59748e"
+HOCM_PREV8="$TMPROOT/hocm-prev-r8.md"
+( cd "$REPO_ROOT" && git show "$HOCM_BASE_SHA8:skills/lcars-eeh/HOLOGRAM-COMMAND-MODE.md" ) >"$HOCM_PREV8" 2>/dev/null || :
+SETUP_PREV8="$(hocm_sec_f "$HOCM_PREV8" '^## Unattended Copilot setup' '^## Unattended Copilot commands')"
+check "S305-R8-D12. CONTROL: the pre-change playbook is readable at $HOCM_BASE_SHA8" \
+  "[ -s \"\$HOCM_PREV8\" ]"
+check "S305-R8-D12. CONTROL: the pre-change setup section is a real, non-empty slice" \
+  "[ -n \"\$SETUP_PREV8\" ] && [ -n \"\$(add_dirs \"\$SETUP_PREV8\" copilot)\" ]"
+check "S305-R8-D12. CONTROL: the PRE-CHANGE section carries NO such export" \
+  "[ -z \"\$(launch_root_export \"\$SETUP_PREV8\")\" ]"
+check "S305-R8-D12. CONTROL: so the pre-change playbook FAILS the predicate" \
+  "[ \"\$(inside_repo \"\$(resolve_launch_root \"\$(launch_root_export \"\$SETUP_PREV8\")\")\")\" = no ]"
+check "S305-R8-D12. CONTROL: strip the export and the live playbook goes red too" \
+  "[ \"\$(inside_repo \"\$(resolve_launch_root \"\$(launch_root_export \"\$(printf '%s\n' \"\$SETUP_SEC\" | grep -v LCARS_LAUNCH_ROOT)\")\")\")\" = no ]"
+check "S305-R8-D12. CONTROL: a deliberately-parent export is caught as outside" \
+  "[ \"\$(inside_repo \"\$(resolve_launch_root 'export LCARS_LAUNCH_ROOT=\"\$(dirname \"\$REPO_TOP\")/.lcars-launch\"')\")\" = no ]"
+check "S305-R8-D12. CONTROL: and a hand-written in-repo export is caught as inside" \
+  "[ \"\$(inside_repo \"\$(resolve_launch_root 'export LCARS_LAUNCH_ROOT=\"\$REPO_TOP/.probe-launch\"')\")\" = yes ]"
+check "S305-R8-D12. CONTROL: lcars-launch itself is UNCHANGED by this cure (still defaults to the parent)" \
+  "[ \"\$(cd \"\$REPO_ROOT\" && git show \"\$HOCM_BASE_SHA8:skills/lcars-launch/launch.sh\" | grep -c '^LAUNCH_ROOT=')\" -eq 1 ] && [ \"\$(cd \"\$REPO_ROOT\" && git show \"\$HOCM_BASE_SHA8:skills/lcars-launch/launch.sh\" | grep -m1 '^LAUNCH_ROOT=')\" = \"\$LR_EXPR\" ]"
+
+# (4) THE JUSTIFICATION TRAVELS WITH IT. Content checks, claimed as nothing more.
+#     Sliced by its NEIGHBOURS -- it starts after the 6.1-stays paragraph and
+#     runs to the end of the section -- so these cannot pass on text the
+#     section already carried.
+LR_PARA="$(printf '%s\n' "$SETUP_SEC" | awk '/^\*\*Why the deploy checkout goes inside the repo/{f=1} f')"
+LR_FLAT="$(printf '%s\n' "$LR_PARA" | tr '\n' ' ' | tr -s ' ')"
+echo "    [launch-root slice] $(printf '%s\n' "$LR_PARA" | grep -c .) non-blank lines"
+check "S305-R8-D12. the justification slice is non-empty (a real slice)" \
+  "[ -n \"\$LR_PARA\" ] && [ \"\$(printf '%s\n' \"\$LR_PARA\" | grep -c .)\" -ge 10 ]"
+check "S305-R8-D12. CONTROL: that slice did NOT exist pre-change" \
+  "[ -z \"\$(printf '%s\n' \"\$SETUP_PREV8\" | awk '/^\*\*Why the deploy checkout goes inside the repo/{f=1} f')\" ]"
+check "S305-R8-D12. it carries the measurement: four stalls in nineteen minutes" \
+  "printf '%s\n' \"\$LR_FLAT\" | qgrep -qiF 'four times' && printf '%s\n' \"\$LR_FLAT\" | qgrep -qiF 'nineteen minutes'"
+check "S305-R8-D12. it names the model the stalls were measured on" \
+  "printf '%s\n' \"\$LR_FLAT\" | qgrep -qF 'gpt-6-luna'"
+check "S305-R8-D12. it says three of the four were this one cause" \
+  "printf '%s\n' \"\$LR_FLAT\" | qgrep -qiE 'three of the four'"
+check "S305-R8-D12. it says the seat was blocked on its OWN DEPLOYED files" \
+  "printf '%s\n' \"\$LR_FLAT\" | qgrep -qiE 'own deployed code|own deployed files'"
+check "S305-R8-D12. it names the parent directory as the default location" \
+  "printf '%s\n' \"\$LR_FLAT\" | qgrep -qiF 'parent'"
+check "S305-R8-D12. it says WHY NOT to grant the parent: every sibling repository" \
+  "printf '%s\n' \"\$LR_FLAT\" | qgrep -qiE 'every sibling repositor'"
+check "S305-R8-D12. and that the grant is therefore UNCHANGED — the files move" \
+  "printf '%s\n' \"\$LR_FLAT\" | qgrep -qiE 'files move|move instead'"
+check "S305-R8-D12. it says why not .git/lcars/tmp — launch refuses roots under .git" \
+  "printf '%s\n' \"\$LR_FLAT\" | qgrep -qF '.git/lcars/tmp' && printf '%s\n' \"\$LR_FLAT\" | qgrep -qiF 'refuses'"
+check "S305-R8-D12. it names the trade it does not pretend away (test globs)" \
+  "printf '%s\n' \"\$LR_FLAT\" | qgrep -qiF 'glob'"
+check "S305-R8-D12. it points at the SIBLING cases so a reader sees the pattern" \
+  "printf '%s\n' \"\$LR_FLAT\" | qgrep -qiE 'third instance' && printf '%s\n' \"\$LR_FLAT\" | qgrep -qiF 'sidecar'"
+check "S305-R8-D12. and it points back at the in-repo scratch rule by name" \
+  "printf '%s\n' \"\$LR_FLAT\" | qgrep -qE '6\\.1'"
+check "S305-R8-D12. the cure claims NO new permission (that is the whole point)" \
+  "printf '%s\n' \"\$LR_FLAT\" | qgrep -qiE 'no new permission'"
+check "S305-R8-D12. the grant line itself still carries NO blanket switch" \
+  "! printf '%s\n' \"\$(fence_bash \"\$SETUP_SEC\")\" | qgrep -qE -- '--allow-all-paths|COPILOT_ALLOW_ALL=true|--dangerously-skip-permissions'"
+check "S305-R8-D12. CONTROL: no new --add-dir was smuggled in (copilot still 6)" \
+  "[ \"\$(add_dirs \"\$SETUP_SEC\" copilot | grep -c .)\" -eq 6 ]"
+check "S305-R8-D12. CONTROL: and claude still 5" \
+  "[ \"\$(add_dirs \"\$SETUP_SEC\" claude | grep -c .)\" -eq 5 ]"
+
 echo
 echo "=== lcars-ech: $pass passed, $fail failed ==="
 [ "$fail" -eq 0 ]
