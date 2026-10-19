@@ -433,18 +433,29 @@ sidecar. A hand-authored `mockup.html` attached at CLI filing is an
 **attachment-only** path: it never passes through the surface, so the Holodeck
 stays empty. **State which path you took.**
 
-**You never hand a design over by hand.** Not by writing the brief into the
-mission's PRD yourself, not by pasting the sidecar paths in, not with a better
-version of the boilerplate than the one `promote` injects. The hand-off is ONE
-call — `POST /api/holodeck/<sessionId>/promote`, step 5 below — and nothing
-else is one. Writing it yourself reproduces the content and skips the
-bookkeeping, so it is not **equivalent**, however faithful it reads: measured,
-a seat did exactly this and got the RIGHT BUILD with NO RECORD — no
-`Sent to Align:` line in the transcript, the room never marked handed over and
-read-only, nothing tying the Mission to the Program it came from, the
-viewscreen unable to draw the connection. That leaves a real hand-off
-indistinguishable from no hand-off at all, which is the exact failure class
-this whole mode exists to remove.
+**Hand the design over with `promote` — the hand-off is what gives the Mission
+its own copy of the design.** `POST /api/holodeck/<sessionId>/promote` (step 5
+below) drafts the brief; filing the mission AS that hand-off — the same
+`sessionId` threaded into the filing call, `POST /api/mission` with
+`{"idea": "<the brief>", "holodeck": "<sessionId>"}` — **copies** the room's
+`mockup.html` and `concept.md` into the Mission's own `attachments/` dir and
+lists them in its `prd.md`, which is the GitHub issue body. The Mission OWNS
+the design: delete the sidecar and the build still has its drawing. The record
+rides along for free — the `Sent to Align:` line, the room marked handed over
+and read-only, the link the viewscreen draws back to the Program.
+
+Writing the brief yourself is **not equivalent**, however faithful it reads,
+because it copies nothing. The Mission is left BORROWING a file that lives
+outside the product tree, by absolute path: end the room, move or clean the
+sidecar, or hand that path to a worker that cannot read it, and the build
+silently loses its design with every stage still green. The record goes missing
+too, which makes a real hand-off indistinguishable from no hand-off at all.
+
+**Measured: three seats in a row read the first wording of this rule and
+hand-wrote the brief anyway** — two built the right thing with no record, one
+abandoned its design and never filed at all — because the only cost it named
+was bookkeeping. The cost is the copy. A fourth seat, the same model behind a
+different CLI, called `promote` twice: this is a choice, not a limit.
 
 **HOW TO CALL IT: the Holodeck is HTTP on the viewscreen daemon.**
 `holodeck_start` / `holodeck_say` / `holodeck_end` are **not shell verbs** —

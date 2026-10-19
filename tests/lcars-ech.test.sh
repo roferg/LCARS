@@ -4981,13 +4981,26 @@ ACTPY="$REPO_ROOT/web/lcars_serve/actions.py"
 hocm_section() { awk -v s="$1" -v e="$2" '$0 ~ s {f=1} f && $0 ~ e {exit} f' "$HOCM"; }
 
 # has_handoff_rule <text> -> yes|no. All three facets or it is not the rule:
-# the prohibition, the call that replaces it, and the record that goes missing.
+# the thing `promote` does that nothing else does (it COPIES the design into the
+# Mission's own `attachments/` — S305-R6-D10's rewrite), the call that does it,
+# and the record that goes missing without it. The first facet was the
+# prohibition's own sentence until R6; it is now the consequence that sentence
+# left out, because the prohibition was measured not to work.
 has_handoff_rule() {
   local t="$1"
-  printf '%s\n' "$t" | qgrep -qiE 'never hand (a|the) design over by hand' || { echo no; return; }
+  printf '%s\n' "$t" | qgrep -qF 'attachments/' || { echo no; return; }
   printf '%s\n' "$t" | qgrep -qF '/promote' || { echo no; return; }
   printf '%s\n' "$t" | qgrep -qiF 'Sent to Align' || { echo no; return; }
   echo yes
+}
+
+# THE RULE'S OWN PASSAGE, sliced by its NEIGHBOURS and not by its own words: it
+# is whatever sits between the end of the which-path paragraph and the start of
+# the curl walkthrough. That boundary is what makes the facet checks below
+# non-tautological — the slice is defined by text the rule does not own, so a
+# rewrite that drops a facet goes red instead of moving the goalposts.
+hocm_rule_block() {
+  awk '/State which path you took/ {f=1; next} /HOW TO CALL IT/ {exit} f' "${1:-$HOCM}"
 }
 # has_merge_rule <text> -> yes|no. The precedent this rule is written to match,
 # used here only as a discriminator for the slicer.
@@ -5008,7 +5021,7 @@ check "S305-R4-D8. the hand-off prohibition sits in § 4, with promote" \
   "[ \"\$(has_handoff_rule \"\$S4\")\" = yes ]"
 
 # ORDERING: a seat reading § 4 top-down meets the rule BEFORE the promote line.
-RULE_LN="$(printf '%s\n' "$S4" | grep -niE 'never hand (a|the) design over by hand' | head -1 | cut -d: -f1)"
+RULE_LN="$(printf '%s\n' "$S4" | grep -nF 'attachments/' | head -1 | cut -d: -f1)"
 PROM_LN="$(printf '%s\n' "$S4" | grep -nE 'curl .*api/holodeck/.*/promote' | head -1 | cut -d: -f1)"
 echo "    [§ 4 line offsets] rule=${RULE_LN:-none} promote-curl=${PROM_LN:-none}"
 check "S305-R4-D8. and it is read BEFORE the promote call, not after it" \
@@ -5019,8 +5032,8 @@ check "S305-R4-D8. and it is read BEFORE the promote call, not after it" \
 # vacuous: step 5's own comment already names the route. So the rule's own
 # paragraph is cut out (the contiguous non-blank run around the prohibition)
 # and the three questions are put to THAT.
-RULEPARA="$(awk 'BEGIN{RS=""} tolower($0) ~ /never hand (a|the) design over by hand/' <<<"$S4")"
-check "S305-R4-D8. the rule is one self-contained paragraph, extractable" \
+RULEPARA="$(hocm_rule_block)"
+check "S305-R4-D8. the rule block is extractable from its neighbours" \
   "[ -n \"\$RULEPARA\" ]"
 check "S305-R4-D8. the RULE itself names the route the playbook documents" \
   "printf '%s\n' \"\$RULEPARA\" | qgrep -qF '/api/holodeck/<sessionId>/promote'"
@@ -5056,7 +5069,7 @@ check "S305-R4-D8. CONTROL: and the merge precedent is NOT in § 4" \
 # (4) ANTI-VACUITY — strip the added rule out of § 4 and the predicate must go
 # red. This is what proves the green above comes from the new text and not from
 # something § 4 already said.
-S4_STRIPPED="$(printf '%s\n' "$S4" | grep -viE 'never hand (a|the) design over by hand|indistinguishable from no hand-?off')"
+S4_STRIPPED="$(printf '%s\n' "$S4" | grep -viE 'attachments/|indistinguishable from no hand-?off')"
 check "S305-R4-D8. CONTROL: § 4 with the prohibition stripped out fails the predicate" \
   "[ \"\$(has_handoff_rule \"\$S4_STRIPPED\")\" = no ]"
 check "S305-R4-D8. CONTROL: and the strip left the rest of § 4 intact" \
@@ -5219,6 +5232,112 @@ check "S305-R5-D9. CONTROL: § 6.1's section is not a launch grant and fails the
   "[ \"\$(names_scratch \"\$S6\" copilot)\" = no ]"
 check "S305-R5-D9. CONTROL: § 7 (Land it) carries no launch grant either" \
   "[ \"\$(names_scratch \"\$S7\" copilot)\" = no ]"
+
+# ───────────────────────────────────────────────────────────────────────────────
+# S305-R6-D10 — THE HAND-OFF RULE LEADS WITH THE DURABLE COPY, NOT THE RECORD
+#
+# WHY IT WAS REWRITTEN. R4-D8 put the rule in the file as a PROHIBITION whose
+# reason was bookkeeping — a missing `Sent to Align:` line, a room not marked
+# read-only, a connection the viewscreen cannot draw. MEASURED since it
+# shipped, three seats in a row ignored it: `claude`/Opus drew the design then
+# wrote the brief itself referencing the sidecar by absolute path;
+# `copilot`/`gpt-6.1-sol` drew it, abandoned it and never filed a mission at
+# all; `claude`/Sonnet drew it, hand-wrote the brief against `concept.md` and
+# `mockup.html` by path, and built the work. A seat shipping working software
+# weighs a missing label as small and proceeds — so the wording was giving it
+# the WEAK reason.
+#
+# THE STRONG REASON, measured the same day and absent from R4's wording:
+# `promote` threads the program's `mockup.html` + `concept.md` down the
+# `--attach` road, and `file.sh` COPIES each one into the Mission's own
+# `attachments/attachment-NN.<ext>` and lists it in `prd.md` (which is the
+# GitHub issue body) by RELATIVE path. The Mission OWNS the design. A
+# hand-written brief copies nothing and leaves the Mission borrowing a file
+# outside the product tree.
+#
+# WHAT THIS MEASURES: that the rewritten passage (a) names that copy and the
+# route that makes it, (b) puts the copy AHEAD of the bookkeeping inside the
+# passage, so the headline is the engineering consequence, (c) names what is
+# lost by hand and keeps the three-seat measurement that forced the rewrite,
+# and (d) is TRUE of the product — asserted against file.sh and actions.py
+# read-only, not against this brief. Controls: the PRE-CHANGE passage at HEAD
+# fails the predicate, the sections that never carried the rule fail it, and
+# stripping the new lines turns it red.
+# WHAT IT DOES NOT ESTABLISH: that a live seat now calls `promote`. Three seats
+# ignored the last wording and no grep can tell whether this one lands — only
+# the next seats can. "Leads with" is also measured as TEXT ORDER within the
+# passage, which is a proxy for emphasis, not emphasis itself.
+FILESH="$REPO_ROOT/skills/lcars-file/file.sh"
+RULEBLK="$(hocm_rule_block)"
+
+check "S305-R6-D10. the rule block is non-empty and sits before the promote curl" \
+  "[ -n \"\$RULEBLK\" ] && [ \"\$(grep -nF 'attachments/' '$HOCM' | head -1 | cut -d: -f1)\" -lt \"\$(grep -nE 'curl .*api/holodeck/.*/promote' '$HOCM' | head -1 | cut -d: -f1)\" ]"
+
+# (a) THE DURABLE COPY, named, with the route that makes it.
+check "S305-R6-D10. it names the Mission's own attachments/ dir" \
+  "printf '%s\n' \"\$RULEBLK\" | qgrep -qF \"attachments/\""
+check "S305-R6-D10. it names the two files that ride (mockup.html, concept.md)" \
+  "printf '%s\n' \"\$RULEBLK\" | qgrep -qF 'mockup.html' && printf '%s\n' \"\$RULEBLK\" | qgrep -qF 'concept.md'"
+check "S305-R6-D10. it says the Mission OWNS a copy / keeps it if the sidecar goes" \
+  "printf '%s\n' \"\$RULEBLK\" | qgrep -qiE 'copies|copy' && printf '%s\n' \"\$RULEBLK\" | qgrep -qiF 'sidecar'"
+
+# (b) POSITIVE LEAD, AND THE COPY AHEAD OF THE BOOKKEEPING. The passage used to
+# open 'You never hand a design over by hand'; the captain's correction was that
+# a prohibition does not sell the reader on what it gains. So: the FIRST line
+# names the call, and does not open with 'never'.
+LEAD="$(printf '%s\n' "$RULEBLK" | grep -v '^[[:space:]]*$' | head -1)"
+echo "    [rule lead] ${LEAD}"
+check "S305-R6-D10. the LEAD line names promote (a positive instruction)" \
+  "printf '%s\n' \"\$LEAD\" | qgrep -qF 'promote'"
+check "S305-R6-D10. the LEAD line does not open as a prohibition" \
+  "printf '%s\n' \"\$LEAD\" | qgrep -qivE 'never|do not|don.t'"
+COPY_LN="$(printf '%s\n' "$RULEBLK" | grep -nF 'attachments/' | head -1 | cut -d: -f1)"
+BOOK_LN="$(printf '%s\n' "$RULEBLK" | grep -niF 'Sent to Align' | head -1 | cut -d: -f1)"
+echo "    [rule offsets] attachments=${COPY_LN:-none} Sent-to-Align=${BOOK_LN:-none}"
+check "S305-R6-D10. the durable copy comes BEFORE the bookkeeping in the passage" \
+  "[ -n \"\$COPY_LN\" ] && [ -n \"\$BOOK_LN\" ] && [ \"\$COPY_LN\" -lt \"\$BOOK_LN\" ]"
+
+# (c) WHAT IS LOST BY HAND, and the measurement that forced the rewrite.
+check "S305-R6-D10. it says a hand-written brief copies NOTHING" \
+  "printf '%s\n' \"\$RULEBLK\" | qgrep -qiE 'copies nothing|copies NOTHING'"
+check "S305-R6-D10. it says the brief then depends on a file outside the repo" \
+  "printf '%s\n' \"\$RULEBLK\" | qgrep -qiE 'outside the (product tree|repo)'"
+check "S305-R6-D10. it says the design can be lost SILENTLY" \
+  "printf '%s\n' \"\$RULEBLK\" | qgrep -qiF 'silently'"
+check "S305-R6-D10. it keeps the measurement: three seats ignored the last wording" \
+  "printf '%s\n' \"\$RULEBLK\" | qgrep -qiE 'three seats'"
+check "S305-R6-D10. it still pre-empts 'a faithful brief is equivalent'" \
+  "printf '%s\n' \"\$RULEBLK\" | qgrep -qiF 'equivalent'"
+check "S305-R6-D10. it is still tight — the passage is under 30 lines" \
+  "[ \"\$(printf '%s\n' \"\$RULEBLK\" | wc -l | tr -d ' ')\" -lt 30 ]"
+
+# (d) CROSS-CHECK AGAINST THE PRODUCT, read-only. The claim the rule now leads
+# with is an implementation claim, so it is asserted of the implementation.
+check "S305-R6-D10. CROSS-CHECK: promote's hand-off set really is mockup.html + concept.md" \
+  "qgrep -qF '_HANDOFF_FILES = (\"mockup.html\", _CONCEPT)' '$ACTPY' && qgrep -qF '_CONCEPT = \"concept.md\"' '$ACTPY'"
+check "S305-R6-D10. CROSS-CHECK: those files ride the --attach road into filing" \
+  "qgrep -qF 'args += [\"--attach\", p]' '$ACTPY'"
+check "S305-R6-D10. CROSS-CHECK: file.sh COPIES each --attach into attachments/attachment-NN" \
+  "qgrep -qF 'attachments/attachment-%02d' '$FILESH' && qgrep -qF 'cp \"\$asrc\" \"\$MISSION_DIR/\$arel\"' '$FILESH'"
+check "S305-R6-D10. CROSS-CHECK: and lists them in prd.md, the issue body, by relative path" \
+  "qgrep -qF 'lcars_attach_prd_section \"\${ATTACH_RELS[@]}\" >>\"\$MISSION_DIR/prd.md\"' '$FILESH'"
+
+# (e) CONTROLS. The predicate must be falsifiable, and it must have been FALSE
+# before this change — that is what proves it is not a grep for text already
+# present. HEAD's copy of the playbook is the pre-change text.
+HOCM_PREV="$TMPROOT/hocm-prev.md"
+( cd "$REPO_ROOT" && git show HEAD:skills/lcars-eeh/HOLOGRAM-COMMAND-MODE.md ) >"$HOCM_PREV" 2>/dev/null || :
+check "S305-R6-D10. CONTROL: the pre-change playbook is readable at HEAD" \
+  "[ -s \"\$HOCM_PREV\" ]"
+check "S305-R6-D10. CONTROL: the PRE-CHANGE passage FAILS the predicate" \
+  "[ \"\$(has_handoff_rule \"\$(hocm_rule_block \"\$HOCM_PREV\")\")\" = no ]"
+check "S305-R6-D10. CONTROL: and the pre-change passage was non-empty (a real slice)" \
+  "[ -n \"\$(hocm_rule_block \"\$HOCM_PREV\")\" ]"
+RULEBLK_STRIPPED="$(printf '%s\n' "$RULEBLK" | grep -viE 'attachments/|copies nothing|three seats')"
+check "S305-R6-D10. CONTROL: strip the new claims and the predicate goes red" \
+  "[ \"\$(has_handoff_rule \"\$RULEBLK_STRIPPED\")\" = no ]"
+check "S305-R6-D10. CONTROL: § 6, which never carried this rule, fails it" \
+  "[ \"\$(has_handoff_rule \"\$S6\")\" = no ]"
 
 echo
 echo "=== lcars-ech: $pass passed, $fail failed ==="
