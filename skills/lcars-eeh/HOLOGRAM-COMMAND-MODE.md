@@ -65,10 +65,16 @@ grant itself anything:
 copilot --model <model> --allow-all-tools \
         --add-dir <product-repo> \
         --add-dir <holodeck-sidecar> \
-        --add-dir /tmp
-# claude — its cwd IS the repo already, so only the other two need naming
+        --add-dir /tmp \
+        --add-dir /usr/bin \
+        --add-dir /bin \
+        --add-dir /usr/sbin
+# claude — its cwd IS the repo already, so only the others need naming
 claude --add-dir <holodeck-sidecar> \
-       --add-dir /tmp
+       --add-dir /tmp \
+       --add-dir /usr/bin \
+       --add-dir /bin \
+       --add-dir /usr/sbin
 ```
 
 Grant whichever directory your seat's `mktemp` and `>` targets really land in —
@@ -94,6 +100,36 @@ genuinely wider than granting the repo alone, and it is not free. It is also
 like `COPILOT_ALLOW_ALL`, which trusts a directory and therefore loads its
 skills, hooks and MCP servers too. Decide it for your own environment; drop it
 and expect a weaker seat to stall on its own scratch instead.
+
+**Why the system toolchain is in there.** Measured 2026-10-18: a live seat on
+`gpt-6-luna` stalled asking permission to use `/usr/bin/time` — a standard
+system binary — because the grant named the repo, the sidecar, the LCARS source
+and `/tmp`, but not the directories ordinary system commands live in. That is an
+unattended run frozen on a dialog nobody is awake to answer, over `time`. The
+reasons this is a narrow grant, each one checked on the host it was written on:
+
+- `/usr/bin`, `/bin` and `/usr/sbin` are `root:wheel`, mode `drwxr-xr-x`, and
+  **not writable** by the user a seat runs as; `[ -w /usr/bin ]` is false.
+- **System Integrity Protection is enabled** (`csrutil status`), which forbids
+  writes there even to root. Two independent levels, so **for writes the grant
+  is close to a no-op.**
+- It **adds no capability.** The seat already executes all 932 of `/usr/bin`'s
+  tools through the shell; granting the directory removes a *prompt*, not a
+  barrier.
+- The danger named above is that trust "also loads its skills, plugins, MCP
+  servers and hooks, **including hooks that run shell commands**" — executable
+  configuration. A directory of root-owned system binaries carries none of that
+  to load.
+- It is a **launch flag**: scoped to that run, persists nothing, and leaves no
+  trusted-directory record behind.
+
+**The line this does NOT cross: `$HOME` stays ungranted, deliberately.** The
+system toolchain and the home directory are **different kinds of grant** and
+must not be weighed the same way. `$HOME` is **user-writable**; it holds
+**credentials**, keys and every other project on the machine; and it *does*
+carry loadable configuration (`~/.claude/`, `~/.copilot/`, their hooks and MCP
+servers) — so every argument above fails for it, one by one. If you take one
+thing from this passage, take that distinction.
 
 **§ 6.1 stays either way — belt and braces.** In-repo scratch is still the
 better hygiene: it keeps the product tree clean and leaves the evidence beside

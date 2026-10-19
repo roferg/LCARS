@@ -5171,8 +5171,12 @@ check "S305-R5-D9. the copilot grant names the Holodeck sidecar" \
   "printf '%s\n' \"\$COP_DIRS\" | qgrep -qF '<holodeck-sidecar>'"
 check "S305-R5-D9. the copilot grant names the system temp directory, resolved" \
   "[ \"\$(names_scratch \"\$SETUP_SEC\" copilot)\" = yes ]"
-check "S305-R5-D9. and it is THREE named directories, not a widened sweep" \
-  "[ \"\$(printf '%s\n' \"\$COP_DIRS\" | grep -c .)\" -eq 3 ]"
+# S305-R7-D11 widened the grant to six NAMED directories (the system toolchain
+# joined repo/sidecar/scratch). The intent asserted here is unchanged -- an
+# ENUMERATED set, never a sweep -- so the count moved and the exact set is
+# asserted in R7-D11 below. Do not revert to 3.
+check "S305-R5-D9. and it is NAMED directories, not a widened sweep" \
+  "[ \"\$(printf '%s\n' \"\$COP_DIRS\" | grep -c .)\" -eq 6 ]"
 check "S305-R5-D9. the claude launch line names the sidecar (its cwd is the repo)" \
   "printf '%s\n' \"\$CLA_DIRS\" | qgrep -qF '<holodeck-sidecar>'"
 check "S305-R5-D9. the claude launch line names the system temp directory too" \
@@ -5325,9 +5329,12 @@ check "S305-R6-D10. CROSS-CHECK: and lists them in prd.md, the issue body, by re
 # (e) CONTROLS. The predicate must be falsifiable, and it must have been FALSE
 # before this change — that is what proves it is not a grep for text already
 # present. HEAD's copy of the playbook is the pre-change text.
+# S305-R7-D11: PINNED. This read HEAD, which was the pre-change commit while R6
+# was being written and stopped being it the moment R6 landed -- the control then
+# fails for the wrong reason. 7548ee4 is R6's real parent and stays pre-change.
 HOCM_PREV="$TMPROOT/hocm-prev.md"
-( cd "$REPO_ROOT" && git show HEAD:skills/lcars-eeh/HOLOGRAM-COMMAND-MODE.md ) >"$HOCM_PREV" 2>/dev/null || :
-check "S305-R6-D10. CONTROL: the pre-change playbook is readable at HEAD" \
+( cd "$REPO_ROOT" && git show 7548ee4:skills/lcars-eeh/HOLOGRAM-COMMAND-MODE.md ) >"$HOCM_PREV" 2>/dev/null || :
+check "S305-R6-D10. CONTROL: the pre-change playbook is readable at 7548ee4" \
   "[ -s \"\$HOCM_PREV\" ]"
 check "S305-R6-D10. CONTROL: the PRE-CHANGE passage FAILS the predicate" \
   "[ \"\$(has_handoff_rule \"\$(hocm_rule_block \"\$HOCM_PREV\")\")\" = no ]"
@@ -5338,6 +5345,171 @@ check "S305-R6-D10. CONTROL: strip the new claims and the predicate goes red" \
   "[ \"\$(has_handoff_rule \"\$RULEBLK_STRIPPED\")\" = no ]"
 check "S305-R6-D10. CONTROL: § 6, which never carried this rule, fails it" \
   "[ \"\$(has_handoff_rule \"\$S6\")\" = no ]"
+
+# ───────────────────────────────────────────────────────────────────────────────
+# S305-R7-D11 — THE LAUNCH GRANT NAMES THE SYSTEM TOOLCHAIN TOO
+#
+# MEASURED LIVE, 2026-10-18. A Copilot seat on `gpt-6-luna` STALLED asking
+# permission to use `/usr/bin/time` — a standard system binary — because the
+# documented grant named the product repo, the Holodeck sidecar, the LCARS
+# source and /tmp, but not the directories ordinary system commands live in.
+# That freezes an unattended run on a dialog nobody is awake to answer. R5-D9
+# fixed the same class for the seat's own scratch; this is the same fix for the
+# tools it runs. The grant is the PRODUCT half: a stranger who launches the
+# hologram from this playbook has to get the grant the measurement rig gets, or
+# the measurement passes green and the shipped product still stalls.
+#
+# WHAT IS MEASURED HERE, and what is not. Not a grep for a sentence this session
+# wrote: the documented launch block is EXTRACTED, its backslash continuations
+# joined, its `--add-dir` values PARSED OUT as argv tokens, each token EVALUATED
+# and RESOLVED with `pwd -P`, and the resolved set compared against this host's
+# real /usr/bin, /bin and /usr/sbin — for BOTH CLIs the mode supports. The
+# blanket switches must still be ABSENT, and $HOME must NOT be among the
+# resolved grants (nor any directory containing it), because that is the line
+# the passage says it does not cross. Controls: the PRE-CHANGE block at HEAD
+# must FAIL the predicate and must be a real, non-empty slice; stripping the new
+# grant lines must turn it red; and sections that carry no launch grant fail it.
+# WHAT IT DOES NOT ESTABLISH: that any seat stalls less — only a live seat can
+# measure that, and the /usr/bin/time stall above is that measurement, not this
+# test. It cannot establish that a reader launches with the line as written, nor
+# that the grant covers whatever binary a future model reaches for. The prose
+# assertions in (3) are content checks and are claimed as nothing more; they say
+# the justification is present, not that it convinces anyone.
+
+# hocm_sec_f <file> <start-re> <end-re> — hocm_section against an ARBITRARY file,
+# so the pre-change playbook can be sliced the same way as the live one.
+hocm_sec_f() { awk -v s="$2" -v e="$3" '$0 ~ s {f=1} f && $0 ~ e {exit} f' "$1"; }
+
+TC_REAL=""
+for d in /usr/bin /bin /usr/sbin; do TC_REAL="$TC_REAL $(cd "$d" && pwd -P)"; done
+HOME_REAL="$(cd "$HOME" && pwd -P)"
+echo "    [this host] toolchain ->$TC_REAL ; \$HOME -> $HOME_REAL"
+
+# resolved_dirs <text> <cli> — every --add-dir value on that cli's launch line
+# that is a real directory, resolved through symlinks. Placeholders are skipped.
+resolved_dirs() {
+  local tok p
+  while IFS= read -r tok; do
+    case "$tok" in *'<'*|'') continue ;; esac
+    p="$(eval "printf '%s' $tok" 2>/dev/null)" || continue
+    [ -d "$p" ] || continue
+    ( cd "$p" && pwd -P )
+  done <<EOF7
+$(add_dirs "$1" "$2")
+EOF7
+}
+# names_toolchain <text> <cli> -> yes|no. ALL THREE system dirs must be granted.
+names_toolchain() {
+  local got; got="$(resolved_dirs "$1" "$2")"
+  local d
+  for d in $TC_REAL; do
+    printf '%s\n' "$got" | qgrep -qxF "$d" || { echo no; return; }
+  done
+  echo yes
+}
+# grants_home <text> <cli> -> yes|no. True if $HOME, or any directory that
+# CONTAINS it, is among the resolved grants.
+grants_home() {
+  local got d; got="$(resolved_dirs "$1" "$2")"
+  while IFS= read -r d; do
+    [ -n "$d" ] || continue
+    case "$HOME_REAL/" in "$d"/*) echo yes; return ;; esac
+  done <<EOF8
+$got
+EOF8
+  echo no
+}
+
+# TC_PARA — the NEW justification passage only, sliced out of the setup section.
+# The prose assertions below run against THIS, not the whole section, so a phrase
+# the section already carried (e.g. the skills/plugins/MCP/hooks reasoning) cannot
+# make a check pass by accident. That is exactly how a vacuous assertion gets in.
+TC_PARA="$(printf '%s\n' "$SETUP_SEC" | awk '/\*\*Why the system toolchain is in there/{f=1} f && /^\*\*. 6\.1 stays either way/{exit} f')"
+# TC_FLAT — the same passage with its line breaks folded. Markdown wraps prose at
+# column ~80, so a phrase like "not a barrier" is split across two lines and a
+# per-line grep would miss text that is genuinely there. The claim is about the
+# passage's WORDS, not its line breaks, so the multi-word checks use this.
+TC_FLAT="$(printf '%s\n' "$TC_PARA" | tr '\n' ' ' | tr -s ' ')"
+echo "    [justification slice] $(printf '%s\n' "$TC_PARA" | grep -c .) non-blank lines, $(printf '%s' "$TC_FLAT" | wc -c | tr -d ' ') chars folded"
+# The POSITIVE CONTROL's baseline. PINNED to the commit this change was built on,
+# NOT to HEAD: HEAD ceases to be "pre-change" the instant this lands, which is
+# precisely how R6-D10's HEAD-based control went stale (see its note).
+HOCM_BASE_SHA="380fb3f"
+HOCM_PREV7="$TMPROOT/hocm-prev-r7.md"
+( cd "$REPO_ROOT" && git show "$HOCM_BASE_SHA:skills/lcars-eeh/HOLOGRAM-COMMAND-MODE.md" ) >"$HOCM_PREV7" 2>/dev/null || :
+SETUP_PREV="$(hocm_sec_f "$HOCM_PREV7" '^## Unattended Copilot setup' '^## Unattended Copilot commands')"
+echo "    [copilot resolved] $(resolved_dirs "$SETUP_SEC" copilot | tr '\n' ' ')"
+echo "    [claude  resolved] $(resolved_dirs "$SETUP_SEC" claude  | tr '\n' ' ')"
+
+# (1) THE CHANGE ITSELF — the toolchain is granted, for both CLIs, by resolved path.
+check "S305-R7-D11. the copilot grant names the system toolchain, resolved" \
+  "[ \"\$(names_toolchain \"\$SETUP_SEC\" copilot)\" = yes ]"
+check "S305-R7-D11. the claude grant names the system toolchain too" \
+  "[ \"\$(names_toolchain \"\$SETUP_SEC\" claude)\" = yes ]"
+check "S305-R7-D11. the copilot grant is still an ENUMERATED set, not a sweep" \
+  "[ \"\$(printf '%s\n' \"\$COP_DIRS\" | grep -c .)\" -eq 6 ] && printf '%s\n' \"\$COP_DIRS\" | qgrep -qF '<product-repo>'"
+
+# (2) THE LINE NOT CROSSED — $HOME stays out, and the blanket switches stay out.
+check "S305-R7-D11. \$HOME is NOT granted to copilot" \
+  "[ \"\$(grants_home \"\$SETUP_SEC\" copilot)\" = no ]"
+check "S305-R7-D11. \$HOME is NOT granted to claude" \
+  "[ \"\$(grants_home \"\$SETUP_SEC\" claude)\" = no ]"
+check "S305-R7-D11. no grant token is \$HOME or /Users/<user> textually either" \
+  "! printf '%s\n' \"\$COP_DIRS\" \"\$CLA_DIRS\" | qgrep -qE '^(\\\$HOME|~|/Users/[^/]+)/?$'"
+check "S305-R7-D11. the launch line still carries NO blanket switch" \
+  "! printf '%s\n' \"\$GRANT_LINES\" | qgrep -qE -- '--allow-all-paths|COPILOT_ALLOW_ALL=true|--dangerously-skip-permissions'"
+
+# (3) THE JUSTIFICATION TRAVELS WITH IT — a widened grant with no reason gets
+# reverted by the next reader. Content assertions, claimed as nothing more.
+check "S305-R7-D11. the justification slice is non-empty (a real slice)" \
+  "[ -n \"\$TC_PARA\" ] && [ \"\$(printf '%s\n' \"\$TC_PARA\" | grep -c .)\" -ge 10 ]"
+check "S305-R7-D11. it names the measured stall that forced it (/usr/bin/time)" \
+  "printf '%s\n' \"\$TC_PARA\" | qgrep -qF '/usr/bin/time'"
+check "S305-R7-D11. it says the toolchain dirs are root-owned and not writable" \
+  "printf '%s\n' \"\$TC_FLAT\" | qgrep -qiF 'root' && printf '%s\n' \"\$TC_FLAT\" | qgrep -qiE 'not writable|non-writable'"
+check "S305-R7-D11. it cites System Integrity Protection as the second level" \
+  "printf '%s\n' \"\$TC_PARA\" | qgrep -qiF 'System Integrity Protection'"
+check "S305-R7-D11. it says the grant adds no CAPABILITY, only removes a prompt" \
+  "printf '%s\n' \"\$TC_FLAT\" | qgrep -qiE 'adds no capability' && printf '%s\n' \"\$TC_FLAT\" | qgrep -qiE 'not a barrier'"
+# This phrase ALREADY existed in the section (the COPILOT_ALLOW_ALL explanation),
+# so asserting it section-wide would be vacuous -- it passed before the change.
+# Asserted against TC_PARA it means the new passage ECHOES the section's own
+# reasoning instead of inventing a parallel argument, which is the actual ask.
+check "S305-R7-D11. the new passage reuses the section's OWN trust reasoning" \
+  "printf '%s\n' \"\$TC_FLAT\" | qgrep -qiF 'skills, plugins, MCP servers and hooks'"
+check "S305-R7-D11. CONTROL: that phrase pre-dates the change (so section-wide would be vacuous)" \
+  "printf '%s\n' \"\$SETUP_PREV\" | tr '\n' ' ' | tr -s ' ' | qgrep -qiF 'skills, plugins, MCP servers and hooks'"
+check "S305-R7-D11. it says a launch flag is scoped to the run and persists nothing" \
+  "printf '%s\n' \"\$TC_PARA\" | qgrep -qiF 'launch flag' && printf '%s\n' \"\$TC_PARA\" | qgrep -qiF 'persists nothing'"
+check "S305-R7-D11. it states PROMINENTLY that \$HOME stays ungranted" \
+  "printf '%s\n' \"\$TC_FLAT\" | qgrep -qiE 'HOME. (stays|remains) ungranted'"
+check "S305-R7-D11. and says why: user-writable, credentials, loadable configuration" \
+  "printf '%s\n' \"\$TC_PARA\" | qgrep -qiF 'user-writable' && printf '%s\n' \"\$TC_PARA\" | qgrep -qiF 'credentials'"
+check "S305-R7-D11. it says the two are DIFFERENT KINDS of grant" \
+  "printf '%s\n' \"\$TC_FLAT\" | qgrep -qiE 'different kinds of grant'"
+
+# (4) CONTROLS — the predicate is falsifiable, and it was FALSE before this change.
+check "S305-R7-D11. CONTROL: the pre-change playbook is readable at $HOCM_BASE_SHA" \
+  "[ -s \"\$HOCM_PREV7\" ]"
+check "S305-R7-D11. CONTROL: the pre-change setup section is a real, non-empty slice" \
+  "[ -n \"\$SETUP_PREV\" ] && [ -n \"\$(add_dirs \"\$SETUP_PREV\" copilot)\" ]"
+check "S305-R7-D11. CONTROL: the PRE-CHANGE copilot grant FAILS the predicate" \
+  "[ \"\$(names_toolchain \"\$SETUP_PREV\" copilot)\" = no ]"
+check "S305-R7-D11. CONTROL: and so does the pre-change claude grant" \
+  "[ \"\$(names_toolchain \"\$SETUP_PREV\" claude)\" = no ]"
+check "S305-R7-D11. CONTROL: but the pre-change block DID name the scratch dir (slice is sound)" \
+  "[ \"\$(names_scratch \"\$SETUP_PREV\" copilot)\" = yes ]"
+SETUP_TC_STRIPPED="$(printf '%s\n' "$SETUP_SEC" | grep -vE -- '--add-dir (/usr/bin|/bin|/usr/sbin)')"
+check "S305-R7-D11. CONTROL: strip the toolchain lines and copilot goes red" \
+  "[ \"\$(names_toolchain \"\$SETUP_TC_STRIPPED\" copilot)\" = no ]"
+check "S305-R7-D11. CONTROL: and claude goes red too" \
+  "[ \"\$(names_toolchain \"\$SETUP_TC_STRIPPED\" claude)\" = no ]"
+check "S305-R7-D11. CONTROL: the strip left the repo and scratch grants standing" \
+  "printf '%s\n' \"\$(add_dirs \"\$SETUP_TC_STRIPPED\" copilot)\" | qgrep -qF '<product-repo>' && [ \"\$(names_scratch \"\$SETUP_TC_STRIPPED\" copilot)\" = yes ]"
+check "S305-R7-D11. CONTROL: § 6.1 is not a launch grant and fails the predicate" \
+  "[ \"\$(names_toolchain \"\$S6\" copilot)\" = no ]"
+check "S305-R7-D11. CONTROL: § 7 (Land it) carries no launch grant either" \
+  "[ \"\$(names_toolchain \"\$S7\" copilot)\" = no ]"
 
 echo
 echo "=== lcars-ech: $pass passed, $fail failed ==="
