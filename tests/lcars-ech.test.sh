@@ -5172,12 +5172,13 @@ check "S305-R5-D9. the copilot grant names the Holodeck sidecar" \
 check "S305-R5-D9. the copilot grant names the system temp directory, resolved" \
   "[ \"\$(names_scratch \"\$SETUP_SEC\" copilot)\" = yes ]"
 # S305-R7-D11 widened the grant to six NAMED directories (the system toolchain
-# joined repo/sidecar/scratch), and S305-R8-D12 added a SEVENTH (the launch
-# checkout's own sibling directory). The intent asserted here is unchanged -- an
-# ENUMERATED set, never a sweep -- so the count moved and the exact set is
-# asserted in R7-D11 and R8-D12 below. Do not revert to 3.
+# joined repo/sidecar/scratch), S305-R8-D12 added a SEVENTH (the launch
+# checkout's own sibling directory) and S305-R9-D13 an EIGHTH (the on-PATH
+# launcher directory install.sh writes to). The intent asserted here is
+# unchanged -- an ENUMERATED set, never a sweep -- so the count moved and the
+# exact set is asserted in R7-D11, R8-D12 and R9-D13 below. Do not revert to 3.
 check "S305-R5-D9. and it is NAMED directories, not a widened sweep" \
-  "[ \"\$(printf '%s\n' \"\$COP_DIRS\" | grep -c .)\" -eq 7 ]"
+  "[ \"\$(printf '%s\n' \"\$COP_DIRS\" | grep -c .)\" -eq 8 ]"
 check "S305-R5-D9. the claude launch line names the sidecar (its cwd is the repo)" \
   "printf '%s\n' \"\$CLA_DIRS\" | qgrep -qF '<holodeck-sidecar>'"
 check "S305-R5-D9. the claude launch line names the system temp directory too" \
@@ -5450,9 +5451,10 @@ check "S305-R7-D11. the copilot grant names the system toolchain, resolved" \
   "[ \"\$(names_toolchain \"\$SETUP_SEC\" copilot)\" = yes ]"
 check "S305-R7-D11. the claude grant names the system toolchain too" \
   "[ \"\$(names_toolchain \"\$SETUP_SEC\" claude)\" = yes ]"
-# The count is 7 since S305-R8-D12 added the launch checkout's sibling directory.
+# The count is 8 since S305-R8-D12 added the launch checkout's sibling directory
+# and S305-R9-D13 the launcher directory on PATH.
 check "S305-R7-D11. the copilot grant is still an ENUMERATED set, not a sweep" \
-  "[ \"\$(printf '%s\n' \"\$COP_DIRS\" | grep -c .)\" -eq 7 ] && printf '%s\n' \"\$COP_DIRS\" | qgrep -qF '<product-repo>'"
+  "[ \"\$(printf '%s\n' \"\$COP_DIRS\" | grep -c .)\" -eq 8 ] && printf '%s\n' \"\$COP_DIRS\" | qgrep -qF '<product-repo>'"
 
 # (2) THE LINE NOT CROSSED — $HOME stays out, and the blanket switches stay out.
 check "S305-R7-D11. \$HOME is NOT granted to copilot" \
@@ -5765,8 +5767,10 @@ check "S305-R8-D12. \$HOME is still NOT granted, nor any directory containing it
   "! printf '%s\n' \"\$R8_COP\" \"\$R8_CLA\" | while IFS= read -r d; do [ -n \"\$d\" ] || continue; case \"\$HOME_REAL/\" in \"\$d\"/*) echo hit ;; esac; done | qgrep -q hit"
 check "S305-R8-D12. the grant block still carries NO blanket switch" \
   "! printf '%s\n' \"\$(fence_bash \"\$SETUP_SEC\")\" | qgrep -qE -- '--allow-all-paths|COPILOT_ALLOW_ALL=true|--dangerously-skip-permissions'"
-check "S305-R8-D12. the grant is still an ENUMERATED set: copilot 7, claude 6" \
-  "[ \"\$(add_dirs \"\$SETUP_SEC\" copilot | grep -c .)\" -eq 7 ] && [ \"\$(add_dirs \"\$SETUP_SEC\" claude | grep -c .)\" -eq 6 ]"
+# Counts moved to 8/7 in S305-R9-D13 (the launcher directory). An enumerated
+# set, as before -- the number is the enumeration, not a sweep.
+check "S305-R8-D12. the grant is still an ENUMERATED set: copilot 8, claude 7" \
+  "[ \"\$(add_dirs \"\$SETUP_SEC\" copilot | grep -c .)\" -eq 8 ] && [ \"\$(add_dirs \"\$SETUP_SEC\" claude | grep -c .)\" -eq 7 ]"
 
 # (5) THE JUSTIFICATION TRAVELS WITH IT. Content checks, claimed as nothing more.
 #     Sliced by its NEIGHBOURS -- it starts after the 6.1-stays paragraph and
@@ -5801,6 +5805,225 @@ check "S305-R8-D12. and it points back at the in-repo scratch rule by name" \
   "printf '%s\n' \"\$LR_FLAT\" | qgrep -qE '6\\.1'"
 check "S305-R8-D12. it warns the directory may not exist yet and must be created first" \
   "printf '%s\n' \"\$LR_FLAT\" | qgrep -qiE 'may not exist' && printf '%s\n' \"\$LR_FLAT\" | qgrep -qiE 'is not a grant|create it first|created before'"
+
+# ==========================================================================
+# S305-R9-D13 — THE LAUNCHER DIRECTORY install.sh WRITES TO IS GRANTED BY NAME
+#               (one named child of $HOME; $HOME itself still refused)
+#
+# MEASURED, and the measurement REVERSED an earlier call. `install.sh` puts the
+# `lcars-ech` / `lcars-eeh` launchers on PATH in its bin destination
+# ($LCARS_BIN_DEST, default ~/.local/bin) and a seat drives the whole round
+# through them. Across EIGHT runs that cost exactly ONE stall, and that one was
+# a seat GLOB-LISTING the directory to see what was installed — a browse, not
+# blocked work; INVOKING the launchers through PATH never prompted at all,
+# 27-103 invocations per seat. So it was deliberately left out of the grant.
+# 2026-10-19 reversed that. Read out of the seats' own logs, ANSI stripped and
+# dialog boxes counted by their BODY text (inside the box, never near it --
+# paths near a box have produced false findings today):
+#   * seat copilot-sol-cured, the single earlier stall: the box body is
+#     `/Users/<user>/.local/bin/lcars*` -- A GLOB. That is the browse we waived.
+#   * seat copilot-luna-4 (`gpt-6-luna`, the clean run): the box body is
+#     `/Users/<user>/.local/bin/lcars-ech` -- THE LAUNCHER FILE ITSELF, no glob,
+#     the command the seat runs. It froze the run until it was answered.
+# HONEST COUNT: ONE such box is in that log as read at 00:41, the run still
+# live. The brief that ordered this change reported two back to back at
+# 00:31/00:32; the second is NOT in the log and is claimed neither here nor in
+# the playbook. One is enough -- the waiver was conditional on the stall not
+# BLOCKING, and a glob listing does not block while the launcher file does.
+#
+# WHAT IS MEASURED HERE, and what is not. NOT a grep for a sentence this session
+# wrote. The documented launch block's `--add-dir` values are parsed out as real
+# argv tokens (comments dropped, continuations joined), the block's own setup
+# lines are EVALUATED first so a variable token resolves the way a reader's
+# shell would, each token is resolved with `pwd -P`, and the resolved set must
+# contain the launcher directory EXACTLY -- for BOTH CLIs. Exactly, not by
+# containment: granting $HOME would "cover" ~/.local/bin and must NOT pass. The
+# two $HOME claims are kept apart deliberately and do not contradict: nothing
+# granted may EQUAL $HOME (nor contain it), while the launcher directory being
+# UNDER $HOME is the expected shape and is asserted positively.
+# CONTROLS: the PRE-CHANGE playbook, PINNED to the literal commit 9fb9e0a (not
+# HEAD -- a HEAD-pinned control in this suite went stale the moment its own
+# change landed), must FAIL the predicate for both CLIs while still passing the
+# older toolchain predicate, so the slice is sound; stripping the new token must
+# go red; a block granting $HOME ITSELF must be caught as wrong (and must not
+# satisfy this predicate by covering it); and a hand-written launcher grant must
+# be caught as RIGHT, so a `no` cannot be the predicate simply never saying yes.
+# WHAT IT DOES NOT ESTABLISH: that any seat stalls less -- only a live seat can
+# measure that, and the two back-to-back stalls above ARE that measurement, not
+# this test. It does not run a CLI, does not prove a reader launches with the
+# line as written, and it is HOST-DEPENDENT: if this host had no launcher
+# directory the predicate could only answer `no`, so its existence is asserted
+# first rather than assumed. The prose checks in (6) are content checks and are
+# claimed as nothing more.
+
+# THE REAL LAUNCHER DIRECTORY on this host, taken from install.sh's OWN variable
+# and its own default. Never a hardcoded /Users/<name>: a seat failed today by
+# guessing a username from a GitHub login.
+LAUNCHER_DEFAULT="$(sed -n 's/^[[:space:]]*DEFAULT_BIN_DEST="\(.*\)"$/\1/p' "$REPO_ROOT/install.sh" | grep -F '.local/bin' | head -1)"
+[ -n "$LAUNCHER_DEFAULT" ] || LAUNCHER_DEFAULT='$HOME/.local/bin'
+LAUNCHER_CAND="${LCARS_BIN_DEST:-}"
+[ -n "$LAUNCHER_CAND" ] || LAUNCHER_CAND="$(eval "printf '%s' \"$LAUNCHER_DEFAULT\"")"
+LAUNCHER_REAL=""
+[ -d "$LAUNCHER_CAND" ] && LAUNCHER_REAL="$( cd "$LAUNCHER_CAND" && pwd -P )"
+echo "    [install.sh default] ${LAUNCHER_DEFAULT:-<unread>} ; [this host] launcher dir -> ${LAUNCHER_REAL:-<absent>}"
+
+# grants_launcher <text> <cli> -> yes|no. Yes iff some --add-dir token, resolved
+# AFTER the block's own setup lines have been evaluated, is EXACTLY the launcher
+# directory. granted_dirs (R8-D12) does that evaluation; reused deliberately.
+grants_launcher() {
+  local d
+  [ -n "$LAUNCHER_REAL" ] || { echo no; return; }
+  while IFS= read -r d; do
+    [ -n "$d" ] || continue
+    [ "$d" = "$LAUNCHER_REAL" ] && { echo yes; return; }
+  done <<EOFR9
+$(granted_dirs "$1" "$2")
+EOFR9
+  echo no
+}
+# grants_home_itself <text> <cli> -> yes|no. Yes iff a granted directory IS
+# $HOME. Distinct from grants_home (R7-D11), which asks whether a granted
+# directory CONTAINS $HOME.
+grants_home_itself() {
+  local d
+  while IFS= read -r d; do
+    [ -n "$d" ] || continue
+    [ "$d" = "$HOME_REAL" ] && { echo yes; return; }
+  done <<EOFR9B
+$(granted_dirs "$1" "$2")
+EOFR9B
+  echo no
+}
+
+# (0) THE TEST IS NOT VACUOUS ON THIS HOST.
+check "S305-R9-D13. install.sh's own bin-dest default was read out of install.sh" \
+  "printf '%s' \"\$LAUNCHER_DEFAULT\" | qgrep -qF '.local/bin'"
+check "S305-R9-D13. the launcher directory exists on this host (predicate can answer yes)" \
+  "[ -n \"\$LAUNCHER_REAL\" ]"
+check "S305-R9-D13. and it really holds a launcher install.sh wrote" \
+  "[ -f \"\$LAUNCHER_REAL/lcars-ech\" ] || [ -f \"\$LAUNCHER_REAL/lcars-eeh\" ]"
+
+# (1) THE CHANGE ITSELF — granted, for BOTH CLIs, by resolved path.
+check "S305-R9-D13. BEHAVIOUR: the copilot grant names the launcher directory, resolved" \
+  "[ \"\$(grants_launcher \"\$SETUP_SEC\" copilot)\" = yes ]"
+check "S305-R9-D13. BEHAVIOUR: and so does the claude grant" \
+  "[ \"\$(grants_launcher \"\$SETUP_SEC\" claude)\" = yes ]"
+
+# (2) THE SHAPE: a named CHILD of $HOME, which is not the same thing as $HOME.
+#     Asserted positively so it cannot be read as contradicting (3).
+check "S305-R9-D13. the launcher directory IS under \$HOME — expected, and fine" \
+  "case \"\$LAUNCHER_REAL/\" in \"\$HOME_REAL\"/*) true ;; *) false ;; esac"
+check "S305-R9-D13. and it is NOT \$HOME itself" \
+  "[ \"\$LAUNCHER_REAL\" != \"\$HOME_REAL\" ]"
+
+# (3) THE LINE STILL NOT CROSSED — nothing granted IS $HOME, nothing CONTAINS it.
+check "S305-R9-D13. no granted directory IS \$HOME (copilot)" \
+  "[ \"\$(grants_home_itself \"\$SETUP_SEC\" copilot)\" = no ]"
+check "S305-R9-D13. no granted directory IS \$HOME (claude)" \
+  "[ \"\$(grants_home_itself \"\$SETUP_SEC\" claude)\" = no ]"
+check "S305-R9-D13. and none CONTAINS \$HOME either (R7-D11's predicate, re-run)" \
+  "[ \"\$(grants_home \"\$SETUP_SEC\" copilot)\" = no ] && [ \"\$(grants_home \"\$SETUP_SEC\" claude)\" = no ]"
+check "S305-R9-D13. the \$HOME-stays-ungranted sentence SURVIVED this change" \
+  "printf '%s\n' \"\$SETUP_SEC\" | tr '\n' ' ' | tr -s ' ' | qgrep -qiE 'HOME. (stays|remains) ungranted'"
+check "S305-R9-D13. no grant token hardcodes a user's home path" \
+  "! printf '%s\n' \"\$COP_DIRS\" \"\$CLA_DIRS\" | qgrep -qE '^\"?/(Users|home)/[^/\$]'"
+
+# (4) STILL SCOPED — the blanket switches stay absent.
+check "S305-R9-D13. the grant block still carries NO blanket switch" \
+  "! printf '%s\n' \"\$(fence_bash \"\$SETUP_SEC\")\" | qgrep -qE -- '--allow-all-paths|COPILOT_ALLOW_ALL=true|--dangerously-skip-permissions'"
+check "S305-R9-D13. the grant is still an ENUMERATED set: copilot 8, claude 7" \
+  "[ \"\$(add_dirs \"\$SETUP_SEC\" copilot | grep -c .)\" -eq 8 ] && [ \"\$(add_dirs \"\$SETUP_SEC\" claude | grep -c .)\" -eq 7 ]"
+
+# (5) CONTROLS — falsifiable in every direction.
+HOCM_BASE_SHA9="9fb9e0a"
+HOCM_PREV9="$TMPROOT/hocm-prev-r9.md"
+( cd "$REPO_ROOT" && git show "$HOCM_BASE_SHA9:skills/lcars-eeh/HOLOGRAM-COMMAND-MODE.md" ) >"$HOCM_PREV9" 2>/dev/null || :
+SETUP_PREV9="$(hocm_sec_f "$HOCM_PREV9" '^## Unattended Copilot setup' '^## Unattended Copilot commands')"
+check "S305-R9-D13. CONTROL: the pre-change playbook is readable at $HOCM_BASE_SHA9" \
+  "[ -s \"\$HOCM_PREV9\" ]"
+check "S305-R9-D13. CONTROL: the pre-change setup section is a real, non-empty slice" \
+  "[ -n \"\$SETUP_PREV9\" ] && [ -n \"\$(add_dirs \"\$SETUP_PREV9\" copilot)\" ]"
+check "S305-R9-D13. CONTROL: the PRE-CHANGE playbook FAILS the predicate (copilot)" \
+  "[ \"\$(grants_launcher \"\$SETUP_PREV9\" copilot)\" = no ]"
+check "S305-R9-D13. CONTROL: and FAILS it for claude too" \
+  "[ \"\$(grants_launcher \"\$SETUP_PREV9\" claude)\" = no ]"
+check "S305-R9-D13. CONTROL: but the pre-change block DID name the toolchain (slice is sound)" \
+  "[ \"\$(names_toolchain \"\$SETUP_PREV9\" copilot)\" = yes ]"
+R9_STRIPPED="$(printf '%s\n' "$SETUP_SEC" | grep -v 'LAUNCHER_DIR')"
+check "S305-R9-D13. CONTROL: the strip really removed lines" \
+  "[ \"\$(printf '%s\n' \"\$R9_STRIPPED\" | wc -l)\" -lt \"\$(printf '%s\n' \"\$SETUP_SEC\" | wc -l)\" ]"
+check "S305-R9-D13. CONTROL: strip the new token and copilot goes red" \
+  "[ \"\$(grants_launcher \"\$R9_STRIPPED\" copilot)\" = no ]"
+check "S305-R9-D13. CONTROL: and claude goes red too" \
+  "[ \"\$(grants_launcher \"\$R9_STRIPPED\" claude)\" = no ]"
+check "S305-R9-D13. CONTROL: the strip left the rest of the grant standing" \
+  "printf '%s\n' \"\$(add_dirs \"\$R9_STRIPPED\" copilot)\" | qgrep -qF '<product-repo>' && [ \"\$(names_toolchain \"\$R9_STRIPPED\" copilot)\" = yes ]"
+# A token that is $HOME ITSELF is the wrong grant and must be caught -- both as
+# a $HOME grant, and as NOT satisfying this predicate by merely covering it.
+R9_FAKE_HOME="\`\`\`bash
+copilot --allow-all-tools --add-dir \"\$HOME\"
+\`\`\`"
+check "S305-R9-D13. CONTROL: a token that is \$HOME itself is caught as a \$HOME grant" \
+  "[ \"\$(grants_home_itself \"\$R9_FAKE_HOME\" copilot)\" = yes ]"
+check "S305-R9-D13. CONTROL: and granting \$HOME does NOT satisfy this predicate by covering it" \
+  "[ \"\$(grants_launcher \"\$R9_FAKE_HOME\" copilot)\" = no ]"
+check "S305-R9-D13. CONTROL: R7-D11's containment predicate catches it too (not vacuous)" \
+  "[ \"\$(grants_home \"\$R9_FAKE_HOME\" copilot)\" = yes ]"
+# POSITIVE CONTROL: a hand-written launcher grant is caught as RIGHT.
+R9_FAKE_OK="\`\`\`bash
+LAUNCHER_DIR=\"\${LCARS_BIN_DEST:-\$HOME/.local/bin}\"
+copilot --allow-all-tools --add-dir \"\$LAUNCHER_DIR\"
+\`\`\`"
+check "S305-R9-D13. CONTROL: a hand-written launcher grant is caught as right" \
+  "[ \"\$(grants_launcher \"\$R9_FAKE_OK\" copilot)\" = yes ]"
+check "S305-R9-D13. CONTROL: and it is not a \$HOME grant" \
+  "[ \"\$(grants_home_itself \"\$R9_FAKE_OK\" copilot)\" = no ] && [ \"\$(grants_home \"\$R9_FAKE_OK\" copilot)\" = no ]"
+check "S305-R9-D13. CONTROL: § 6.1 is not a launch grant and fails the predicate" \
+  "[ \"\$(grants_launcher \"\$S6\" copilot)\" = no ]"
+check "S305-R9-D13. CONTROL: § 7 (Land it) carries no launch grant either" \
+  "[ \"\$(grants_launcher \"\$S7\" copilot)\" = no ]"
+
+# (6) THE JUSTIFICATION TRAVELS WITH IT — sliced to the NEW passage only, which
+#     starts after R8-D12's "third instance" paragraph, so a phrase the section
+#     already carried (e.g. "user-writable", "launch flag") cannot pass by
+#     accident. Content checks, claimed as nothing more.
+LD_PARA="$(printf '%s\n' "$SETUP_SEC" | awk '/^\*\*Why the launcher directory/{f=1} f')"
+LD_FLAT="$(printf '%s\n' "$LD_PARA" | tr '\n' ' ' | tr -s ' ')"
+echo "    [launcher slice] $(printf '%s\n' "$LD_PARA" | grep -c .) non-blank lines"
+check "S305-R9-D13. the justification slice is non-empty (a real slice)" \
+  "[ -n \"\$LD_PARA\" ] && [ \"\$(printf '%s\n' \"\$LD_PARA\" | grep -c .)\" -ge 10 ]"
+check "S305-R9-D13. CONTROL: that slice did NOT exist pre-change" \
+  "[ -z \"\$(printf '%s\n' \"\$SETUP_PREV9\" | awk '/^\*\*Why the launcher directory/{f=1} f')\" ]"
+check "S305-R9-D13. it carries the measurement that was there before: one stall across eight runs" \
+  "printf '%s\n' \"\$LD_FLAT\" | qgrep -qiF 'eight' && printf '%s\n' \"\$LD_FLAT\" | qgrep -qiE 'one stall|exactly .*one'"
+check "S305-R9-D13. and says that one was a BROWSE, not blocked work" \
+  "printf '%s\n' \"\$LD_FLAT\" | qgrep -qiE 'listing|browse'"
+# What CHANGED the call. The claim asserted is the one the log supports: the
+# dialog named the launcher FILE, not a glob, and it BLOCKED. "Two back to back"
+# is deliberately NOT asserted -- only one such box is in the seat's log, and a
+# test must not demand prose the evidence does not carry.
+check "S305-R9-D13. it carries what CHANGED the call: a BLOCKING stall, not a browse" \
+  "printf '%s\n' \"\$LD_FLAT\" | qgrep -qiE 'froze the run|blocked the run' && printf '%s\n' \"\$LD_FLAT\" | qgrep -qiF 'no glob'"
+check "S305-R9-D13. and that the dialog named the LAUNCHER FILE itself" \
+  "printf '%s\n' \"\$LD_FLAT\" | qgrep -qiE 'launcher file' && printf '%s\n' \"\$LD_FLAT\" | qgrep -qF 'lcars-ech'"
+check "S305-R9-D13. it names the model the stalls were measured on" \
+  "printf '%s\n' \"\$LD_FLAT\" | qgrep -qF 'gpt-6-luna'"
+check "S305-R9-D13. it says this is the directory install.sh itself writes to" \
+  "printf '%s\n' \"\$LD_FLAT\" | qgrep -qF 'install.sh' && printf '%s\n' \"\$LD_FLAT\" | qgrep -qF 'LCARS_BIN_DEST'"
+check "S305-R9-D13. it states the trade: this directory IS user-writable" \
+  "printf '%s\n' \"\$LD_FLAT\" | qgrep -qiF 'user-writable'"
+check "S305-R9-D13. and says plainly that it is WEAKER than the toolchain's argument" \
+  "printf '%s\n' \"\$LD_FLAT\" | qgrep -qiE 'weaker' && printf '%s\n' \"\$LD_FLAT\" | qgrep -qiF '/usr/bin'"
+check "S305-R9-D13. it does not BORROW the toolchain reasoning — it says that fails here" \
+  "printf '%s\n' \"\$LD_FLAT\" | qgrep -qiE 'fails here|do not borrow'"
+check "S305-R9-D13. the mitigations are named: the reader's own dir, deliberately installed" \
+  "printf '%s\n' \"\$LD_FLAT\" | qgrep -qiE \"reader.s .*own\" && printf '%s\n' \"\$LD_FLAT\" | qgrep -qiF 'deliberately'"
+check "S305-R9-D13. and that it is a launch flag that persists nothing" \
+  "printf '%s\n' \"\$LD_FLAT\" | qgrep -qiF 'launch flag' && printf '%s\n' \"\$LD_FLAT\" | qgrep -qiF 'persists nothing'"
+check "S305-R9-D13. it re-states that \$HOME is still refused, and why a child is not its parent" \
+  "printf '%s\n' \"\$LD_FLAT\" | qgrep -qiE 'HOME. is still refused' && printf '%s\n' \"\$LD_FLAT\" | qgrep -qiE 'not its parent'"
+check "S305-R9-D13. it is still ONE NAMED directory, said so" \
+  "printf '%s\n' \"\$LD_FLAT\" | qgrep -qiE 'one named director'"
 
 echo
 echo "=== lcars-ech: $pass passed, $fail failed ==="

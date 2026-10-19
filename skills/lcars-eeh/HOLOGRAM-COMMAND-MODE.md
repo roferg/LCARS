@@ -67,11 +67,16 @@ grant itself anything:
 # sidecar's own grant does.
 LAUNCH_ROOT="$(dirname "$(git rev-parse --show-toplevel)")/.lcars-launch"
 mkdir -p "$LAUNCH_ROOT"
+# `install.sh` puts the `lcars-ech` / `lcars-eeh` launchers on PATH in its bin
+# destination, and the seat runs them constantly — so name that directory too.
+# Resolved from install.sh's own variable, never a hardcoded /Users/<name>.
+LAUNCHER_DIR="${LCARS_BIN_DEST:-$HOME/.local/bin}"
 # copilot — the working directory is NOT trusted by the flag, so name the repo
 copilot --model <model> --allow-all-tools \
         --add-dir <product-repo> \
         --add-dir <holodeck-sidecar> \
         --add-dir "$LAUNCH_ROOT" \
+        --add-dir "$LAUNCHER_DIR" \
         --add-dir /tmp \
         --add-dir /usr/bin \
         --add-dir /bin \
@@ -79,6 +84,7 @@ copilot --model <model> --allow-all-tools \
 # claude — its cwd IS the repo already, so only the others need naming
 claude --add-dir <holodeck-sidecar> \
        --add-dir "$LAUNCH_ROOT" \
+       --add-dir "$LAUNCHER_DIR" \
        --add-dir /tmp \
        --add-dir /usr/bin \
        --add-dir /bin \
@@ -178,6 +184,42 @@ launch checkout — and a scoped grant does not reach any of them. All three are
 cured the same way: name that one directory, create it first, change nothing
 about where the files go. When a seat stalls on a path it created itself, check
 that list first.
+
+**Why the launcher directory is in there.** `install.sh` puts the `lcars-ech`
+and `lcars-eeh` launchers on PATH in its bin destination — `$LCARS_BIN_DEST`,
+default `~/.local/bin` — and a seat drives a whole round through them. Measured
+across **eight** runs that cost exactly **one stall**, and that one was a seat
+*listing* the directory (`~/.local/bin/lcars*`, a glob) to see what was
+installed — a browse, not blocked work. *Invoking* the launchers through PATH
+never prompted at all, 27–103 invocations a seat. So it was deliberately left
+out of the grant.
+
+**2026-10-19 reversed that.** On a clean `gpt-6-luna` seat the "Allow path
+access" dialog named **the launcher file itself** — `~/.local/bin/lcars-ech`,
+no glob, the command the seat runs — and it **froze the run** until somebody
+answered. A grant that saves a *browse* is optional; one that unblocks the
+command a seat reaches for every few minutes is not.
+
+**It is the directory `install.sh` itself writes to**, so a reader who installed
+LCARS the normal way already has it, and nothing new has to be created in order
+to grant it. If your launchers live somewhere else, grant that directory
+instead — `command -v lcars-ech` says which one it is.
+
+**The honest trade, and it is weaker than the toolchain's.** Do not borrow the
+`/usr/bin` argument above: every limb of it fails here. This directory **is
+user-writable** by the seat; there is no `root:wheel` ownership and no System
+Integrity Protection over it, and anything written there lands on `$PATH`. What
+is true instead is smaller, and worth stating plainly rather than dressing up:
+it is the reader's **own** directory, holding software they installed
+**deliberately**, and it is a **launch flag** — scoped to that run, it
+**persists nothing** and leaves no trusted-directory record. That is the whole
+case for it. It is still **one named directory**, never `--allow-all-paths` and
+never `COPILOT_ALLOW_ALL`.
+
+**`$HOME` is still refused**, and granting a directory *inside* it changes
+nothing about that. `~/.local/bin` holds launchers; `$HOME` holds credentials,
+keys, every other project on the machine, and the loadable configuration under
+`~/.claude/` and `~/.copilot/`. One named child is **not its parent**.
 
 ## Unattended Copilot commands: start at the repository root and write downward
 
