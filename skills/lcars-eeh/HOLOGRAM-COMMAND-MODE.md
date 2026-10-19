@@ -77,12 +77,15 @@ LAUNCHER_DIR="${LCARS_BIN_DEST:-$HOME/.local/bin}"
 # Chromium). Resolve exactly ONE, BY A CHECK rather than a hardcoded path — a
 # stranger's machine may not have the browser this one has — and grant the
 # directory it was found in. Google Chrome first; the first match wins and no
-# second browser is ever tried.
+# second browser is ever tried. The two `command -v` probes deliberately do NOT
+# discard to `/dev/null` — a discard inside a `$(...)` is the stall § 6's rule
+# forbids, and this file does not model what it forbids. `command -v` is silent
+# when it finds nothing, so there is nothing to discard.
 CHROME_BIN=""
 for c in "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" \
          "/Applications/Chromium.app/Contents/MacOS/Chromium" \
-         "$(command -v google-chrome 2>/dev/null)" \
-         "$(command -v chromium 2>/dev/null)"; do
+         "$(command -v google-chrome)" \
+         "$(command -v chromium)"; do
   [ -n "$c" ] && [ -x "$c" ] && { CHROME_BIN="$c"; break; }
 done
 BROWSER_DIR="${CHROME_BIN%/*}"
@@ -90,6 +93,23 @@ BROWSER_DIR="${CHROME_BIN%/*}"
 # back to a directory that is granted below anyway, so the launch line stays
 # valid instead of failing on an empty --add-dir.
 [ -n "$CHROME_BIN" ] || { echo "WARNING: no Chrome-family browser found; § 6.1 cannot drive one" >&2; BROWSER_DIR=/tmp; }
+# `/dev` — the device directory, and `/dev/null` in particular, which
+# essentially every shell redirect touches. It was NOT granted, so a seat that
+# composed its own discard to `/dev/null` inside a `$(...)` froze on
+# `Allow path access` for the path `/dev/null)` — closing parenthesis included,
+# because the permission layer's path extractor took the `)` as part of the
+# path — and the run was over, twenty minutes and a whole PR in (measured
+# 2026-10-19). It is granted on exactly the reasoning the toolchain entries
+# above already rely on: root-owned and system-managed, nothing a seat can
+# meaningfully change.
+# TRADE-OFF, deliberate, and the reason the cure has TWO halves: if the
+# extractor compares the malformed string `/dev/null)` against this grant, a
+# `/dev` grant may not match it, so this half alone may not hold. The other
+# half is the prompt rule in § 6's doctrine — never discard output to
+# `/dev/null` in a command you compose yourself; redirect it to a file under
+# `.git/lcars/tmp/` instead — which avoids the construct entirely and does not
+# depend on the extractor being right. Two changes, so the next run can tell
+# the two explanations apart.
 # copilot — the working directory is NOT trusted by the flag, so name the repo
 copilot --model <model> --allow-all-tools \
         --add-dir <product-repo> \
@@ -100,7 +120,8 @@ copilot --model <model> --allow-all-tools \
         --add-dir /tmp \
         --add-dir /usr/bin \
         --add-dir /bin \
-        --add-dir /usr/sbin
+        --add-dir /usr/sbin \
+        --add-dir /dev
 # claude — its cwd IS the repo already, so only the others need naming
 claude --add-dir <holodeck-sidecar> \
        --add-dir "$LAUNCH_ROOT" \
@@ -109,7 +130,8 @@ claude --add-dir <holodeck-sidecar> \
        --add-dir /tmp \
        --add-dir /usr/bin \
        --add-dir /bin \
-       --add-dir /usr/sbin
+       --add-dir /usr/sbin \
+       --add-dir /dev
 ```
 
 Grant whichever directory your seat's `mktemp` and `>` targets really land in —
@@ -688,7 +710,11 @@ curl -s -X POST http://127.0.0.1:8765/api/holodeck/<sessionId>/derive \
 #     program: ..."}, which parses fine but carries no derive block. Both mean
 #     NOTHING IS COMING, so this loop calls them `no-answer`, stops at once,
 #     and says which it was. A seat that can tell a dead daemon from a slow
-#     one does not have to guess.
+#     one does not have to guess. The `except` is what keeps the traceback out,
+#     NOT a discard: this substitution deliberately carries no `/dev/null`
+#     redirect, because one inside a `$(...)` is read as the path `/dev/null)`
+#     and stalls an unattended seat (§ 6's rule; measured 2026-10-19). Do not
+#     add one back.
 for i in $(seq 1 90); do
   st="$(curl -s http://127.0.0.1:8765/api/holodeck/<sessionId> \
         | python3 -c 'import json, sys
@@ -697,7 +723,7 @@ try:
 except Exception:
     print("no-answer"); raise SystemExit
 print((reply.get("derive") or {}).get("state", "")
-      or ("no-answer" if reply.get("error") else "running"))' 2>/dev/null)"
+      or ("no-answer" if reply.get("error") else "running"))')"
   [ "$st" = "done" ] && break
   [ "$st" = "no-answer" ] && break
   sleep 5
@@ -922,6 +948,21 @@ You do. You are trusted only inside the repository you are building in, and a
 dead on a dialog nothing in the run can answer (measured, 2026-10-18: a seat
 stalled twice, on `/tmp/home2-XXXX` and on `/tmp/good.json`). So never `/tmp`,
 never a bare `mktemp -d` with no template, never a `>` target outside the repo.
+
+**Never discard output to `/dev/null`** in a command you compose yourself —
+redirect it to a file under `.git/lcars/tmp/` instead. A discard to `/dev/null`
+written inside a subshell or a `$(...)` reaches the permission layer as the
+path `/dev/null)`, trailing parenthesis and all, because its path extractor
+takes the `)` as part of the path. That string matches no grant that could ever
+be written, so no `--add-dir` can satisfy the dialog it raises, and it stopped
+an unattended run dead twenty minutes in — after a mission, four closed tickets
+and an open PR (measured 2026-10-19). A real file — `2>.git/lcars/tmp/<what>.log`
+— raises nothing, and has the side benefit that the output still exists if
+something needs diagnosing. The launch grant now names `/dev` as well, but that
+is belt and braces: if the extractor compares the malformed `/dev/null)`
+against it, a `/dev` grant may not match, so this rule is the half that does
+not depend on it. This file obeys the rule too — no recipe in it discards to
+`/dev/null`, so there is nothing here to copy.
 
 The **second actor** (cli checklist item 4, whose `<throwaway-home-2>` has no
 location in the checklist) is the one measured to bite. Give it one, from the
