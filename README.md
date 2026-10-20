@@ -9,7 +9,8 @@ LCARS is a harness that sits on top of an AI coding CLI — **Claude Code** or t
 **GitHub Copilot CLI** — and runs a whole piece of work end to end. An idea goes
 in; it is sharpened into a spec, researched, planned, cut into small tickets,
 built test-first, and handed back as a branch and a pull request. It runs
-unattended between those two points and interrupts you only for a real decision.
+unattended between those two points, stopping for a decision that is yours to
+make and, now and then, for a permission prompt from the CLI underneath.
 **You keep the decisions. It keeps the typing.**
 
 It installs once, works in **any** repo, and leaves **zero** files in your
@@ -133,7 +134,9 @@ now, or park it in the backlog for later.
 
 **3. Walk away.** The Mission advances itself through Research, Validate, Plan,
 Plan Review, Schedule and Implement, the card showing the stage, the cost so far
-and the ticket it is on. Nothing needs you until something does.
+and the ticket it is on. Nothing needs you until something does. On a long run a
+lighter model will sometimes pause and report where it has got to; tell it to
+carry on and it picks up where it left off.
 
 **4. Answer what it asks.** An escalation turns the card red, says what needs
 your answer, and sends a notification; reaching Verify alone does not turn a card
