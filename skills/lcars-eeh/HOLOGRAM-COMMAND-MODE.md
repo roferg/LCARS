@@ -278,19 +278,6 @@ keys, every other project on the machine, and the loadable configuration under
 descendants. Never redirect through parent path components (`..`), even when
 the resolved destination would remain inside the repository.
 
-**Every path in a command you compose yourself is ABSOLUTE and under one of the
-approved roots.** Never `..` in any path — not in a redirect, not in a read,
-not inside a `find`, `ls`, `grep`, `cat` or `cp` argument, and not when the
-climb would land back inside the repository. The shell resolves `..` before the
-grant is checked, so a climbing path is tested against whatever it resolves to,
-which is outside every approved root — and that raises `Allow path access` and
-stops an unattended run dead. Measured 2026-10-19: a seat composed its own
-inspection command ("Inspect repository files and permitted evidence
-directories") containing a `..` traversal and stalled the run on it. Nothing
-underneath put it there; the seat wrote it. When you need a directory beside
-the repo, name it by the absolute path the launch grant already resolved
-(`$LAUNCH_ROOT`, `$BROWSER_DIR`, the sidecar), never by climbing to it.
-
 This command route is refused even with `COPILOT_ALLOW_ALL=true`: the problem
 is the upward traversal, not the destination, .git, Python, or the test runner.
 In unattended mode no interactive approval is possible, so a permission

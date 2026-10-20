@@ -1356,36 +1356,6 @@ check "S306-2. § 6.1 keeps its 400 px iframe recipe (the item was reworded, not
 check "S306-2. CONTROL: the pre-change § 6.1 named no browser to use" \
   "! printf '%s\n' \"\$(s306_sec '$S306_PREV' '^### 6\\.1' '^### 6\\.2')\" | qgrep -qF 'CHROME_BIN'"
 
-# --- S306-3. ABSOLUTE PATHS UNDER THE APPROVED ROOTS, NEVER `..` ---------
-# The pre-change file already forbade redirecting THROUGH `..` (case 28 above
-# pins that sentence). The stall was a READ: a command the model composed
-# itself. So the rule has to cover any path in any command, not just redirects —
-# and the control below is what proves this is not case 28's sentence read back.
-S306_CMD="$(s306_sec "$S306_PB" '^## Unattended Copilot commands:' '^## How to read this file')"
-S306_CMDF="$(printf '%s\n' "$S306_CMD" | tr '\n' ' ' | tr -s ' ')"
-check "S306-3. the command-safety section slices non-empty" \
-  "[ \"\$(printf '%s\n' \"\$S306_CMD\" | grep -c .)\" -ge 8 ]"
-check "S306-3. it requires ABSOLUTE paths under the approved roots" \
-  "printf '%s' \"\$S306_CMDF\" | qgrep -qiF 'absolute' && printf '%s' \"\$S306_CMDF\" | qgrep -qiF 'approved roots'"
-check "S306-3. and forbids \`..\` in ANY path, not only a redirect" \
-  "printf '%s' \"\$S306_CMDF\" | qgrep -qiE 'Never .\\.\\.. in any path'"
-check "S306-3. it says the shell resolves the climb BEFORE the grant is checked" \
-  "printf '%s' \"\$S306_CMDF\" | qgrep -qiF 'before the grant is checked'"
-check "S306-3. it names the measured cause: a command the SEAT composed itself" \
-  "printf '%s' \"\$S306_CMDF\" | qgrep -qiF 'composed' && printf '%s' \"\$S306_CMDF\" | qgrep -qF '2026-10-19'"
-check "S306-3. and gives the alternative: the absolute path from the launch grant" \
-  "printf '%s' \"\$S306_CMDF\" | qgrep -qF 'LAUNCH_ROOT'"
-check "S306-3. the section still carries case 28's redirect rule (added to, not replaced)" \
-  "printf '%s' \"\$S306_CMDF\" | qgrep -qF 'Never redirect through parent path components'"
-# CONTROL — the pre-change section had the redirect sentence and NOT this rule.
-S306_CMDP="$(printf '%s\n' "$(s306_sec "$S306_PREV" '^## Unattended Copilot commands:' '^## How to read this file')" | tr '\n' ' ' | tr -s ' ')"
-check "S306-3. CONTROL: the pre-change section is a real slice" \
-  "printf '%s' \"\$S306_CMDP\" | qgrep -qF 'Never redirect through parent path components'"
-check "S306-3. CONTROL: ...and it did NOT carry the any-path rule (so this is not case 28 read back)" \
-  "! printf '%s' \"\$S306_CMDP\" | qgrep -qiE 'Never .\\.\\.. in any path'"
-check "S306-3. CONTROL: nor the approved-roots requirement" \
-  "! printf '%s' \"\$S306_CMDP\" | qgrep -qiF 'approved roots'"
-
 # --- S306-4. BAD INPUT GOES INSIDE AN ALREADY-APPROVED FOLDER ------------
 # Asserted on THE ITEM, not the section: the bullet is extracted by its own
 # `--help` literal and folded, so a sentence elsewhere in § 6.1 cannot satisfy
