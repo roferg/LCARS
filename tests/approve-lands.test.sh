@@ -26,12 +26,15 @@
 #      test only the child owns is re-run too — through the SAME shared helper
 #      (retest_ticket_suites), never a parallel path (BUG-013's lesson).
 #   4. Every exit path of reconcile_gate frees its worktree, the drift die
-#      included. The refusal TEXT is unchanged, character for character.
+#      included. The refusal's detection and severity are unchanged, character
+#      for character (S311 rewrote only its closing cure sentence).
 #   5. A legacy child filed before the record existed still merges, via ONE
 #      ancestry fallback that is LOGGED in the mission's events.
 #
 # WHAT MUST NOT CHANGE, and is asserted here as a negative:
-#   • an UNDECLARED test edit still BLOCKS, with the same words (S156/S157).
+#   • an UNDECLARED test edit still BLOCKS, with the same SEVERITY words
+#     (S156/S157). S311 changed the closing CURE sentence and only that; see
+#     the DRIFT_SEVERITY / DRIFT_CURE comment below.
 #   • a child that is NOT folded does not get a vote (its declaration counts
 #     only once the fold is recorded).
 #
@@ -62,8 +65,20 @@ PBRANCH="lcars/$PID"
 
 # The EXACT refusal the weekend saw. Character-for-character: the fix must not
 # reword it.
+#
+# S311 SPLIT THIS PIN IN TWO, DELIBERATELY. What this suite is really guarding
+# is that an undeclared test edit still BLOCKS, with undiminished severity --
+# and DRIFT_SEVERITY below pins exactly that, character for character, as it
+# always did. What it was ALSO pinning by accident was the old closing sentence
+# "Restore the test or re-open the ticket", which named a verb that does not
+# exist: there is no `lcars reopen`, so an unattended seat could only revert a
+# correct adaptation or stop, and one real mission sat BLOCKED for 4h49m on it.
+# S311 is chartered to change what the gates SAY (never what they refuse), so
+# that sentence is now the runnable command instead, and DRIFT_CURE pins the
+# command. The severity pin is UNCHANGED and is the one that matters.
 DRIFT_WORDS='PRE-MERGE UNDECLARED TEST DRIFT'
-DRIFT_TAIL='BLOCKED: the Mission cannot merge an undeclared test edit, and this is NOT a self-healable regression. Restore the test or re-open the ticket.'
+DRIFT_SEVERITY='BLOCKED: the Mission cannot merge an undeclared test edit, and this is NOT a self-healable regression.'
+DRIFT_CURE='implement-ticket --mission'
 
 mdir_of() { echo "$1/.git/lcars/missions/$PID"; }
 cdir_of() { echo "$1/.git/lcars/missions/${2:-$CID}"; }
@@ -364,8 +379,11 @@ check "3a. an UNDECLARED edit by a folded child STILL blocks (non-zero)" \
   "[ '$rc3' -ne 0 ]"
 check "3b. the refusal headline is unchanged" \
   "grep -qF '$DRIFT_WORDS' '$(aux_of "$r3")/out.txt'"
-check "3c. the refusal TAIL is unchanged, character for character" \
-  "grep -qF '$DRIFT_TAIL' '$(aux_of "$r3")/out.txt'"
+check "3c. the refusal's SEVERITY is unchanged, character for character" \
+  "grep -qF '$DRIFT_SEVERITY' '$(aux_of "$r3")/out.txt'"
+check "3c2. and it closes on a RUNNABLE re-open command, not the absent 'lcars reopen'" \
+  "grep -qF '$DRIFT_CURE' '$(aux_of "$r3")/out.txt' \
+     && ! grep -qF 'Restore the test or re-open the ticket.' '$(aux_of "$r3")/out.txt'"
 check "3d. it names the drifted path and the owning ticket" \
   "grep -q \"ticket t-001's COMMITTED test file\" '$(aux_of "$r3")/out.txt' \
      && grep -q 'tests/test_x.sh' '$(aux_of "$r3")/out.txt'"

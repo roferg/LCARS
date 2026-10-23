@@ -214,6 +214,19 @@ RESPOND_SCRIPT="${LCARS_RESPOND_SCRIPT:-$SKILL_DIR/../lcars-respond/respond.sh}"
 respond_hint() { printf 'bash %s answer --mission %s --answer "<your answer>"' \
                    "$RESPOND_SCRIPT" "$MISSION_ID"; }
 drive_hint()   { printf 'bash %s drive --mission %s' "$SELF" "$MISSION_ID"; }
+# S311 — THE SANCTIONED RE-OPEN, AS A COMMAND SOMEBODY CAN ACTUALLY RUN.
+# Every undeclared-drift refusal used to end on "Restore the test or re-open the
+# ticket." There is no `lcars reopen`, so that sentence named a verb that does
+# not exist: an unattended seat could only restore the test — which REVERTS a
+# correct adaptation — or stop. One real mission sat BLOCKED for 4h49m on
+# exactly that sentence. `implement-ticket` IS the sanctioned re-open, it already
+# exists, and it was simply named nowhere in the refusal.
+# This changes NOTHING about what any gate refuses. It changes what the refusal
+# tells you to do about it.
+reopen_hint() { # ticketId → a literal, copy-pasteable command
+  printf 'bash %s implement-ticket --mission %s --ticket %s' \
+    "$SELF" "${MISSION_ID:-<mission-id>}" "${1:-<ticket-id>}"
+}
 
 # --- tiny JSON readers (no jq; same style as file.sh / status.sh) ----------
 json_str() { # file key  → first matching "key": "value"
@@ -10599,6 +10612,133 @@ PDD_EOF
   return 1
 }
 
+# ===========================================================================
+# S311 — WHO CHANGED THIS TEST. FROM A RECORD, NEVER FROM A COMMIT MESSAGE.
+# ===========================================================================
+# The drift refusal named only the ticket that OWNS the drifted test. The ticket
+# that MADE the edit is a DIFFERENT one, and the declaration belongs in the
+# EDITOR's test-edits.json, not the owner's — so the refusal pointed the
+# operator at the wrong ticket, and every operator had to `git log` the file by
+# hand to find out who to actually fix.
+#
+# THE MAPPING IS ALREADY RECORDED. `commit_ticket` writes the ticket's commit
+# OBJECT to $(ticket_dir <id>)/.commit-sha at the moment it commits. These
+# helpers read THAT record and ask GIT — not prose — whether the recorded commit
+# is the one that touched the drifted path.
+#
+# THEY NEVER PARSE A COMMIT MESSAGE FOR A TICKET ID. Reading back human-written
+# text to recover a fact the producer could have recorded is the single most
+# expensive recurring mistake in this codebase: it burned fix rounds in S147,
+# S156 and S188, every time for the same reason — the captain writes specs
+# *about LCARS*, so the prose eventually contains the very vocabulary the parser
+# keys on, and the parser starts confidently answering with garbage. There IS a
+# `lcars(<mission>) <ticket>:` subject prefix on these commits, and it is
+# deliberately NOT used here.
+#
+# WHEN THE RECORD DOES NOT ACCOUNT FOR THE CHANGE, these say so. An honest
+# "the editing ticket is NOT RECORDED, here is the commit git blames" beats an
+# invented attribution, and no refusal is ever softened by the absence.
+
+# git's own patch identity for a commit — the thing a cherry-pick PRESERVES.
+# A wave's ticket commits are built on a detached worktree and CHERRY-PICKED
+# onto the mission branch, which REWRITES the sha, so sha equality alone would
+# miss the common case. patch-id is still git answering about its own objects;
+# it is not a reading of anybody's prose. Empty when git cannot answer.
+drift_patch_id() { # tree sha → patch-id (empty = unknown)
+  [ -n "${2:-}" ] || return 0
+  ( cd "$1" 2>/dev/null \
+      && "$GIT_BIN" show "$2" 2>/dev/null | "$GIT_BIN" patch-id --stable 2>/dev/null ) \
+    | awk 'NR==1 {print $1}'
+}
+
+# The ticket that CHANGED <relpath>, and the commit it changed it in.
+# Echoes "<ticketId>\t<sha>" when the record accounts for it, "\t<sha>" when only
+# git can name the commit, and NOTHING when neither can. Never fails the caller.
+drift_editor_of() { # relpath owner-ticket [tree] → "<ticket>\t<sha>" | "\t<sha>" | ""
+  local rel="$1" owner="${2:-}" tree="${3:-${REPO_ROOT:-$PWD}}"
+  local c id td sha first="" cands=""
+  [ -n "$rel" ] && [ -n "${MISSION_DIR:-}" ] || return 0
+  # git's OWN history of the file, newest first, BOUNDED (a refusal must never
+  # become a long walk through history).
+  cands="$( cd "$tree" 2>/dev/null \
+            && "$GIT_BIN" log -n 25 --format=%H -- "$rel" 2>/dev/null )"
+  [ -n "$cands" ] || return 0
+  first="$(printf '%s\n' "$cands" | awk 'NR==1')"
+  # PASS 1 — exact sha equality against the record. Cheapest and strongest.
+  while IFS= read -r c; do
+    [ -n "$c" ] || continue
+    for td in "$MISSION_DIR"/tickets/*/; do
+      [ -d "$td" ] || continue
+      id="$(basename "$td")"
+      [ "$id" = "$owner" ] && continue      # the OWNER is not the editor
+      sha="$(cat "$td/.commit-sha" 2>/dev/null || true)"
+      [ -n "$sha" ] && [ "$sha" = "$c" ] || continue
+      printf '%s\t%s\n' "$id" "$c"
+      return 0
+    done
+  done <<DEO1_EOF
+$cands
+DEO1_EOF
+  # PASS 2 — patch identity, for the cherry-picked wave case.
+  local want pid
+  while IFS= read -r c; do
+    [ -n "$c" ] || continue
+    pid="$(drift_patch_id "$tree" "$c")"
+    [ -n "$pid" ] || continue
+    for td in "$MISSION_DIR"/tickets/*/; do
+      [ -d "$td" ] || continue
+      id="$(basename "$td")"
+      [ "$id" = "$owner" ] && continue
+      sha="$(cat "$td/.commit-sha" 2>/dev/null || true)"
+      [ -n "$sha" ] || continue
+      want="$(drift_patch_id "$tree" "$sha")"
+      [ -n "$want" ] && [ "$want" = "$pid" ] || continue
+      printf '%s\t%s\n' "$id" "$c"
+      return 0
+    done
+  done <<DEO2_EOF
+$cands
+DEO2_EOF
+  # NOT RECORDED. Name the commit git blames, attribute no ticket.
+  printf '\t%s\n' "$first"
+  return 0
+}
+
+# The cure block every drift refusal ends on: who owns what, who changed it, and
+# the ONE runnable command that clears it. Shared by all three drift sites so
+# they cannot drift apart from each other.
+drift_cure_block() { # owner-ticket  drifted-rels(newline)  [tree] → the block
+  local owner="$1" rels="$2" tree="${3:-${REPO_ROOT:-$PWD}}"
+  local rel ed id sha who="" target="" shortsha
+  while IFS= read -r rel; do
+    [ -n "$rel" ] || continue
+    ed="$(drift_editor_of "$rel" "$owner" "$tree")"
+    id="$(printf '%s' "$ed" | cut -f1)"
+    sha="$(printf '%s' "$ed" | cut -f2)"
+    shortsha="$( cd "$tree" 2>/dev/null && "$GIT_BIN" rev-parse --short=9 "$sha" 2>/dev/null )"
+    [ -n "$shortsha" ] || shortsha="$sha"
+    if [ -n "$id" ]; then
+      who="${who}    - ${rel}: OWNED by ticket ${owner}; CHANGED by ticket ${id} in commit ${shortsha}. The declaration belongs in ${id}'s test-edits.json, not ${owner}'s.
+"
+      [ -n "$target" ] || target="$id"
+    elif [ -n "$sha" ]; then
+      who="${who}    - ${rel}: OWNED by ticket ${owner}; last CHANGED by commit ${shortsha}, which no ticket's recorded .commit-sha accounts for — the editing ticket is NOT RECORDED. Identify it from that commit before declaring the edit.
+"
+    else
+      who="${who}    - ${rel}: OWNED by ticket ${owner}; no commit in this branch's history of the file could be resolved, so the editor is NOT RECORDED.
+"
+    fi
+  done <<DCB_EOF
+$rels
+DCB_EOF
+  [ -n "$target" ] || target="$owner"
+  printf 'WHO OWNS WHAT, AND WHO CHANGED IT:
+%sTO CLEAR THIS, RE-OPEN THE EDITING TICKET SO IT CAN DECLARE THE EDIT WITH A REASON — run exactly:
+    %s
+That is the sanctioned re-open; there is no `lcars reopen`. Restoring the test byte-for-byte also clears the block, but it REVERTS the adaptation, so prefer the re-open whenever the changed test is the correct one.' \
+    "$who" "$(reopen_hint "$target")"
+}
+
 # --- GUARDRAIL 3: test quality (the suite must assert something) ------------
 # Light, language-agnostic: reject a suite where no file contains any common
 # assertion construct — an empty / zero-assertion / sandbagged contract proves
@@ -14317,18 +14457,32 @@ declared_edits_guard() { # ticket parent-sha worktree
     printf 'proof-gate: declared-edits guard — no result.json for %s, so declarations cannot be verified.\n' "$t" >&2
     return 1
   fi
-  local rels declared undeclared="" p
+  local rels declared undeclared="" absent="" p
   rels="$(proof_test_rels_in_diff "$parent" "$wt")"     # all — deletions included
   declared="$(proof_result_declared_paths "$resf")"
   while IFS= read -r p; do
     [ -n "$p" ] || continue
-    printf '%s\n' "$declared" | grep -Fxq "$p" || undeclared="${undeclared:+$undeclared }$p"
+    printf '%s\n' "$declared" | grep -Fxq "$p" && continue
+    # S311 — AN ABSENT PATH IS A DELETION, AND MUST BE SAID TO BE ONE.
+    # A worker created a test package, consolidated it into an existing module
+    # and DELETED the package. Deletions count as edits, so this gate correctly
+    # refused — but it named paths that NO LONGER EXIST on the branch in wording
+    # that read as though they were present and undeclared. That sent a worker
+    # hunting the wrong file SIX SESSIONS RUNNING. The refusal is unchanged in
+    # what it REFUSES; the two classes are simply no longer lumped into one list.
+    if [ -e "$wt/$p" ]; then undeclared="${undeclared:+$undeclared }$p"
+    else                     absent="${absent:+$absent }$p"; fi
   done <<DE_EOF
 $rels
 DE_EOF
-  if [ -n "$undeclared" ]; then
-    printf 'proof-gate: UNDECLARED test edit(s) for %s — the diff vs %s touches test-classified file(s) the result never declared (newTests / testEdits): %s. Deletions count as edits. Declare every test edit with a reason, or leave the file untouched.\n' \
-      "$t" "$parent" "$undeclared" >&2
+  if [ -n "$undeclared" ] || [ -n "$absent" ]; then
+    printf 'proof-gate: UNDECLARED test edit(s) for %s — the diff vs %s touches test-classified file(s) the result never declared (newTests / testEdits). Declare every test edit with a reason, or leave the file untouched.\n' \
+      "$t" "$parent" >&2
+    [ -n "$undeclared" ] && \
+      printf '  STILL PRESENT on the branch and undeclared: %s\n' "$undeclared" >&2
+    [ -n "$absent" ] && \
+      printf '  DELETED — these were deleted and are NOT on the branch any more, so do not go looking for them: %s. A DELETION IS A DECLARED EDIT: declare it in testEdits with a reason (naming the path it was consolidated into, if it was), exactly as for a file you changed.\n' \
+        "$absent" >&2
     return 1
   fi
   proof_write_test_edits "$resf" "$td/test-edits.json"
@@ -14731,7 +14885,13 @@ post_commit_gate() { # ticket
   if [ -n "$(printf '%s' "$rels" | grep . || true)" ]; then
     undecl="$(proof_drift_declared_ok "$t" "$wt")" || {
       tamper=1
-      local tdetail="POST-COMMIT GATE — UNDECLARED TEST DRIFT: ticket $t's COMMITTED test file(s) no longer match the proof-time snapshot (proof-tests.sha256) and NO ticket declared that edit (test-edits.json): $(printf '%s' "$undecl" | tr '\n' ' '). A test may only change when the editing ticket declares it with a reason; refusing. This is NOT a normal red and is NOT self-healable. Restore the test or re-open the ticket."
+      # S311: the DETECTION and the SEVERITY are untouched — same snapshot
+      # comparison, same "NOT self-healable", same distinct code 4 below. Only
+      # the closing sentence changes: from a verb that does not exist
+      # ("re-open the ticket") to the command that actually does it, aimed at
+      # the ticket that MADE the edit rather than the one that owns the test.
+      local tdetail="POST-COMMIT GATE — UNDECLARED TEST DRIFT: ticket $t's COMMITTED test file(s) no longer match the proof-time snapshot (proof-tests.sha256) and NO ticket declared that edit (test-edits.json): $(printf '%s' "$undecl" | tr '\n' ' '). A test may only change when the editing ticket declares it with a reason; refusing. This is NOT a normal red and is NOT self-healable.
+$(drift_cure_block "$t" "$undecl" "$wt")"
       printf '  ✗ %s\n' "$tdetail" >&2
       [ -n "$POST_COMMIT_SIGNAL" ] && printf '%s\n' "$tdetail" >"$POST_COMMIT_SIGNAL"
     }
@@ -14804,7 +14964,137 @@ PC_RELS_EOF
     return 3
   fi
 
-  local detail="POST-COMMIT GATE — ticket $t's suite is RED against the COMMITTED branch state (commit ${ref}). The implementation is NOT present on the committed branch: the Implementer reported green from its OWN scratch worktree, but the change never landed (or only an out-of-scope change was committed). The ticket FAILS this worker session — it must land its change on the committed branch to pass. Command run: $cmd."
+  # =========================================================================
+  # S311 — IS THIS VERDICT STILL ABOUT THE COMMIT THAT ANSWERS THE QUESTION?
+  # =========================================================================
+  # MEASURED (21-22 Oct 2026): a ticket was failed here with "the implementation
+  # is NOT present on the committed branch (commit 3fea5b5)" while a LATER
+  # worker session had already committed 4c6c286 for the SAME ticket, which is
+  # green (verified by hand: 1518 tests OK). A finished, passing ticket looked
+  # permanently broken, and the human gate it raised was about a commit nobody
+  # was building on any more.
+  #
+  # The gate itself is excellent and is NOT being relaxed. This re-asks the SAME
+  # question of the CURRENT branch tip before raising a human gate, and only
+  # when the tip STRICTLY SUPERSEDES the judged commit — i.e. the judged commit
+  # is an ANCESTOR of it, the same line of history carried further. A DIVERGED
+  # tip is not a supersession and is NOT re-run; it is only reported, so
+  # staleness is visible either way.
+  #
+  # IT CANNOT MANUFACTURE A PASS. The tip leg re-runs the SAME scoped command on
+  # a CLEAN worktree, and the tip's copy of the ticket's own recorded tests must
+  # be BYTE-IDENTICAL to the proof-time snapshot (proof-tests.sha256) — so a tip
+  # that is "green" because the tests were deleted, truncated or quietly
+  # rewritten buys nothing. Red at the tip still FAILS, and that is pinned by a
+  # regression lock.
+  #
+  # IT IS SNAPSHOT IDENTITY, NOT A DECLARATION. (Fix round 1, 23 Oct 2026 — a
+  # route this very session opened, proven NEW with a control at bacae6f.) This
+  # leg first gated on proof_drift_declared_ok, i.e. "did SOMEBODY DECLARE this
+  # edit?" — the downstream drift contract's question, which is the right
+  # question for "may this branch merge" and the WRONG one here. A sibling
+  # ticket declaring an edit to this ticket's test is the ordinary owner/editor
+  # case S311 is built around, and the declaration is EXACTLY what S311's own
+  # drift refusal instructs an operator to create. So a tip where the
+  # implementation was STILL ABSENT, with this ticket's test rewritten to assert
+  # nothing (or truncated to zero bytes) and declared by a sibling, returned
+  # rc 0 and announced "present, undrifted and GREEN. A later session landed the
+  # work." Nothing had landed. The question this leg must ask is not "was the
+  # edit permitted" but "IS THIS STILL THE TEST THAT WAS PROVED" — only an
+  # unchanged test can re-prove a verdict about the old one, and a declaration
+  # does not make a changed test the same test. A DECLARED adaptation at the tip
+  # therefore makes the tip UNUSABLE for re-checking, not green: the leg says so
+  # and the ticket keeps its honest red from the judged commit (the pre-S311
+  # outcome), which is a false STOP at worst, never a false pass.
+  #
+  # AND THE GREEN-ON-NOTHING GUARD APPLIES HERE TOO, as it does on every other
+  # proof leg: byte-identity cannot see a tip whose runner SELECTED nothing (a
+  # narrowed `include`, a skip list, a moved config), and a run that collects
+  # zero tests proves nothing. Measured: that route also returned rc 0.
+  #
+  # THE GENUINE SUPERSEDE IS UNAFFECTED, by construction. A later session that
+  # really lands this ticket re-runs the whole worker loop, and on passing its
+  # gates `proof_snapshot_tests` REWRITES proof-tests.sha256 from its own tree
+  # before it commits — so snapshot and tip agree. The unchanged-test case
+  # agrees trivially. Both are pinned as controls.
+  local tip=""; tip="$(mission_branch_tip)"
+  local bothnote=""
+  if [ -n "$tip" ] && [ -n "$ref" ] && [ "$tip" != "$ref" ]; then
+    bothnote=" JUDGED COMMIT: ${ref}. CURRENT BRANCH TIP: ${tip}."
+    if ( cd "${REPO_ROOT:-.}" && "$GIT_BIN" merge-base --is-ancestor "$ref" "$tip" ) 2>/dev/null; then
+      local twt trc=0 tout="" tscope tpresent="" tdrift="" tnorecheck=""
+      twt="$(mktemp -d "$MISSION_DIR/postcommit-tip-${t}.XXXXXX" 2>/dev/null || true)"
+      [ -n "$twt" ] || twt="$MISSION_DIR/postcommit-tip-${t}.$$"
+      rm -rf "$twt"
+      if "$GIT_BIN" worktree add -q --detach "$twt" "$tip" >/dev/null 2>&1; then
+        provision_worktree "$twt" || :
+        # The recorded tests must still BE there, and must still be THE SAME
+        # BYTES that were proved — not merely an edit somebody declared.
+        tdrift="$(proof_tests_drift "$t" "$twt")"
+        local _tr
+        while IFS= read -r _tr; do
+          [ -n "$_tr" ] && [ -f "$twt/$_tr" ] && tpresent="${tpresent}${_tr}
+"
+        done <<PCTIP_EOF
+$rels
+PCTIP_EOF
+        if [ -z "$(printf '%s' "$tpresent" | grep . || true)" ]; then
+          trc=1
+          tnorecheck="the ticket has no recorded test file present at the tip at all, so there was NOTHING to re-run there"
+        elif [ -n "$(printf '%s' "$tdrift" | grep . || true)" ]; then
+          trc=1
+          tnorecheck="the ticket's own recorded test file(s) at the tip are missing or no longer the bytes that were proved (proof-tests.sha256): $(printf '%s' "$tdrift" | tr '\n' ' ') — a CHANGED test cannot re-prove a verdict about the test that was proved, and a declaration does not make it the same test, so nothing was re-run there"
+        else
+          local trun_dir="$twt"
+          local _tpkg; _tpkg="$(ticket_target_package "$t" "$twt")"
+          if [ -n "$_tpkg" ]; then trun_dir="$twt/$_tpkg"
+          else
+            local _ttpkg; _ttpkg="$(ticket_tests_package "$t" "$twt")"
+            [ -n "$_ttpkg" ] && trun_dir="$twt/$_ttpkg"
+          fi
+          intree_scopes_for "$twt" "$tpresent" >/dev/null
+          tscope="$INTREE_SCOPES"
+          tout="$(intree_scoped_run "$trun_dir" "$cmd" "$tscope")" || trc=$?
+          # GREEN ON NOTHING: the same guard every other proof leg applies. A
+          # tip run that SELECTED nothing is not evidence that anything landed.
+          if [ "$trc" -eq 0 ] && proof_zero_collected "$tout" "$tpresent" "$twt"; then
+            trc=1
+            tnorecheck="the re-run at the tip collected ZERO tests — a run that selects nothing proves nothing (the green-on-nothing trap), so the tip's green is not evidence that anything landed"
+          fi
+        fi
+        "$GIT_BIN" worktree remove --force "$twt" >/dev/null 2>&1 || rm -rf "$twt" 2>/dev/null || :
+        if [ "$trc" -eq 0 ]; then
+          # SUPERSEDED AND NOW GREEN. The ticket is not broken; the verdict was
+          # about a commit a later session had already replaced. Say both
+          # commits out loud so the staleness is on the record either way.
+          local okdetail="POST-COMMIT GATE — STALE VERDICT, RE-CHECKED AT THE TIP: ticket $t's suite is RED at the commit this gate was handed (JUDGED COMMIT: ${ref}), but that commit has been SUPERSEDED — it is an ancestor of the mission branch's CURRENT BRANCH TIP (${tip}), where the ticket's own recorded tests are present, undrifted and GREEN. A later session landed the work. The ticket PASSES on the state the Mission is actually building on; refusing to raise a human gate about a commit nobody is on any more. Command run: $cmd."
+          printf '  ⚠ %s\n' "$okdetail" >&2
+          [ -n "$POST_COMMIT_SIGNAL" ] && printf '%s\n' "$okdetail" >"$POST_COMMIT_SIGNAL"
+          return 0
+        fi
+        # SAY ONLY WHAT WAS OBSERVED. When the tip could not be used — no
+        # recorded test there, the recorded test no longer the proved bytes, or
+        # a run that collected nothing — the suite was NEVER RUN at the tip, and
+        # the old wording ("RE-CHECKED there too, and the suite is STILL RED")
+        # asserted a run that never happened. An operator told "still red at the
+        # tip" goes hunting a red test that is not there: the identical
+        # wrong-file hunt S311 just cured one function over.
+        if [ -n "$tnorecheck" ]; then
+          bothnote=" JUDGED COMMIT: ${ref}. CURRENT BRANCH TIP: ${tip} — the tip could NOT be re-checked: ${tnorecheck}. So this verdict is the one from the JUDGED COMMIT and was not re-tested at the tip."
+        else
+          bothnote=" JUDGED COMMIT: ${ref}. CURRENT BRANCH TIP: ${tip} — RE-CHECKED there too, and the suite is STILL RED, so this is not a stale verdict."
+        fi
+      else
+        bothnote=" JUDGED COMMIT: ${ref}. CURRENT BRANCH TIP: ${tip} — a worktree could NOT be cut at the tip, so the tip was not re-checked and this verdict may be stale."
+      fi
+    else
+      bothnote=" JUDGED COMMIT: ${ref}. CURRENT BRANCH TIP: ${tip} — the tip has DIVERGED from the judged commit (it is not a descendant), so it was not re-checked; confirm which commit you mean before acting."
+    fi
+  elif [ -n "$tip" ]; then
+    bothnote=" JUDGED COMMIT: ${ref}. CURRENT BRANCH TIP: ${tip} (the same commit — this verdict is about the current state of the branch)."
+  fi
+
+  local detail="POST-COMMIT GATE — ticket $t's suite is RED against the COMMITTED branch state (commit ${ref}). The implementation is NOT present on the committed branch: the Implementer reported green from its OWN scratch worktree, but the change never landed (or only an out-of-scope change was committed). The ticket FAILS this worker session — it must land its change on the committed branch to pass.${bothnote} Command run: $cmd. To re-open this ticket and let a fresh worker land it, run: $(reopen_hint "$t")"
   printf '  ✗ %s\n' "$detail" >&2
   [ -n "$POST_COMMIT_SIGNAL" ] && printf '%s\n' "$detail" >"$POST_COMMIT_SIGNAL"
   return 1
@@ -15293,7 +15583,10 @@ retest_ticket_suites() { # run_dir  cmd  ordered ticketId...
       emit_event ticket_locked_test_tampered implement \
         "ticket $id — committed test drifted from the proof-time snapshot with no declaring ticket (pre-merge drift check)" \
         "ticket=$id" || :
-      die "PRE-MERGE UNDECLARED TEST DRIFT: ticket $id's COMMITTED test file(s) no longer match the proof-time snapshot and NO ticket declared that edit (test-edits.json): $(printf '%s' "$undecl" | tr '\n' ' '). BLOCKED: the Mission cannot merge an undeclared test edit, and this is NOT a self-healable regression. Restore the test or re-open the ticket."
+      # S311: same detection, same BLOCK, same severity words — only the
+      # closing cure changes, and it now names the EDITING ticket's re-open.
+      die "PRE-MERGE UNDECLARED TEST DRIFT: ticket $id's COMMITTED test file(s) no longer match the proof-time snapshot and NO ticket declared that edit (test-edits.json): $(printf '%s' "$undecl" | tr '\n' ' '). BLOCKED: the Mission cannot merge an undeclared test edit, and this is NOT a self-healable regression.
+$(drift_cure_block "$id" "$undecl" "$run_dir")"
     }
     # Run only the still-present recorded tests IN PLACE at their committed paths
     # (a DECLARED deletion is legal and simply has nothing to re-run).
