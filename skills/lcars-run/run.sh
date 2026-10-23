@@ -14870,6 +14870,11 @@ escalate_full_suite_regression() { # reason  ordered ticketId...
   local victims; victims="$(tickets_to_issues $regressed_ids)"
   local culprit; culprit="$(tickets_to_issues "$regressor")"
   local summary
+  # S310 FIX 2 D4: the reconcile dispatch count, guarded. Neither roundsSpent
+  # nor applyFailures can answer "did a worker run?" — a round is REFUNDED on an
+  # apply failure and on a parked discard — so this counter exists for it.
+  local dispatched="${SELFHEAL_DISPATCHES:-0}"
+  case "$dispatched" in ''|*[!0-9]*) dispatched=0 ;; esac
   # S157 × #93: AN ENVIRONMENT FAULT READS AS ONE. The generic "a change conflicts
   # with the rest of the branch" copy is actively misleading for a toolchain
   # fault — it points a human at code when the repair is provisioning, and it
@@ -14882,34 +14887,202 @@ escalate_full_suite_regression() { # reason  ordered ticketId...
   # S157: no "the fix for X re-broke a test from Y" — that named a cause the gate
   # never established. Say what happened, who owns the broken test, and what the
   # harness tried.
+  # S310 FIX 2 D4: ¶1 MUST NOT CLAIM A RECONCILE THAT NEVER HAPPENED. Three of
+  # the stops (base-drift, stale-attribution, contradiction) dispatch NOTHING —
+  # dispatch.log is literally 0 lines — and this field still opened with "the
+  # harness's last reconcile attempt went to issue #102 … and did not clear it",
+  # then contradicted itself two paragraphs later with "no worker was
+  # dispatched". The false half came FIRST, on the one surface `lcars answer`
+  # and the board replay to him. The dispatch count is known, so say the true
+  # thing: nobody was sent, and the reason why is below.
+  # S310 FIX 2 D1: and the parked discard gets its own ¶1. A reconcile DID run
+  # here, so the 0-dispatch wording below would be wrong — but "went to the
+  # ticket and did not clear it" reads as a failed repair, which is the opposite
+  # of what happened: it passed every gate and was thrown away.
+  # S310 FIX 3: the dispatch that produced NOTHING gets its own ¶1, ahead of the
+  # parked-green one it was wrongly borrowing. A worker DID go out, so the
+  # 0-dispatch wording is wrong — but it came back with no result at all, so
+  # "PASSED its proof gates" is a false claim, and it was the first thing he read.
+  elif [ -n "$victims" ] && [ "${SELFHEAL_STOP_REASON:-}" = worker-no-result ]; then
+    summary="A test that was green when it was built no longer passes on the branch — $victims. A reconcile worker WAS dispatched and it produced NO RESULT: no result file, no commit, no proof gate was ever run — so nothing was rebuilt, nothing passed, and nothing was accomplished. The regression is still live on the branch and no cause has been established. Repair the worker first (below); answering this gate on its own will only send another worker that fails the same way."
+  elif [ -n "$victims" ] && [ "${SELFHEAL_STOP_REASON:-}" = mission-parked ]; then
+    summary="A test that was green when it was built no longer passes on the branch — $victims. The harness's reconcile DID run and PASSED its proof gates, but it could not land and was discarded (below), so the regression is still live on the branch and no cause has been established. Reply with how to reconcile, send the mission back to re-fix, or drop one."
+  elif [ -n "$victims" ] && [ "$basis" = authored-failing-suite ] && [ "$dispatched" -eq 0 ]; then
+    summary="A test that was green when it was built no longer passes on the branch — $victims. NO reconcile was attempted: the harness dispatched no worker and spent nothing, because of what stopped it (below), and it has NOT established which change caused the break. Clear that first, then reply with how to reconcile, send the mission back to re-fix, or drop one."
   elif [ -n "$victims" ] && [ "$basis" = authored-failing-suite ]; then
     summary="A test that was green when it was built no longer passes on the branch — $victims. The harness's last reconcile attempt went to $culprit (the ticket that wrote a failing test) and did not clear it, and it has NOT established which change caused the break. Reply with how to reconcile, send the mission back to re-fix, or drop one."
+  elif [ -n "$victims" ] && [ "$dispatched" -eq 0 ]; then
+    summary="A test that was green when it was built no longer passes on the branch — $victims. The harness could not work out which ticket owns the failing test, and NO reconcile was attempted — no worker was dispatched, for the reason below. Reply with how to reconcile, send the mission back to re-fix, or drop one."
   elif [ -n "$victims" ]; then
     summary="A test that was green when it was built no longer passes on the branch — $victims. The harness could not work out which ticket owns the failing test, and its reconcile attempts did not clear it. Reply with how to reconcile, send the mission back to re-fix, or drop one."
   else
     summary="A change conflicts with the rest of the branch and the harness could not auto-reconcile it. Reply with how to reconcile, or send the mission back to re-fix."
   fi
 
-  local q; q="$(mktemp)"
-  printf '%s\n' "$reason" >"$q"
+  # "0" is a SET value, so a `:+` expansion of the counter would print this
+  # sentence with a zero in it — a sentence about apply failures that never
+  # happened. The test is on the NUMBER.
+  local afnote=""
+  if [ "${SELFHEAL_APPLY_FAILURES:-0}" -gt 0 ] 2>/dev/null; then
+    afnote=" Before that, ${SELFHEAL_APPLY_FAILURES} rebuild(s) were built and green and would not LAND — infrastructure, and no round was charged for them."
+  fi
+
+  # S310: WHY THE SELF-HEAL STOPPED IS PART OF THE QUESTION. Appended, never
+  # substituted, so the regression wording above is unchanged. A human reading
+  # "the harness tried three times and failed" has to know whether those three
+  # attempts were about the code at all: on the live run NONE of them were, and
+  # the fix was a one-minute rebase nobody was told to do.
+  case "${SELFHEAL_STOP_REASON:-}" in
+    base-drift)
+      summary="$summary
+
+WHAT ACTUALLY STOPPED THE SELF-HEAL: the mission branch is ${SELFHEAL_DRIFT_BEHIND:-?} commit(s) behind its base, so a rebuild would be composed on a tip the branch has already left behind. ${SELFHEAL_ROUNDS_SPENT:-0} of $SELFHEAL_CAP self-heal round(s) were spent and no worker was dispatched. Re-anchor the branch first: ${SELFHEAL_REANCHOR_FIX:-rebase the mission branch onto its base} $(selfheal_recovery_order "re-anchor the branch with that command")" ;;
+    apply-failed)
+      summary="$summary
+
+WHAT ACTUALLY STOPPED THE SELF-HEAL: ${SELFHEAL_APPLY_FAILURES:-0} rebuild(s) were built and green and then would not LAND on the mission branch. That is an infrastructure fault, not a defect another worker session can fix, and ${SELFHEAL_ROUNDS_SPENT:-0} of $SELFHEAL_CAP self-heal round(s) were spent.${SELFHEAL_REANCHOR_FIX:+ Re-anchor the branch first: $SELFHEAL_REANCHOR_FIX} $(selfheal_recovery_order "free whatever holds the mission branch")" ;;
+    # S310 FIX 2 D1: the GREEN reconcile that could not land. Distinguished from
+    # ticket-session-cap by a NEW ticket_flagged event — present there, absent
+    # here. Nothing was flagged, no defect verdict was reached, and no round is
+    # charged, so saying "the ticket burned its own session cap" was false twice
+    # over: about the ticket, and about the budget.
+    # S310 FIX 3: the reconcile that never ran to a result. Distinguished from
+    # BOTH stories above by POSITIVE evidence: no new ticket_green and no new
+    # ticket_postcommit_ok for this dispatch, and no new ticket_flagged either.
+    # It claims no rebuild, no gate pass and no intact budget, and it points at
+    # the engine — because the gate and the code are not what failed.
+    worker-no-result)
+      summary="$summary
+
+WHAT ACTUALLY STOPPED THE SELF-HEAL: a reconcile worker was dispatched and produced NO RESULT. It exited with status ${SELFHEAL_NORESULT_RC:-?} and the harness recorded ${SELFHEAL_NORESULT_EVENTS:-0} worker-failure/empty-output event(s) for it, with no proof-gate result of any kind. NOTHING was rebuilt, NO gate was run, and no defect verdict was reached, so no repair round was charged — but nothing was attempted successfully either, which is not the same as a budget that is intact because nothing was wrong (${SELFHEAL_ROUNDS_SPENT:-0} of $SELFHEAL_CAP self-heal round(s) spent across ${SELFHEAL_DISPATCHES:-0} reconcile dispatch(es)). This is the ENGINE, not the gate and not the code: check the worker CLI the harness is configured to spawn (\$LCARS_WORKER_BIN) — authentication, rate limits, and whether it returns anything at all. $(selfheal_recovery_order "repair the worker CLI so it answers at all")" ;;
+    mission-parked)
+      summary="$summary
+
+WHAT ACTUALLY STOPPED THE SELF-HEAL: the reconcile was rebuilt, it PASSED every proof gate, and no defect was established in any ticket — but the mission is parked at a human gate, so the rebuild could not land on the mission branch and was discarded. Nothing was flagged and NO repair round was charged: ${SELFHEAL_ROUNDS_SPENT:-0} of $SELFHEAL_CAP self-heal round(s) were spent across ${SELFHEAL_DISPATCHES:-0} reconcile dispatch(es). Answer this gate and run implement again — the reconcile has to be rebuilt from scratch, and nothing is lost but that worker session." ;;
+    stale-attribution)
+      summary="$summary
+
+WHAT ACTUALLY STOPPED THE SELF-HEAL: every regression the gate handed it had already cleared at the current tip, so there was nothing for a worker to fix. ${SELFHEAL_ROUNDS_SPENT:-0} of $SELFHEAL_CAP self-heal round(s) were spent and ${SELFHEAL_WORKERS_AVOIDED:-0} worker dispatch(es) were avoided. $(selfheal_recovery_order "re-run those suites yourself at this tip")" ;;
+    # S310 FIX 1 D3: KEYED ON THE STOP REASON, NOT ON THE STALE COUNTER. A
+    # contradiction used to borrow the stale-skip sentence, which says the
+    # OPPOSITE of what the harness just established: he read "there was nothing
+    # for a worker to fix" about a branch the harness had explicitly refused to
+    # vouch for. The event's wording was already right; it is reused here.
+    contradiction)
+      summary="$summary
+
+WHAT ACTUALLY STOPPED THE SELF-HEAL: the suite(s) the gate named PASSED when they were re-run on their own at the current tip and FAILED in the full-suite gate on that SAME tip. The harness cannot tell which run is true, so it refuses to spend a round guessing — ${SELFHEAL_ROUNDS_SPENT:-0} of $SELFHEAL_CAP self-heal round(s) were spent. Re-run that suite yourself at this tip before anyone is sent to fix code: a suite that flaps is not a regression. $(selfheal_recovery_order "re-run that suite yourself at this tip")" ;;
+    # The everyday outcome: the reconcile ticket could not do it inside its own
+    # worker-session cap. That is a real defect round, and it is NOT the
+    # self-heal budget running out — the two were told as one story.
+    ticket-session-cap)
+      summary="$summary
+
+WHAT ACTUALLY STOPPED THE SELF-HEAL: the reconcile ticket burned its OWN worker-session cap inside self-heal round ${SELFHEAL_ROUNDS_SPENT:-0} — the proof gates rejected every session it was given, so the self-heal stopped there instead of opening another round. ${SELFHEAL_ROUNDS_SPENT:-0} of $SELFHEAL_CAP self-heal round(s) were spent.$afnote" ;;
+    attempt-cap)
+      summary="$summary
+
+WHAT ACTUALLY STOPPED THE SELF-HEAL: the loop reached its attempt backstop with ${SELFHEAL_ROUNDS_SPENT:-0} of $SELFHEAL_CAP self-heal round(s) spent, ${SELFHEAL_APPLY_FAILURES:-0} rebuild(s) that would not LAND and ${SELFHEAL_STALE_SKIPS:-0} attributed regression(s) that had already cleared at the tip. Those last two are infrastructure outcomes, not defects a worker session can fix." ;;
+    no-regressor)
+      summary="$summary
+
+WHAT ACTUALLY STOPPED THE SELF-HEAL: the harness could not name any ticket to send a reconcile to, so no worker was dispatched and no round was spent." ;;
+    *)
+      # A cap genuinely exhausted on defects can still have had infrastructure
+      # outcomes alongside it — and those were invisible, which is how "round
+      # 3/3" came to be read as three failed attempts at the code.
+      if [ "${SELFHEAL_APPLY_FAILURES:-0}" -gt 0 ] || [ "${SELFHEAL_STALE_SKIPS:-0}" -gt 0 ]; then
+        summary="$summary
+
+ALONGSIDE THOSE ROUNDS: ${SELFHEAL_APPLY_FAILURES:-0} rebuild(s) were built and green and would not LAND, and ${SELFHEAL_STALE_SKIPS:-0} attributed regression(s) had already cleared at the tip. Those are infrastructure outcomes, not defects, and no round was charged for them."
+      fi
+      # ESCALATE ON A CHANGING FAILURE MODE, NOT ONLY ON THE ROUND COUNT. Two
+      # rounds failing for two DIFFERENT reasons is stronger evidence of a
+      # structural problem than two identical ones, and the recommendation that
+      # follows from it is different: reshape the mechanism, do not re-fix.
+      if [ -n "${SELFHEAL_MODE_SHIFT:-}" ]; then
+        summary="$summary
+
+READ THE ROUNDS TOGETHER: they each failed for a DIFFERENT reason (${SELFHEAL_ROUNDS_SPENT:-0} round(s): $(printf '%s' "${SELFHEAL_MODES:-}" | tr '\n' ';' | sed 's/;$//')). A changed failure mode between rounds points at a structural problem rather than one reducible regression, so reshaping the work is more likely to help than another re-fix."
+      fi ;;
+  esac
+
+  # THE BUDGET, SAID IN ONE LINE. Four of these stops spend NOTHING on defects,
+  # and that is the single most actionable fact about them: the repair budget is
+  # still there once the infrastructure is cleared. It was legible only by
+  # subtracting two numbers out of a paragraph.
+  case "${SELFHEAL_STOP_REASON:-}" in
+    apply-failed|base-drift|stale-attribution|contradiction|attempt-cap|no-regressor|mission-parked)
+      if [ "${SELFHEAL_ROUNDS_SPENT:-0}" = 0 ]; then
+        summary="$summary
+
+YOUR REPAIR BUDGET IS UNTOUCHED: 0 of $SELFHEAL_CAP self-heal round(s) were spent — nothing that stopped this was a defect another worker session could fix."
+      fi ;;
+  esac
+
   local esctype="regression"
   [ "$basis" = environment-fault ] || [ -n "${FULL_SUITE_ENV_FAULT:-}" ] && esctype="environment"
-  LCARS_PENDING_HUMAN_SUMMARY="$summary" \
+
+  # THE FIRST LINE HE READS. "self-heal exhausted" is TRUE only when the rounds
+  # were spent on defects; on every other stop it is the pre-S310 sentence that
+  # cost the measured live run 2.5 hours, and it is also what the board and
+  # `lcars answer` replay back to him later. Keyed on the stop reason.
+  #
+  # S310 FIX 2 D4: COMPUTED HERE, ABOVE THE WRITES, BECAUSE IT HAS TO REACH
+  # `pendingQuestion`. It used to be built after them, so it existed only in the
+  # `gate` event and on stdout — and the one surface `lcars answer` and the board
+  # replay to him later never carried the keyed story at all (0 hits for
+  # "full-suite regression —" across all six stops).
+  local spent="${SELFHEAL_ROUNDS_SPENT:-0} of $SELFHEAL_CAP repair round(s) spent"
+  local what="full-suite regression — self-heal exhausted"
+  case "${SELFHEAL_STOP_REASON:-}" in
+    apply-failed)
+      what="full-suite regression — the rebuild would not LAND (infrastructure, not a defect); $spent" ;;
+    base-drift)
+      what="full-suite regression — self-heal REFUSED, the branch is behind its base; $spent" ;;
+    stale-attribution)
+      what="full-suite regression — every regression handed to self-heal had already cleared at the tip; $spent" ;;
+    contradiction)
+      what="full-suite regression — the suite passes alone and fails in the gate at the same tip; $spent" ;;
+    ticket-session-cap)
+      what="full-suite regression — the reconcile ticket burned its OWN worker-session cap; $spent" ;;
+    # S310 FIX 2 D1: the same exit, the opposite story. Nothing was flagged,
+    # the rebuild passed, and the mission's existing park is what blocked it.
+    mission-parked)
+      what="full-suite regression — the reconcile went GREEN and could not land: the mission is parked at a human gate; $spent" ;;
+    # S310 FIX 3: the third state. No green marker and no flag for the dispatch,
+    # so neither story above is true: the worker came back empty.
+    worker-no-result)
+      what="full-suite regression — the reconcile worker produced NO RESULT: nothing was rebuilt and no gate was run; $spent" ;;
+    attempt-cap)
+      what="full-suite regression — self-heal stopped at its attempt backstop; $spent" ;;
+    no-regressor)
+      what="full-suite regression — self-heal could attribute it to no ticket; $spent" ;;
+  esac
+  if [ "$esctype" = environment ]; then
+    what="full-suite gate — environment fault, self-heal SKIPPED (no ticket to dispatch)"
+  fi
+
+  # S310 FIX 2 D4: the keyed headline LEADS the field he actually reads. stdout
+  # keeps printing it on its own `IMPLEMENT:` line, so it is not doubled there.
+  local pq_text="$what
+
+$summary"
+
+  local q; q="$(mktemp)"
+  printf '%s\n' "$reason" >"$q"
+  LCARS_PENDING_HUMAN_SUMMARY="$pq_text" \
   LCARS_PENDING_ESCALATION_TYPE="$esctype" \
   LCARS_PENDING_TECHNICAL_DETAIL="$reason" \
     write_pending "$q" "implement"
   rm -f "$q"
   lcars_state_set "$STATE" awaitingHuman true
-  lcars_state_set_string "$STATE" pendingQuestion "$summary"
+  lcars_state_set_string "$STATE" pendingQuestion "$pq_text"
   lcars_state_refusal_die "lcars run"   # S207 D2: no gate written ⇒ no gate
   # In-flight stage label (implement) first, THEN the awaiting-human overlay, so
   # the parked card sits squarely in the Implement column (mirror validate-pause).
   gh_relabel "lcars:implement lcars:awaiting-human" ""
 
-  local what="full-suite regression — self-heal exhausted"
-  if [ "$esctype" = environment ]; then
-    what="full-suite gate — environment fault, self-heal SKIPPED (no ticket to dispatch)"
-  fi
   emit_event gate implement "$what, awaiting your answer: $summary" \
     "phase=full-suite-gate"
 
@@ -14933,6 +15106,244 @@ case "$SELFHEAL_CAP" in ''|*[!0-9]*) SELFHEAL_CAP=3 ;; esac
 SELFHEAL_LAST_REASON=""
 SELFHEAL_REGRESSOR=""        # S157: the ticket self-heal chose, and WHY it chose it
 SELFHEAL_REGRESSOR_BASIS=""
+
+# --- S310: A ROUND IS SPENT ON DEFECTS, NOT ON INFRASTRUCTURE --------------
+# Measured on a live repo 2026-10-22: ONE ticket burned THREE self-heal rounds,
+# FIVE worker sessions and ~2.5 hours on a regression that did not exist. Twice
+# the round reported the ticket GREEN and then "the rebuilt commit did not land
+# cleanly" — the WORK succeeded, only the APPLY failed — and the round was
+# ALREADY SPENT, because `round=$((round + 1))` was the second line of the loop
+# body and the apply-failure emit came later in the same iteration. The base had
+# moved three times underneath and the branch ended NINE commits behind, so every
+# round rebuilt against a base that was already stale. Rebasing took one minute.
+#
+# THE CAP ITSELF IS UNCHANGED (it is an invariant of this project): what changed
+# is what CONSUMES a round. A defect round is one where a worker was dispatched
+# against a regression that still exists at the current tip. Everything else —
+# an apply that could not land, a base that moved, an attribution that is already
+# green — is accounted for separately, with its own counter and its own bound.
+SELFHEAL_APPLY_CAP="${LCARS_SELFHEAL_APPLY_CAP:-$SELFHEAL_CAP}"
+case "$SELFHEAL_APPLY_CAP" in ''|*[!0-9]*) SELFHEAL_APPLY_CAP="$SELFHEAL_CAP" ;; esac
+SELFHEAL_STALE_CAP="${LCARS_SELFHEAL_STALE_CAP:-2}"
+case "$SELFHEAL_STALE_CAP" in ''|*[!0-9]*) SELFHEAL_STALE_CAP=2 ;; esac
+SELFHEAL_ROUNDS_SPENT=0      # DEFECT rounds only — the number the cap governs
+SELFHEAL_APPLY_FAILURES=0    # infrastructure: the rebuild would not land
+SELFHEAL_STALE_SKIPS=0       # the attributed regression was green at the tip
+SELFHEAL_WORKERS_AVOIDED=0   # worker dispatches the stale-attribution check saved
+SELFHEAL_TIP=""              # the branch tip THIS round re-anchored to
+SELFHEAL_STOP_REASON=""      # why the loop ended: cap | apply-failed | base-drift | …
+SELFHEAL_REANCHOR_FIX=""     # the ONE command that clears a base-drift refusal
+SELFHEAL_DRIFT_BEHIND=""     # how many commits behind its base the branch is
+SELFHEAL_DRIFT_REASON=""
+SELFHEAL_MODES=""            # one signature per spent round, newline-separated
+SELFHEAL_MODE_SHIFT=""       # set when two spent rounds failed for DIFFERENT reasons
+SELFHEAL_NORESULT_EVENTS=""  # S310 FIX 3: worker-failure/empty-output events this dispatch
+SELFHEAL_NORESULT_RC=""      # the exit status the reconcile worker died with
+SELFHEAL_RECHECK_UNMEASURED=""  # why the stale-attribution check could not run
+SELFHEAL_RECHECK_NOTED=""       # the last unmeasured reason already reported
+# S310 FIX 2 D4: HOW MANY RECONCILE WORKERS WERE ACTUALLY SPAWNED. Three of the
+# stops dispatch NOTHING (dispatch.log is literally 0 lines), yet the escalation
+# opened by telling him "the harness's last reconcile attempt … did not clear
+# it" — a reconcile that never happened — and then contradicted itself two
+# paragraphs later with "no worker was dispatched". Neither counter already here
+# can answer the question: a round is REFUNDED on an apply failure and on a
+# parked discard, so roundsSpent 0 does not mean nobody ran. This one only ever
+# goes up, right at the dispatch.
+SELFHEAL_DISPATCHES=0
+
+# ticket_flagged events on record, off disk. S310 FIX 2 D1 reads this BEFORE and
+# AFTER a reconcile dispatch: `awaitingHuman == true` afterwards is only evidence
+# that THIS dispatch flagged the ticket if a NEW ticket_flagged was written. The
+# mission may simply have been parked already — which is the state every one of
+# these six stops leaves behind.
+selfheal_flag_count() {
+  local n=0
+  if [ -n "${MISSION_DIR:-}" ] && [ -f "$MISSION_DIR/events.jsonl" ]; then
+    n="$(grep -c '"type":"ticket_flagged"' "$MISSION_DIR/events.jsonl" 2>/dev/null || true)"
+    n="$(printf '%s' "$n" | tr -dc '0-9')"
+  fi
+  printf '%s' "${n:-0}"
+}
+
+# S310 FIX 3: ANY event type on record, off disk — the same per-dispatch
+# pre/post counting technique as selfheal_flag_count, which held against a
+# back-dated ticket_flagged for the same ticket.
+selfheal_event_count() { # type…
+  local t n total=0
+  for t in "$@"; do
+    n=0
+    if [ -n "${MISSION_DIR:-}" ] && [ -f "$MISSION_DIR/events.jsonl" ]; then
+      n="$(grep -c "\"type\":\"$t\"" "$MISSION_DIR/events.jsonl" 2>/dev/null || true)"
+      n="$(printf '%s' "$n" | tr -dc '0-9')"
+    fi
+    total=$((total + ${n:-0}))
+  done
+  printf '%s' "$total"
+}
+
+# S310 FIX 3: POSITIVE evidence that a dispatch PRODUCED A RESULT. Fix round 2
+# discriminated the parked exit on the ABSENCE of a ticket_flagged — and absence
+# is not evidence of green: a reconcile worker that simply FAILS writes no
+# ticket_flagged either, so a dead engine was reported as "the reconcile went
+# GREEN … it PASSED every proof gate … nothing is lost". Three false sentences.
+# These are the markers the product writes when a gate really passed.
+selfheal_green_count() { selfheal_event_count ticket_green ticket_postcommit_ok; }
+
+# THE RECOVERY ORDER, SAID ONCE, FOR EVERY STOP THAT PARKS THE MISSION.
+# S310 FIX 2 D3: fix round 1 wrote "ANSWER THIS GATE FIRST, then free whatever
+# holds the branch" — and that order cannot be performed. Answering a gate
+# RESUMES THE DRIVE, which re-runs implement immediately: there is no gap
+# between step 1 and step 2. A tester followed it literally and the resumed
+# drive re-ran implement with the holder still attached — three more apply
+# failures, three more worker sessions, re-parked with the same story. So the
+# order is reversed: clear the obstacle, THEN answer. All four 0-round stops
+# carry it, because all four park the mission, all four ask him to act, and the
+# discard-while-parked hazard is identical on every one of them.
+selfheal_recovery_order() { # first-action
+  printf 'THE ORDER MATTERS: %s FIRST, and only THEN answer this gate — answering RESUMES the drive, which re-runs implement straight away, and while the mission is parked a self-heal round that SUCCEEDS is discarded (its rebuild never lands).' "$1"
+}
+
+# The self-heal's own record, on disk, next to the mission's events: what the
+# round counter actually is, what was spent on what, and why the loop stopped.
+# A counter nobody can read is a counter nobody can audit — the live run's whole
+# problem was that "round 2/3" and "did not land cleanly" were two lines in a log
+# with no number tying them together.
+selfheal_ledger_write() { # last-outcome
+  [ -n "${MISSION_DIR:-}" ] || return 0
+  local modes="" m first=1
+  while IFS= read -r m; do
+    [ -n "$m" ] || continue
+    if [ "$first" = 1 ]; then modes="\"$(json_escape "$m")\""; first=0
+    else modes="$modes, \"$(json_escape "$m")\""; fi
+  done <<SH_MODES
+$SELFHEAL_MODES
+SH_MODES
+  cat >"$MISSION_DIR/selfheal-ledger.json" <<JSON
+{
+  "cap": $SELFHEAL_CAP,
+  "roundsSpent": $SELFHEAL_ROUNDS_SPENT,
+  "capExhausted": $( [ "$SELFHEAL_ROUNDS_SPENT" -ge "$SELFHEAL_CAP" ] && printf true || printf false ),
+  "applyFailures": $SELFHEAL_APPLY_FAILURES,
+  "applyCap": $SELFHEAL_APPLY_CAP,
+  "staleAttributionSkips": $SELFHEAL_STALE_SKIPS,
+  "workersAvoided": $SELFHEAL_WORKERS_AVOIDED,
+  "dispatches": ${SELFHEAL_DISPATCHES:-0},
+  "tip": "$(json_escape "${SELFHEAL_TIP:-}")",
+  "stopReason": "$(json_escape "${SELFHEAL_STOP_REASON:-}")",
+  "modeShift": "$(json_escape "${SELFHEAL_MODE_SHIFT:-}")",
+  "modes": [$modes],
+  "lastOutcome": "$(json_escape "${1:-}")",
+  "reanchorFix": "$(json_escape "${SELFHEAL_REANCHOR_FIX:-}")"
+}
+JSON
+  return 0
+}
+
+# The mission branch's tip AS IT IS NOW. Read at the START of every round, so a
+# round composes on the tip it is actually about to land on rather than on a base
+# captured when the loop began.
+selfheal_branch_tip() { # branch
+  [ -n "${1:-}" ] || return 0
+  "$GIT_BIN" rev-parse --verify -q "refs/heads/$1" 2>/dev/null || true
+}
+
+# BASE DRIFT BLOCKS A SELF-HEAL INSTEAD OF INFORMING IT. There is ONE
+# implementation of base freshness in this project — `ensure_base_current` +
+# `lcars_base_advance_mission_branch` in lcars-common.sh (S158/S159) — and this
+# CONSUMES it; nothing about freshness is re-decided here. The guard's own
+# doctrine is unchanged: it never writes into a dirty tree, never resets or
+# forces, and only fast-forwards a mission branch when that is provably lossless.
+#
+# What S310 changes is the CONSEQUENCE. At drive time "the branch is N commits
+# behind" is a warning you proceed past; with a self-heal about to run it is the
+# WHOLE STORY, because the rebuild will be composed on a tip the branch has
+# already left behind. So: if the guard could fast-forward the branch, that IS
+# the re-anchor and the round proceeds. If it refused (the branch carries work of
+# its own — the ordinary mid-mission state), the round is refused and the guard's
+# own one-line fix is handed on.
+# Returns 0 = REFUSE this round. Returns 1 = nothing in the way.
+selfheal_base_drift_blocks() { # branch base
+  local branch="${1:-}" base="${2:-}"
+  SELFHEAL_REANCHOR_FIX=""; SELFHEAL_DRIFT_BEHIND=""; SELFHEAL_DRIFT_REASON=""
+  [ -n "$branch" ] && [ -n "$base" ] || return 1
+  [ "$branch" != "$base" ] || return 1
+  drive_load_base_lib || return 1
+  ensure_base_current "$base" || :
+  # A logged bug's base IS its parent's mission branch: LCARS takes no position
+  # on it and never moves the parent, so there is no drift to refuse.
+  [ "${LCARS_BASE_VERDICT:-}" = "child-base" ] && return 1
+  # Mid-operation (rebase/merge/cherry-pick/revert/bisect): the refs are
+  # mid-move, so every measurement is of a transient. Claiming staleness that
+  # was never established is the one lie a consumer cannot detect.
+  [ "${LCARS_BASE_BLOCKER:-}" = "operation-in-progress" ] && return 1
+  lcars_base_advance_mission_branch "$branch" "$base" || :
+  case "${LCARS_MB_BEHIND:-}" in ''|0|*[!0-9]*) return 1 ;; esac
+  # The guard brought the branch up to date itself — that is the re-anchor, and
+  # there is nothing left to refuse.
+  [ "${LCARS_MB_MOVE:-}" = "moved" ] && return 1
+  SELFHEAL_DRIFT_BEHIND="$LCARS_MB_BEHIND"
+  SELFHEAL_DRIFT_REASON="${LCARS_MB_REASON:-}"
+  SELFHEAL_REANCHOR_FIX="${LCARS_MB_FIX:-git rebase $base $branch}"
+  return 0
+}
+
+# IS THE ATTRIBUTED REGRESSION STILL THERE? Re-run ONLY the attributed failing
+# set, at the branch tip as it is now, BEFORE a worker is dispatched. On the live
+# run that one check would have saved all three rounds and five worker sessions:
+# the branch was green the whole time.
+#
+# Returns 0 ONLY on positive evidence of green. Every inability to measure —
+# no runner, no failing set, a worktree that would not cut — returns non-zero, so
+# an unmeasured repo can never be mistaken for a healed one.
+#
+# S310 FIX 1 D5: AN UNMEASURED CHECK SAYS SO. Every one of those inabilities
+# used to be silent, which means the whole budget-saving feature could switch
+# itself off on a real repo — a blocked worktree path is enough — with nothing
+# in the timeline or on stdout saying it had. The reason is recorded here and
+# reported by the caller.
+selfheal_failing_set_green() { # ticketId...
+  SELFHEAL_RECHECK_UNMEASURED=""
+  [ $# -gt 0 ] || { SELFHEAL_RECHECK_UNMEASURED="the gate attributed the regression to no ticket, so there was no failing set to re-run"; return 1; }
+  local cmd; cmd="$(resolve_test_cmd)"
+  [ -n "$cmd" ] || { SELFHEAL_RECHECK_UNMEASURED="this repo has no test command, so nothing can be re-run"; return 1; }
+  local branch wt_base wt rc=0
+  branch="$(json_str "$STATE" branch)"
+  wt_base="$MISSION_DIR/selfheal-recheck-wt"
+  rm -rf "$wt_base" 2>/dev/null || :
+  wt="$(make_ticket_worktree "$wt_base" "$branch" "recheck")" \
+    || { SELFHEAL_RECHECK_UNMEASURED="the re-check worktree at $wt_base could not be cut"; return 1; }
+  [ -n "$wt" ] || wt="$REPO_ROOT"
+  retest_ticket_suites "$wt" "$cmd" "$@" || rc=$?
+  if [ "$wt" != "$REPO_ROOT" ]; then
+    "$GIT_BIN" worktree remove --force "$wt" >/dev/null 2>&1 || rm -rf "$wt"
+    "$GIT_BIN" worktree prune >/dev/null 2>&1 || :
+    rm -rf "$wt_base" 2>/dev/null || :
+  fi
+  return "$rc"
+}
+
+# One signature per SPENT round: the basis the attribution rested on plus the set
+# of suites that were failing. Two rounds with the same signature are the same
+# problem twice; two with different signatures are two problems, which is a
+# stronger reason to stop and reshape than the round count alone.
+selfheal_record_mode() { # basis failing-set
+  local sig="${1:-unknown}|${2:-none}"
+  case "$SELFHEAL_MODES" in
+    "") SELFHEAL_MODES="$sig" ;;
+    *)
+      case "
+$SELFHEAL_MODES
+" in
+        *"
+$sig
+"*) : ;;
+        *) SELFHEAL_MODE_SHIFT="the rounds did NOT fail the same way" ;;
+      esac
+      SELFHEAL_MODES="$SELFHEAL_MODES
+$sig" ;;
+  esac
+  return 0
+}
 self_heal_full_suite() { # reason  ordered ticketId...
   local reason="$1"; shift
   local ordered="$*"
@@ -14957,6 +15368,13 @@ self_heal_full_suite() { # reason  ordered ticketId...
     emit_event selfheal_skipped implement \
       "self-heal SKIPPED — the full-suite gate diagnosed an environment fault (${FULL_SUITE_ENV_FAULT}), which attributes to no ticket and no worker edit can clear; escalating with the diagnosis" \
       "fault=${FULL_SUITE_ENV_FAULT}" || :
+    # D4: the loop never starts, so nothing resets the counters — write the
+    # record anyway, with the reason, rather than leaving no ledger at all.
+    SELFHEAL_STOP_REASON="environment-fault"
+    SELFHEAL_ROUNDS_SPENT=0; SELFHEAL_APPLY_FAILURES=0; SELFHEAL_STALE_SKIPS=0
+    SELFHEAL_WORKERS_AVOIDED=0; SELFHEAL_MODES=""; SELFHEAL_MODE_SHIFT=""
+    SELFHEAL_DISPATCHES=0
+    selfheal_ledger_write environment-fault
     return 1
   fi
 
@@ -14970,9 +15388,54 @@ self_heal_full_suite() { # reason  ordered ticketId...
   local branch; branch="$(json_str "$STATE" branch)"
   local wt_base="$MISSION_DIR/selfheal-wt"
 
+  # S310: the counters start clean for THIS self-heal, and the ledger is written
+  # before anything is spent so "round 0" is on disk too.
+  SELFHEAL_ROUNDS_SPENT=0; SELFHEAL_APPLY_FAILURES=0; SELFHEAL_STALE_SKIPS=0
+  SELFHEAL_WORKERS_AVOIDED=0; SELFHEAL_STOP_REASON=""; SELFHEAL_MODES=""
+  SELFHEAL_MODE_SHIFT=""; SELFHEAL_REANCHOR_FIX=""; SELFHEAL_TIP=""
+  SELFHEAL_DISPATCHES=0
+  local base; base="$(json_str "$STATE" base)"
+  selfheal_ledger_write start
+
   local round=0 fssig regressor basis pick attribution
+  # S310: ATTEMPTS and DEFECT ROUNDS are different numbers. The loop is bounded
+  # by the cap in DEFECT rounds (unchanged) and separately by each
+  # infrastructure outcome's own bound, with one backstop so no combination of
+  # them can spin.
+  local attempt=0 attempt_cap
+  attempt_cap=$(( SELFHEAL_CAP + SELFHEAL_APPLY_CAP + SELFHEAL_STALE_CAP + 1 ))
   while [ "$round" -lt "$SELFHEAL_CAP" ]; do
-    round=$((round + 1))
+    attempt=$((attempt + 1))
+    if [ "$attempt" -gt "$attempt_cap" ]; then
+      SELFHEAL_STOP_REASON="attempt-cap"
+      selfheal_ledger_write attempt-cap
+      break
+    fi
+
+    # --- S310 (a) RE-ANCHOR, AT THE START OF THE ROUND -------------------
+    # Read the tip NOW. Everything this round composes, lands on and re-tests
+    # is anchored here — not on a base captured when the loop began, which is
+    # what made the live run's rebuild unlandable three times over.
+    cleanup_ticket_worktrees "$wt_base" || :
+
+    # --- S310 (b) BASE DRIFT REFUSES THE ROUND ---------------------------
+    if selfheal_base_drift_blocks "$branch" "$base"; then
+      SELFHEAL_STOP_REASON="base-drift"
+      SELFHEAL_TIP="$(selfheal_branch_tip "$branch")"
+      emit_event selfheal_refused implement \
+        "self-heal REFUSED before attempt $attempt — the mission branch '$branch' is ${SELFHEAL_DRIFT_BEHIND} commit(s) behind '$base', so a rebuild would be composed on a tip the branch has already left behind and could not land. No worker was dispatched and no round was spent (${SELFHEAL_ROUNDS_SPENT} of $SELFHEAL_CAP). Re-anchor first: ${SELFHEAL_REANCHOR_FIX}" \
+        "behindBy=${SELFHEAL_DRIFT_BEHIND}" "base=$base" "roundsSpent=$SELFHEAL_ROUNDS_SPENT" || :
+      selfheal_ledger_write base-drift
+      printf '  ⚠ SELF-HEAL REFUSED — %s is %s commit(s) behind %s\n' \
+        "$branch" "${SELFHEAL_DRIFT_BEHIND}" "$base" >&2
+      [ -n "${SELFHEAL_DRIFT_REASON:-}" ] && printf '    Why:    %s\n' "$SELFHEAL_DRIFT_REASON" >&2
+      printf '    Fix:    %s\n' "$SELFHEAL_REANCHOR_FIX" >&2
+      return 1
+    fi
+    # Read the tip AFTER the guard, so a fast-forward it performed is reflected
+    # rather than a tip that no longer exists.
+    SELFHEAL_TIP="$(selfheal_branch_tip "$branch")"
+
     # S157 D3: RE-PICK EVERY ROUND, from THIS round's failing set. Both halves of
     # the brief have to come from the same round: the reason below is rewritten
     # each iteration, so a regressor (and an attribution line) fixed before the
@@ -14983,11 +15446,94 @@ self_heal_full_suite() { # reason  ordered ticketId...
     pick="$(selfheal_regressor "$failing" "$ordered")"
     regressor="${pick%%$'\t'*}"; basis="${pick#*$'\t'}"
     SELFHEAL_REGRESSOR="$regressor"; SELFHEAL_REGRESSOR_BASIS="$basis"
-    [ -n "$regressor" ] || return 1
+    if [ -z "$regressor" ]; then
+      SELFHEAL_STOP_REASON="no-regressor"
+      emit_event selfheal_blocked implement \
+        "self-heal STOPPED before attempt $attempt — no ticket could be named to send a reconcile to, so no worker was dispatched and no round was spent (${SELFHEAL_ROUNDS_SPENT} of $SELFHEAL_CAP)." \
+        "roundsSpent=$SELFHEAL_ROUNDS_SPENT" "stop=no-regressor" || :
+      selfheal_ledger_write no-regressor
+      return 1
+    fi
+
+    # --- S310 (c) IS THE REGRESSION STILL THERE? -------------------------
+    # BEFORE the attribution is written and BEFORE a worker is dispatched, re-run
+    # the attributed failing set at the tip this round just anchored to. A set
+    # that is GREEN there means the attribution is STALE: the regression it names
+    # does not exist on this tip, so no edit to any ticket can clear it and a
+    # worker session would be spent re-solving a solved problem. Record the
+    # staleness, spend NO round and NO worker, and let the full-suite gate judge
+    # the real tip. On the live run this single check would have saved all three
+    # rounds and five worker sessions — the branch was green the whole time.
+    if selfheal_failing_set_green $failing; then
+      SELFHEAL_STALE_SKIPS=$((SELFHEAL_STALE_SKIPS + 1))
+      SELFHEAL_WORKERS_AVOIDED=$((SELFHEAL_WORKERS_AVOIDED + 1))
+      emit_event selfheal_stale_attribution implement \
+        "STALE ATTRIBUTION — the suite(s) the gate named (${failing:-none}) PASS at the current tip ${SELFHEAL_TIP:-unknown}, so the regression attributed to $regressor is not present there. NO worker was dispatched and no round was spent (${SELFHEAL_ROUNDS_SPENT} of $SELFHEAL_CAP); the full-suite gate now judges that tip." \
+        "ticket=$regressor" "failing=${failing:-}" "tip=${SELFHEAL_TIP:-}" \
+        "roundsSpent=$SELFHEAL_ROUNDS_SPENT" "workersAvoided=$SELFHEAL_WORKERS_AVOIDED" || :
+      selfheal_ledger_write stale-attribution
+      fssig="$MISSION_DIR/full-suite-signal.txt"; rm -f "$fssig"
+      if FULL_SUITE_SIGNAL="$fssig" full_suite_gate $ordered; then
+        rm -f "$fssig"
+        emit_event selfheal_ok implement \
+          "self-heal succeeded with NO worker session — the attributed regression was already absent at the tip and every suite passes again" \
+          "ticket=$regressor" "round=$SELFHEAL_ROUNDS_SPENT" "workersAvoided=$SELFHEAL_WORKERS_AVOIDED"
+        SELFHEAL_STOP_REASON="healed-stale"
+        selfheal_ledger_write healed
+        return 0
+      fi
+      [ -f "$fssig" ] && cp "$fssig" "$SELFHEAL_LAST_REASON"
+      rm -f "$fssig"
+      local prev_failing="$failing"
+      failing="${FULL_SUITE_REGRESSED:-}"
+      # The narrow re-check said green and the full gate says the SAME set is
+      # red. Those two cannot both be true of one tip, so the harness stops
+      # rather than loop on a contradiction it cannot resolve.
+      if [ "$failing" = "$prev_failing" ]; then
+        SELFHEAL_STOP_REASON="contradiction"
+        emit_event selfheal_blocked implement \
+          "self-heal STOPPED — the suite(s) ${failing:-none} passed when re-run on their own at tip ${SELFHEAL_TIP:-unknown} and failed in the full-suite gate on the same tip. The harness cannot tell which run is true, so it refuses to spend a round guessing (${SELFHEAL_ROUNDS_SPENT} of $SELFHEAL_CAP spent)." \
+          "roundsSpent=$SELFHEAL_ROUNDS_SPENT" "tip=${SELFHEAL_TIP:-}" || :
+        selfheal_ledger_write contradiction
+        return 1
+      fi
+      if [ "$SELFHEAL_STALE_SKIPS" -ge "$SELFHEAL_STALE_CAP" ]; then
+        SELFHEAL_STOP_REASON="stale-attribution"
+        emit_event selfheal_blocked implement \
+          "self-heal STOPPED after $SELFHEAL_STALE_SKIPS stale attribution(s) — every regression it was handed had already cleared at the tip, so there was nothing for a worker to fix. ${SELFHEAL_ROUNDS_SPENT} of $SELFHEAL_CAP defect round(s) were spent." \
+          "roundsSpent=$SELFHEAL_ROUNDS_SPENT" "staleSkips=$SELFHEAL_STALE_SKIPS" || :
+        selfheal_ledger_write stale-blocked
+        return 1
+      fi
+      continue
+    fi
+
+    # The check returned "not green" — but that is only trustworthy when it was
+    # MEASURED. Say so, once per distinct reason, on both surfaces: a worker is
+    # about to be spent on the gate's word alone.
+    if [ -n "${SELFHEAL_RECHECK_UNMEASURED:-}" ] \
+       && [ "${SELFHEAL_RECHECK_NOTED:-}" != "$SELFHEAL_RECHECK_UNMEASURED" ]; then
+      SELFHEAL_RECHECK_NOTED="$SELFHEAL_RECHECK_UNMEASURED"
+      emit_event selfheal_recheck_unmeasured implement \
+        "the STALE-ATTRIBUTION CHECK could not run — $SELFHEAL_RECHECK_UNMEASURED. The harness therefore cannot say whether the attributed regression still exists at tip ${SELFHEAL_TIP:-unknown}, so it proceeds on the gate's word and SPENDS a worker rather than risk a false heal. The round is not refunded, because a defect verdict was never ruled out." \
+        "ticket=$regressor" "tip=${SELFHEAL_TIP:-}" || :
+      printf '  ⚠ STALE-ATTRIBUTION CHECK DID NOT RUN — %s. The harness could not re-check the attributed regression at the tip, so it spends a worker on the gate'"'"'s word.\n' \
+        "$SELFHEAL_RECHECK_UNMEASURED" >&2
+    fi
+
+    # From here a worker IS dispatched against a regression that still exists at
+    # this tip — THAT is what spends a round.
+    round=$((round + 1)); SELFHEAL_ROUNDS_SPENT="$round"
     attribution="$(selfheal_attribution_note "$regressor" "$basis")"
+    # S310 FIX 1 D6: the ATTEMPT is in the line too. On an apply-failure stack
+    # the round is refunded, so three attempts emitted three byte-identical
+    # "round 1: … attributed to t-002" lines and the timeline read as a stutter.
     emit_event selfheal_attribution implement \
-      "round $round: full-suite regression attributed to $regressor ($basis)" \
-      "ticket=$regressor" "round=$round" || :
+      "attempt $attempt (defect round $round of $SELFHEAL_CAP): full-suite regression attributed to $regressor ($basis)" \
+      "ticket=$regressor" "round=$round" "attempt=$attempt" || :
+    emit_event selfheal_reanchor implement \
+      "round $round re-anchored to the mission branch tip as it is now: ${SELFHEAL_TIP:-unknown} — the rebuild composes on that commit, not on a base captured earlier" \
+      "ticket=$regressor" "round=$round" "tip=${SELFHEAL_TIP:-}" || :
     emit_event selfheal implement "self-heal round $round/$SELFHEAL_CAP — re-running $regressor's implementer to reconcile the regression" \
       "ticket=$regressor" "round=$round"
 
@@ -14997,6 +15543,19 @@ self_heal_full_suite() { # reason  ordered ticketId...
     # declared-edits guard + the pre-merge drift check).
     local irc=0
     rm -f "$(ticket_dir "$regressor")/.build-rc" "$(ticket_dir "$regressor")/.commit-sha" "$(ticket_dir "$regressor")/.commit-base" 2>/dev/null
+    # S310 FIX 2 D1/D4: the two facts that make the next check honest, read
+    # BEFORE the dispatch — how many flags were already on record, and whether
+    # the mission was ALREADY parked. Without them, `awaitingHuman == true`
+    # after the dispatch is indistinguishable from a park that pre-dates it.
+    # S310 FIX 3: and the THIRD fact — how much POSITIVE green evidence was on
+    # record before the dispatch, so "no ticket_flagged" cannot be read as
+    # "went green" when the worker simply died.
+    local pre_flagged pre_parked pre_green pre_noresult
+    pre_flagged="$(selfheal_flag_count)"
+    pre_green="$(selfheal_green_count)"
+    pre_noresult="$(selfheal_event_count ticket_worker_empty_output ticket_implementer_failed)"
+    pre_parked="$(json_raw "$STATE" awaitingHuman)"
+    SELFHEAL_DISPATCHES=$((SELFHEAL_DISPATCHES + 1))
     LCARS_GH_BIN="$GH_BIN" LCARS_GIT_BIN="$GIT_BIN" \
     LCARS_TICKET_WT_BASE="$wt_base" LCARS_TICKET_BRANCH="$branch" \
     LCARS_SELFHEAL_FEEDBACK="$attribution
@@ -15006,8 +15565,76 @@ $(cat "$SELFHEAL_LAST_REASON")" \
     # A flagged ticket (its own session cap) set awaitingHuman in shared state —
     # the per-ticket cap already handled it; stop self-healing here.
     if [ "$(json_raw "$STATE" awaitingHuman)" = "true" ]; then
-      emit_event selfheal implement "self-heal round $round flagged the ticket's own worker-session cap — stopping self-heal" \
-        "ticket=$regressor" "round=$round"
+      # S310 FIX 2 D1: TWO DIFFERENT THINGS REACHED THIS ONE EXIT.
+      # (a) the reconcile ticket really was FLAGGED — it burned its own
+      #     worker-session cap and a NEW ticket_flagged went on record. A real
+      #     defect round; the sentence below is true and the round is charged.
+      # (b) the ticket went GREEN and the mission was ALREADY parked at a human
+      #     gate when the self-heal started. Nothing was flagged, nothing was
+      #     established, and nothing could land — the rebuild is discarded (that
+      #     discard is INHERITED, ledgered as D17, and not changed here).
+      # Measured 2026-10-22 with one variable between two identical fixtures:
+      # case (b) printed "the reconcile ticket burned its OWN worker-session
+      # cap" over a timeline reading flip_flop_pass → ticket_postcommit_ok →
+      # ticket_green with NO ticket_flagged anywhere, and billed a repair round
+      # for a round that SUCCEEDED. Since every one of these six stops parks the
+      # mission, following the printed advice on any of them lands in (b).
+      # The discriminator is on disk, not inferred: a NEW ticket_flagged event.
+      local post_flagged; post_flagged="$(selfheal_flag_count)"
+      # S310 FIX 3: (c) THE THIRD STATE — NEITHER. No new ticket_flagged AND no
+      # new green marker: the worker produced no result at all. Fix round 2 read
+      # this as (b) and told him the reconcile "went GREEN", "PASSED every proof
+      # gate" and that "nothing is lost but that worker session" — three
+      # sentences that are false when the engine is the thing that broke, and it
+      # sent him to answer a gate that then re-dispatched the same dead worker.
+      # Discriminated on POSITIVE evidence, per dispatch, same counting
+      # technique. The product already named this state and wrote it in the
+      # measured runs (ticket_worker_empty_output / ticket_implementer_failed);
+      # it was simply never consulted here.
+      local post_green; post_green="$(selfheal_green_count)"
+      if [ "$post_flagged" -le "$pre_flagged" ] && [ "$post_green" -le "$pre_green" ]; then
+        # No verdict was reached and no work was done, so no round is charged —
+        # but nothing was accomplished either, which is NOT the same as a budget
+        # that is intact because nothing was wrong. The copy says so, and this
+        # stop is deliberately left OUT of the "BUDGET IS UNTOUCHED" line.
+        round=$((round - 1)); SELFHEAL_ROUNDS_SPENT="$round"
+        SELFHEAL_STOP_REASON="worker-no-result"
+        SELFHEAL_NORESULT_EVENTS="$(( $(selfheal_event_count ticket_worker_empty_output ticket_implementer_failed) - pre_noresult ))"
+        SELFHEAL_NORESULT_RC="$irc"
+        emit_event selfheal_worker_no_result implement \
+          "self-heal STOPPED, and NO round was charged: the reconcile worker for $regressor produced NO RESULT — it exited with status $irc and the harness recorded ${SELFHEAL_NORESULT_EVENTS} worker-failure/empty-output event(s) for this dispatch, with no ticket_green, no ticket_postcommit_ok and no ticket_flagged. NOTHING was rebuilt and NO proof gate was run, so no defect verdict was reached and nothing was accomplished. This is a WORKER/ENGINE fault — not a defect in $regressor, not its worker-session cap, and not a green rebuild that could not land (${SELFHEAL_ROUNDS_SPENT} of $SELFHEAL_CAP defect round(s) spent, ${SELFHEAL_DISPATCHES} reconcile dispatch(es))." \
+          "ticket=$regressor" "roundsSpent=$SELFHEAL_ROUNDS_SPENT" \
+          "dispatches=$SELFHEAL_DISPATCHES" "workerRc=$irc" \
+          "noResultEvents=$SELFHEAL_NORESULT_EVENTS" "tip=${SELFHEAL_TIP:-}" \
+          "stop=worker-no-result"
+        selfheal_ledger_write worker-no-result
+        return 1
+      fi
+      if [ "$post_flagged" -le "$pre_flagged" ]; then
+        # (b) Refund the round. A round bounds how many times a worker is asked
+        # to fix code and then JUDGED on it; no verdict was reached here, and the
+        # work the worker did was accepted by every gate it was shown to.
+        round=$((round - 1)); SELFHEAL_ROUNDS_SPENT="$round"
+        SELFHEAL_STOP_REASON="mission-parked"
+        local whenparked=""
+        [ "$pre_parked" = "true" ] && whenparked=" before this round began"
+        emit_event selfheal_parked implement \
+          "self-heal STOPPED, and NO round was charged: $regressor's rebuild passed its proof gates (no ticket_flagged was written), but the mission is parked at a human gate$whenparked, so nothing could land on the mission branch and the rebuild was discarded. This is NOT the ticket's worker-session cap and NOT a defect in $regressor — no defect verdict was reached (${SELFHEAL_ROUNDS_SPENT} of $SELFHEAL_CAP defect round(s) spent, ${SELFHEAL_DISPATCHES} reconcile dispatch(es))." \
+          "ticket=$regressor" "roundsSpent=$SELFHEAL_ROUNDS_SPENT" \
+          "dispatches=$SELFHEAL_DISPATCHES" "tip=${SELFHEAL_TIP:-}" "stop=mission-parked"
+        selfheal_ledger_write mission-parked
+        return 1
+      fi
+      # S310 FIX 1 D4: CLOSE THE LEDGER HERE TOO. This is the everyday outcome —
+      # the reconcile ticket could not do it inside its own session cap — and it
+      # was the one exit that left the new record at "roundsSpent 0, lastOutcome
+      # start, tip ''". A budget record that under-reports real spend is worse
+      # than no record, and an empty stop reason is also what dropped the
+      # escalation back onto the generic "self-heal exhausted" story.
+      SELFHEAL_STOP_REASON="ticket-session-cap"
+      emit_event selfheal implement "self-heal round $round of $SELFHEAL_CAP stopped: the reconcile ticket $regressor burned its OWN worker-session cap, so the self-heal stops here rather than opening another round (defect round(s) spent: $round)" \
+        "ticket=$regressor" "round=$round" "roundsSpent=$round" "stop=ticket-session-cap"
+      selfheal_ledger_write ticket-session-cap
       return 1
     fi
 
@@ -15017,20 +15644,39 @@ $(cat "$SELFHEAL_LAST_REASON")" \
     # SAME mutex-protected landing replay every other commit uses — the old inline
     # `checkout $branch` here is what left the captain's checkout stranded on the
     # mission branch after every heal (root-tree sovereignty).
-    local sha; sha="$(cat "$(ticket_dir "$regressor")/.commit-sha" 2>/dev/null || true)"
+    local sha applied=1
+    sha="$(cat "$(ticket_dir "$regressor")/.commit-sha" 2>/dev/null || true)"
     if [ -n "$sha" ] && [ -n "$branch" ] && "$GIT_BIN" show-ref --verify --quiet "refs/heads/$branch"; then
-      replay_ticket_commit "$branch" "$sha" "$regressor" \
-        || emit_event selfheal implement \
-             "self-heal round $round: the rebuilt commit did not land cleanly (${REPLAY_FAIL_REASON:-cherry-pick failed}) — the full-suite retest will judge the unchanged tip" \
-             "ticket=$regressor" "round=$round"
+      if ! replay_ticket_commit "$branch" "$sha" "$regressor"; then
+        # S310: AN APPLY FAILURE IS AN INFRASTRUCTURE OUTCOME, NOT A DEFECT
+        # ROUND. The rebuild is built and green — the live run said exactly that
+        # immediately before each "did not land cleanly" — and what failed is the
+        # LANDING. Refund the round: the defect budget exists to bound how many
+        # times a worker is asked to fix code, and nothing here was about code.
+        # The ticket is named only as the owner of the commit; no defect is
+        # attributed to it, because none was established.
+        applied=0
+        round=$((round - 1)); SELFHEAL_ROUNDS_SPENT="$round"
+        SELFHEAL_APPLY_FAILURES=$((SELFHEAL_APPLY_FAILURES + 1))
+        emit_event selfheal_apply_failed implement \
+          "APPLY FAILED on attempt $attempt — $regressor's rebuild is built and green, but its commit would not land on '$branch': ${REPLAY_FAIL_REASON:-cherry-pick failed}. This is an INFRASTRUCTURE outcome, not a defect in $regressor and not a regression round, so the self-heal budget is UNCHANGED (${SELFHEAL_ROUNDS_SPENT} of $SELFHEAL_CAP spent, apply failure(s): $SELFHEAL_APPLY_FAILURES of $SELFHEAL_APPLY_CAP). The full-suite gate now judges the tip as it stands." \
+          "ticket=$regressor" "attempt=$attempt" "roundsSpent=$SELFHEAL_ROUNDS_SPENT" \
+          "applyFailures=$SELFHEAL_APPLY_FAILURES" "tip=${SELFHEAL_TIP:-}" || :
+        selfheal_ledger_write apply-failed
+      fi
     fi
 
-    # Re-run the full-suite gate. Green → healed.
+    # Re-run the full-suite gate. Green → healed. (Also after an apply failure:
+    # the gate, not the harness's guess, is what decides whether the branch is
+    # clear — the work may have landed by another route, or the regression may
+    # have cleared on its own, which is precisely what the live run missed.)
     fssig="$MISSION_DIR/full-suite-signal.txt"; rm -f "$fssig"
     if FULL_SUITE_SIGNAL="$fssig" full_suite_gate $ordered; then
       rm -f "$fssig"
       emit_event selfheal_ok implement "self-heal succeeded in round $round — every suite passes again" \
         "ticket=$regressor" "round=$round"
+      SELFHEAL_STOP_REASON="healed"
+      selfheal_ledger_write healed
       return 0
     fi
     [ -f "$fssig" ] && cp "$fssig" "$SELFHEAL_LAST_REASON"
@@ -15038,10 +15684,41 @@ $(cat "$SELFHEAL_LAST_REASON")" \
     # S157 D3: the reason and the attribution must stay in step — refresh the
     # failing set from the gate run that produced the reason just stored.
     failing="${FULL_SUITE_REGRESSED:-}"
+    # S310: a spent round's signature, for the escalation's "did these rounds
+    # fail the same way?" judgement. An un-applied attempt has no defect
+    # signature, because no defect verdict was reached.
+    if [ "$applied" = 1 ]; then
+      selfheal_record_mode "$basis" "${failing:-none}"
+      selfheal_ledger_write round-failed
+    elif [ "$SELFHEAL_APPLY_FAILURES" -ge "$SELFHEAL_APPLY_CAP" ]; then
+      # S310 FIX 1 D6: ONE STOP, ONE STOP EVENT. This used to emit
+      # selfheal_blocked here and selfheal_exhausted below for the same stop,
+      # so the timeline showed the run stopping twice. The prose moved into the
+      # single selfheal_exhausted detail built after the loop.
+      SELFHEAL_STOP_REASON="apply-failed"
+      selfheal_ledger_write apply-blocked
+      break
+    fi
   done
 
-  emit_event selfheal_exhausted implement "self-heal exhausted $SELFHEAL_CAP round(s) — regression is irreducible, escalating" \
-    "ticket=$regressor" "rounds=$SELFHEAL_CAP"
+  [ -n "$SELFHEAL_STOP_REASON" ] || SELFHEAL_STOP_REASON="cap"
+  # The sentence must not claim a budget was spent on defects when it was not:
+  # "round 3/3" above a stack of infrastructure failures is exactly the reading
+  # that cost the live run 2.5 hours.
+  local exh_detail="self-heal exhausted $SELFHEAL_CAP round(s) — regression is irreducible, escalating"
+  case "$SELFHEAL_STOP_REASON" in
+    apply-failed)
+      exh_detail="self-heal STOPPED after $SELFHEAL_APPLY_FAILURES failed attempt(s) to LAND a rebuild, WITHOUT exhausting its ${SELFHEAL_CAP}-round budget — every attempt produced green work that would not apply to '$branch', which is an infrastructure fault and not something another worker session can fix, and ${SELFHEAL_ROUNDS_SPENT} of $SELFHEAL_CAP defect round(s) were spent.${SELFHEAL_REANCHOR_FIX:+ Re-anchor first: $SELFHEAL_REANCHOR_FIX} Escalating." ;;
+    attempt-cap)
+      exh_detail="self-heal STOPPED at its attempt backstop — ${SELFHEAL_ROUNDS_SPENT} of $SELFHEAL_CAP defect round(s) were spent. Escalating." ;;
+    *)
+      [ -n "$SELFHEAL_MODE_SHIFT" ] && \
+        exh_detail="self-heal exhausted $SELFHEAL_CAP round(s) — the rounds did NOT fail the same way, which points at a structural problem rather than one reducible regression, escalating" ;;
+  esac
+  emit_event selfheal_exhausted implement "$exh_detail" \
+    "ticket=$regressor" "rounds=$SELFHEAL_CAP" "roundsSpent=$SELFHEAL_ROUNDS_SPENT" \
+    "stop=$SELFHEAL_STOP_REASON"
+  selfheal_ledger_write exhausted
   return 1
 }
 
@@ -22195,7 +22872,7 @@ _replay_ticket_commit_locked() { # branch  sha  ticket
             /^worktree /{p=substr($0,10)}
             $0==b{print p; exit}' )"
       if [ -n "$held_wt" ]; then
-        REPLAY_FAIL_REASON="branch $branch is checked out at $held_wt (likely your own checkout) — git will not let the fix land while that tree holds the branch. The ticket's fix is built and green; switch that checkout to another branch (or \`git worktree remove\` a stale tree) and re-run implement. LCARS lands mission commits via its own worktree and never touches your checkout."
+        REPLAY_FAIL_REASON="branch $branch is checked out at $held_wt (likely your own checkout) — git will not let the fix land while that tree holds the branch. The ticket's fix is built and green; switch that checkout to another branch (or \`git worktree remove\` a stale tree), then ANSWER ANY AWAITING-HUMAN GATE ON THIS MISSION FIRST and re-run implement — a repair that succeeds while the mission is parked is discarded. LCARS lands mission commits via its own worktree and never touches your checkout."
       else
         REPLAY_FAIL_REASON="could not cut the landing worktree for branch $branch${add_err:+; git: $(printf '%s' "$add_err" | tr '\n' ' ')}"
       fi
