@@ -59,7 +59,21 @@ VERB_MODEL=""
 VERB_MODEL_GIVEN=0
 while [ $# -gt 0 ]; do
   case "$1" in
-    --test-command)   VERB="set"; shift; VERB_CMD="${1:-}"; [ $# -gt 0 ] && shift ;;
+    # S319 — `--test-command` READS A FLAG-SHAPED VALUE THE SAME WAY, and it is
+    # the one arm S309 left out of its own rule. MEASURED at HEAD:
+    # `lcars update --test-command --model` exited 0, printed
+    # `✓ testCommand set: --model` and WROTE `--model` into config.json as this
+    # repo's test command — a success tick over a recorded string no shell can
+    # run, which is how `lcars update --test-command $CMD --model $M` reads when
+    # $CMD is unset and unquoted. It is refused HERE, at parse time, because
+    # nothing is written during the parse: naming the flag that lost its value
+    # and stopping is strictly cheaper than letting `--model` claim the verb and
+    # then refuse in its own name for a mistake that was not `--model`'s.
+    --test-command)   VERB="set"; shift
+                      case "${1:-}" in
+                        -*) die "--test-command was given no command — \"$1\" is another option, not a command. Write --test-command '<command>'; if it came from a variable, that variable is empty. Nothing was written." ;;
+                      esac
+                      VERB_CMD="${1:-}"; [ $# -gt 0 ] && shift ;;
     --test-command=*) VERB="set"; VERB_CMD="${1#--test-command=}"; shift ;;
     --probe-tests)    VERB="probe"; shift ;;
     --fix-tests)      VERB="fix"; shift ;;
