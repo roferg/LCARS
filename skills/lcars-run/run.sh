@@ -12033,6 +12033,619 @@ proof_scope_control_exec() { # run_dir cmd [secs]
   return 0
 }
 
+# === THE DECLARED-FILE ACCOUNTING MEASUREMENT (S318, D9) ===================
+# THE QUESTION THE GATE HAD NEVER ASKED: *did each DECLARED test file actually
+# execute?* Measured on the committed tip, a ticket declaring two test files —
+# one honest, one named `_spec.js` in a `*.test.js` world and GENUINELY RED on
+# the tip — was certified `flip-flop PASS` in FOUR separate narrowing states:
+#
+#   ancestor          one invocation for N files: no per-file evidence at all.
+#                     THIS IS THE NORMAL NESTED LAYOUT.
+#   moot              the control is skipped. Its premise is TRUE (a fallback to
+#                     the runner's own discovery can only run DECLARED tests) and
+#                     the inference drawn from it is wrong — that says nothing
+#                     about whether EACH of them ran.
+#   uncountable       no readable count, reached on a js repo by an ordinary
+#                     quiet CI wrapper printing ALL GREEN / SUITE FAILED.
+#   tree/not-narrowed the testCommand never interpolates $LCARS_TESTS_DIR, so the
+#                     leg ran the whole suite — which cannot include a file the
+#                     runner is unable to discover.
+#
+# S308's per-invocation control closed `files` mode ONLY, because that is the one
+# state that already carries per-file numbers. Nothing anywhere compared
+# `testFiles` (the DECLARATION) against what executed.
+#
+# IT IS A MEASUREMENT, NOT A PARSER (ORCHESTRATION.md § the infer-vs-record
+# check; S147 burned four generations of a source parser). Nothing here reads a
+# runner's prose, recognises a command's shape, or looks for a file NAME in any
+# output. The evidence is a COUNT produced by the repo's own testCommand:
+#
+#   file / files   the leg ALREADY ran one invocation per declared file, so its
+#                  own `legExecutedEach` IS the per-file measurement and NOTHING
+#                  EXTRA RUNS. A file whose invocation executed nothing is
+#                  unaccounted for.
+#   ancestor       one invocation covered N files, so the measurement has to be
+#                  made: the testCommand is re-run once per declared file with
+#                  the scope pointed at THAT FILE. A file is accounted for when
+#                  its own run executed at least one test, was read by the same
+#                  runner, and executed NO MORE than the leg itself did — a run
+#                  bigger than the leg cannot have been a subset of it, which is
+#                  exactly the signature of a selection that matched nothing and
+#                  fell back to discovering the whole suite. The per-file counts
+#                  must then SUM to no more than the leg's own count, or the
+#                  files cannot be separated and none of them is accounted for.
+#   tree / native  refused without running anything: an unscoped testCommand
+#                  cannot be measured per file, and saying so costs N full-suite
+#                  runs less than proving it.
+#
+# POSITIVE EVIDENCE ONLY. Nothing here concludes from an ABSENCE ("no failure was
+# recorded" treated as "it passed") — that is how S310's fix loop manufactured a
+# false claim. Every "accounted for" is a number ≥ 1 that a runner printed.
+#
+# FAIL SAFE IN ONE DIRECTION ONLY: a file this cannot account for makes the leg
+# INCONCLUSIVE. Extra inconclusive is acceptable; a confident verdict on tests
+# that did not run is not.
+# PROOF_FILE_EXEC     "<runner> <executed>" | "" when the run could not be read
+# PROOF_FILE_EXEC_RC  the run's own rc, so a TIMEOUT is never stored as a zero
+#                     (fix round 1, D6: a timed-out ablation was reported as
+#                     "no run executed a single test out of <file>").
+PROOF_FILE_EXEC=""; PROOF_FILE_EXEC_RC=""
+proof_file_scope_exec() { # run_dir cmd scope-abs [secs]
+  PROOF_FILE_EXEC=""; PROOF_FILE_EXEC_RC=""
+  local rd="$1" cmd="$2" sc="$3" secs="${4:-120}" of rc=0 cout
+  case "$secs" in ''|*[!0-9]*) secs=120 ;; esac
+  [ -n "$rd" ] && [ -n "$cmd" ] && [ -n "$sc" ] || return 0
+  of="$(mktemp "${TMPDIR:-/tmp}/lcars-declout.XXXXXX" 2>/dev/null)" || return 0
+  # The rc is DELIBERATELY ignored except for the hard timeout: a measurement
+  # run that goes RED still produced a count, and this measurement is about
+  # participation, never about colour.
+  ( cd "$rd" 2>/dev/null || exit 0
+    LCARS_TESTS_DIR="$sc" run_with_hard_timeout "$secs" "$of" bash -c "$cmd" ) || rc=$?
+  PROOF_FILE_EXEC_RC="$rc"
+  if [ "$rc" != 124 ]; then
+    cout="$(cat "$of" 2>/dev/null)"
+    PROOF_FILE_EXEC="$(proof_executed_count_ext "$cout")"
+  fi
+  rm -f "$of"
+  return 0
+}
+# A declared "test file" THAT HOLDS NOTHING (fix round 1, D4). MEASURED: a
+# ZERO-BYTE declared test file was certified as "executed at least one test",
+# because `node --test` counts an empty file as one passing test — while the
+# all-`test.skip` equivalent was correctly refused, which is what made this an
+# oversight rather than a policy. A file with no content declares no test, and
+# that is a FILESYSTEM FACT (is there anything in it at all?), not a reading of
+# what the content means.
+proof_decl_file_is_empty() { # abs-path
+  [ -f "$1" ] || return 1
+  [ -s "$1" ] || return 0
+  [ -z "$(tr -d '[:space:]' <"$1" 2>/dev/null | head -c 1)" ]
+}
+# PROOF_DECL_METHOD  how the accounting was attempted:
+#   leg-invocations    read off the leg's own per-file invocations (no extra run)
+#   ablation           the testCommand re-run with the LEG'S OWN SCOPE and the
+#                      declared file moved aside, once per declared file
+#   unreadable-runner  the runner prints no test count — refused BY NAME
+#   unscoped-command   the leg ran the full suite with no narrowing — refused
+#   not-applicable     nothing to account for, or no re-runnable testCommand
+#                      exists (the native lane: LEDGERED, see below)
+# PROOF_DECL_EACH    "<rel>=<n>" per declared file, in the leg's own order
+# PROOF_DECL_UNACC   the declared files it could NOT account for, one per line
+# PROOF_DECL_WHY     one sentence a captain can act on
+# PROOF_DECL_FIX     the remediation for THIS reason (fix round 1, D5: the
+#                    `_spec.js` rename paragraph was appended to EVERY refusal,
+#                    including ones where the filenames were already exactly
+#                    what the selection expects, so he was sent renaming
+#                    correct files)
+PROOF_DECL_METHOD=""; PROOF_DECL_EACH=""; PROOF_DECL_UNACC=""; PROOF_DECL_WHY=""
+PROOF_DECL_FIX=""
+# Set when the leg's own count was unreadable and the ablation lane re-measured
+# the un-ablated leg with the extended reader: "<runner> <executed>".
+PROOF_DECL_RECOUNT=""
+# THE RENAME REMEDIATION, and the ONLY reason it explains: a declared file whose
+# removal from the scope changed nothing about what ran.
+PROOF_DECL_FIX_RENAME="The commonest cause is a test file the repo's OWN testCommand cannot see — a name its selection does not match (\`_spec.js\` where the selection says \`*.test.js\`), so the runner is handed an empty argument list and discovers its own tests instead. Either name the ticket's test files the way the existing selection expects, or hand \"\$LCARS_TESTS_DIR\" to the runner directly (\`lcars update --fix-tests\`) so no fallback discovery is possible at all."
+# === S318 FIX ROUND 2: THE ABLATION'S DATA-LOSS WINDOW, CLOSED ==============
+# The ablation below copies a declared test file aside, REMOVES it from the REAL
+# working tree, re-runs the repo's own test command, and puts it back. That
+# middle step is a full invocation of the captain's suite — minutes, on exactly
+# the slow-suite repo class this measurement exists for — and there was NO TRAP.
+# For the whole of that window the file existed only in $TMPDIR. MEASURED (a
+# fresh suite row): TERM the gate mid-ablation and the declared test file is
+# GONE from the working tree, the tree is left `D tests/a/ticket_up.test.js`,
+# and the holding directory leaks into $TMPDIR for the OS to collect whenever it
+# feels like it. This laptop idle-sleeps after one minute on mains, an
+# orchestrator dying mid-run is a recurring event here, and `rm -f` on a test
+# file the worker has only just written on the tip is NOT recoverable from git.
+#
+# So the restore is made to survive the process dying: these four globals say
+# what is currently moved aside, and the handler below puts it back. The handler
+# is IDEMPOTENT (it runs again on EXIT after a successful restore has already
+# happened, and must do nothing then), depends on nothing that may be unset, and
+# never fails in a way that could mask an exit status.
+PROOF_ABLATE_HOLD=""      # the holding directory, while one exists to remove
+PROOF_ABLATE_WT=""        # the worktree the moved-aside file belongs to
+PROOF_ABLATE_REL=""       # the declared file CURRENTLY moved aside ("" = none)
+PROOF_ABLATE_HELD=""      # its copy inside the holding directory
+proof_ablate_rescue() {
+  if [ -n "${PROOF_ABLATE_REL:-}" ] && [ -n "${PROOF_ABLATE_WT:-}" ] \
+     && [ -f "${PROOF_ABLATE_HELD:-}" ] && [ ! -f "$PROOF_ABLATE_WT/$PROOF_ABLATE_REL" ]; then
+    cp -p "$PROOF_ABLATE_HELD" "$PROOF_ABLATE_WT/$PROOF_ABLATE_REL" 2>/dev/null || :
+  fi
+  PROOF_ABLATE_REL=""; PROOF_ABLATE_HELD=""
+  # The holding directory goes too — unless the abort path has deliberately
+  # cleared this, because its refusal NAMES the held copy as the captain's way
+  # back and deleting it would be the data loss all over again.
+  [ -n "${PROOF_ABLATE_HOLD:-}" ] && rm -rf "$PROOF_ABLATE_HOLD" 2>/dev/null || :
+  PROOF_ABLATE_HOLD=""
+  return 0
+}
+# DISARM BACK TO DEFAULT — AND NOT BY RE-ARMING WHAT `trap -p` REPORTED, WHICH
+# WAS MEASURED TO BE A NEW DEFECT. The obvious shape is "save `trap -p EXIT INT
+# TERM HUP`, restore it after", because an outer trap DOES exist above this
+# code: cmd_implement arms `trap … cm_heartbeat_stop … EXIT INT TERM` and
+# cmd_implement_ticket arms an EXIT trap that writes the ticket's `.build-rc`,
+# which its parent reads as the build's exit code.
+#
+# But the only PRODUCTION caller runs the whole gate inside a COMMAND
+# SUBSTITUTION — `ffout="$(flip_flop_gate … 2>&1)"` — and bash resets trapped
+# signals to their default in that subshell while `trap -p` STILL PRINTS the
+# inherited command strings (bash 3.2, measured here). So "restoring" them would
+# ARM in the subshell traps that were inert: at the gate's exit `.build-rc`
+# would be overwritten with the gate's own rc, cm_heartbeat_stop would reap the
+# comment heartbeat mid-ticket, and the handlers' stdout would be CAPTURED INTO
+# $ffout and fed to _tdd_reject as the gate's reason.
+#
+# Resetting to default is therefore the faithful restore, not a compromise: on
+# the production path those traps are already inert here, and on the only other
+# path (the `flip-flop-gate-test` hook) no trap is armed at all. There is no
+# caller that reaches this function with a LIVE trap in the SAME shell — and in
+# bash 3.2 a live trap and an inherited-inert one are indistinguishable, so
+# nothing could tell them apart if one appeared. If a future caller invokes the
+# gate directly from a shell holding a live trap, it must re-arm it itself.
+proof_ablate_disarm() {
+  proof_ablate_rescue
+  trap - EXIT INT TERM HUP 2>/dev/null || :
+  return 0
+}
+# A SIGNAL STILL KILLS THE GATE. The file is put back FIRST, the traps go back to
+# default SECOND, and then we exit — so the drive dies as the sender asked
+# instead of carrying on. A bare `trap 'rescue' TERM` would have SWALLOWED the
+# signal: bash runs the handler and then resumes the script, which would have
+# made the gate unkillable for the length of the ablation. On the production
+# path this exits the gate's command substitution, so the caller reads a
+# non-zero gate — never a pass — while the captain's file is already back.
+proof_ablate_signal_exit() { # exit-code
+  proof_ablate_disarm
+  exit "${1:-143}"
+}
+
+proof_declared_accounting() { # wt rels kind leg-exec exec-each run_dir raw_cmd budget leg-rc
+  PROOF_DECL_METHOD=""; PROOF_DECL_EACH=""; PROOF_DECL_UNACC=""; PROOF_DECL_WHY=""
+  PROOF_DECL_FIX=""; PROOF_DECL_RECOUNT=""
+  local wt="$1" rels="$2" kind="$3" legexec="$4" execeach="$5"
+  local rundir="$6" rawcmd="$7" budget="$8" legrc="${9:-0}"
+  local n legn legrunner rel idx c crunner sum=0 names
+  local hold="" held="" scope="" contrib tmo="" anc="" sym=""
+  n="$(printf '%s\n' "$rels" | grep -c . | tr -d '[:space:]')"
+  case "$n" in ''|*[!0-9]*) n=0 ;; esac
+  if [ "$n" -eq 0 ]; then
+    PROOF_DECL_METHOD=not-applicable
+    PROOF_DECL_WHY="the ticket declared no test file, so there is nothing to account for"
+    return 0
+  fi
+  # === D4: A DECLARED TEST FILE WITH NOTHING IN IT ==========================
+  # Checked FIRST and for EVERY scope kind, because no arithmetic downstream can
+  # see it: whatever number a runner prints for an empty file, the ticket wrote
+  # no test there. This is not about colour and not about discovery.
+  while IFS= read -r rel; do
+    [ -n "$rel" ] || continue
+    if proof_decl_file_is_empty "$wt/$rel"; then
+      PROOF_DECL_EACH="$PROOF_DECL_EACH${PROOF_DECL_EACH:+ }$rel=empty-file"
+      PROOF_DECL_UNACC="$PROOF_DECL_UNACC$rel
+"
+    fi
+  done <<PDA_EMPTY
+$rels
+PDA_EMPTY
+  if [ -n "$PROOF_DECL_UNACC" ]; then
+    PROOF_DECL_METHOD=empty-declared-file
+    names="$(printf '%s' "$PROOF_DECL_UNACC" | grep . | tr '\n' ' ' | sed 's/ $//')"
+    PROOF_DECL_WHY="the declared test file(s) $names hold NO CONTENT AT ALL (an empty file), so whatever a runner counted for them, the ticket wrote no test there"
+    PROOF_DECL_FIX="Nothing about the repo's test command is wrong here: the ticket DECLARED a test file it left empty. Either write the test the ticket's spec calls for, or stop declaring that path."
+    return 0
+  fi
+  # THE NATIVE LANE IS OUT OF SCOPE AND SAYS SO. A native stack (go / cargo /
+  # dotnet) scopes by runner ARGUMENT, never by $LCARS_TESTS_DIR, so no per-file
+  # scope exists to re-run and this measurement cannot be constructed at all.
+  # Those lanes carry their own declaration guards (the dotnet declared-vs-
+  # collected floor below, cargo's harness=false refusal). LEDGERED, deliberately
+  # NOT refused here: blanket-parking every native ticket to close a route this
+  # check cannot even measure would be a regression dressed as a safety fix.
+  if [ -z "$rundir" ] || [ -z "$rawcmd" ]; then
+    PROOF_DECL_METHOD=not-applicable
+    PROOF_DECL_WHY="this leg is not driven through a re-runnable testCommand (a native stack scopes by runner argument, not by \$LCARS_TESTS_DIR), so no per-file measurement could be constructed — LEDGERED, out of this check's reach"
+    return 0
+  fi
+  legrunner="${legexec%% *}"; legn="${legexec##* }"
+  # === AN UNREADABLE LEG COUNT, RE-MEASURED FOR THE ABLATION LANE ==========
+  # The leg's own `executed` is read by the MAIN grammar set, which deliberately
+  # did not grow (proof_executed_count_ext says why, with the three proof-gates
+  # rows it would otherwise have parked). So when the leg carries no number and
+  # the ablation lane could read one, the un-ablated leg is measured ONCE more
+  # with the extended reader, and the whole arithmetic is then done in THAT
+  # reader's numbers — baseline and ablations read by the same grammar, never
+  # mixed. It costs one extra run, and only on a repo that would otherwise be
+  # refused outright. A genuinely countless runner (a quiet CI wrapper printing
+  # ALL GREEN / SUITE FAILED, go, cargo) stays unreadable here too and falls
+  # straight through to the refusal below, so D9's `uncountable` path is
+  # untouched.
+  case "$legn" in
+    ''|*[!0-9]*)
+      if [ "$kind" = ancestor ] && [ "$n" -ge 2 ]; then
+        anc="$(common_ancestor_dir "$rels")"
+        scope="$wt${anc:+/$anc}"
+        if [ -d "$scope" ]; then
+          proof_file_scope_exec "$rundir" "$rawcmd" "$scope" "$budget"
+          case "${PROOF_FILE_EXEC##* }" in
+            ''|*[!0-9]*) : ;;
+            *) if [ "${PROOF_FILE_EXEC##* }" -ge 1 ] 2>/dev/null; then
+                 legexec="$PROOF_FILE_EXEC"
+                 legrunner="${legexec%% *}"; legn="${legexec##* }"
+                 PROOF_DECL_RECOUNT="$legexec"
+               fi ;;
+          esac
+        fi
+      fi ;;
+  esac
+  case "$legn" in
+    ''|*[!0-9]*)
+      # NO NUMBER EXISTS ANYWHERE, so no arithmetic can ever account for a file.
+      #
+      # FIX ROUND 1, D1 — WHERE THIS CAUSE ACTUALLY LIVES. The first cut refused
+      # every multi-file ticket on such a repo FOREVER, and a captain-stand-in
+      # tester measured three of them — python unittest's `Ran 3 tests in
+      # 0.000s`/`OK`, TAP's `1..2`/`ok 1`, and a bare `N passed, 0 failed` — in
+      # which BOTH declared files demonstrably ran green. The number was printed
+      # right there in the output; it was this HARNESS that could not read it.
+      # So those three grammars were added to proof_executed_count and those
+      # repos are now countable, which routes them through the ablation below
+      # like any other. What is left here is the genuinely countless runner — a
+      # quiet CI wrapper printing ALL GREEN / SUITE FAILED, go, cargo — and for
+      # those the refusal stands, because arithmetic is the whole mechanism.
+      #
+      # THE n>=2 BOUND, MEASURED, NOT ASSUMED: this accounting is about
+      # ATTRIBUTION AMONG THE DECLARED FILES — which of them contributed. With
+      # exactly ONE declared file there is nothing to attribute: the leg ran one
+      # invocation and it was handed that one file. Refusing those too parked
+      # FIVE honest tickets in tests/proof-gates.test.sh (every python row whose
+      # runner is `python3 -m unittest discover`) — the same regression S308
+      # round 2 and S310 round 1 each produced by over-applying a new guard.
+      if [ "$n" -lt 2 ]; then
+        PROOF_DECL_METHOD=not-applicable
+        PROOF_DECL_WHY="this repo's test command printed no test count this harness can read, and the ticket declared exactly ONE test file, so there is nothing to attribute between files — the leg's one invocation was handed that one file (whether the repo's own selection then narrowed to it is the scope question the pre-check and the control own; on a countless runner that stays unproven and is LEDGERED, pre-existing)"
+        return 0
+      fi
+      PROOF_DECL_METHOD=unreadable-runner
+      PROOF_DECL_UNACC="$(printf '%s\n' "$rels" | grep .)"
+      PROOF_DECL_WHY="this repo's test command printed no test count in any grammar this harness can read, so there is no number in which any of the $n declared test files could be shown to have contributed even one executed test. An accounting of declared tests is arithmetic, and a runner that counts nothing cannot be counted"
+      # D5: KEYED TO THE REASON. Nothing about the ticket's FILENAMES is at
+      # issue here, and the old advice ("have the testCommand print its runner's
+      # own summary") was sent to commands that already print one — the gap was
+      # a grammar this harness did not know, which is not his to fix in his repo.
+      PROOF_DECL_FIX="Nothing about the ticket's test files is wrong here, and nothing about their NAMES: the gate needs a test COUNT and this command's output carries none it recognises. LCARS reads node:test, vitest, jest, pytest, rspec, minitest, VSTest, python unittest (\`Ran N tests\`), TAP (\`1..N\`) and a bare \`N passed, N failed\`. If the command wraps a runner and swallows its summary (printing only ALL GREEN / SUITE FAILED), let that summary through; if the runner genuinely counts nothing, expect every multi-file ticket on this repo to need the captain's own eyes at Verify."
+      return 0 ;;
+  esac
+  if [ "$legn" -le 0 ]; then
+    # Zero executed is decided by the zero-evidence refusal on its own evidence
+    # — and zero executed on a RED leg is REAL evidence (a greenfield parent
+    # whose staged copy dies at import). Not this check's business.
+    PROOF_DECL_METHOD=not-applicable
+    PROOF_DECL_WHY="this leg executed no tests at all, which the zero-evidence refusal decides on its own evidence"
+    return 0
+  fi
+  case "$kind" in
+    file|files)
+      # ONE INVOCATION PER DECLARED FILE ALREADY RAN. Its count is the per-file
+      # measurement, so this costs NOTHING. The order is the leg's own: both the
+      # scope list and these counts are built from $rels in sequence.
+      PROOF_DECL_METHOD=leg-invocations
+      idx=0
+      while IFS= read -r rel; do
+        [ -n "$rel" ] || continue
+        idx=$((idx + 1))
+        c="$(printf '%s\n' "$execeach" | awk -v i="$idx" '{ print $i }' | head -1)"
+        case "$c" in
+          '')
+            # The invocation never happened. A declared-files leg is an `&&`
+            # chain, so a RED earlier file stops it — and that stop is itself a
+            # declared test running and failing, which can only ever permit a
+            # FAIL, never a pass (a leg that stopped early is never green).
+            if [ "${legrc:-0}" -ne 0 ] 2>/dev/null; then
+              PROOF_DECL_EACH="$PROOF_DECL_EACH${PROOF_DECL_EACH:+ }$rel=not-reached"
+            else
+              PROOF_DECL_EACH="$PROOF_DECL_EACH${PROOF_DECL_EACH:+ }$rel=unrun"
+              PROOF_DECL_UNACC="$PROOF_DECL_UNACC$rel
+"
+            fi ;;
+          *[!0-9]*)
+            PROOF_DECL_EACH="$PROOF_DECL_EACH${PROOF_DECL_EACH:+ }$rel=unreadable"
+            PROOF_DECL_UNACC="$PROOF_DECL_UNACC$rel
+" ;;
+          *)
+            PROOF_DECL_EACH="$PROOF_DECL_EACH${PROOF_DECL_EACH:+ }$rel=$c"
+            [ "$c" -ge 1 ] 2>/dev/null || PROOF_DECL_UNACC="$PROOF_DECL_UNACC$rel
+" ;;
+        esac
+      done <<PDA_FILES
+$rels
+PDA_FILES
+      ;;
+    ancestor)
+      # === THE ABLATION (fix round 1 — it REPLACES the per-file re-run) =======
+      # ONE invocation covered N declared files, so the per-file numbers do not
+      # exist yet and have to be MEASURED. Round 1 measured them by pointing the
+      # scope at each declared FILE in turn and accepting any count >= 1. A
+      # captain-stand-in tester beat that two ways, and one of them PARKED AN
+      # HONEST TICKET:
+      #
+      #   D2 FALSE REFUSAL — a repo whose test command always runs a FIXED EXTRA
+      #      SUITE alongside the scope (a global smoke suite, a jest `projects`
+      #      config, a Makefile `test` target). The leg ran `tests 6 / pass 6`
+      #      with both declared files executing, but each per-file run carried
+      #      the same fixed 4-test overhead, so 5 + 5 > 6 and the gate said "the
+      #      leg cannot have run all of them" — which is FALSE.
+      #   D3 FALSE PASS — a per-file run was credited to a file it never touched.
+      #      An unmatchable, genuinely RED declared file's own run selected
+      #      NOTHING, the runner fell back to its own discovery, and the count
+      #      that came back was a SIBLING'S.
+      #
+      # So the measurement is turned round. Instead of asking "what does this
+      # file run on its own?", which cannot be separated from a fixed overhead or
+      # from a fallback, it asks THE ABLATION QUESTION:
+      #
+      #      contribution(f) = legExecuted - executed(same scope, f moved aside)
+      #      f is accounted for  iff  contribution(f) >= 1
+      #
+      # Both runs use THE LEG'S OWN SCOPE, so they differ in exactly one thing:
+      # whether f is in the tree. A fixed extra suite is in BOTH numbers and
+      # CANCELS (D2 dissolves). A file the command's selection cannot see changes
+      # nothing when it is removed, so its contribution is 0 and no sibling's
+      # output can be credited to it (D3 dissolves) — with no identity check, no
+      # filename matched against any output, and no command shape recognised.
+      # Anything that reads $LCARS_TESTS_DIR sees the SAME directory in both
+      # runs, so the directory-vs-file asymmetry round 1's per-file scope exposed
+      # is gone as well.
+      #
+      # WHY THE BASELINE-SUBTRACTION FORM OF THIS WAS REJECTED (it was measured,
+      # not reasoned about): subtracting the EMPTY-SCOPE control instead would
+      # only work where that control is the fixed overhead. For the ordinary
+      # `$(find "$LCARS_TESTS_DIR" …)` command an empty scope selects nothing and
+      # the runner falls back to discovering the WHOLE SUITE, so the control is a
+      # full-suite count — and subtracting it parks every honest ticket on the
+      # commonest testCommand there is. The ablation needs no baseline because
+      # the overhead never leaves the measurement.
+      #
+      # THE COST IS UNCHANGED: N runs per leg, exactly what the per-file control
+      # cost. And the ablation is not run on a RED leg at all (see D7 at the call
+      # site), which is strictly cheaper than round 1.
+      #
+      # IT MUTATES THE TREE, AND THAT IS HANDLED: the file is copied to a holding
+      # directory outside the worktree, removed, measured, and put back before
+      # the next one is touched. If a restore ever fails the accounting STOPS and
+      # refuses rather than measure on a tree it has damaged.
+      #
+      # SAFE BY CONSTRUCTION FOR THE SCOPE ITSELF: `ancestor` is the recorded
+      # fact that the scope directory holds NO test file the ticket did not
+      # declare (intree_dir_extra_tests), and this arm is only reached with n>=2,
+      # so every ablation leaves at least one declared test file in the scope.
+      PROOF_DECL_METHOD=ablation
+      anc="$(common_ancestor_dir "$rels")"
+      scope="$wt${anc:+/$anc}"
+      hold="$(mktemp -d "${TMPDIR:-/tmp}/lcars-ablate.XXXXXX" 2>/dev/null)" || hold=""
+      if [ -z "$hold" ] || [ ! -d "$scope" ]; then
+        PROOF_DECL_METHOD=ablation-unavailable
+        PROOF_DECL_UNACC="$(printf '%s\n' "$rels" | grep .)"
+        PROOF_DECL_WHY="the ablation measurement could not be set up (no holding directory, or the leg's own scope directory is not there), so no declared file could be accounted for"
+        PROOF_DECL_FIX="This is a harness-side failure, not a fault in the ticket: re-run the gate. If it repeats, \$TMPDIR is unwritable."
+        [ -n "$hold" ] && rm -rf "$hold"
+        return 0
+      fi
+      # ARMED BEFORE THE FIRST `rm`, and before the loop that does it, so no
+      # path through this arm can remove a file with no handler watching.
+      PROOF_ABLATE_HOLD="$hold"; PROOF_ABLATE_WT="$wt"
+      PROOF_ABLATE_REL=""; PROOF_ABLATE_HELD=""
+      trap 'proof_ablate_rescue' EXIT
+      trap 'proof_ablate_signal_exit 130' INT
+      trap 'proof_ablate_signal_exit 143' TERM
+      trap 'proof_ablate_signal_exit 129' HUP
+      idx=0
+      while IFS= read -r rel; do
+        [ -n "$rel" ] || continue
+        idx=$((idx + 1))
+        # S318 FIX ROUND 3: A SYMLINK IS NEVER MOVED ASIDE. The copy-aside is
+        # `cp -p`, which FOLLOWS a symlink and copies its TARGET's bytes; the
+        # `rm` then removes the LINK; and the restore writes a REGULAR FILE
+        # where the link was. MEASURED twice: a normal, successful, signal-free
+        # gate run turned a declared `linked.test.js -> ticket_up.test.js` into
+        # a 306-byte regular file, left the tree `T linked.test.js` (`mode
+        # change 120000 => 100644`), and returned a PASS — tree damage on a
+        # pass, with no word of it in the artifact. Content survived only
+        # because the file was TRACKED; an UNTRACKED symlink has no way back.
+        #
+        # So this measurement REFUSES to touch one. The alternative cure —
+        # preserving the link through the move — would make the ablation
+        # correct for symlinks, but it rewrites the copy-aside, the restore AND
+        # the signal-rescue predicates (`[ -f "$held" ]` is false for a
+        # RELATIVE link moved into $TMPDIR, so the rescue would silently
+        # decline to put it back) on the one path that is already verified
+        # byte-identical under TERM/INT/HUP. A false refusal costs a captain an
+        # INCONCLUSIVE leg on a ticket that declares a symlinked test file;
+        # silent tree damage on a PASS costs him the file. THE COST IS NAMED:
+        # a repo whose declared test files include a symlink now gets
+        # INCONCLUSIVE on ancestor-scoped tickets, and the reason says why.
+        #
+        # Because the file is skipped before `PROOF_ABLATE_REL` is ever set to
+        # it, the trap/rescue path handles it identically: a symlink is never
+        # moved aside, so no signal can bring one back as a regular file.
+        # Checked FIRST, before the absent test, so a DANGLING link is refused
+        # on the same honest ground rather than reported as a missing file.
+        if [ -L "$wt/$rel" ]; then
+          PROOF_DECL_EACH="$PROOF_DECL_EACH${PROOF_DECL_EACH:+ }$rel=symlink"
+          PROOF_DECL_UNACC="$PROOF_DECL_UNACC$rel
+"
+          sym="$sym${sym:+ }$rel"
+          continue
+        fi
+        if [ ! -f "$wt/$rel" ]; then
+          PROOF_DECL_EACH="$PROOF_DECL_EACH${PROOF_DECL_EACH:+ }$rel=absent"
+          PROOF_DECL_UNACC="$PROOF_DECL_UNACC$rel
+"
+          continue
+        fi
+        held="$hold/held.$idx"
+        if ! cp -p "$wt/$rel" "$held" 2>/dev/null; then
+          PROOF_DECL_EACH="$PROOF_DECL_EACH${PROOF_DECL_EACH:+ }$rel=unmeasurable"
+          PROOF_DECL_UNACC="$PROOF_DECL_UNACC$rel
+"
+          continue
+        fi
+        # WHAT IS MOVED ASIDE, RECORDED BEFORE IT IS MOVED. If this process
+        # dies anywhere in the run below, the handler reads these and puts the
+        # file back.
+        PROOF_ABLATE_REL="$rel"; PROOF_ABLATE_HELD="$held"
+        rm -f "$wt/$rel"
+        proof_file_scope_exec "$rundir" "$rawcmd" "$scope" "$budget"
+        crunner="${PROOF_FILE_EXEC%% *}"; c="${PROOF_FILE_EXEC##* }"
+        tmo=""; [ "${PROOF_FILE_EXEC_RC:-0}" = 124 ] && tmo=1
+        # PUT BACK BEFORE ANYTHING ELSE IS DECIDED, so the tree the next
+        # measurement runs on is the tree the leg ran on.
+        if ! cp -p "$held" "$wt/$rel" 2>/dev/null || [ ! -f "$wt/$rel" ]; then
+          PROOF_DECL_METHOD=ablation-aborted
+          PROOF_DECL_UNACC="$(printf '%s\n' "$rels" | grep .)"
+          PROOF_DECL_WHY="the ablation measurement could not put '$rel' back after moving it aside, so this gate STOPPED rather than judge the ticket against a tree it had damaged — the file is held at $held"
+          PROOF_DECL_FIX="This is a harness-side failure, not a fault in the ticket. Restore '$rel' from $held before re-running anything."
+          # The held copy is the captain's ONLY copy, so the handler must not
+          # delete it: clear the holding dir it would remove, and clear the
+          # restore state so nothing contradicts the abort this is recording.
+          PROOF_ABLATE_HOLD=""; PROOF_ABLATE_REL=""; PROOF_ABLATE_HELD=""
+          proof_ablate_disarm
+          return 0
+        fi
+        PROOF_ABLATE_REL=""; PROOF_ABLATE_HELD=""
+        rm -f "$held"
+        if [ -n "$tmo" ]; then
+          # D6: A TIMEOUT IS NOT A ZERO. Round 1 stored it as `unreadable` and
+          # then said "no run executed a single test out of <file>", which
+          # describes a measurement that never finished as one that came back
+          # empty.
+          PROOF_DECL_EACH="$PROOF_DECL_EACH${PROOF_DECL_EACH:+ }$rel=timed-out"
+          PROOF_DECL_UNACC="$PROOF_DECL_UNACC$rel
+"
+          tmo=timeout
+          continue
+        fi
+        if [ -z "$PROOF_FILE_EXEC" ]; then
+          PROOF_DECL_EACH="$PROOF_DECL_EACH${PROOF_DECL_EACH:+ }$rel=unreadable"
+          PROOF_DECL_UNACC="$PROOF_DECL_UNACC$rel
+"
+          continue
+        fi
+        if [ "$crunner" != "$legrunner" ]; then
+          PROOF_DECL_EACH="$PROOF_DECL_EACH${PROOF_DECL_EACH:+ }$rel=$crunner:$c"
+          PROOF_DECL_UNACC="$PROOF_DECL_UNACC$rel
+"
+          continue
+        fi
+        case "$c" in
+          ''|*[!0-9]*)
+            PROOF_DECL_EACH="$PROOF_DECL_EACH${PROOF_DECL_EACH:+ }$rel=unreadable"
+            PROOF_DECL_UNACC="$PROOF_DECL_UNACC$rel
+"
+            continue ;;
+        esac
+        contrib=$((legn - c))
+        PROOF_DECL_EACH="$PROOF_DECL_EACH${PROOF_DECL_EACH:+ }$rel=$contrib"
+        if [ "$contrib" -lt 1 ]; then
+          # TAKING THE FILE OUT OF THE SCOPE CHANGED NOTHING (or made the run
+          # BIGGER, which is the signature of a selection that then matched
+          # nothing and fell back to discovering the whole suite). Either way
+          # nothing the ticket wrote in this file took part in this leg.
+          PROOF_DECL_UNACC="$PROOF_DECL_UNACC$rel
+"
+        else
+          sum=$((sum + contrib))
+        fi
+      done <<PDA_ANC
+$rels
+PDA_ANC
+      # The holding directory goes and the outer traps come back. Everything
+      # after this point only reads numbers already measured.
+      proof_ablate_disarm
+      # THE JOINT CHECK. Each contribution is already measured against the leg's
+      # own count, so this only catches an arithmetic impossibility: the declared
+      # files cannot together have contributed more tests than the leg ran.
+      if [ -z "$PROOF_DECL_UNACC" ] && [ "$sum" -gt "$legn" ] 2>/dev/null; then
+        PROOF_DECL_UNACC="$(printf '%s\n' "$rels" | grep .)"
+        PROOF_DECL_WHY="each declared test file contributed at least one test when it was moved aside, but their contributions sum to $sum while this leg executed only $legn — that is arithmetically impossible, so none of them can be treated as accounted for"
+        PROOF_DECL_FIX="$PROOF_DECL_FIX_RENAME"
+        return 0
+      fi
+      ;;
+    *)
+      # NO NARROWING AT ALL. `tree` is the recorded fact that this repo's
+      # testCommand never interpolates $LCARS_TESTS_DIR, so no scope can change
+      # what it runs: every per-file measurement would be the same full suite,
+      # and running N of them to discover that costs N full suites for nothing.
+      #
+      # Bounded to a MULTI-FILE ticket for the same measured reason as the
+      # countless-runner arm above: with one declared file there is nothing to
+      # attribute between files, and an unscoped command with one declared file
+      # is already refused by the control run (it executes the same count with an
+      # empty scope as with the file).
+      if [ "$n" -lt 2 ]; then
+        PROOF_DECL_METHOD=not-applicable
+        PROOF_DECL_WHY="this leg was not narrowed (scope kind '${kind:-none}') and the ticket declared exactly ONE test file, so there is nothing to attribute between files; an unscoped command with a single declared file is refused by the control run instead"
+        return 0
+      fi
+      PROOF_DECL_METHOD=unscoped-command
+      PROOF_DECL_UNACC="$(printf '%s\n' "$rels" | grep .)"
+      PROOF_DECL_WHY="this leg ran the repo's FULL SUITE with no narrowing at all (scope kind '${kind:-none}'), so no scoped measurement exists in which any single declared test file could be shown to have contributed — and a full-suite run cannot include a file the runner is unable to discover"
+      # D5: KEYED TO THE REASON. The ticket's filenames are not the problem when
+      # the command ignores the scope entirely — every name would fare the same.
+      PROOF_DECL_FIX="Nothing about the ticket's test files or their NAMES is at issue: this repo's test command ignores the scope it is handed, so the gate has no narrowed run to measure anything in. Make the testCommand run only \"\$LCARS_TESTS_DIR\" when it is set (\`lcars update --fix-tests\`)."
+      return 0 ;;
+  esac
+  if [ -n "$PROOF_DECL_UNACC" ]; then
+    names="$(printf '%s' "$PROOF_DECL_UNACC" | grep . | tr '\n' ' ' | sed 's/ $//')"
+    if [ "$tmo" = timeout ]; then
+      # D6: SAY WHICH IT WAS. A measurement that ran out of its budget is not a
+      # measurement that came back empty.
+      PROOF_DECL_WHY="the measurement for $names did not FINISH — it exceeded its ${budget}s budget and was killed — so this gate holds no number for those file(s) either way. A timeout is not a zero"
+      PROOF_DECL_FIX="Nothing here says the ticket's tests did not run; it says the gate ran out of time asking. Record this repo's real full-suite wall clock as \`gateTimeout\` in .git/lcars/config.json so the measurement has the budget it needs."
+    elif [ -n "$sym" ]; then
+      # S318 FIX ROUND 3: SAY WHICH IT WAS. A file this measurement REFUSED to
+      # touch is not a file whose removal changed nothing — the ablation
+      # sentence below would be a straight untruth about a run that never
+      # happened, and it would send the captain to the rename advice for a
+      # reason that has nothing to do with names.
+      PROOF_DECL_WHY="the declared test file(s) $sym are SYMBOLIC LINKS, and this measurement will not move a symlink aside — putting one back would replace the link with a regular file and silently damage the working tree on a PASS — so no contribution could be measured for them and the declared file(s) $names stay unaccounted for"
+      PROOF_DECL_FIX="Nothing about the ticket's tests is wrong here, and nothing about their NAMES: this gate refuses to mutate a symlinked test file in order to measure it. Declare the real path the link points at instead of the link itself, or make the ticket's test files regular files."
+    elif [ "$PROOF_DECL_METHOD" = ablation ]; then
+      PROOF_DECL_WHY="taking $names out of the leg's own scope and re-running this repo's testCommand changed NOTHING about how many tests ran (or made it run MORE), so nothing the ticket wrote in those file(s) took part in this leg"
+      PROOF_DECL_FIX="$PROOF_DECL_FIX_RENAME"
+    else
+      PROOF_DECL_WHY="no run measured by this gate executed a single test out of $names, so nothing shows the test(s) the ticket wrote there took part in this leg"
+      PROOF_DECL_FIX="$PROOF_DECL_FIX_RENAME"
+    fi
+  elif [ "$PROOF_DECL_METHOD" = ablation ]; then
+    PROOF_DECL_WHY="every declared test file was measured CONTRIBUTING at least one executed test to this leg — taking it out of the leg's own scope and re-running the repo's testCommand ran fewer tests every time — and their contributions sum to $sum inside this leg's own $legn (per declared file: $PROOF_DECL_EACH)${PROOF_DECL_RECOUNT:+ — this leg's count was re-measured for the accounting as $PROOF_DECL_RECOUNT, because the gate's main grammar set could not read this runner}"
+  else
+    PROOF_DECL_WHY="every declared test file was measured executing at least one test under the same runner, and their counts fit inside this leg's own $legn (per declared file: $PROOF_DECL_EACH)"
+  fi
+  return 0
+}
+
 # Run the ticket's tests SCOPED, per stack, from a given tree root (either the
 # tip worktree or the parent scratch worktree). Sets PROOF_LEG_RC + PROOF_LEG_OUT.
 # rc 96/97 are local sentinels for "cannot even construct the run" (no
@@ -12792,6 +13405,64 @@ if mf and mp:
 ' 2>/dev/null
 }
 
+# === THE EXTENDED COUNT READER (S318 fix round 1, D1) ======================
+# proof_executed_count is read by the WHOLE gate — the zero-evidence refusal,
+# the anti-gutting comparison, the scope control. Three ordinary runner grammars
+# were missing from it, and a captain-stand-in tester measured the consequence:
+# an honest two-file ticket was REFUSED on each of python unittest
+# (`Ran 3 tests in 0.000s` / `OK`), TAP (`1..2` / `ok 1`) and a bare
+# `N passed, 0 failed`, because the declared-file accounting is arithmetic and
+# there was no number to do it with. The number was printed right there; it was
+# this harness that could not read it.
+#
+# THEY ARE ADDED HERE, NOT TO proof_executed_count, AND THAT IS MEASURED TOO.
+# Teaching the MAIN reader python unittest turned THREE legitimate rows of
+# tests/proof-gates.test.sh (S5a, S5c, Z10a) from PASS to INCONCLUSIVE: those
+# fixtures run `make test` -> `python3 -m unittest discover`, and the moment
+# their count became readable S308's empty-scope control could run and correctly
+# observed that the scope changes nothing — so a pre-existing refusal fired on
+# three honest tickets. A cure for an over-refusal must not buy itself a fresh
+# one. So the extra grammars are confined to the ONE question that needs
+# arithmetic and nothing else: did each declared test file contribute a test?
+# Every other consumer of `executed` keeps the exact numbers it had, and the
+# accounting never mixes the two readers — when it uses this one it re-measures
+# its own baseline with it (see proof_declared_accounting).
+proof_executed_count_ext() { # runner-output -> "<runner> <executed>" | ""
+  local base
+  base="$(proof_executed_count "$1")"
+  if [ -n "$base" ]; then printf '%s' "$base"; return 0; fi
+  printf '%s' "$1" | "${LCARS_PYTHON_BIN:-python3}" -c '
+import re, sys
+out = sys.stdin.read()
+
+# python unittest / nose — `Ran 3 tests in 0.001s` + `OK` / `OK (skipped=1)` /
+# `FAILED (failures=1, skipped=2)`. `Ran` counts SKIPPED tests too, so the
+# skips are subtracted: EXECUTED, not COLLECTED, the same rule as every arm
+# above.
+m = re.search(r"^Ran (\d+) tests? in ", out, re.M)
+if m and re.search(r"^(OK|FAILED)\b", out, re.M):
+    sk = re.search(r"^(?:OK|FAILED)\b[^\n]*?\bskipped=(\d+)", out, re.M)
+    print("unittest %d" % (int(m.group(1)) - int(sk.group(1) if sk else 0))); sys.exit(0)
+
+# TAP — a `1..N` plan line plus `ok` / `not ok` result lines. The PLAN is only
+# the identifier; the count is the result lines that actually ran, so a
+# `# SKIP` / `# TODO` directive is not counted.
+if re.search(r"^1\.\.\d+\s*$", out, re.M):
+    ran = 0
+    for ln in out.splitlines():
+        if re.match(r"^(not ok|ok)\b", ln) and not re.search(r"#\s*(SKIP|TODO)", ln, re.I):
+            ran += 1
+    print("tap %d" % ran); sys.exit(0)
+
+# A bare `2 passed, 0 failed` summary with no decoration — what a hand-rolled
+# runner and several CI wrappers print. The pytest arm above requires its `===`
+# banner, so this one is not reachable from pytest output.
+m = re.search(r"^[^\n]*?\b(\d+) passed,\s*(\d+) failed\b", out, re.M)
+if m:
+    print("bare %d" % (int(m.group(1)) + int(m.group(2)))); sys.exit(0)
+' 2>/dev/null
+}
+
 # S157 (trimmed): the REPAIR PATH IS WITHDRAWN when the ticket's diff touches any
 # NON-TEST path. That routing is spec, not a heuristic — a repair is
 # test-infrastructure only, and a `vite.config.ts` (neither product source nor a
@@ -12874,6 +13545,13 @@ FF_GATE_SCOPE_CONTROL_SECS=""; FF_GATE_TIP_EXEC_EACH=""
 # own words (so `executed` carries no number to print). Recorded, because
 # "no count" and "a count of nothing" are different facts.
 FF_GATE_SCOPE_CONTROL_ZERO=""
+# FF_GATE_DECL_* (S318, D9) — THE ACCOUNTING OF THE TICKET'S DECLARED TESTS.
+# `testFiles` has always been WRITTEN DOWN in this artifact and never CHECKED:
+# a ticket could be stamped `flip-flop PASS` while one of its own declared test
+# files was RED on the tip and never executed once. See
+# proof_declared_accounting for the measurement and the four states it closes.
+FF_GATE_DECL_METHOD=""; FF_GATE_DECL_EACH=""; FF_GATE_DECL_UNACC=""
+FF_GATE_DECL_WHY=""
 _ff_reset() {
   FF_TIP_RC=null; FF_TIP_TAIL=""; FF_TIP_CMD=""
   FF_PAR_RC=null; FF_PAR_KIND=""; FF_PAR_TAIL=""; FF_PAR_CMD=""
@@ -12885,6 +13563,7 @@ _ff_reset() {
   FF_GATE_SCOPE_CONTROL=""
   FF_GATE_SCOPE_NARROWING=""; FF_GATE_SCOPE_NARROW_WHY=""
   FF_GATE_SCOPE_CONTROL_SECS=""; FF_GATE_TIP_EXEC_EACH=""; FF_GATE_SCOPE_CONTROL_ZERO=""
+  FF_GATE_DECL_METHOD=""; FF_GATE_DECL_EACH=""; FF_GATE_DECL_UNACC=""; FF_GATE_DECL_WHY=""
 }
 # The rels carrying a given source, space-separated (for the verdict wording).
 _ff_rels_with_source() { # source-token
@@ -12982,6 +13661,27 @@ FFS_EOF
       "$(json_escape "${FF_GATE_SCOPE_NARROW_WHY:-}")" \
       "$_cbud" "$(json_escape "${FF_GATE_TIP_EXEC_EACH:-}")" \
       "$( [ -n "${FF_GATE_SCOPE_CONTROL_ZERO:-}" ] && printf true || printf false )"
+    # S318 `declaredRan`: whether every file in `testFiles` was MEASURED
+    # executing at least one test on this leg, and which ones could not be
+    # accounted for. ADDITIVE — every pre-existing key keeps its name, position
+    # and meaning. `unaccounted` is [] on a leg that accounted for all of them,
+    # and `method` says how it was established (leg-invocations costs no extra
+    # run; ablation re-runs the repo's testCommand once per declared file with
+    # THAT FILE MOVED ASIDE, so `each` carries the file's CONTRIBUTION to the
+    # leg, not what the file runs on its own — round 1's per-file form could be
+    # credited with a sibling's output and could not separate a fixed overhead).
+    # See proof_declared_accounting.
+    local _dunacc="" _dsep="" _done
+    while IFS= read -r _done; do
+      [ -n "$_done" ] || continue
+      _dunacc="$_dunacc$_dsep\"$(json_escape "$_done")\""; _dsep=", "
+    done <<FFD_EOF
+$FF_GATE_DECL_UNACC
+FFD_EOF
+    printf '  "declaredRan": { "checked": %s, "method": "%s", "each": "%s", "unaccounted": [%s], "why": "%s" },\n' \
+      "$( [ "${FF_GATE_DECL_METHOD:-}" = leg-invocations ] || [ "${FF_GATE_DECL_METHOD:-}" = ablation ] && printf true || printf false )" \
+      "$(json_escape "${FF_GATE_DECL_METHOD:-}")" "$(json_escape "${FF_GATE_DECL_EACH:-}")" \
+      "$_dunacc" "$(json_escape "${FF_GATE_DECL_WHY:-}")"
     printf '  "tip": { "rc": %s, "cmd": "%s", "tail": "%s" },\n' \
       "${FF_TIP_RC:-null}" "$(json_escape "${FF_TIP_CMD:-}")" "$(json_escape "${FF_TIP_TAIL:-}")"
     printf '  "parent": { "rc": %s, "kind": "%s", "cmd": "%s", "tail": "%s" }\n' \
@@ -13303,6 +14003,52 @@ FF_DECL
   if [ "$FF_TIP_RC" -ne 0 ]; then
     _ff_finish "$t" "$parent" "$ffj" fail \
       "the TIP leg is RED (exit $FF_TIP_RC) — the ticket's tests do not pass on the implemented tree" "$rels"
+    return $?
+  fi
+  # === S318 / D9: DID EACH DECLARED TEST FILE ACTUALLY RUN? ================
+  # The ONE question the gate had never asked. `testFiles` was written into this
+  # artifact from the first version and never checked against anything, so a
+  # ticket could be certified while one of its own declared tests was RED on the
+  # tip and never executed — in `ancestor`, `moot`, `uncountable` and `tree`
+  # alike. S308's control closed `files` mode only, because that is the single
+  # state that already carries per-file numbers.
+  #
+  # FIX ROUND 1, D7 — ASKED AFTER THE TIP-RED FAIL, NOT BEFORE IT. Round 1 put
+  # this question first on the reasoning that a leg which cannot account for the
+  # ticket's tests has no standing to say they FAIL either. Measured consequence:
+  # a genuinely RED tip leg stopped reporting "the TIP leg is RED (exit 1) — the
+  # ticket's tests do not pass", which is the true cause and what the committed
+  # code said, and reported "could not account for the declared files" instead.
+  # Both are non-pass so nothing ships either way, but the captain lost the real
+  # reason — and a RED leg is itself positive evidence that a declared test ran
+  # and failed. So the real red speaks first; the accounting guards the PASS,
+  # which is the direction that ships. See proof_declared_accounting.
+  proof_declared_accounting "$wt" "$rels" "$FF_GATE_SCOPE_KIND" "$FF_TIP_EXEC" \
+    "$FF_GATE_TIP_EXEC_EACH" "$PROOF_LEG_RUN_DIR" "$PROOF_LEG_RAW_CMD" \
+    "$(proof_control_budget "$wt" "$FF_GATE_TIMEOUT")" "$FF_TIP_RC"
+  FF_GATE_DECL_METHOD="$PROOF_DECL_METHOD"; FF_GATE_DECL_EACH="$PROOF_DECL_EACH"
+  FF_GATE_DECL_UNACC="$PROOF_DECL_UNACC";   FF_GATE_DECL_WHY="$PROOF_DECL_WHY"
+  if [ -n "$FF_GATE_DECL_UNACC" ]; then
+    local dl_names
+    dl_names="$(printf '%s' "$FF_GATE_DECL_UNACC" | grep . | tr '\n' ' ' | sed 's/ $//')"
+    emit_event proof_declared_test_unaccounted implement \
+      "proof leg REFUSED — the gate could not show that the ticket's DECLARED test file(s) $dl_names executed at all on this leg: $FF_GATE_DECL_WHY" "ticket=$t" || :
+    # D5: THE REMEDIATION IS THE ONE FOR THIS REASON. Round 1 appended the
+    # `_spec.js`-vs-`*.test.js` rename paragraph to EVERY refusal, including the
+    # unreadable-runner, unscoped-command and timeout ones — where the ticket's
+    # filenames are already exactly what the selection expects, so the captain
+    # was sent renaming correct files, and where the python case was told to
+    # "have the testCommand print its runner's own summary" by a gate reading a
+    # command that already printed `Ran 3 tests in 0.000s`.
+    _ff_finish "$t" "$parent" "$ffj" inconclusive \
+      "this gate could NOT ACCOUNT FOR the ticket's DECLARED test file(s) $dl_names — it holds no measurement showing that each of them contributed a test to this leg — so it has no standing to say the ticket's tests pass. A verdict on tests that may never have run is worse than no verdict, and inconclusive is never a pass.
+  the declared test file(s) it could not account for: $dl_names
+  how the accounting was attempted: ${FF_GATE_DECL_METHOD:-none}${FF_GATE_DECL_EACH:+
+  what each declared file contributed, measured by taking it back out of the scope this leg ran: $FF_GATE_DECL_EACH}
+  why: $FF_GATE_DECL_WHY
+  what this leg executed: ${FF_TIP_EXEC##* } test(s) via ${FF_TIP_EXEC%% *}${FF_GATE_TIP_EXEC_EACH:+ (per invocation: $FF_GATE_TIP_EXEC_EACH)}
+  what the TIP leg ran: $FF_TIP_CMD
+${PROOF_DECL_FIX:-$PROOF_DECL_FIX_RENAME}" "$rels"
     return $?
   fi
 

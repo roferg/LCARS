@@ -1028,6 +1028,665 @@ ff "$B26" LCARS_GATE_TIMEOUT=30
   || bad "23c. scopeControl.collectedZero should be true (got '$(jq_ff "$B26" 'd["scopeControl"]["collectedZero"]')')"
 
 # ===========================================================================
+# 24. S318 / D9 — A LEG THAT CANNOT ACCOUNT FOR THE TICKET'S DECLARED TESTS
+#     MAY NOT PASS IT.
+#
+#     MEASURED on the committed tip BEFORE this section existed: a ticket
+#     declaring TWO test files, one of them named `_spec.js` in a `*.test.js`
+#     world and GENUINELY RED, was certified
+#
+#       verdict  : pass
+#       declared : ['tests/ticket_down_spec.js', 'tests/ticket_up.test.js']
+#       executed : {parent: 1, tip: 1, runner: node, checked: true}
+#       tip tail : up works            <- the RED declared test is ABSENT
+#
+#     in FOUR separate narrowing states — `ancestor`, `moot`, `uncountable` and
+#     `tree`/`not-narrowed`. S308's per-invocation control closed `files` mode
+#     only, because that is the ONLY state carrying per-file evidence. Nothing
+#     anywhere compared `testFiles` (the DECLARATION) against what executed.
+#
+#     THE MEASUREMENT, not a parser (ORCHESTRATION.md § infer-vs-record): the
+#     repo's OWN testCommand is re-run once per declared file with the scope
+#     pointed at THAT FILE, and the leg may only conclude when it executed at
+#     least as many tests as those per-file runs sum to. In `files` mode the leg
+#     ALREADY ran one invocation per declared file, so its own
+#     `legExecutedEach` IS the measurement and nothing extra runs.
+#
+#     FAIL SAFE IN ONE DIRECTION ONLY: extra INCONCLUSIVE is acceptable, a
+#     confident verdict on tests that did not run is not. 24m-24t are the
+#     CONTROLS and they matter more than the four refusals.
+# ===========================================================================
+echo "-- 24. a leg that cannot account for the declared tests may not pass it --"
+
+# Rewrite the tip's result.json newTests list, in place.
+set_declared() { # base json-array
+  local f="$1/repo/.git/lcars/missions/m-001/tickets/t-001/result.json"
+  "${LCARS_PYTHON_BIN:-python3}" - "$f" "$2" <<'SDPY'
+import json, sys
+p = sys.argv[1]
+d = json.load(open(p))
+d["newTests"] = json.loads(sys.argv[2])
+open(p, "w").write(json.dumps(d, indent=1) + "\n")
+SDPY
+}
+# The D9 tip: TWO declared test files, the second one UNDISCOVERABLE by the
+# repo's own `*.test.js` selection AND RED. Built by AMENDING the fixture's tip
+# commit, so HEAD~1 is still the flat-slow parent the gate is driven against.
+d9_tip() { # base dir-of-the-red-file requires-prefix
+  local base="$1" dir="$2" req="$3"
+  ( cd "$base/repo" || exit 1
+    rm -f "$dir/ticket_down.test.js"
+    cat >"$dir/ticket_down_spec.js" <<JSRED
+const { test } = require('node:test');
+const assert = require('node:assert');
+const { down } = require('$req/src/down.js');
+// THE TICKET'S REAL TEST, AND IT IS RED. If it ever executes the leg goes red;
+// the false PASS is that it never executes at all.
+test('down works', () => { assert.strictEqual(down('HI'), 'DEFINITELY NOT THIS'); });
+JSRED
+    git add -A && git commit -q --amend -m "t-001: two declared files, one undiscoverable AND RED" ) >/dev/null 2>&1
+}
+
+# --- 24a-e. ANCESTOR scope. The normal nested layout. ----------------------
+B27="$(mkbase --files 2 --sleep 0 --tip nested)"
+d9_tip "$B27" tests/a/b '../../..'
+set_declared "$B27" '["tests/a/ticket_up.test.js","tests/a/b/ticket_down_spec.js"]'
+RED27="$( cd "$B27/repo" && node --test --test-concurrency=1 tests/a/b/ticket_down_spec.js 2>&1 )"
+printf '%s' "$RED27" | grep -q 'fail 1' \
+  && ok "24a. the fixture bites: the declared tests/a/b/ticket_down_spec.js is RED on the tip" \
+  || bad "24a. the fixture does not bite — the declared _spec file is not red on the tip"
+ff "$B27" LCARS_GATE_TIMEOUT=30
+[ "$(jq_ff "$B27" 'd["gate"]["scopeKind"]')" = ancestor ] \
+  && ok "24b. the leg really is in the ANCESTOR narrowing state" \
+  || bad "24b. scopeKind was '$(jq_ff "$B27" 'd["gate"]["scopeKind"]')' (expected ancestor)"
+[ "$(jq_ff "$B27" 'd["verdict"]')" = inconclusive ] \
+  && ok "24c. ancestor: INCONCLUSIVE, not a certified pass" \
+  || bad "24c. FALSE PASS (ancestor) — verdict '$(jq_ff "$B27" 'd["verdict"]')', executed $(jq_ff "$B27" 'd["executed"]')"
+case "$(jq_ff "$B27" 'd["reason"]')" in
+  *ticket_down_spec.js*) ok "24d. and the reason NAMES the file it could not account for" ;;
+  *) bad "24d. the reason must name tests/a/b/ticket_down_spec.js: $(jq_ff "$B27" 'd["reason"]' | head -c 220)" ;;
+esac
+case "$(jq_ff "$B27" 'd["declaredRan"]["unaccounted"]')" in
+  *ticket_down_spec.js*) ok "24e. the artifact RECORDS the unaccounted file" ;;
+  *) bad "24e. declaredRan.unaccounted was '$(jq_ff "$B27" 'd["declaredRan"]["unaccounted"]')'" ;;
+esac
+
+# --- 24f-g. MOOT: every tracked test file IS declared. --------------------
+# The precondition round 2 added: its premise is TRUE (a fallback to discovery
+# can only run DECLARED tests) and the inference drawn from it is wrong — that
+# says nothing about whether EACH of them ran.
+B28="$(mkbase --files 0 --sleep 0 --tip spec2red)"
+ff "$B28" LCARS_GATE_TIMEOUT=30
+[ "$(jq_ff "$B28" 'd["verdict"]')" = inconclusive ] \
+  && ok "24f. moot: INCONCLUSIVE, not a certified pass" \
+  || bad "24f. FALSE PASS (moot) — verdict '$(jq_ff "$B28" 'd["verdict"]')', narrowing $(jq_ff "$B28" 'd["scopeControl"]["narrowing"]'), executed $(jq_ff "$B28" 'd["executed"]')"
+case "$(jq_ff "$B28" 'd["declaredRan"]["unaccounted"]')" in
+  *ticket_down_spec.js*) ok "24g. and the moot leg names the file it could not account for" ;;
+  *) bad "24g. declaredRan.unaccounted was '$(jq_ff "$B28" 'd["declaredRan"]["unaccounted"]')'" ;;
+esac
+
+# --- 24h-j. UNCOUNTABLE: an ordinary quiet CI wrapper prints no count. ----
+B29="$(mkbase --files 0 --sleep 0 --tip spec2red)"
+cfg_set_testcmd "$B29" 'if node --test --test-concurrency=1 $(find "$LCARS_TESTS_DIR" -name "*.test.js") >/dev/null 2>&1; then echo "ALL GREEN"; else echo "SUITE FAILED"; exit 1; fi'
+ff "$B29" LCARS_GATE_TIMEOUT=30
+[ "$(jq_ff "$B29" 'd["scopeControl"]["narrowing"]')" = uncountable ] \
+  && ok "24h. the leg really is in the UNCOUNTABLE narrowing state" \
+  || bad "24h. narrowing was '$(jq_ff "$B29" 'd["scopeControl"]["narrowing"]')' (expected uncountable)"
+[ "$(jq_ff "$B29" 'd["verdict"]')" = inconclusive ] \
+  && ok "24i. uncountable: INCONCLUSIVE — no count can ever account for a file" \
+  || bad "24i. FALSE PASS (uncountable) — verdict '$(jq_ff "$B29" 'd["verdict"]')'"
+case "$(jq_ff "$B29" 'd["reason"]')" in
+  *"no test count"*|*"no count"*) ok "24j. and it names the unreadable runner as the reason" ;;
+  *) bad "24j. the reason must say the runner prints no count: $(jq_ff "$B29" 'd["reason"]' | head -c 220)" ;;
+esac
+
+# --- 24k-l. TREE / not-narrowed: the testCommand ignores the scope. -------
+B30="$(mkbase --files 2 --sleep 0 --tip spec2red)"
+cfg_set_testcmd "$B30" 'node --test --test-concurrency=1 $(find tests -name "*.test.js")'
+ff "$B30" LCARS_GATE_TIMEOUT=30
+[ "$(jq_ff "$B30" 'd["scopeControl"]["narrowing"]')" = not-narrowed ] \
+  && ok "24k. the leg really is in the NOT-NARROWED state (an unscoped testCommand)" \
+  || bad "24k. narrowing was '$(jq_ff "$B30" 'd["scopeControl"]["narrowing"]')' (expected not-narrowed)"
+[ "$(jq_ff "$B30" 'd["verdict"]')" = inconclusive ] \
+  && ok "24l. tree: INCONCLUSIVE — a full-suite run cannot show a declared file ran" \
+  || bad "24l. FALSE PASS (tree) — verdict '$(jq_ff "$B30" 'd["verdict"]')', executed $(jq_ff "$B30" 'd["executed"]')"
+
+# === THE CONTROLS — these matter more than the four refusals above. ========
+# --- 24m-o. AN HONEST TWO-FILE ANCESTOR TICKET STILL PASSES. --------------
+B31="$(mkbase --files 2 --sleep 0 --tip nested)"
+ff "$B31" LCARS_GATE_TIMEOUT=30
+[ "$(jq_ff "$B31" 'd["verdict"]')" = pass ] \
+  && ok "24m. CONTROL: an honest TWO-file ancestor ticket still PASSES" \
+  || bad "24m. the guard PARKED an honest two-file ancestor ticket — verdict '$(jq_ff "$B31" 'd["verdict"]')': $(jq_ff "$B31" 'd["reason"]' | head -c 250)"
+[ "$(jq_ff "$B31" 'd["declaredRan"]["unaccounted"]')" = "[]" ] \
+  && ok "24n. with BOTH declared files accounted for" \
+  || bad "24n. declaredRan.unaccounted was '$(jq_ff "$B31" 'd["declaredRan"]["unaccounted"]')' on an honest ticket"
+case "$(jq_ff "$B31" 'd["declaredRan"]["each"]')" in
+  *ticket_up.test.js=*) ok "24o. and the per-file measurement is RECORDED, file by file" ;;
+  *) bad "24o. declaredRan.each should carry each declared file's own count: '$(jq_ff "$B31" 'd["declaredRan"]["each"]')'" ;;
+esac
+# --- 24p-q. AN HONEST TWO-FILE FLAT (files-mode) TICKET STILL PASSES, and the
+#            accounting costs it NO extra run: the leg already ran per file.
+[ "$(jq_ff "$B1" 'd["verdict"]')" = pass ] \
+  && ok "24p. CONTROL: the honest FLAT two-file (files-mode) ticket still passes" \
+  || bad "24p. the guard parked the honest flat two-file ticket"
+[ "$(jq_ff "$B1" 'd["declaredRan"]["method"]')" = leg-invocations ] \
+  && ok "24q. and files mode is accounted from the leg's OWN invocations (no extra run)" \
+  || bad "24q. declaredRan.method was '$(jq_ff "$B1" 'd["declaredRan"]["method"]')' (expected leg-invocations)"
+# --- 24r. AN HONEST SINGLE-FILE TICKET IS UNCHANGED. ----------------------
+B32="$(mkbase --files 2 --sleep 0 --tip flat1)"
+ff "$B32" LCARS_GATE_TIMEOUT=30
+[ "$(jq_ff "$B32" 'd["verdict"]')" = pass ] \
+  && ok "24r. CONTROL: an honest SINGLE-file ticket still passes" \
+  || bad "24r. the guard parked an honest single-file ticket: $(jq_ff "$B32" 'd["reason"]' | head -c 250)"
+# --- 24s. A REPO WHOSE ONLY TEST IS THE DECLARED ONE (the moot shape that
+#          parked five honest tickets in S308 round 2) STILL PASSES.
+B33="$(mkbase --files 0 --sleep 0 --tip flat1)"
+ff "$B33" LCARS_GATE_TIMEOUT=30
+[ "$(jq_ff "$B33" 'd["verdict"]')" = pass ] \
+  && ok "24s. CONTROL: a repo whose WHOLE suite is the ticket's one declared file passes" \
+  || bad "24s. the guard parked the moot one-file shape: $(jq_ff "$B33" 'd["reason"]' | head -c 250)"
+# --- 24t. The zero-numbers control repo of section 23 still passes. --------
+[ "$(jq_ff "$B26" 'd["verdict"]')" = pass ] \
+  && ok "24t. CONTROL: the repo whose zero-run prints no numbers still passes" \
+  || bad "24t. the guard parked the no-numbers repo of section 23"
+
+# ===========================================================================
+# 25. S318 FIX ROUND 1 — THE HONEST SHAPES THE FIRST CUT PARKED, AND THE TWO
+#     WAYS ITS ACCOUNTING COULD STILL BE SATISFIED FALSELY.
+#
+#     A captain-stand-in tester drove 50 real fixtures against section 24's
+#     guard. The four refusals held, but:
+#
+#     D1  FALSE REFUSAL. A ticket with >=2 declared files in a repo whose test
+#         count the harness cannot parse was refused EVEN WHEN BOTH FILES RAN
+#         GREEN — measured on THREE independent runners (python unittest's
+#         `Ran 3 tests in 0.000s`/`OK`, TAP's `1..2`/`ok 1`, and a bare
+#         `N passed, 0 failed`). The committed code says `pass`. A SINGLE-file
+#         ticket on the same repo passed, so the refusal was purely a function
+#         of file count: every multi-file ticket on such a repo, forever.
+#     D2  FALSE REFUSAL. An honest multi-file ticket was refused when the
+#         repo's test command always runs a FIXED EXTRA SUITE alongside the
+#         scope (a global smoke suite, a jest `projects` config, a Makefile
+#         target). Measured `tests 6 / pass 6` with both declared files
+#         executing, but each per-file run carried the same fixed 4-test
+#         overhead, so `5 + 5 > 6` and the gate said "the leg cannot have run
+#         all of them" — which is FALSE.
+#     D3  FALSE PASS. A per-file run was credited to a file it never touched: a
+#         declared file that is unmatchable AND genuinely RED was credited `=1`
+#         by a SIBLING file's output, because the file's own run selected
+#         nothing and the runner fell back to its own discovery.
+#     D4  FALSE PASS. A ZERO-BYTE declared test file was certified as
+#         "executed at least one test" because `node --test` counts an empty
+#         file as one test. (The all-`test.skip` equivalent was already
+#         correctly refused, which is what made this an oversight.)
+#     D6  a per-file run that TIMED OUT was stored as `unreadable` and
+#         described as "no run executed a single test out of <file>" — a
+#         timeout reported as a zero.
+#     D7  a genuinely RED tip leg reported only "could not account for the
+#         declared files", masking the real cause.
+#
+#     THE CURE, and why it is a MEASUREMENT and not a parser: the per-file
+#     re-run is replaced by an ABLATION. The repo's own testCommand is re-run
+#     with the LEG'S OWN SCOPE and the declared file MOVED ASIDE, and the file's
+#     CONTRIBUTION is `legExecuted - thatRun`. A fixed extra suite is present in
+#     both numbers and CANCELS (D2). A file the selection cannot see changes
+#     nothing when it is removed, so its contribution is 0 and no sibling's
+#     output can be credited to it (D3) — with no identity check and no command
+#     shape recognised. D1 is cured where its cause actually is: the harness was
+#     missing three ordinary runner grammars, so the count it called unreadable
+#     was printed right there in the output.
+# ===========================================================================
+echo "-- 25. the honest shapes, and the two false satisfactions --"
+
+# A repo whose runner output the harness could not count at all. Three real
+# grammars, each wrapped around the same honest node run so the TESTS are
+# identical and only the SUMMARY LINE differs.
+UNREAD_UNITTEST='o=$(node --test --test-reporter=tap --test-concurrency=1 $(find "$LCARS_TESTS_DIR" -name "*.test.js") 2>&1); r=$?; n=$(printf "%s\n" "$o" | grep -cE "^(not )?ok "); echo "Ran $n tests in 0.000s"; if [ $r = 0 ]; then echo OK; else echo "FAILED (failures=1)"; fi; exit $r'
+UNREAD_TAP='o=$(node --test --test-reporter=tap --test-concurrency=1 $(find "$LCARS_TESTS_DIR" -name "*.test.js") 2>&1); r=$?; n=$(printf "%s\n" "$o" | grep -cE "^(not )?ok "); echo "1..$n"; i=1; while [ $i -le $n ]; do echo "ok $i - t"; i=$((i+1)); done; exit $r'
+UNREAD_BARE='o=$(node --test --test-reporter=tap --test-concurrency=1 $(find "$LCARS_TESTS_DIR" -name "*.test.js") 2>&1); r=$?; n=$(printf "%s\n" "$o" | grep -cE "^(not )?ok "); echo "$n passed, 0 failed"; exit $r'
+
+# --- 25a-f. D1: an honest TWO-file ancestor ticket on a repo whose count the
+#            harness could not read. Measured `inconclusive` on all three.
+B34="$(mkbase --files 2 --sleep 0 --tip nested)"
+cfg_set_testcmd "$B34" "$UNREAD_UNITTEST"
+ff "$B34" LCARS_GATE_TIMEOUT=30
+[ "$(jq_ff "$B34" 'd["gate"]["scopeKind"]')" = ancestor ] \
+  && ok "25a. the unittest-grammar repo really is in the ANCESTOR state" \
+  || bad "25a. scopeKind was '$(jq_ff "$B34" 'd["gate"]["scopeKind"]')'"
+[ "$(jq_ff "$B34" 'd["verdict"]')" = pass ] \
+  && ok "25b. D1: an honest 2-file ticket PASSES on a python-unittest-grammar repo" \
+  || bad "25b. FALSE REFUSAL (unittest grammar) — verdict '$(jq_ff "$B34" 'd["verdict"]')': $(jq_ff "$B34" 'd["reason"]' | head -c 220)"
+B35="$(mkbase --files 2 --sleep 0 --tip nested)"
+cfg_set_testcmd "$B35" "$UNREAD_TAP"
+ff "$B35" LCARS_GATE_TIMEOUT=30
+[ "$(jq_ff "$B35" 'd["verdict"]')" = pass ] \
+  && ok "25c. D1: an honest 2-file ticket PASSES on a TAP-grammar repo" \
+  || bad "25c. FALSE REFUSAL (TAP) — verdict '$(jq_ff "$B35" 'd["verdict"]')': $(jq_ff "$B35" 'd["reason"]' | head -c 220)"
+B36="$(mkbase --files 2 --sleep 0 --tip nested)"
+cfg_set_testcmd "$B36" "$UNREAD_BARE"
+ff "$B36" LCARS_GATE_TIMEOUT=30
+[ "$(jq_ff "$B36" 'd["verdict"]')" = pass ] \
+  && ok "25d. D1: an honest 2-file ticket PASSES on a bare 'N passed, N failed' repo" \
+  || bad "25d. FALSE REFUSAL (bare passed/failed) — verdict '$(jq_ff "$B36" 'd["verdict"]')': $(jq_ff "$B36" 'd["reason"]' | head -c 220)"
+# And the SAME repo still refuses the D9 shape, so curing D1 did not open it.
+B37="$(mkbase --files 2 --sleep 0 --tip nested)"
+d9_tip "$B37" tests/a/b '../../..'
+set_declared "$B37" '["tests/a/ticket_up.test.js","tests/a/b/ticket_down_spec.js"]'
+cfg_set_testcmd "$B37" "$UNREAD_UNITTEST"
+ff "$B37" LCARS_GATE_TIMEOUT=30
+[ "$(jq_ff "$B37" 'd["verdict"]')" = inconclusive ] \
+  && ok "25e. and the D9 shape on that SAME countable-now repo is STILL refused" \
+  || bad "25e. FALSE PASS — curing D1 opened the D9 shape: verdict '$(jq_ff "$B37" 'd["verdict"]')'"
+# A genuinely countless runner (the quiet CI wrapper) is still refused BY NAME.
+[ "$(jq_ff "$B29" 'd["declaredRan"]["method"]')" = unreadable-runner ] \
+  && ok "25f. a genuinely countless runner is still refused by name" \
+  || bad "25f. declaredRan.method was '$(jq_ff "$B29" 'd["declaredRan"]["method"]')'"
+
+# --- 25g-i. D2: the repo whose test command always runs a FIXED EXTRA SUITE.
+# The FIXED EXTRA SUITE is the fixture's own four-module flat suite, which lives
+# in the PARENT commit and is therefore not in the ticket's diff: the leg's scope
+# is tests/a, and the testCommand ALWAYS appends the four slow modules on top of
+# whatever the scope selects — a global smoke suite, a jest `projects` config, a
+# Makefile `test` target. Both declared files run, and each ablation run carries
+# the SAME fixed 4-test overhead, which is what defeated round 1.
+B38="$(mkbase --files 4 --sleep 0 --tip nested)"
+cfg_set_testcmd "$B38" 'node --test --test-concurrency=1 $(find "$LCARS_TESTS_DIR" -name "*.test.js") $(find tests -maxdepth 1 -name "slow_*.test.js")'
+ff "$B38" LCARS_GATE_TIMEOUT=30
+[ "$(jq_ff "$B38" 'd["executed"]["tip"]')" = 6 ] \
+  && ok "25g. the fixture bites: the leg executes 6 (2 declared + the fixed 4)" \
+  || bad "25g. the leg executed '$(jq_ff "$B38" 'd["executed"]["tip"]')' (expected 6)"
+[ "$(jq_ff "$B38" 'd["verdict"]')" = pass ] \
+  && ok "25h. D2: the fixed-extra-suite repo's honest 2-file ticket PASSES" \
+  || bad "25h. FALSE REFUSAL (fixed extra suite) — verdict '$(jq_ff "$B38" 'd["verdict"]')': $(jq_ff "$B38" 'd["reason"]' | head -c 260)"
+case "$(jq_ff "$B38" 'd["declaredRan"]["each"]')" in
+  *ticket_up.test.js=1*) ok "25i. and each file's CONTRIBUTION is recorded net of the fixed overhead" ;;
+  *) bad "25i. declaredRan.each was '$(jq_ff "$B38" 'd["declaredRan"]["each"]')' (expected a contribution of 1 per file)" ;;
+esac
+
+# --- 25j-l. D3: a per-file run credited to a file it never touched. A sibling
+#            emits runner-shaped lines; the unmatchable RED file must NOT be
+#            credited with them.
+B39="$(mkbase --files 2 --sleep 0 --tip nested)"
+d9_tip "$B39" tests/a/b '../../..'
+set_declared "$B39" '["tests/a/ticket_up.test.js","tests/a/b/ticket_down_spec.js"]'
+( cd "$B39/repo" && cat >tests/a/forge.test.js <<'JSFORGE'
+const { test } = require('node:test');
+// THE FORGERY: runner-shaped lines emitted only when the scope is a DIRECTORY,
+// so a per-file run of a sibling could be credited with this file's numbers.
+if (process.env.LCARS_TESTS_DIR) {
+  try {
+    if (require('node:fs').statSync(process.env.LCARS_TESTS_DIR).isDirectory()) {
+      console.log('ℹ tests 99'); console.log('ℹ pass 99'); console.log('ℹ fail 0');
+    }
+  } catch (e) {}
+}
+test('forge', () => {});
+JSFORGE
+  git add -A && git commit -q --amend --no-edit ) >/dev/null 2>&1
+set_declared "$B39" '["tests/a/ticket_up.test.js","tests/a/b/ticket_down_spec.js","tests/a/forge.test.js"]'
+RED39="$( cd "$B39/repo" && node --test --test-concurrency=1 tests/a/b/ticket_down_spec.js 2>&1 )"
+printf '%s' "$RED39" | grep -q 'fail 1' \
+  && ok "25j. the fixture bites: the unmatchable declared file is RED on the tip" \
+  || bad "25j. the fixture does not bite — the declared _spec file is not red"
+ff "$B39" LCARS_GATE_TIMEOUT=30
+[ "$(jq_ff "$B39" 'd["verdict"]')" != pass ] \
+  && ok "25k. D3: the forged sibling cannot buy a PASS for the unmatchable RED file" \
+  || bad "25k. FALSE PASS (D3) — verdict pass, each=$(jq_ff "$B39" 'd["declaredRan"]["each"]')"
+case "$(jq_ff "$B39" 'd["declaredRan"]["each"]')" in
+  *ticket_down_spec.js=[1-9]*) bad "25l. the unmatchable RED file was CREDITED with a contribution: $(jq_ff "$B39" 'd["declaredRan"]["each"]')" ;;
+  *) ok "25l. and the unmatchable RED file is never CREDITED with a contribution" ;;
+esac
+
+# --- 25m-n. D4: a ZERO-BYTE declared test file is not a test that ran.
+B40="$(mkbase --files 2 --sleep 0 --tip nested)"
+( cd "$B40/repo" && : >tests/a/b/ticket_down.test.js \
+  && git add -A && git commit -q --amend --no-edit ) >/dev/null 2>&1
+[ ! -s "$B40/repo/tests/a/b/ticket_down.test.js" ] \
+  && ok "25m. the fixture bites: the declared tests/a/b/ticket_down.test.js is ZERO BYTES" \
+  || bad "25m. the declared file is not empty"
+ff "$B40" LCARS_GATE_TIMEOUT=30
+[ "$(jq_ff "$B40" 'd["verdict"]')" != pass ] \
+  && ok "25n. D4: an EMPTY declared test file cannot be certified as having run a test" \
+  || bad "25n. FALSE PASS (D4) — an empty declared file was credited: each=$(jq_ff "$B40" 'd["declaredRan"]["each"]')"
+
+# --- 25o-p. D7: a genuinely RED tip leg says so, instead of "could not
+#            account for the declared files".
+B41="$(mkbase --files 2 --sleep 0 --tip nested)"
+( cd "$B41/repo" && cat >tests/a/b/ticket_down.test.js <<'JSREDTIP'
+const { test } = require('node:test');
+const assert = require('node:assert');
+// A HONEST, DISCOVERABLE declared test that is simply RED on the tip.
+test('down works', () => { assert.strictEqual(1, 2); });
+JSREDTIP
+  git add -A && git commit -q --amend --no-edit ) >/dev/null 2>&1
+ff "$B41" LCARS_GATE_TIMEOUT=30
+[ "$(jq_ff "$B41" 'd["verdict"]')" = fail ] \
+  && ok "25o. D7: a genuinely RED tip leg is a FAIL, not an accounting refusal" \
+  || bad "25o. verdict was '$(jq_ff "$B41" 'd["verdict"]')' on a genuinely red tip leg"
+case "$(jq_ff "$B41" 'd["reason"]')" in
+  *"TIP leg is RED"*) ok "25p. and the reason is the REAL red, not the accounting" ;;
+  *) bad "25p. the reason masked the real red: $(jq_ff "$B41" 'd["reason"]' | head -c 200)" ;;
+esac
+
+# --- 25q-s. D5: the remediation advice is KEYED TO THE REASON. The `_spec.js`
+#            rename advice must not be appended to a refusal it cannot explain.
+case "$(jq_ff "$B29" 'd["reason"]')" in
+  *"the way the existing selection expects"*) bad "25q. the countless-runner refusal still tells him to rename correct files" ;;
+  *) ok "25q. D5: the countless-runner refusal does NOT advise renaming files" ;;
+esac
+case "$(jq_ff "$B29" 'd["reason"]')" in
+  *"print its runner's own summary"*) bad "25r. it still advises printing a summary the command already prints" ;;
+  *) ok "25r. and it does not advise printing a summary the command already prints" ;;
+esac
+case "$(jq_ff "$B30" 'd["reason"]')" in
+  *"the way the existing selection expects"*) bad "25s. the unscoped-command refusal still advises renaming files" ;;
+  *) ok "25s. and the unscoped-command refusal does not advise renaming files either" ;;
+esac
+# --- 25t. the ancestor refusal — the one the rename advice DOES explain —
+#          still carries it.
+case "$(jq_ff "$B27" 'd["reason"]')" in
+  *"the way the existing selection expects"*) ok "25t. the refusal the rename advice DOES explain still carries it" ;;
+  *) bad "25t. the ancestor refusal lost its remediation: $(jq_ff "$B27" 'd["reason"]' | head -c 220)" ;;
+esac
+
+# --- 25u. D6: a per-file ablation that TIMED OUT is reported as a timeout,
+#          never as "no run executed a single test out of <file>".
+B42="$(mkbase --files 2 --sleep 0 --tip nested)"
+cfg_set_testcmd "$B42" 'if [ -f "$LCARS_TESTS_DIR/ticket_up.test.js" ] && [ ! -f "$LCARS_TESTS_DIR/b/ticket_down.test.js" ]; then sleep 600; fi; node --test --test-concurrency=1 $(find "$LCARS_TESTS_DIR" -name "*.test.js")'
+# The ablation's budget is proof_control_budget, i.e. the repo's recorded
+# gateTimeout — so record a SMALL one, or this row alone costs the suite 120s.
+cfg_set_gate "$B42" 8
+ff "$B42" LCARS_GATE_TIMEOUT=8
+case "$(jq_ff "$B42" 'd["reason"]')$(jq_ff "$B42" 'd["declaredRan"]["each"]')" in
+  *timed*out*|*timeout*) ok "25u. D6: an ablation run that TIMED OUT is reported as a timeout" ;;
+  *) bad "25u. a timed-out ablation was not reported as one: each='$(jq_ff "$B42" 'd["declaredRan"]["each"]')' reason='$(jq_ff "$B42" 'd["reason"]' | head -c 240)'" ;;
+esac
+
+# --- 25v-y. THE HONEST SHAPES THE TESTER DROVE, re-driven here as controls.
+B43="$(mkbase --files 2 --sleep 0 --tip nested)"
+( cd "$B43/repo" && mkdir -p "tests/a/deep nest" \
+  && git mv tests/a/b/ticket_down.test.js "tests/a/deep nest/ticket down.test.js" \
+  && "${LCARS_PYTHON_BIN:-python3}" - .git/lcars/missions/m-001/tickets/t-001/result.json <<'SPPY'
+import json, sys
+p = sys.argv[1]; d = json.load(open(p))
+d["newTests"] = ["tests/a/ticket_up.test.js", "tests/a/deep nest/ticket down.test.js"]
+open(p, "w").write(json.dumps(d, indent=1) + "\n")
+SPPY
+  sed -i.bak 's#\.\./\.\./\.\./src/down\.js#../../../src/down.js#' "tests/a/deep nest/ticket down.test.js"
+  rm -f "tests/a/deep nest/ticket down.test.js.bak"
+  git add -A && git commit -q --amend --no-edit ) >/dev/null 2>&1
+# A SPACE-SAFE testCommand, because the fixture's default one word-splits an
+# unquoted substitution and so cannot run ANY path with a space in it — that is
+# the command's limit, not the guard's. (`-print0 | xargs -0` is space-safe but
+# its EMPTY-scope control output is unreadable, so S308's own narrowing refusal
+# fires before this check is ever asked — measured, and also not this guard.)
+cfg_set_testcmd "$B43" 'node --test --test-concurrency=1 "$LCARS_TESTS_DIR"'
+ff "$B43" LCARS_GATE_TIMEOUT=30
+[ "$(jq_ff "$B43" 'd["verdict"]')" = pass ] \
+  && ok "25v. CONTROL: a declared filename WITH SPACES in a deep subdirectory passes" \
+  || bad "25v. the guard parked a filename with spaces: $(jq_ff "$B43" 'd["reason"]' | head -c 240)"
+# A repo whose WHOLE suite is the two declared files.
+B44="$(mkbase --files 0 --sleep 0 --tip nested)"
+ff "$B44" LCARS_GATE_TIMEOUT=30
+[ "$(jq_ff "$B44" 'd["verdict"]')" = pass ] \
+  && ok "25w. CONTROL: a repo whose WHOLE suite is the two declared files passes" \
+  || bad "25w. the guard parked the whole-suite-is-the-ticket shape: $(jq_ff "$B44" 'd["reason"]' | head -c 240)"
+# THREE declared files sharing an ancestor.
+B45="$(mkbase --files 2 --sleep 0 --tip nested)"
+( cd "$B45/repo" && printf 'exports.side = (s) => String(s).trim();\n' >src/side.js \
+  && cat >tests/a/ticket_side.test.js <<'JS3'
+const { test } = require('node:test');
+const assert = require('node:assert');
+const { side } = require('../../src/side.js');
+test('side works', () => { assert.strictEqual(side(' x '), 'x'); });
+JS3
+  git add -A && git commit -q --amend --no-edit ) >/dev/null 2>&1
+set_declared "$B45" '["tests/a/ticket_up.test.js","tests/a/b/ticket_down.test.js","tests/a/ticket_side.test.js"]'
+ff "$B45" LCARS_GATE_TIMEOUT=30
+[ "$(jq_ff "$B45" 'd["verdict"]')" = pass ] \
+  && ok "25x. CONTROL: THREE declared files sharing an ancestor pass" \
+  || bad "25x. the guard parked a three-file ticket: $(jq_ff "$B45" 'd["reason"]' | head -c 240)"
+# The ablation RESTORES the tree it measured on — nothing is left moved aside.
+( cd "$B45/repo" && git status --porcelain ) 2>/dev/null | grep -q . \
+  && bad "25y. the ablation left the worktree DIRTY: $( cd "$B45/repo" && git status --porcelain | head -5 | tr '\n' ' ')" \
+  || ok "25y. and the ablation left the worktree exactly as it found it"
+
+# --- 25z-ac. S318 FIX ROUND 2 — THE DATA-LOSS WINDOW ON THE CAPTAIN'S OWN
+#             WORKING TREE.
+# The ablation COPIES a declared test file aside, REMOVES it from the real
+# worktree, re-runs the repo's own test command (minutes, on the slow-suite repo
+# class this whole feature exists for), and only then puts it back. There was no
+# `trap`. For the whole of that window the captain's file existed ONLY in
+# $TMPDIR — and this laptop idle-sleeps after one minute on mains, an
+# orchestrator dying mid-run is a recurring event here, and `rm -f` on a test
+# file the worker has only just written on the tip is NOT recoverable from git.
+# So: kill the gate while an ablation is in flight and the file must come back.
+abl_dirs() { # → how many lcars-ablate.* holding dirs exist right now
+  ls -d "${TMPDIR:-/tmp}"/lcars-ablate.* 2>/dev/null | grep -c . | tr -d ' '
+}
+# A KNOWN-GOOD CONTROL FOR THE COUNTER ITSELF. A glob that matches nothing reads
+# exactly like a clean result, so prove the counter can SEE such a directory
+# before any row trusts it to report zero.
+ABL_BASE="$(abl_dirs)"
+ABL_DECOY="$(mktemp -d "${TMPDIR:-/tmp}/lcars-ablate.XXXXXX")"
+[ "$(abl_dirs)" -gt "$ABL_BASE" ] \
+  && ok "25z. CONTROL: the holding-dir counter can see an lcars-ablate.* directory" \
+  || bad "25z. the holding-dir counter is blind — it reported $(abl_dirs) with a decoy at $ABL_DECOY present"
+rm -rf "$ABL_DECOY"
+[ "$(abl_dirs)" = "$ABL_BASE" ] \
+  || bad "25z. the holding-dir baseline is not stable: $(abl_dirs) != $ABL_BASE"
+
+# An HONEST two-file ancestor ticket, driven to completion AFTER the baseline
+# was taken: the holding dir must not be left behind.
+B46="$(mkbase --files 2 --sleep 0 --tip nested)"
+ff "$B46" LCARS_GATE_TIMEOUT=30
+[ "$(jq_ff "$B46" 'd["verdict"]')" = pass ] \
+  && ok "25aa. CONTROL: an honest two-file ancestor ticket still passes" \
+  || bad "25aa. the honest two-file ticket stopped passing: $(jq_ff "$B46" 'd["reason"]' | head -c 240)"
+( cd "$B46/repo" && git status --porcelain ) 2>/dev/null | grep -q . \
+  && bad "25ab. the completed ablation left the worktree DIRTY: $( cd "$B46/repo" && git status --porcelain | head -5 | tr '\n' ' ')" \
+  || ok "25ab. and it left the worktree exactly as it found it"
+[ "$(abl_dirs)" = "$ABL_BASE" ] \
+  && ok "25ac. a COMPLETED ablation leaves no lcars-ablate.* holding directory behind" \
+  || bad "25ac. a completed ablation leaked $(( $(abl_dirs) - ABL_BASE )) holding dir(s): $(ls -d "${TMPDIR:-/tmp}"/lcars-ablate.* 2>/dev/null | tail -3 | tr '\n' ' ')"
+
+# THE ROW THAT MATTERS. The testCommand sleeps ONLY while the first declared
+# file is absent — i.e. only inside the ablation window — so the window is wide
+# and the timing is reliable. The gate is started in its OWN SESSION (the same
+# perl/setsid trick run.sh itself uses) so the test can TERM the whole process
+# group, which is what a dying orchestrator, a Ctrl-C and a sleeping laptop all
+# do.
+B47="$(mkbase --files 2 --sleep 0 --tip nested)"
+# The sleep is keyed to the EXACT tree the first ablation makes — up gone, down
+# still there — so neither the leg (both present) nor the empty-scope control
+# (neither present) is slowed by it. Keying it to `up` alone would hang the
+# control instead and the gate would refuse before any ablation ran: measured.
+cfg_set_testcmd "$B47" 'if [ ! -f "$LCARS_TESTS_DIR/ticket_up.test.js" ] && [ -f "$LCARS_TESTS_DIR/b/ticket_down.test.js" ]; then sleep 30; fi; node --test --test-concurrency=1 $(find "$LCARS_TESTS_DIR" -name "*.test.js")'
+cfg_set_gate "$B47" 25
+VICTIM="$B47/repo/tests/a/ticket_up.test.js"
+cp -p "$VICTIM" "$B47/victim.orig"
+( cd "$B47/repo" && exec env PATH="$B47/shim:$PATH" LCARS_GH_BIN=true LCARS_GIT_BIN=git \
+    LCARS_GATE_TIMEOUT=25 \
+    perl -e 'use POSIX qw(setsid); eval { setsid(); }; exec @ARGV' -- \
+    bash "$RUN_SH" flip-flop-gate-test --mission m-001 --ticket t-001 \
+      --sha "$(parent_of "$B47")" ) >"$B47/kill.out" 2>&1 &
+KPID=$!
+# Wait for the ablation to actually take the file out of the tree.
+KW=0; KSAW=
+while [ "$KW" -lt 60 ]; do
+  if [ ! -f "$VICTIM" ]; then KSAW=1; break; fi
+  kill -0 "$KPID" 2>/dev/null || break
+  sleep 0.5; KW=$((KW + 1))
+done
+if [ -z "$KSAW" ]; then
+  bad "25ad. the rig never observed the ablation window (the declared file was never moved aside) — nothing was proven"
+  kill -TERM -"$KPID" 2>/dev/null || kill -TERM "$KPID" 2>/dev/null || true
+else
+  ok "25ad. CONTROL: the ablation really does remove the declared file from the real worktree"
+  # KILL IT, exactly as a dying orchestrator would.
+  kill -TERM -"$KPID" 2>/dev/null || kill -TERM "$KPID" 2>/dev/null || true
+  KW=0
+  while [ "$KW" -lt 40 ] && kill -0 "$KPID" 2>/dev/null; do sleep 0.5; KW=$((KW + 1)); done
+  wait "$KPID" 2>/dev/null || true
+  # Give the restore a moment to land, then judge.
+  KW=0
+  while [ "$KW" -lt 20 ] && [ ! -f "$VICTIM" ]; do sleep 0.5; KW=$((KW + 1)); done
+  if [ ! -f "$VICTIM" ]; then
+    bad "25ae. DATA LOSS: the gate was killed mid-ablation and the captain's declared test file tests/a/ticket_up.test.js is GONE from the working tree"
+  elif cmp -s "$VICTIM" "$B47/victim.orig"; then
+    ok "25ae. a gate killed mid-ablation puts the declared test file BACK, byte for byte"
+  else
+    bad "25ae. the declared test file came back CHANGED after a mid-ablation kill: $(diff "$B47/victim.orig" "$VICTIM" | head -4 | tr '\n' ' ')"
+  fi
+  ( cd "$B47/repo" && git status --porcelain ) 2>/dev/null | grep -q . \
+    && bad "25af. a killed ablation left the worktree DIRTY: $( cd "$B47/repo" && git status --porcelain | head -5 | tr '\n' ' ')" \
+    || ok "25af. and the worktree it was killed in is exactly as it was found"
+  [ "$(abl_dirs)" = "$ABL_BASE" ] \
+    && ok "25ag. a KILLED ablation leaves no lcars-ablate.* holding directory behind either" \
+    || bad "25ag. a killed ablation leaked $(( $(abl_dirs) - ABL_BASE )) holding dir(s): $(ls -d "${TMPDIR:-/tmp}"/lcars-ablate.* 2>/dev/null | tail -3 | tr '\n' ' ')"
+fi
+
+# --- 25ah-aj. A RESTORE THAT GENUINELY FAILS still aborts by name, and the
+#              held copy is STILL THERE afterwards. The rescue handler removes
+#              the holding directory on every other path, and this is the one
+#              path where that would BE the data loss: the abort's own reason
+#              hands the captain that path as his way back.
+# Forced by making the scope directory read-only from inside the testCommand,
+# at the exact moment the first declared file is out of the tree — so the `cp`
+# back cannot land.
+B48="$(mkbase --files 2 --sleep 0 --tip nested)"
+cfg_set_testcmd "$B48" 'if [ ! -f "$LCARS_TESTS_DIR/ticket_up.test.js" ] && [ -f "$LCARS_TESTS_DIR/b/ticket_down.test.js" ]; then chmod 500 "$LCARS_TESTS_DIR"; fi; node --test --test-concurrency=1 $(find "$LCARS_TESTS_DIR" -name "*.test.js")'
+ff "$B48" LCARS_GATE_TIMEOUT=30
+AB_REASON="$(jq_ff "$B48" 'd["reason"]')"
+[ "$(jq_ff "$B48" 'd["declaredRan"]["method"]')" = ablation-aborted ] \
+  && ok "25ah. a failed restore still aborts the accounting BY NAME (ablation-aborted)" \
+  || bad "25ah. a failed restore did not abort by name: method='$(jq_ff "$B48" 'd["declaredRan"]["method"]')' reason='$(printf '%s' "$AB_REASON" | head -c 240)'"
+AB_HELD="$(printf '%s' "$AB_REASON" | sed -n 's/.*the file is held at \([^ ]*\).*/\1/p' | head -1)"
+case "$AB_HELD" in
+  */lcars-ablate.*/held.*) ok "25ai. and it names the exact holding path the captain can recover from" ;;
+  *) bad "25ai. the abort named no holding path: reason='$(printf '%s' "$AB_REASON" | head -c 300)'" ;;
+esac
+[ -n "$AB_HELD" ] && [ -f "$AB_HELD" ] \
+  && ok "25aj. and that held copy SURVIVES the gate exiting — the rescue does not delete the only copy" \
+  || bad "25aj. the held copy named in the refusal is GONE: '$AB_HELD'"
+# Hand the fixture back its write bit so teardown can remove it, and drop the
+# holding directory this row deliberately preserved.
+chmod 700 "$B48/repo/tests/a" 2>/dev/null || true
+[ -n "$AB_HELD" ] && rm -rf "$(dirname "$AB_HELD")" 2>/dev/null || true
+[ "$(abl_dirs)" = "$ABL_BASE" ] \
+  || bad "25ak. the abort row left extra holding dirs behind: $(ls -d "${TMPDIR:-/tmp}"/lcars-ablate.* 2>/dev/null | tail -3 | tr '\n' ' ')"
+
+# --- 25al-at. S318 FIX ROUND 3 — A SYMLINKED DECLARED TEST FILE IS NOT
+#              ABLATED, SO A PASSING GATE CANNOT DESTROY IT.
+# MEASURED (twice, reproduction preserved): the ablation's `cp -p` FOLLOWS a
+# symlink, the `rm` removes the link, and the restore writes a REGULAR FILE in
+# its place. A completely normal, successful, signal-free gate run therefore
+# turned `tests/a/linked.test.js -> ticket_up.test.js` into a 306-byte regular
+# file, left the tree `T tests/a/linked.test.js`, and returned a PASS verdict
+# with no mention of it anywhere in the artifact. Tree damage on a PASS, silent
+# — the exact combination this session exists to prevent. Content survived only
+# because the file was TRACKED; an untracked symlink has no way back at all.
+mk_symlink_base() { # → base dir with tests/a/linked.test.js as a committed symlink
+  local b; b="$(mkbase --files 2 --sleep 0 --tip nested)"
+  ( cd "$b/repo" && ln -s ticket_up.test.js tests/a/linked.test.js \
+    && git add -A && git commit -q --amend --no-edit ) >/dev/null 2>&1
+  set_declared "$b" '["tests/a/ticket_up.test.js","tests/a/b/ticket_down.test.js","tests/a/linked.test.js"]'
+  printf '%s' "$b"
+}
+B49="$(mk_symlink_base)"
+LINK="$B49/repo/tests/a/linked.test.js"
+# A KNOWN-GOOD CONTROL FOR EVERY CHECK THIS SECTION MAKES. A `[ -L ]` on a path
+# that is not there, or a `git ls-files -s` that matches nothing, reads exactly
+# like a clean result — so prove the fixture really holds a committed symlink,
+# and that the mode reader can SEE its 120000, before any row trusts them.
+LINK_MODE_BEFORE="$( cd "$B49/repo" && git ls-files -s tests/a/linked.test.js | awk '{print $1}' )"
+if [ -L "$LINK" ] && [ "$LINK_MODE_BEFORE" = 120000 ]; then
+  ok "25al. CONTROL: the fixture holds a COMMITTED symlink and the mode reader sees its 120000"
+else
+  bad "25al. the symlink fixture was not built — [ -L ]=$( [ -L "$LINK" ] && echo yes || echo no ) git-mode='$LINK_MODE_BEFORE' (nothing below proves anything)"
+fi
+( cd "$B49/repo" && git status --porcelain ) 2>/dev/null | grep -q . \
+  && bad "25al. the symlink fixture started DIRTY: $( cd "$B49/repo" && git status --porcelain | head -3 | tr '\n' ' ')" \
+  || ok "25al2. CONTROL: and it starts from a clean tree"
+LINK_TARGET_BEFORE="$(readlink "$LINK" 2>/dev/null)"
+ff "$B49" LCARS_GATE_TIMEOUT=40
+# THE DEFECT, STATED AS THE TREE. Whatever the verdict, the gate may not have
+# changed what this path IS.
+if [ -L "$LINK" ]; then
+  ok "25am. a declared SYMLINK is still a symlink after the gate ran"
+else
+  bad "25am. TREE DAMAGE: the gate turned the declared symlink tests/a/linked.test.js into a $( [ -f "$LINK" ] && printf 'regular file of %s bytes' "$(wc -c <"$LINK" | tr -d ' ')" || printf 'non-existent path')"
+fi
+[ "$(readlink "$LINK" 2>/dev/null)" = "$LINK_TARGET_BEFORE" ] \
+  && ok "25an. and it still points at the same target ($LINK_TARGET_BEFORE)" \
+  || bad "25an. the link target changed: '$LINK_TARGET_BEFORE' -> '$(readlink "$LINK" 2>/dev/null)'"
+[ "$( cd "$B49/repo" && git ls-files -s tests/a/linked.test.js | awk '{print $1}' )" = 120000 ] \
+  && ok "25ao. git still records it at mode 120000" \
+  || bad "25ao. git now records mode '$( cd "$B49/repo" && git ls-files -s tests/a/linked.test.js | awk '{print $1}' )' for the declared symlink"
+( cd "$B49/repo" && git status --porcelain ) 2>/dev/null | grep -q . \
+  && bad "25ap. the gate left the worktree DIRTY: $( cd "$B49/repo" && git status --porcelain | head -5 | tr '\n' ' ') / $( cd "$B49/repo" && git diff --summary | head -3 | tr '\n' ' ')" \
+  || ok "25ap. and the worktree is exactly as it was found (git status empty)"
+# AND IT IS NOT SILENT. The artifact must SAY the link was not measured, in
+# words, rather than quietly crediting or quietly damaging it.
+SYM_REASON="$(jq_ff "$B49" 'd["reason"]')$(jq_ff "$B49" 'd["declaredRan"]["why"]')"
+case "$SYM_REASON" in
+  *"symbolic link"*|*symlink*) ok "25aq. and the artifact SAYS a symbolic link was not measured" ;;
+  *) bad "25aq. the symlink is nowhere in the artifact's own words: verdict='$(jq_ff "$B49" 'd["verdict"]')' reason='$(printf '%s' "$SYM_REASON" | head -c 300)'" ;;
+esac
+[ "$(jq_ff "$B49" 'd["verdict"]')" = pass ] \
+  && bad "25ar. a ticket with an UNMEASURED declared test file PASSED — the refusal was weakened" \
+  || ok "25ar. and the leg is not a pass (verdict '$(jq_ff "$B49" 'd["verdict"]')') — an unmeasured declared file is never credited"
+
+# THE SAME, KILLED MID-ABLATION. The regular declared file is still ablated, so
+# the trap path is live while a symlink sits in the same scope: a signal must
+# leave the regular file back byte-for-byte AND the symlink still a symlink.
+B50="$(mk_symlink_base)"
+cfg_set_testcmd "$B50" 'if [ ! -f "$LCARS_TESTS_DIR/ticket_up.test.js" ] && [ -f "$LCARS_TESTS_DIR/b/ticket_down.test.js" ]; then sleep 30; fi; node --test --test-concurrency=1 $(find "$LCARS_TESTS_DIR" -name "*.test.js")'
+cfg_set_gate "$B50" 25
+SVICTIM="$B50/repo/tests/a/ticket_up.test.js"
+SLINK="$B50/repo/tests/a/linked.test.js"
+cp -p "$SVICTIM" "$B50/victim.orig"
+( cd "$B50/repo" && exec env PATH="$B50/shim:$PATH" LCARS_GH_BIN=true LCARS_GIT_BIN=git \
+    LCARS_GATE_TIMEOUT=25 \
+    perl -e 'use POSIX qw(setsid); eval { setsid(); }; exec @ARGV' -- \
+    bash "$RUN_SH" flip-flop-gate-test --mission m-001 --ticket t-001 \
+      --sha "$(parent_of "$B50")" ) >"$B50/kill.out" 2>&1 &
+SPID=$!
+SW=0; SSAW=
+while [ "$SW" -lt 60 ]; do
+  if [ ! -f "$SVICTIM" ] && [ ! -L "$SVICTIM" ]; then SSAW=1; break; fi
+  kill -0 "$SPID" 2>/dev/null || break
+  sleep 0.5; SW=$((SW + 1))
+done
+if [ -z "$SSAW" ]; then
+  bad "25as. the rig never observed the ablation window on the symlink repo — nothing was proven"
+  kill -TERM -"$SPID" 2>/dev/null || kill -TERM "$SPID" 2>/dev/null || true
+else
+  ok "25as. CONTROL: the ablation window really opens on a repo holding a symlinked declared file"
+  kill -TERM -"$SPID" 2>/dev/null || kill -TERM "$SPID" 2>/dev/null || true
+  SW=0
+  while [ "$SW" -lt 40 ] && kill -0 "$SPID" 2>/dev/null; do sleep 0.5; SW=$((SW + 1)); done
+  wait "$SPID" 2>/dev/null || true
+  SW=0
+  while [ "$SW" -lt 20 ] && [ ! -f "$SVICTIM" ]; do sleep 0.5; SW=$((SW + 1)); done
+  if [ -L "$SLINK" ] && [ "$(readlink "$SLINK")" = ticket_up.test.js ]; then
+    ok "25at. a gate KILLED mid-ablation leaves the declared symlink a symlink"
+  else
+    bad "25at. a killed ablation destroyed the declared symlink: [ -L ]=$( [ -L "$SLINK" ] && echo yes || echo no ) target='$(readlink "$SLINK" 2>/dev/null)'"
+  fi
+  cmp -s "$SVICTIM" "$B50/victim.orig" \
+    && ok "25au. and the regular declared file still comes back byte for byte" \
+    || bad "25au. the regular declared file did not come back after the kill: $( [ -f "$SVICTIM" ] && diff "$B50/victim.orig" "$SVICTIM" | head -3 | tr '\n' ' ' || echo GONE)"
+  ( cd "$B50/repo" && git status --porcelain ) 2>/dev/null | grep -q . \
+    && bad "25av. the killed symlink repo was left DIRTY: $( cd "$B50/repo" && git status --porcelain | head -5 | tr '\n' ' ')" \
+    || ok "25av. and that tree is exactly as it was found too"
+  [ "$(abl_dirs)" = "$ABL_BASE" ] \
+    || bad "25aw. the killed symlink row leaked $(( $(abl_dirs) - ABL_BASE )) holding dir(s)"
+fi
+
+# ===========================================================================
 echo
 printf 'gate-scope: %d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]
+
