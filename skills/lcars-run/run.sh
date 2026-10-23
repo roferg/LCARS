@@ -11537,6 +11537,502 @@ proof_scope_glob_char() { # abs-scope → the first glob metachar in it ("" = sa
   printf ''
 }
 
+# =============================================================================
+# THE GATE TIMEOUT, RESOLVED PER LEG (S308)
+# =============================================================================
+# Both flip-flop legs run under a portable hard timeout so a suite that never
+# settles is rendered INCONCLUSIVE instead of hanging the ticket build. That
+# bound was added 2026-07-23 (fbe77e4) and it is CORRECT; the 120s default STAYS
+# 120s. What was wrong is where the number could come from.
+#
+# THE DEFECT (B2, measured on a real repo, 2026-10-21): it was read from the
+# ENVIRONMENT ONLY — `${LCARS_GATE_TIMEOUT:-120}`. A repo whose suite
+# legitimately needs longer had nowhere to RECORD that. Worse, answering a human
+# gate RESUMES the mission by starting a driver that inherits the RESPONDER's
+# environment, so a value set on `lcars run` and not on `lcars respond` silently
+# became 120 again. Two apparently-correct fixes did nothing for exactly that
+# reason.
+#
+# RESOLUTION ORDER, and it is resolved PER LEG, never once per process: an
+# explicit $LCARS_GATE_TIMEOUT wins (a one-off, and what the ECH injects), then
+# the repo's own `gateTimeout` in .git/lcars/config.json (what `lcars init`
+# seeds when the probe measures a suite that needs it), then the 120s default.
+# Per leg is the point: a mission already in flight picks up a changed value,
+# and a respond-resumed driver reads the repo's record instead of an empty
+# environment. $LCARS_GATE_TIMEOUT_DEFAULT moves the LAST resort only (the test
+# rig uses it to prove the seeding without shipping a 120-second fixture).
+#
+# GATE_TIMEOUT_SRC is the RECORD of which of the three answered, so the leg's
+# artifact can say it and nobody has to infer it from a number.
+#
+# GATE_TIMEOUT_NOTE is the second half of that record (S308 fix round 1,
+# DEFECT 4): what was WRONG with the value the repo (or the environment) handed
+# over, and what was used instead. Empty when nothing needed saying.
+GATE_TIMEOUT_SECS=120; GATE_TIMEOUT_SRC=default; GATE_TIMEOUT_NOTE=""
+# THE SANE UPPER BOUND, and why it is one hour. The gate timeout exists to bound
+# a suite that never settles; past it the ticket is parked INCONCLUSIVE rather
+# than hanging the build. A finger-slip in a config file ("999999999" — 31
+# years) therefore does not merely set a generous bound, it REMOVES the hang
+# protection altogether and an unattended overnight drive burns its whole window
+# on one leg. One hour is far above anything LCARS has ever measured (the worst
+# real suite it has timed was 228s) and far above any plausible single-ticket
+# proof leg, so it cannot swallow a deliberate large-but-reasonable value — and
+# when it does bite, it says so by name.
+GATE_TIMEOUT_MAX=3600
+GATE_TIMEOUT_SAID=""   # the last raw value spoken about, so N legs say it ONCE
+# SAY IT. A value failing safe to 120 is right; doing it in SILENCE is the exact
+# failure mode that burned eight worker sessions — the captain had recorded what
+# he thought was a 300s gate and every leg kept dying at 120 with no word
+# anywhere. One line, naming the offending value and what was used instead.
+# S308 FIX ROUND 2 (LOW 5): THE EVENT NAME IS A PARAMETER, because "we could
+# not use your value" and "we used your value, written oddly" are DIFFERENT
+# FACTS and a count of the first one must not include the second. A quoted
+# `"30"` is HONOURED as 30s and still emitted `gate_timeout_unusable`, so any
+# measurement that counts that event overstated the failures. Three names now:
+#   gate_timeout_unusable — REFUSED; the default was used instead.
+#   gate_timeout_coerced  — read and HONOURED as written (quoted, padded,
+#                           leading zero): the seconds used are the captain's.
+#   gate_timeout_capped   — honoured but CLAMPED to the maximum.
+gate_timeout_say() { # raw-value note [event]
+  [ "$GATE_TIMEOUT_SAID" = "$1" ] && return 0
+  GATE_TIMEOUT_SAID="$1"
+  printf '  ⚠ gate timeout: %s\n' "$2" >&2
+  [ -n "${MISSION_DIR:-}" ] && emit_event "${3:-gate_timeout_unusable}" implement "$2" || :
+  return 0
+}
+gate_cfg_file() { # [tree] → path to .git/lcars/config.json ("" = none found)
+  if [ -n "${LCARS_CFG:-}" ] && [ -f "$LCARS_CFG" ]; then printf '%s' "$LCARS_CFG"; return 0; fi
+  local t="${1:-}" g
+  [ -n "$t" ] || t="${REPO_ROOT:-$PWD}"
+  g="$("$GIT_BIN" -C "$t" rev-parse --git-common-dir 2>/dev/null)" || return 0
+  case "$g" in /*) : ;; *) g="$t/$g" ;; esac
+  [ -f "$g/lcars/config.json" ] && printf '%s' "$g/lcars/config.json"
+  return 0
+}
+resolve_gate_timeout() { # [tree] → seconds (also sets GATE_TIMEOUT_SECS/SRC/NOTE)
+  local raw="${LCARS_GATE_TIMEOUT:-}" src=env cfg dflt="${LCARS_GATE_TIMEOUT_DEFAULT:-120}"
+  local knob='LCARS_GATE_TIMEOUT' from='the environment' quoted="" t how="" note=""
+  case "$dflt" in ''|*[!0-9]*) dflt=120 ;; esac
+  [ "$dflt" -gt 0 ] 2>/dev/null || dflt=120
+  GATE_TIMEOUT_NOTE=""
+  if [ -z "$raw" ]; then
+    src=config; knob='gateTimeout'; from='.git/lcars/config.json'
+    cfg="$(gate_cfg_file "${1:-}")"
+    if [ -n "$cfg" ]; then
+      raw="$(json_raw "$cfg" gateTimeout 2>/dev/null)"
+      case "$raw" in null) raw="" ;; esac
+      # json_raw reads BARE tokens only — its character class stops at the
+      # opening quote, so a hand-edited `"gateTimeout": "30"` came back EMPTY
+      # and vanished into the 120s default without a word. Read it as a STRING
+      # when the bare read finds nothing, so the value can be NAMED at all.
+      if [ -z "$raw" ]; then
+        raw="$(json_str "$cfg" gateTimeout 2>/dev/null)"
+        [ -n "$raw" ] && quoted=1
+      fi
+    fi
+  fi
+  # NOTHING RECORDED ANYWHERE is the quiet, correct path: the default, no word.
+  if [ -z "$raw" ]; then
+    GATE_TIMEOUT_SECS="$dflt"; GATE_TIMEOUT_SRC=default
+    printf '%s' "$dflt"; return 0
+  fi
+  # A TOLERANT READ, STATED OUT LOUD — a DESIGN CHOICE, not an obvious win.
+  # `"30"` is a very plausible hand edit, because every other value in that
+  # config file is quoted; `"  12  "` is the same slip with a stray space. The
+  # captain's intent is unmistakable in both, and refusing them would mean his
+  # recorded gate silently did not apply — one notch away from the silence this
+  # fix exists to kill. So they are HONOURED and the coercion is SAID, with the
+  # bare-number form to record instead. Anything that is not an integer number
+  # of seconds (abc, -5, 0, 7.5, true) carries no discoverable intent at all and
+  # is REFUSED, equally out loud.
+  t="$(printf '%s' "$raw" | tr -d '[:space:]')"
+  [ -n "$quoted" ] && how="recorded as a JSON string"
+  [ "$t" = "$raw" ] || how="${how:+$how and }padded with whitespace"
+  case "$t" in ''|*[!0-9]*) t="" ;; esac
+  # S308 FIX ROUND 2, DEFECT 2 — A LEADING ZERO IS NORMALISED TO DECIMAL HERE,
+  # BEFORE ANY ARITHMETIC OR ANY MESSAGE. It was the worst item of fix round 1
+  # because it corrupted the file a verdict is read from:
+  #   • `[ "$t" -gt 0 ]` and every later `$(( ))` read `010` as OCTAL 8, so a
+  #     leg recorded as "the 010s gate timeout" was killed at 7997ms;
+  #   • `"timeoutSecs": 030` is NOT VALID JSON — `json.load` refuses the whole
+  #     flip-flop.json, so the gate's own record became unreadable;
+  #   • and round 1's advice line literally told the captain to write that
+  #     invalid form back ("Record it as a bare number (gateTimeout: 0030)").
+  # Stripping the zeros first makes all three disappear at once and keeps the
+  # captain's obvious intent, which is what the tolerant read above is for.
+  # `030` → 30, `010` → 10, `000` → 0 (then refused by the >0 test below).
+  if [ -n "$t" ]; then
+    local zraw="$t"
+    t="${t#"${t%%[!0]*}"}"; [ -n "$t" ] || t=0
+    # The raw value is already quoted by the message template, so the clause
+    # names the SHAPE, not the value, and the sentence reads once.
+    [ "$t" = "$zraw" ] || how="${how:+$how and }written with a LEADING ZERO, which shell arithmetic reads as OCTAL and which is not valid JSON"
+  fi
+  [ -n "$t" ] && { [ "$t" -gt 0 ] 2>/dev/null || t=""; }
+  if [ -z "$t" ]; then
+    note="ignoring $knob=$raw (from $from) — it must be a bare positive integer number of seconds; using ${dflt}s"
+    gate_timeout_say "$raw" "$note" gate_timeout_unusable
+    GATE_TIMEOUT_SECS="$dflt"; GATE_TIMEOUT_SRC=default; GATE_TIMEOUT_NOTE="$note"
+    printf '%s' "$dflt"; return 0
+  fi
+  if [ "$t" -gt "$GATE_TIMEOUT_MAX" ]; then
+    note="$knob=$t (from $from) exceeds the ${GATE_TIMEOUT_MAX}s maximum this harness will honour — using ${GATE_TIMEOUT_MAX}s. A bound longer than an hour stops protecting against the never-settling suite the gate exists to catch; if a leg genuinely needs longer, the suite is the thing to fix"
+    t="$GATE_TIMEOUT_MAX"
+    gate_timeout_say "$raw" "$note" gate_timeout_capped
+  elif [ -n "$how" ]; then
+    # $t is already the NORMALISED decimal, so the number this line tells the
+    # captain to record is a legal JSON number — round 1's advice was not.
+    note="$knob was $how (\"$raw\") in $from — read as ${t}s and honoured. Record it as a bare number ($knob: $t) so it cannot be misread"
+    gate_timeout_say "$raw" "$note" gate_timeout_coerced
+  fi
+  GATE_TIMEOUT_SECS="$t"; GATE_TIMEOUT_SRC="$src"; GATE_TIMEOUT_NOTE="$note"
+  printf '%s' "$t"
+}
+# proof_say_scope — SAY, ONCE, WHAT THIS LEG IS SCOPED TO, when the answer is
+# not the obvious one. The B1-ROOT burn cost eight worker sessions precisely
+# because a widened leg looked exactly like a narrow one: a valid path, no
+# warning, five identical INCONCLUSIVE verdicts. Two cases are reported BY NAME
+# so the run is diagnosable in one line:
+#   proof_scope_full_suite_fallback — the leg could NOT be narrowed and will run
+#       the repo's FULL SUITE. This is the loud one.
+#   proof_scope_per_file — a directory scope would have widened the run, so the
+#       leg runs the ticket's declared files one by one. Not a fallback: the
+#       cure. Named anyway, because "why did this leg run twice?" must have an
+#       answer in the record.
+# The single-file and exact-ancestor kinds say nothing: they are the quiet,
+# correct path and a line per leg would be noise.
+proof_say_scope_kind() { # kind why
+  case "${1:-}" in
+    tree)
+      printf '  ⚠ proof scope: FULL SUITE — %s\n' "${2:-}" >&2
+      emit_event proof_scope_full_suite_fallback implement \
+        "proof leg fell back to the FULL SUITE — ${2:-}" || : ;;
+    files)
+      printf '  · proof scope: the ticket'"'"'s declared test files, one run each — %s\n' "${2:-}" >&2
+      emit_event proof_scope_per_file implement \
+        "proof leg scoped to the ticket's DECLARED test files instead of a directory — ${2:-}" || : ;;
+  esac
+  return 0
+}
+proof_say_scope() { # [tree] — the same, from the leg's recorded decision
+  proof_say_scope_kind "$PROOF_LEG_SCOPE_KIND" "$PROOF_LEG_SCOPE_WHY"
+}
+
+# === A REFUSED LEG RECORDS WHAT IT REFUSED (S308 fix round 2, LOW 4) =========
+# MEASURED 22 Oct 2026: a ticket declaring TWO test files, one of them
+# unmatchable, was correctly rendered INCONCLUSIVE — and the artifact recorded
+#     "scopeKind": "file",
+#     "scopeWhy":  "one declared test file, run as a precise positional filter"
+# Two files were declared, and NOTHING was run as any filter. Both halves of
+# that record are false, and `scopeKind` is exactly the field a later
+# measurement of "how often does the gate narrow?" would be keyed on — so the
+# mis-recording class this whole session exists to kill was reproduced by the
+# session's own fix. A leg that never produced a verdict-bearing run records the
+# REFUSAL (with the scope kind it WOULD have used, which is the diagnostic
+# value), never the filter it did not apply.
+proof_leg_refused_scope() { # rels(newline) intended-kind reason
+  local n; n="$(printf '%s\n' "${1:-}" | grep -c . 2>/dev/null | tr -d '[:space:]')"
+  case "$n" in ''|*[!0-9]*) n=0 ;; esac
+  local noun="declared test files"; [ "$n" = 1 ] && noun="declared test file"
+  PROOF_LEG_SCOPE_KIND=refused
+  PROOF_LEG_SCOPE_WHY="$n $noun; this leg was REFUSED and NOTHING was run as any filter — ${3:-no reason recorded}. The scope kind it would otherwise have used was \"${2:-unknown}\""
+  return 0
+}
+
+# The clause the timeout message carries, so the reader knows WHICH knob to turn.
+# It always names LCARS_GATE_TIMEOUT (the override that works everywhere).
+gate_timeout_clause() { # → "(…)"
+  case "$GATE_TIMEOUT_SRC" in
+    env)    printf '(LCARS_GATE_TIMEOUT, from the environment)' ;;
+    config) printf '(gateTimeout in .git/lcars/config.json; LCARS_GATE_TIMEOUT overrides it)' ;;
+    *)      printf '(the default — record this repo'"'"'s real need as gateTimeout in .git/lcars/config.json, or set LCARS_GATE_TIMEOUT)' ;;
+  esac
+}
+
+# === DOES THE SCOPE SELECT ANYTHING AT ALL? (S308 fix round 1, DEFECT 1) =====
+# THE DEFECT, measured 22 Oct 2026. A ticket declared ONE test file,
+# `tests/ticket_up_spec.js`, in a repo whose testCommand is the very common
+#
+#     node --test --test-concurrency=1 $(find "$LCARS_TESTS_DIR" -name "*.test.js")
+#
+# `find <that file> -name "*.test.js"` matches NOTHING, so the command
+# substitution collapses to the EMPTY STRING, the runner receives an EMPTY
+# ARGUMENT LIST, and `node --test` falls back to its OWN discovery — running the
+# eight tests the ticket never declared on BOTH legs. The leg recorded
+# `scopeKind: "file"`, `scopeWhy: "one declared test file, run as a precise
+# positional filter"` (false for that run) and printed the fully confident
+#
+#     ✗ flip-flop FAIL — the ticket's tests PASS on the PARENT commit
+#
+# while the ticket's own test never ran once. That reason sends an engineer
+# hunting a red-on-parent problem that does not exist — the exact
+# five-sessions-of-nothing class this session exists to kill — and a false PASS
+# is reachable the same way whenever the fallback suite happens to be
+# green-on-tip and red-on-parent. Under the old DIRECTORY scope the argument
+# list could never be empty; file/files mode introduces this path.
+#
+# DETECTED AT THE SOURCE, not inferred downstream. The question "did this scope
+# select anything?" is answerable BEFORE a single test runs, by evaluating the
+# command's own file-SELECTION with $LCARS_TESTS_DIR set to the scope. A
+# selection that resolves to nothing is a FACT about this leg, so it is recorded
+# where it is produced (PROOF_LEG_SCOPE_SELECTED_NOTHING + a named event) rather
+# than guessed later from a finished run's test counts.
+#
+# WHAT COUNTS AS A SELECTION. Only a `$( … )` command substitution that
+# REFERENCES $LCARS_TESTS_DIR: that is what a testCommand uses the scope for,
+# and it is the whole of the empty-argument-list hazard. A command that hands
+# "$LCARS_TESTS_DIR" straight to the runner has no selection to be empty (and
+# every runner we support accepts an explicit path whatever its own naming
+# conventions), so nothing fires and its behaviour is byte-identical.
+#
+# THE RESIDUAL RISK, stated: the selection is EVALUATED, so a substitution with
+# side effects would run twice (once here, once in the real command). It is
+# bounded to substitutions that mention the scope variable — an expression whose
+# whole job is to produce a file list — and to a short hard timeout, and a
+# selection that errors or times out is treated as UNKNOWN and changes nothing.
+# Backtick substitutions are deliberately not parsed: `$( … )` is the shape
+# every seeded and every observed testCommand uses.
+PROOF_SCOPE_SELECT_EXPR=""
+proof_scope_selection_exprs() { # testCommand → one $( … ) body per line
+  printf '%s' "$1" | "${LCARS_PYTHON_BIN:-python3}" -c '
+import sys
+cmd = sys.stdin.read()
+i = 0
+n = len(cmd)
+while True:
+    j = cmd.find("$(", i)
+    if j < 0:
+        break
+    k = j + 2
+    depth = 1
+    while k < n and depth:
+        if cmd.startswith("$(", k):
+            depth += 1
+            k += 2
+            continue
+        c = cmd[k]
+        if c == ")":
+            depth -= 1
+            k += 1
+            continue
+        if c == "\\":
+            k += 2
+            continue
+        k += 1
+    if depth:
+        break
+    body = cmd[j + 2:k - 1]
+    if "LCARS_TESTS_DIR" in body:
+        sys.stdout.write(" ".join(body.split()) + "\n")
+    i = k
+' 2>/dev/null
+}
+# 0 when some selection in <cmd> matches NOTHING for <scope>; the offending
+# expression is left in $PROOF_SCOPE_SELECT_EXPR.
+proof_scope_selects_nothing() { # run_dir cmd scope [secs]
+  PROOF_SCOPE_SELECT_EXPR=""
+  local run_dir="$1" cmd="$2" scope="$3" secs="${4:-10}" expr rc of
+  [ "$secs" -ge 1 ] 2>/dev/null || secs=1
+  [ "$secs" -le 10 ] || secs=10
+  of="$(mktemp "${TMPDIR:-/tmp}/lcars-sel.XXXXXX" 2>/dev/null)" || return 1
+  while IFS= read -r expr; do
+    [ -n "$expr" ] || continue
+    rc=0
+    ( cd "$run_dir" 2>/dev/null || exit 0
+      export LCARS_TESTS_DIR="$scope"
+      run_with_hard_timeout "$secs" "$of" bash -c "$expr" ) || rc=$?
+    # FIX ROUND 2, DEFECT 1 — THE RULE IS THE OUTPUT, NOT THE EXIT CODE.
+    # Round 1 wrote `[ "$rc" -eq 0 ] || continue`, reasoning that a selection
+    # which errored told us nothing. It is the opposite: for the commands people
+    # actually write, "MATCHED NOTHING" **IS** A NON-ZERO EXIT — `grep` returns
+    # 1, `ls <no match>` returns non-zero, a failing glob leaves a bad path.
+    # The tester's decisive measurement on this very gate: `$(find … | grep …)`
+    # was refused, and the SAME expression with `|| true` appended — byte-
+    # identical EMPTY output, rc 0 — was waved through to a confident verdict.
+    # Two spellings of one fact cannot have two verdicts. An empty selection is
+    # an empty argument list whatever the exit code, so emptiness decides.
+    #
+    # UNKNOWN is now reserved strictly for "we could not COMPLETE the
+    # measurement": the hard timeout (124) or a signal (>=128). Those change
+    # nothing and the real run proceeds under its own gate timeout.
+    case "$rc" in 124) continue ;; esac
+    [ "$rc" -lt 128 ] 2>/dev/null || continue
+    [ -n "$(tr -d '[:space:]' <"$of" 2>/dev/null)" ] && continue
+    PROOF_SCOPE_SELECT_EXPR="$expr"
+    rm -f "$of"
+    return 0
+  done <<PSSN_EOF
+$(proof_scope_selection_exprs "$cmd")
+PSSN_EOF
+  rm -f "$of"
+  return 1
+}
+
+# === DID THE SCOPE CHANGE ANYTHING? THE CONTROL RUN (S308 fix round 2) =======
+# THE DEFECT CLASS, measured four ways by a captain-stand-in tester on 22 Oct
+# 2026 and reproduced by hand here. Every one of these testCommands silently
+# ran the UNDECLARED suite on both legs while the artifact recorded a precise
+# file scope, and one of them certified a ticket with a FALSE PASS:
+#   a. node --test `find "$LCARS_TESTS_DIR" -name "*.test.js"`     (backticks)
+#   b. $(find "$LCARS_TESTS_DIR" -type f | grep "\.test\.js$")      (a pipeline)
+#   c. $(ls "$LCARS_TESTS_DIR"/*.test.js 2>/dev/null)              (a failing ls)
+#   d. node --test "$LCARS_TESTS_DIR"/*.test.js                    (a bare glob)
+# They share ONE mechanism — the command's own file selection matches nothing,
+# the runner is handed an EMPTY argument list, and it discovers its own tests —
+# and they differ only in SPELLING.
+#
+# WHY THIS IS NOT ANOTHER PARSER. ORCHESTRATION.md's infer-vs-record rule
+# records that S147 burned FOUR GENERATIONS of a source parser, S156's
+# classifier collapsed on a reworded corpus, and S188 was beaten twice in one
+# session; the round-1 pre-check (proof_scope_selection_exprs) is a parser of
+# `$( … )` bodies and routes (a) and (d) are simply spellings it does not know.
+# Teaching it backticks and globs would be generation three of the thing S147
+# proved cannot be finished, so it is NOT done here.
+#
+# INSTEAD THE QUESTION IS ANSWERED BY EXPERIMENT, and the experiment is blind to
+# spelling: RUN THE REPO'S OWN testCommand AGAIN, IDENTICALLY, WITH THE SCOPE
+# POINTED AT AN EMPTY DIRECTORY. That is the control. If the leg's run and the
+# control execute THE SAME NUMBER OF TESTS under the same runner, then handing
+# the command the ticket's test file(s) changed NOTHING about what ran — so
+# whatever that leg's colour was, it was not about this ticket. No command shape
+# is privileged: backticks, globs, pipes, `|| true`, a wrapper script, anything.
+#
+# WHY THE MEASUREMENT COULD NOT BE RECORDED ONCE PER REPO (which is what a
+# first reading of the infer-vs-record rule suggests, and what was tried first):
+# the capability is NOT a property of the repo. In the very fixture this session
+# ships, ONE testCommand (`find … -name "*.test.js"`) narrows PERFECTLY for a
+# ticket whose file is `ticket_up.test.js` and collapses COMPLETELY for one
+# whose file is `ticket_up_spec.js`. A per-repo "can it narrow?" flag is
+# therefore false for half the tickets whichever way it is recorded, and a
+# per-repo FALLBACK COUNT goes stale the moment the suite grows (the stale
+# direction is a MISS, not a false alarm). The fact is per-leg, so it is
+# measured per-leg and recorded in that leg's artifact.
+#
+# THE COST, stated plainly: one extra invocation of the testCommand per gate.
+# It is nearly free for a command that OBEYS its scope (an empty directory
+# yields an empty run in milliseconds) and expensive only for a command that
+# falls back to its own discovery — which is exactly the case whose leg is about
+# to be refused anyway. It is bounded by the same gate timeout as a leg, and a
+# control that times out or cannot be read changes NOTHING (recorded as
+# unmeasured; extra INCONCLUSIVE is acceptable, a confident verdict built on a
+# guess is not).
+# THE PRECONDITION, and it is what keeps the control from false-refusing. When
+# the leg's count and the control's count are EQUAL there are TWO explanations
+# and the output cannot tell them apart: the scope selected nothing and the
+# runner discovered everything (the defect), OR the ticket's declared test files
+# ARE the whole of this tree's test suite, so discovering everything and running
+# the ticket's tests are THE SAME RUN (harmless — and measured: this is the
+# ordinary shape of a small repo, and refusing it parked FIVE honest tickets in
+# tests/proof-gates.test.sh on the first cut of this check). The two are
+# separated by a FILESYSTEM fact, not by reading anything: is there a test file
+# in this tree that the ticket did NOT declare? If there is not, no fallback
+# discovery can run anything but the ticket's own tests and the verdict stands.
+# Tracked files only (the gate runs on a committed tip); an UNTRACKED undeclared
+# test file is the one shape this misses, and it misses by NOT refusing.
+proof_undeclared_test_exists() { # tree rels(newline) → 0 when one exists
+  local tree="$1" rels="$2" p
+  while IFS= read -r p; do
+    [ -n "$p" ] || continue
+    proof_is_test_path "$p" || continue
+    printf '%s\n' "$rels" | grep -qxF "$p" && continue
+    return 0
+  done < <("$GIT_BIN" -C "$tree" ls-files 2>/dev/null)
+  return 1
+}
+# === THE CONTROL RUN'S OWN BUDGET (S308 fix round 3, CURE 1) ================
+# WHY IT CANNOT BE THE LEG'S BUDGET, and this is the trap that nearly turned
+# cure 1 into a regression. The control hands the testCommand an EMPTY scope, so
+# a command that does not obey its scope falls back to discovering the WHOLE
+# SUITE — the control is the FULL-SUITE-SHAPED run by construction. Round 2
+# bounded it by the NARROWED leg's gate, and MEASURED 22 Oct 2026 on this repo's
+# own fixture (a ~10s suite with LCARS_GATE_TIMEOUT=5): the leg passed correctly
+# in ~2s while the control was KILLED, recording `narrowingProven: false`.
+#
+# So in exactly the repos this session exists for — a full suite slower than the
+# gate — the control gave ZERO coverage. Make cure 1 act on that `false` and
+# every such leg becomes INCONCLUSIVE: five consecutive no-information verdicts,
+# which is the pagesai burn this whole session is fixing. A regression dressed
+# as a safety fix.
+#
+# THE RESOLUTION: budget the control against the FULL-SUITE number, never the
+# narrow leg's. The repo RECORDS what its suite needs — `gateTimeout` in
+# .git/lcars/config.json, which `lcars init` seeds from the probe's measured
+# wall clock — so that is the number, falling back to the same 120s default
+# every leg uses. The leg's own bound is a FLOOR, not a ceiling: an env
+# LCARS_GATE_TIMEOUT of 600 still raises the control to 600, because a one-off
+# override that RAISES the bound is the captain asking for more time. What it
+# can no longer do is LOWER the control below the repo's recorded need.
+#
+# THE COST, stated: one run per gate, now bounded by the repo's full-suite
+# budget instead of a narrow one. It is still capped by GATE_TIMEOUT_MAX, and
+# still nearly free for a command that OBEYS its scope (an empty directory
+# yields an empty run in milliseconds) — expensive only for the command whose
+# leg is about to be refused anyway.
+#
+# The env override is NOT consulted here: resolve_gate_timeout already applied
+# it to the leg, and this function's job is to answer the DIFFERENT question
+# "how long does this repo's whole suite need?".
+proof_control_budget() { # tree leg-secs → seconds on stdout
+  local leg="${2:-120}" dflt="${LCARS_GATE_TIMEOUT_DEFAULT:-120}" cfg raw t
+  case "$leg"  in ''|*[!0-9]*) leg=120 ;; esac
+  case "$dflt" in ''|*[!0-9]*) dflt=120 ;; esac
+  [ "$dflt" -gt 0 ] 2>/dev/null || dflt=120
+  t="$dflt"
+  cfg="$(gate_cfg_file "${1:-}")"
+  if [ -n "$cfg" ]; then
+    raw="$(json_raw "$cfg" gateTimeout 2>/dev/null)"
+    case "$raw" in null) raw="" ;; esac
+    [ -n "$raw" ] || raw="$(json_str "$cfg" gateTimeout 2>/dev/null)"
+    raw="$(printf '%s' "$raw" | tr -d '[:space:]')"
+    # 10# forces decimal for the same reason resolve_gate_timeout does: a
+    # leading zero read as octal is how the 010s gate died at 7997ms.
+    case "$raw" in ''|*[!0-9]*) raw="" ;; *) raw="$(( 10#$raw ))" ;; esac
+    [ -n "$raw" ] && [ "$raw" -gt 0 ] 2>/dev/null && t="$raw"
+  fi
+  [ "$t" -ge "$leg" ] 2>/dev/null || t="$leg"
+  [ "$t" -le "$GATE_TIMEOUT_MAX" ] 2>/dev/null || t="$GATE_TIMEOUT_MAX"
+  printf '%s' "$t"
+}
+PROOF_SCOPE_CONTROL=""   # "<runner> <executed>" | "" when it could not be read
+# PROOF_SCOPE_CONTROL_ZERO (S308 fix round 3) — the control run COLLECTED NO
+# TESTS AT ALL, in its runner's OWN words. This is NOT a nicety: it is what
+# keeps cure 1 from parking an entire class of honest repo.
+#
+# proof_executed_count reads SUMMARY NUMBERS, and several runners print no
+# summary numbers when they collect nothing — pytest's zero-test run is
+# `===== no tests ran in 0.01s =====` and exit 5, with no passed/failed/error
+# to read. So the control would come back UNREADABLE, and an unreadable control
+# is `unproven`, which cure 1 turns into INCONCLUSIVE. Every leg in every pytest
+# repo, on the exact measurement that was supposed to protect them.
+#
+# But a control that collected NOTHING is the STRONGEST possible form of the
+# same evidence: the scope was emptied and the command ran nothing, so handing
+# it the ticket's files is what produced the leg's tests. It is read from the
+# runners' own "no tests collected / ran" sentences (the shared `zerotests`
+# signature, which is deliberately tight and already anchored against a healthy
+# suite that merely prints a zero), never from an absent number.
+PROOF_SCOPE_CONTROL_ZERO=""
+proof_scope_control_exec() { # run_dir cmd [secs]
+  PROOF_SCOPE_CONTROL=""; PROOF_SCOPE_CONTROL_ZERO=""
+  local rd="$1" cmd="$2" secs="${3:-120}" d of rc=0 cout
+  case "$secs" in ''|*[!0-9]*) secs=120 ;; esac
+  [ -n "$rd" ] && [ -n "$cmd" ] || return 0
+  d="$(mktemp -d "${TMPDIR:-/tmp}/lcars-ctlscope.XXXXXX" 2>/dev/null)" || return 0
+  of="$(mktemp "${TMPDIR:-/tmp}/lcars-ctlout.XXXXXX" 2>/dev/null)" || { rm -rf "$d"; return 0; }
+  ( cd "$rd" 2>/dev/null || exit 0
+    LCARS_TESTS_DIR="$d" run_with_hard_timeout "$secs" "$of" bash -c "$cmd" ) || rc=$?
+  # 124 = the control never settled; it tells us nothing and must not decide.
+  if [ "$rc" != 124 ]; then
+    cout="$(cat "$of" 2>/dev/null)"
+    PROOF_SCOPE_CONTROL="$(proof_executed_count "$cout")"
+    if [ -z "$PROOF_SCOPE_CONTROL" ] && suite_collected_zero_tests "$cout"; then
+      PROOF_SCOPE_CONTROL_ZERO=true
+    fi
+  fi
+  rm -rf "$d"; rm -f "$of"
+  return 0
+}
+
 # Run the ticket's tests SCOPED, per stack, from a given tree root (either the
 # tip worktree or the parent scratch worktree). Sets PROOF_LEG_RC + PROOF_LEG_OUT.
 # rc 96/97 are local sentinels for "cannot even construct the run" (no
@@ -11550,10 +12046,52 @@ proof_scope_glob_char() { # abs-scope → the first glob metachar in it ("" = sa
 # Recording it makes the gate self-evidencing. It is the real string (filter
 # terms, per-project `cd` legs, the LCARS_TESTS_DIR scope and the cwd), NOT a
 # label — a pretty summary would re-open exactly the gap this closes.
+# PROOF_LEG_TIMEOUT / _TIMEOUT_SRC / _SCOPE_KIND / _SCOPE_WHY (S308) — the two
+# decisions this leg made before it ran a single test, recorded so the artifact
+# can state them. See resolve_gate_timeout and intree_scopes_for.
+# PROOF_LEG_TIMEOUT_NOTE (fix round 1, DEFECT 4) — what was wrong with the
+# recorded timeout value and what was used instead; empty when nothing needed
+# saying. PROOF_LEG_SCOPE_SELECTED_NOTHING (DEFECT 1) — the leg's scope was
+# handed to the testCommand and its own file selection matched NOTHING, so the
+# leg was REFUSED rather than run; recorded here because it is produced here.
+# PROOF_LEG_EXEC (DEFECT 2) — the tests this leg's runner(s) reported executing,
+# SUMMED across the invocations that actually ran. In files mode the leg runs
+# once per declared file, and reading the concatenated buffer with
+# proof_executed_count kept only the FIRST summary it found: two runs of one
+# test each recorded 1, not 2. That number is the evidence the zero-collect and
+# anti-gutting checks rest on, so a per-run zero could be MASKED by a sibling
+# run's count. Counted per invocation, where each number is produced.
+# PROOF_LEG_EXEC_EACH (S308 fix round 3, CURE 2) — the SAME numbers, kept APART:
+# one per invocation, space separated, in the order they ran. The SUM alone made
+# the control comparison dead in files mode: the control runs ONCE, so for a
+# two-file ticket the leg's sum can essentially never equal the single control
+# count and `narrowingProven` went true regardless. MEASURED 22 Oct 2026 — a
+# ticket with one matchable sibling (1 test) and one unmatchable declared file
+# (which fell back to discovering 3 undeclared tests) summed to 4, against a
+# control of 3 and a control x N of 6: nothing matched, nothing fired, and the
+# gate certified `pass` while the ticket's OTHER declared test was RED on the tip
+# and never executed. The comparison has to be made where each number was
+# produced — per invocation. Empty when no honest per-invocation count exists
+# (an unreadable or mixed-runner leg), which is what `checked: false` is for.
 PROOF_LEG_RC=0; PROOF_LEG_OUT=""; PROOF_LEG_CMD=""
+PROOF_LEG_TIMEOUT=120; PROOF_LEG_TIMEOUT_SRC=default; PROOF_LEG_TIMEOUT_NOTE=""
+PROOF_LEG_SCOPE_KIND=""; PROOF_LEG_SCOPE_WHY=""; PROOF_LEG_SCOPE_SELECTED_NOTHING=""
+PROOF_LEG_EXEC=""; PROOF_LEG_EXEC_EACH=""
+# PROOF_LEG_ZERO_EXEC (S308 fix round 2, route d) — this leg's own runner said
+# it executed ZERO tests on a run that EXITED GREEN. Recorded, never decided
+# here; see the block where it is set and flip_flop_gate's zero-evidence check.
+PROOF_LEG_ZERO_EXEC=""
+# PROOF_LEG_RUN_DIR / PROOF_LEG_RAW_CMD (S308 fix round 2) — the cwd and the
+# repo's own testCommand this js/py leg used, recorded so the CONTROL RUN below
+# can repeat the identical invocation with a different scope. Empty on the
+# native lane, which hands the runner no repo path and has no scope to control.
+PROOF_LEG_RUN_DIR=""; PROOF_LEG_RAW_CMD=""
 proof_scoped_leg_run() { # leg-root rels(newline)
   local root="$1" rels="$2" first cmd run_dir rc=0 out
   PROOF_LEG_RC=0; PROOF_LEG_OUT=""; PROOF_LEG_CMD=""
+  PROOF_LEG_SCOPE_KIND=""; PROOF_LEG_SCOPE_WHY=""; PROOF_LEG_SCOPE_SELECTED_NOTHING=""
+  PROOF_LEG_EXEC=""; PROOF_LEG_EXEC_EACH=""; PROOF_LEG_ZERO_EXEC=""
+  PROOF_LEG_RUN_DIR=""; PROOF_LEG_RAW_CMD=""
   first="$(printf '%s\n' "$rels" | grep . | head -1)"
   local stack; stack="$(resolve_stack)"
   # S133/DEFECT-2: both flip-flop legs run under a PORTABLE hard timeout so a
@@ -11561,13 +12099,23 @@ proof_scoped_leg_run() { # leg-root rels(newline)
   # self-smoke used to catch) is rendered INCONCLUSIVE — sentinel 98 — instead
   # of silently hanging the ticket build. run_with_hard_timeout group-kills the
   # runner (perl setsid) so no forked child (vitest/jest pool) survives.
-  local gsecs="${LCARS_GATE_TIMEOUT:-120}"
-  case "$gsecs" in ''|*[!0-9]*) gsecs=120 ;; esac
+  # S308: resolved PER LEG — env > the repo's recorded gateTimeout > 120.
+  # NOT in a command substitution — GATE_TIMEOUT_SRC is a global and a subshell
+  # would discard the one fact the artifact has to state.
+  resolve_gate_timeout "$root" >/dev/null
+  local gsecs="$GATE_TIMEOUT_SECS"
+  PROOF_LEG_TIMEOUT="$GATE_TIMEOUT_SECS"; PROOF_LEG_TIMEOUT_SRC="$GATE_TIMEOUT_SRC"
+  PROOF_LEG_TIMEOUT_NOTE="$GATE_TIMEOUT_NOTE"
   local gof; gof="$(mktemp "${TMPDIR:-/tmp}/lcars-ffleg.XXXXXX" 2>/dev/null)" \
     || gof="${MISSION_DIR:-$root}/.ffleg.$$"
   if stack_is_native; then
     # S106 native scoping: cargo test --test <stem> / go test -run '^(funcs)$',
-    # built from the staged files AT THIS LEG'S ROOT.
+    # built from the staged files AT THIS LEG'S ROOT. A native lane never hands
+    # the runner a repo path, so it has no $LCARS_TESTS_DIR scope to resolve —
+    # recorded as `native` rather than left blank, so the artifact says which
+    # kind of scoping decided the run.
+    PROOF_LEG_SCOPE_KIND=native
+    PROOF_LEG_SCOPE_WHY="a native stack ($stack) scopes by runner argument (target/filter), not by \$LCARS_TESTS_DIR"
     cmd="$(printf '%s\n' "$rels" | REPO_ROOT="$root" native_scoped_cmd "$stack")"
     if [ -z "$cmd" ]; then
       rm -f "$gof"
@@ -11582,8 +12130,9 @@ proof_scoped_leg_run() { # leg-root rels(newline)
     PROOF_LEG_CMD="cd $(proof_shq "$run_dir") && $cmd"
     ( cd "$run_dir" && run_with_hard_timeout "$gsecs" "$gof" bash -c "$cmd" ); rc=$?
   else
-    # js/py: the S87 dir-scoped run — LCARS_TESTS_DIR points at the single file
-    # (or the common ancestor), invoked from the tests' own package.
+    # js/py: the S87 scoped run — LCARS_TESTS_DIR points at the single declared
+    # file, their exact common-ancestor directory, or (S308) each declared file
+    # in turn, invoked from the tests' own package.
     cmd="$(resolve_test_cmd)"
     if [ -z "$cmd" ]; then
       rm -f "$gof"
@@ -11593,17 +12142,79 @@ proof_scoped_leg_run() { # leg-root rels(newline)
     fi
     local pkg; pkg="$(package_of_relpath "$first" "$root")"
     run_dir="$root${pkg:+/$pkg}"
-    local scope; scope="$(intree_scope_for "$root" "$rels")"
+    # S308: the scopes this leg will run — the declared file, their exact
+    # common-ancestor directory, or (when that directory would widen the run)
+    # ONE INVOCATION PER DECLARED FILE. intree_scopes_for also records WHY.
+    # NOT in a command substitution: the kind and the reason are globals (see
+    # intree_scopes_for), and a subshell would discard both.
+    intree_scopes_for "$root" "$rels" >/dev/null
+    local scopes="$INTREE_SCOPES"
+    PROOF_LEG_SCOPE_KIND="$INTREE_SCOPE_KIND"; PROOF_LEG_SCOPE_WHY="$INTREE_SCOPE_WHY"
+    # A testCommand that never interpolates $LCARS_TESTS_DIR cannot be narrowed
+    # by ANY scope — it runs the repo's whole suite whatever it is handed. (init
+    # warns about that at setup; until now the GATE said nothing, and the leg's
+    # artifact recorded a scope that did nothing.) So say it here, where the
+    # consequence lands, and run the command ONCE: a per-file list would re-run
+    # the same full suite once per declared file for no added information.
+    case "$PROOF_LEG_SCOPE_KIND:$cmd" in
+      files:*'$LCARS_TESTS_DIR'*|files:*'${LCARS_TESTS_DIR'*) : ;;
+      files:*)
+        scopes="$(printf '%s' "$scopes" | head -1)"
+        PROOF_LEG_SCOPE_KIND=tree
+        PROOF_LEG_SCOPE_WHY="this repo's testCommand never interpolates \$LCARS_TESTS_DIR, so NO scope can narrow it — this leg runs the repo's FULL SUITE. Make the testCommand run only \"\$LCARS_TESTS_DIR\" when it is set (\`lcars update --fix-tests\`)." ;;
+    esac
+    proof_say_scope "$root"
     # S148 GUARD — a scope the runner would re-interpret as a glob PATTERN (see
     # proof_scope_glob_char). Refuse the leg rather than run it: unrun is
     # INCONCLUSIVE, whereas running it is either a mystery red or a widened run
     # whose green (or whose parent-leg red) came from a file the ticket never
     # touched. Native lanes are immune — no repo path enters their command.
-    local gch; gch="$(proof_scope_glob_char "$scope")"
+    # Checked over EVERY scope: one bad path in a declared-files list is the
+    # same hazard as one bad path on its own.
+    local gch="" scope1
+    while IFS= read -r scope1; do
+      [ -n "$scope1" ] || continue
+      gch="$(proof_scope_glob_char "$scope1")"
+      [ -n "$gch" ] && break
+    done <<SCOPE_GLOB_EOF
+$scopes
+SCOPE_GLOB_EOF
     if [ -n "$gch" ]; then
       rm -f "$gof"
       PROOF_LEG_RC=96
-      PROOF_LEG_OUT="proof-gate: the path this leg must hand the test runner contains \`$gch\`, which the runner re-interprets as a GLOB PATTERN instead of a literal path (scope: $scope) — the run would either find nothing or silently widen to files the ticket never touched, so it was NOT run. Nothing is wrong with the ticket: it is WHERE the repo lives. Move or rename the checkout to a path free of \` * ? [ { \\ \` and re-run."
+      proof_leg_refused_scope "$rels" "$PROOF_LEG_SCOPE_KIND" \
+        "the path it would have handed the runner contains the glob metacharacter \`$gch\`"
+      PROOF_LEG_OUT="proof-gate: the path this leg must hand the test runner contains \`$gch\`, which the runner re-interprets as a GLOB PATTERN instead of a literal path (scope: $(printf '%s' "$scopes" | tr '\n' ' ')) — the run would either find nothing or silently widen to files the ticket never touched, so it was NOT run. Nothing is wrong with the ticket: it is WHERE the repo lives. Move or rename the checkout to a path free of \` * ? [ { \\ \` and re-run."
+      return 0
+    fi
+    # DEFECT-1 GUARD (fix round 1) — DOES THE SCOPE SELECT ANYTHING AT ALL?
+    # See proof_scope_selects_nothing for the measured failure. A scope the
+    # command's own selection cannot match hands the runner an EMPTY argument
+    # list, and a runner left with no argument discovers its own tests — so the
+    # leg would run, and be scored, on files the ticket never declared. Refuse
+    # it: unrun is INCONCLUSIVE, which is honest, whereas running it produces a
+    # confident PASS or FAIL about tests that never took part.
+    local selnothing="" selexpr="" scope2
+    while IFS= read -r scope2; do
+      [ -n "$scope2" ] || continue
+      if proof_scope_selects_nothing "$run_dir" "$cmd" "$scope2" "$gsecs"; then
+        selnothing="$scope2"; selexpr="$PROOF_SCOPE_SELECT_EXPR"; break
+      fi
+    done <<SCOPE_SEL_EOF
+$scopes
+SCOPE_SEL_EOF
+    if [ -n "$selnothing" ]; then
+      rm -f "$gof"
+      PROOF_LEG_SCOPE_SELECTED_NOTHING=true
+      PROOF_LEG_RC=96
+      proof_leg_refused_scope "$rels" "$PROOF_LEG_SCOPE_KIND" \
+        "the testCommand's own file selection matched NOTHING for the scope $selnothing"
+      PROOF_LEG_OUT="proof-gate: this leg's scope SELECTED NO TEST FILE, so it was NOT run. The scope was handed to this repo's testCommand as \$LCARS_TESTS_DIR, and the command's own file selection matched NOTHING — the runner would have received an EMPTY argument list and fallen back to its OWN discovery, running tests the ticket never declared and scoring the ticket on them. Nothing about this ticket could be proven either way.
+  the scope that selected nothing: $selnothing
+  the selection that matched it to nothing: $selexpr
+Nothing is wrong with the ticket's code: the repo's testCommand cannot SEE a test file with that name. Either widen the command's selection so it matches the ticket's test file(s), hand \"\$LCARS_TESTS_DIR\" to the runner directly (\`lcars update --fix-tests\`), or name the ticket's test files the way the existing selection expects."
+      emit_event proof_scope_selected_nothing implement \
+        "proof leg REFUSED — its scope selected no test file ($selnothing); the testCommand's own selection ($selexpr) matched nothing, so the runner would have run undeclared tests instead" || :
       return 0
     fi
     # S148 — WHITESPACE IN THE CHECKOUT PATH. $scope is ABSOLUTE, so it carries
@@ -11631,13 +12242,117 @@ proof_scoped_leg_run() { # leg-root rels(newline)
     # artifact assert the OPPOSITE of what the gate did — a scoped green recorded
     # as a command that re-runs red on unrelated tests. Quoting `$cmd` and handing
     # it to `bash -c` is what the line below genuinely executes.
-    PROOF_LEG_CMD="cd $(proof_shq "$run_dir") && LCARS_TESTS_DIR=$(proof_shq "$scope") bash -c $(proof_shq "$cmd")"
-    ( cd "$run_dir" && LCARS_TESTS_DIR="$scope" run_with_hard_timeout "$gsecs" "$gof" bash -c "$cmd" ); rc=$?
+    # S308: ONE INVOCATION PER SCOPE, `&&`-joined — which for the single-scope
+    # kinds (file / ancestor) is exactly the one run it has always been, recorded
+    # in exactly the same shape so the paste-back contract above is untouched.
+    # A declared-files leg stops at the first failing file: the rc is what an
+    # `&&` chain would produce, and the recorded command reproduces it verbatim.
+    #
+    # THE TIMEOUT IS THE LEG'S BUDGET, not a per-file allowance. Each invocation
+    # gets what is LEFT of $gsecs, so N files can never multiply the bound the
+    # hang protection exists to impose (and a leg that burns the budget is
+    # reported as the timeout it is, with the same sentinel 98).
+    local scope cmdrec="" csep="" leg_out="" t0 rem used
+    # DEFECT-2 accumulator: each invocation's OWN executed count, summed. The
+    # total is only honest when every run that happened was READ by the SAME
+    # runner grammar, so an unreadable or mixed-runner leg records NOTHING
+    # rather than a partial sum ("" is what `executed.checked:false` is for).
+    local ex_sum=0 ex_runner="" ex_bad="" one_out one_exec ex_each=""
+    t0="$(date +%s 2>/dev/null || echo 0)"
+    rc=0
+    while IFS= read -r scope; do
+      [ -n "$scope" ] || continue
+      local one_rec
+      one_rec="cd $(proof_shq "$run_dir") && LCARS_TESTS_DIR=$(proof_shq "$scope") bash -c $(proof_shq "$cmd")"
+      if [ -n "$csep" ]; then cmdrec="$cmdrec$csep( $one_rec )"; else cmdrec="$one_rec"; fi
+      csep=" && "
+      used=$(( $(date +%s 2>/dev/null || echo 0) - t0 ))
+      rem=$(( gsecs - used )); [ "$rem" -ge 1 ] || rem=1
+      ( cd "$run_dir" && LCARS_TESTS_DIR="$scope" run_with_hard_timeout "$rem" "$gof" bash -c "$cmd" ); rc=$?
+      one_out="$(cat "$gof" 2>/dev/null)"
+      leg_out="${leg_out}${one_out}
+"
+      # Counted HERE, per invocation, because this is where the number exists:
+      # the concatenated buffer below can only ever yield the first summary.
+      one_exec="$(proof_executed_count "$one_out")"
+      if [ -z "$one_exec" ]; then ex_bad=1
+      elif [ -n "$ex_runner" ] && [ "$ex_runner" != "${one_exec%% *}" ]; then ex_bad=1
+      else ex_runner="${one_exec%% *}"; ex_sum=$((ex_sum + ${one_exec##* }))
+           ex_each="${ex_each}${ex_each:+ }${one_exec##* }"; fi
+      [ "$rc" -eq 0 ] || break
+    done <<SCOPE_RUN_EOF
+$scopes
+SCOPE_RUN_EOF
+    if [ -n "$ex_bad" ] || [ -z "$ex_runner" ]; then PROOF_LEG_EXEC=unreadable; PROOF_LEG_EXEC_EACH=""
+    else PROOF_LEG_EXEC="$ex_runner $ex_sum"; PROOF_LEG_EXEC_EACH="$ex_each"; fi
+    # The FIRST element of a multi-scope record has no parentheses, so a reader
+    # pasting it back gets the same `cd … && …` opening the single-scope form
+    # has always had; every later element is parenthesised so its `cd` cannot
+    # leak into the next one.
+    PROOF_LEG_CMD="$cmdrec"
+    PROOF_LEG_RUN_DIR="$run_dir"; PROOF_LEG_RAW_CMD="$cmd"
+    printf '%s' "$leg_out" >"$gof"
+    # === ROUTE (d), S308 fix round 2: ZERO EXECUTED IS NEVER EVIDENCE ========
+    # MEASURED on this gate with the bare-glob testCommand
+    #     node --test --test-concurrency=1 "$LCARS_TESTS_DIR"/*.test.js
+    # and a declared file whose name DOES match: the scope is a FILE, so
+    # `<file>/*.test.js` matches nothing, bash leaves the pattern literal, and
+    # `node --test` prints `pass 0 / fail 0` and EXITS 0. Both legs were green
+    # on ZERO tests, so the gate printed the fully confident
+    #     ✗ flip-flop FAIL — the ticket's tests PASS on the PARENT commit
+    # with `executed {0,0}, checked:true`. A conclusion from literally no
+    # evidence, and the file-scoping S308 added is what makes an empty
+    # selection reachable in the first place.
+    #
+    # proof_zero_collected cannot see this one: its phrasings are the runners'
+    # OWN "no tests collected/ran" sentences, and node:test prints no such
+    # sentence — it prints a NUMBER. That number is already produced, per
+    # invocation, three lines above (PROOF_LEG_EXEC, S308 DEFECT 2). So the
+    # refusal reads the RECORD rather than another phrasing: a leg whose own
+    # runner says it executed zero tests has proven nothing about this ticket.
+    #
+    # SENTINEL 95, not 96: this leg DID run (its command and its count are
+    # recorded, and the parent leg's `ran` must stay honest) — it simply
+    # produced no evidence. Inconclusive is never a pass.
+    #
+    # ONLY WHEN THE LEG IS GREEN (`rc 0`), and that bound is load-bearing, not
+    # caution. ZERO EXECUTED ON A **RED** LEG IS THE FLAGSHIP LEGITIMATE RED:
+    # the greenfield parent whose copy of the test DIES AT IMPORT because the
+    # module the ticket adds does not exist there yet registers no test at all,
+    # and that import death IS the red-on-parent this gate exists to require
+    # (see the vacuity note on proof_executed_count, which the captain approved
+    # with exactly this case on the table). Refusing it would convert the
+    # flagship PASS into INCONCLUSIVE. GREEN on nothing is the trap; red on
+    # nothing is already triaged by proof_parent_red_kind.
+    # RECORDED HERE, DECIDED IN THE GATE. The refusal is NOT taken on this leg
+    # alone, because a better reason may exist one leg later: when the PARENT
+    # executed tests and the tip executed none, that is GUTTING and the S157
+    # anti-gutting check already names it with both counts, which is far more
+    # use to a worker than "zero". So the leg records the fact where it is
+    # produced and flip_flop_gate decides once both counts are in. (It also
+    # leaves scopeKind/scopeWhy truthful: this leg really did run with that
+    # scope, so unlike the pre-run refusals it has no false record to avoid.)
+    if [ "$rc" -eq 0 ] && [ -z "$ex_bad" ] && [ -n "$ex_runner" ] && [ "$ex_sum" -eq 0 ]; then
+      PROOF_LEG_ZERO_EXEC=true
+    fi
   fi
   out="$(cat "$gof" 2>/dev/null)"; rm -f "$gof"
+  # `unreadable` is the js/py lane saying it counted per invocation and could
+  # NOT produce an honest total; an EMPTY value means no per-invocation count was
+  # taken at all (the native lane, which is always a single run), so the whole
+  # buffer is read exactly as it always was.
+  case "$PROOF_LEG_EXEC" in
+    unreadable) PROOF_LEG_EXEC="" ;;
+    '')         PROOF_LEG_EXEC="$(proof_executed_count "$out")" ;;
+  esac
+  # A SINGLE-RUN lane (native, or a buffer read whole) is a one-element list, so
+  # the per-invocation comparison never has to special-case "no list at all".
+  if [ -z "$PROOF_LEG_EXEC_EACH" ] && [ -n "$PROOF_LEG_EXEC" ]; then
+    PROOF_LEG_EXEC_EACH="${PROOF_LEG_EXEC##* }"
+  fi
   if [ "$rc" = 124 ]; then
     PROOF_LEG_RC=98
-    PROOF_LEG_OUT="scoped test run exceeded the ${gsecs}s gate timeout (LCARS_GATE_TIMEOUT) and was terminated — $(proof_timeout_cause "$out")
+    PROOF_LEG_OUT="scoped test run exceeded the ${gsecs}s gate timeout $(gate_timeout_clause) and was terminated — $(proof_timeout_cause "$out")
 ${out}"
     return 0
   fi
@@ -12107,12 +12822,69 @@ FF_PAR_REFUSED=""
 # carried no count this reader understands, in which case the check is SKIPPED
 # and recorded as such — never assumed to have passed.
 FF_TIP_EXEC=""; FF_PAR_EXEC=""
+# S308: the two decisions the gate made BEFORE it ran a test — the timeout it
+# ran under (and which of env / config / default supplied it) and what the legs
+# were scoped to (and why). Taken from the TIP leg, which both legs resolve
+# identically from the same declared relpaths. Recorded because the B1-ROOT burn
+# was a leg that LOOKED narrow, and because a captain reading this file must not
+# have to infer either fact from a path.
+FF_GATE_TIMEOUT=""; FF_GATE_TIMEOUT_SRC=""; FF_GATE_SCOPE_KIND=""; FF_GATE_SCOPE_WHY=""
+FF_GATE_TIMEOUT_NOTE=""; FF_GATE_SCOPE_SELNOTHING=""
+# FF_GATE_SCOPE_CONTROL (fix round 2) — what the CONTROL RUN executed: the same
+# testCommand, same cwd, scope pointed at an EMPTY directory. "" means it was
+# not measured (an unnarrowed leg, a zero-executed leg, a timeout, or a runner
+# this harness cannot count). Recorded because "the scope was proven to change
+# what ran" is the one fact that distinguishes a real narrow leg from a leg that
+# silently ran the whole suite, and nobody should have to infer it from a path.
+FF_GATE_SCOPE_CONTROL=""
+# FF_GATE_SCOPE_NARROWING / _NARROW_WHY / _CONTROL_SECS / FF_GATE_TIP_EXEC_EACH
+# (S308 fix round 3, CURE 1) — the state the gate now ACTS on, and why.
+#
+# THE DEFECT, verified by reading the source 22 Oct 2026:
+# `grep -n narrowingProven run.sh` returned exactly ONE line — the printf that
+# writes it into flip-flop.json. It was never read, never compared, never acted
+# on. The harness ran the control, honestly recorded that it could not prove the
+# narrowing, and then issued a fully confident verdict anyway. FOUR measured
+# routes into that state, every one ending in a confident PASS or FAIL: the
+# control exits nonzero, its output is unparseable, it is skipped by the
+# precondition, or it is killed by the gate timeout.
+#
+# A boolean could not carry the fix, because "false" meant four different
+# things and only SOME of them are a problem. The state is therefore NAMED:
+#   proven       the control ran, was read by the same runner, and executed a
+#                DIFFERENT number from this leg — handing the ticket's file(s)
+#                over demonstrably changed what ran.
+#   moot         a FILESYSTEM fact settles it: every test file tracked in this
+#                tree is one the ticket declared, so even a total fallback to
+#                the runner's own discovery can only run the ticket's tests.
+#                Nothing to prove; the verdict stands. (This is the precondition
+#                round 2 added after its first cut parked five honest tickets.)
+#   not-narrowed the leg claimed no narrowing (a `tree` or `native` scope), so
+#                there is no narrowing to prove.
+#   uncountable  no count exists to compare — this runner prints none (go and
+#                cargo carry no test count at all; LEDGERED, out of scope), or
+#                the leg executed nothing and the zero-evidence refusal owns it.
+#   unproven     the control was ATTEMPTED and failed to establish anything, OR
+#                it established that the scope changed nothing. This is the one
+#                that must not yield a confident verdict.
+# `narrowingProven` is kept, in its original position, as `narrowing == proven`.
+FF_GATE_SCOPE_NARROWING=""; FF_GATE_SCOPE_NARROW_WHY=""
+FF_GATE_SCOPE_CONTROL_SECS=""; FF_GATE_TIP_EXEC_EACH=""
+# FF_GATE_SCOPE_CONTROL_ZERO — the control run collected NOTHING in its runner's
+# own words (so `executed` carries no number to print). Recorded, because
+# "no count" and "a count of nothing" are different facts.
+FF_GATE_SCOPE_CONTROL_ZERO=""
 _ff_reset() {
   FF_TIP_RC=null; FF_TIP_TAIL=""; FF_TIP_CMD=""
   FF_PAR_RC=null; FF_PAR_KIND=""; FF_PAR_TAIL=""; FF_PAR_CMD=""
   FF_PAR_SOURCES=""; FF_PAR_MODE="none"; FF_PAR_RAN=false
   FF_PAR_REFUSED=""
   FF_TIP_EXEC=""; FF_PAR_EXEC=""
+  FF_GATE_TIMEOUT=""; FF_GATE_TIMEOUT_SRC=""; FF_GATE_SCOPE_KIND=""; FF_GATE_SCOPE_WHY=""
+  FF_GATE_TIMEOUT_NOTE=""; FF_GATE_SCOPE_SELNOTHING=""
+  FF_GATE_SCOPE_CONTROL=""
+  FF_GATE_SCOPE_NARROWING=""; FF_GATE_SCOPE_NARROW_WHY=""
+  FF_GATE_SCOPE_CONTROL_SECS=""; FF_GATE_TIP_EXEC_EACH=""; FF_GATE_SCOPE_CONTROL_ZERO=""
 }
 # The rels carrying a given source, space-separated (for the verdict wording).
 _ff_rels_with_source() { # source-token
@@ -12169,6 +12941,47 @@ FFS_EOF
     # position and meaning, so the CLI verify readout and the board's
     # local_adapter._ticket_proof (both read only verdict/reason/kind) are
     # untouched. json_escape handles the quotes and `$` the command carries.
+    # S308 `gate`: the timeout this leg ran under, WHERE the number came from
+    # (env | config | default), and what the leg was scoped to with the reason.
+    # ADDITIVE — every pre-existing field keeps its name, position and meaning.
+    # `timeoutNote` + `scopeSelectedNothing` (fix round 1) are the two facts a
+    # reader would otherwise have to guess from the reason prose: what was wrong
+    # with the recorded timeout value, and whether this leg was REFUSED because
+    # its scope selected no test file at all. Both ADDITIVE.
+    # DEFECT 2 (fix round 2), THE BACKSTOP: `timeoutSecs` is printed BARE, so a
+    # value that is not a JSON number makes this whole artifact unparseable —
+    # measured, with `"timeoutSecs": 030` defeating `json.load` outright. The
+    # producer (resolve_gate_timeout) now normalises to decimal; this re-checks
+    # at the point of emission, because the one invariant a gate record must
+    # never lose is that a machine can read it. 10# forces decimal, so no
+    # leading-zero form can reach the file even if a new caller forgets.
+    local _tsecs="${FF_GATE_TIMEOUT:-}"
+    case "$_tsecs" in ''|*[!0-9]*) _tsecs=null ;; *) _tsecs="$(( 10#$_tsecs ))" ;; esac
+    printf '  "gate": { "timeoutSecs": %s, "timeoutSource": "%s", "timeoutNote": "%s", "scopeKind": "%s", "scopeWhy": "%s", "scopeSelectedNothing": %s },\n' \
+      "$_tsecs" "$(json_escape "${FF_GATE_TIMEOUT_SRC:-}")" \
+      "$(json_escape "${FF_GATE_TIMEOUT_NOTE:-}")" \
+      "$(json_escape "${FF_GATE_SCOPE_KIND:-}")" "$(json_escape "${FF_GATE_SCOPE_WHY:-}")" \
+      "$( [ -n "${FF_GATE_SCOPE_SELNOTHING:-}" ] && printf true || printf false )"
+    # ADDITIVE: the control run's own numbers, and whether the narrowing was
+    # PROVEN by them. `narrowingProven` is false when the control could not be
+    # measured — never silently true. FIX ROUND 3: the four meanings that false
+    # used to collapse together are now NAMED in `narrowing` with the sentence
+    # in `narrowingWhy`, the control's OWN budget is recorded in `budgetSecs`
+    # (it is the full-suite-shaped run, so it is NOT bounded by the narrowed
+    # leg's gate), and `legExecutedEach` carries the per-invocation counts the
+    # comparison is actually made against. Every pre-existing key keeps its name
+    # and position; `narrowingProven` is now exactly `narrowing == "proven"`.
+    # budgetSecs is printed BARE, so it is normalised to decimal or null for the
+    # same reason timeoutSecs is: an artifact a verdict is read from must parse.
+    local _cbud="${FF_GATE_SCOPE_CONTROL_SECS:-}"
+    case "$_cbud" in ''|*[!0-9]*) _cbud=null ;; *) _cbud="$(( 10#$_cbud ))" ;; esac
+    printf '  "scopeControl": { "executed": "%s", "runner": "%s", "narrowingProven": %s, "narrowing": "%s", "narrowingWhy": "%s", "budgetSecs": %s, "legExecutedEach": "%s", "collectedZero": %s },\n' \
+      "$(json_escape "${FF_GATE_SCOPE_CONTROL##* }")" "$(json_escape "${FF_GATE_SCOPE_CONTROL%% *}")" \
+      "$( [ "${FF_GATE_SCOPE_NARROWING:-}" = proven ] && printf true || printf false )" \
+      "$(json_escape "${FF_GATE_SCOPE_NARROWING:-}")" \
+      "$(json_escape "${FF_GATE_SCOPE_NARROW_WHY:-}")" \
+      "$_cbud" "$(json_escape "${FF_GATE_TIP_EXEC_EACH:-}")" \
+      "$( [ -n "${FF_GATE_SCOPE_CONTROL_ZERO:-}" ] && printf true || printf false )"
     printf '  "tip": { "rc": %s, "cmd": "%s", "tail": "%s" },\n' \
       "${FF_TIP_RC:-null}" "$(json_escape "${FF_TIP_CMD:-}")" "$(json_escape "${FF_TIP_TAIL:-}")"
     printf '  "parent": { "rc": %s, "kind": "%s", "cmd": "%s", "tail": "%s" }\n' \
@@ -12271,10 +13084,18 @@ flip_flop_gate() { # ticket parent-sha worktree
 
   # --- TIP leg: the implemented tree must be GREEN on the ticket's tests -----
   proof_scoped_leg_run "$wt" "$rels"
+  # S308: record the gate's own two decisions from the leg that just ran.
+  FF_GATE_TIMEOUT="$PROOF_LEG_TIMEOUT"; FF_GATE_TIMEOUT_SRC="$PROOF_LEG_TIMEOUT_SRC"
+  FF_GATE_TIMEOUT_NOTE="$PROOF_LEG_TIMEOUT_NOTE"
+  FF_GATE_SCOPE_KIND="$PROOF_LEG_SCOPE_KIND"; FF_GATE_SCOPE_WHY="$PROOF_LEG_SCOPE_WHY"
+  FF_GATE_SCOPE_SELNOTHING="$PROOF_LEG_SCOPE_SELECTED_NOTHING"
   FF_TIP_RC="$PROOF_LEG_RC"
   FF_TIP_CMD="$PROOF_LEG_CMD"
   FF_TIP_TAIL="$(printf '%s' "$PROOF_LEG_OUT" | tail -20)"
-  FF_TIP_EXEC="$(proof_executed_count "$PROOF_LEG_OUT")"
+  # DEFECT 2: the SUM the leg counted per invocation, not a re-read of the
+  # concatenated buffer (which could only ever see the first run's summary).
+  FF_TIP_EXEC="$PROOF_LEG_EXEC"
+  local ff_tip_zero="$PROOF_LEG_ZERO_EXEC"
   if [ "$PROOF_LEG_RC" = 96 ] || [ "$PROOF_LEG_RC" = 97 ] || [ "$PROOF_LEG_RC" = 98 ]; then
     local tipreason="$PROOF_LEG_OUT"
     [ "$PROOF_LEG_RC" = 98 ] && tipreason="the TIP leg's $PROOF_LEG_OUT"
@@ -12321,6 +13142,147 @@ flip_flop_gate() { # ticket parent-sha worktree
   # GUARD 1 instead of being left to this check. GUARD 2 is the backstop for
   # unknown-unknowns — a type shape nobody has thought of yet — where the same
   # slack still exists but there is nothing more specific to say.
+  # === THE CONTROL RUN'S VERDICT (fix round 2) ==============================
+  # Asked BEFORE the tip-red FAIL below as well as before any PASS, because a
+  # widened leg can be red on undeclared tests just as easily as green on them,
+  # and "the ticket's tests do not pass" would be the same false sentence.
+  # Only for a leg that was NARROWED (file / files / ancestor) and that executed
+  # something: an unnarrowed `tree` leg claims nothing to check, and a
+  # zero-executed leg is already handled where the counts are compared.
+  # FIX ROUND 3, CURE 1: the outcome is a NAMED STATE and the gate ACTS on it.
+  # Every branch below assigns one, so an unprovable narrowing can no longer
+  # fall through to a confident verdict by being silently unrecorded.
+  FF_GATE_TIP_EXEC_EACH="$PROOF_LEG_EXEC_EACH"
+  case "$FF_GATE_SCOPE_KIND" in
+    file|files|ancestor)
+      if [ -z "$PROOF_LEG_RUN_DIR" ] || [ -z "$PROOF_LEG_RAW_CMD" ]; then
+        # No re-runnable testCommand was recorded (the native lane), so the
+        # control cannot be CONSTRUCTED. Recorded, not acted on: LEDGERED.
+        FF_GATE_SCOPE_NARROWING=uncountable
+        FF_GATE_SCOPE_NARROW_WHY="this leg's runner is not driven through a re-runnable testCommand, so no control run could be constructed for it"
+      elif [ -z "$FF_TIP_EXEC" ]; then
+        # The runner printed no count this harness understands (go and cargo
+        # print none at all). There is nothing to compare the control against,
+        # and closing that is a separate, LEDGERED question — the pre-existing
+        # `executed.checked: false` already says the comparison was not made.
+        FF_GATE_SCOPE_NARROWING=uncountable
+        FF_GATE_SCOPE_NARROW_WHY="this runner's output carries no test count this harness can read, so a control run would have nothing to be compared against (the comparison is recorded as not made; see executed.checked)"
+      elif [ "${FF_TIP_EXEC##* }" -le 0 ] 2>/dev/null; then
+        FF_GATE_SCOPE_NARROWING=uncountable
+        FF_GATE_SCOPE_NARROW_WHY="this leg executed no tests at all, which the zero-evidence refusal decides on its own evidence rather than by comparison"
+      elif ! proof_undeclared_test_exists "$wt" "$rels"; then
+        # THE PRECONDITION, as a positive fact rather than a skipped step: every
+        # test file tracked in this tree is one the ticket DECLARED, so even a
+        # total fallback to the runner's own discovery can only run the ticket's
+        # own tests. Settled by the FILESYSTEM, so no control run is needed and
+        # the verdict stands. (Round 2 added this after its first cut parked
+        # five honest tickets whose declared files WERE the whole suite.)
+        FF_GATE_SCOPE_NARROWING=moot
+        FF_GATE_SCOPE_NARROW_WHY="every test file tracked in this tree is one the ticket DECLARED, so no fallback discovery could run anything but the ticket's own tests — the narrowing needs no control run (a filesystem fact, not an inference)"
+      else
+        # THE CONTROL GETS ITS OWN BUDGET (proof_control_budget): it is the
+        # full-suite-shaped run, so bounding it by the NARROWED leg's gate gave
+        # zero coverage in exactly the slow-suite repos this session exists for.
+        FF_GATE_SCOPE_CONTROL_SECS="$(proof_control_budget "$wt" "$FF_GATE_TIMEOUT")"
+        proof_scope_control_exec "$PROOF_LEG_RUN_DIR" "$PROOF_LEG_RAW_CMD" "$FF_GATE_SCOPE_CONTROL_SECS"
+        FF_GATE_SCOPE_CONTROL="$PROOF_SCOPE_CONTROL"
+        # A files-mode leg runs ONE INVOCATION PER DECLARED FILE, so if its
+        # selection collapsed, EACH invocation ran the control's discovery and
+        # the leg's SUM is N times the control, not equal to it. N is the number
+        # of declared files; a leg that stopped early on a red file runs fewer
+        # and is the one shape this comparison can miss (it ends in a FAIL,
+        # which blocks, never in a pass).
+        local ctl_n=1 ctl_want ctl_hit="" ctl_one
+        case "$FF_GATE_SCOPE_KIND" in
+          files) ctl_n="$(printf '%s\n' "$rels" | grep -c . | tr -d '[:space:]')"
+                 case "$ctl_n" in ''|*[!0-9]*) ctl_n=1 ;; esac ;;
+        esac
+        ctl_want=-1
+        case "${PROOF_SCOPE_CONTROL##* }" in
+          ''|*[!0-9]*) : ;;
+          *) ctl_want=$(( ${PROOF_SCOPE_CONTROL##* } * ctl_n )) ;;
+        esac
+        # CURE 2 — THE COMPARISON IS MADE PER INVOCATION, where each number was
+        # produced. The control runs ONCE; a files-mode leg runs once per
+        # declared file and its `executed` is the SUM, so for a two-file ticket
+        # the sum could essentially never equal the single control count and the
+        # comparison was dead. MEASURED: 1 (an honest matchable sibling) + 3 (an
+        # unmatchable file falling back to discovery) = 4, against a control of 3
+        # and a control x N of 6 — nothing matched, and the gate certified a
+        # ticket whose other declared test was RED on the tip and never ran.
+        # ONE invocation that matches the control is enough: that invocation ran
+        # the runner's own discovery, so whatever it contributed to the leg's
+        # colour is not about the file it was handed.
+        if [ -n "$PROOF_SCOPE_CONTROL" ] && [ "${PROOF_SCOPE_CONTROL%% *}" = "${FF_TIP_EXEC%% *}" ]; then
+          for ctl_one in $FF_GATE_TIP_EXEC_EACH; do
+            [ "$ctl_one" = "${PROOF_SCOPE_CONTROL##* }" ] && { ctl_hit=1; break; }
+          done
+        fi
+        if [ -z "$PROOF_SCOPE_CONTROL" ] && [ -n "$PROOF_SCOPE_CONTROL_ZERO" ]; then
+          # The control collected NOTHING, said in its runner's own words. The
+          # scope being emptied emptied the run, so the ticket's file(s) are
+          # what produced this leg's tests. Checked BEFORE "unreadable",
+          # because several runners print no summary numbers on a zero run.
+          FF_GATE_SCOPE_NARROWING=proven
+          FF_GATE_SCOPE_CONTROL_ZERO=true
+          FF_GATE_SCOPE_NARROW_WHY="the control run COLLECTED NO TESTS AT ALL with the scope pointed at an EMPTY directory — its runner said so in its own words — while this leg executed ${FF_TIP_EXEC##* } via ${FF_TIP_EXEC%% *}${FF_GATE_TIP_EXEC_EACH:+ (per invocation: $FF_GATE_TIP_EXEC_EACH)}: emptying the scope emptied the run, which is the strongest form of this measurement (measured under a ${FF_GATE_SCOPE_CONTROL_SECS}s control budget)"
+        elif [ -z "$PROOF_SCOPE_CONTROL" ]; then
+          FF_GATE_SCOPE_NARROWING=unproven
+          FF_GATE_SCOPE_NARROW_WHY="the control run could not be read at all: it either exceeded its own ${FF_GATE_SCOPE_CONTROL_SECS}s budget (the repo's recorded full-suite need, or the default) or its runner printed no count this harness understands"
+        elif [ "${PROOF_SCOPE_CONTROL%% *}" != "${FF_TIP_EXEC%% *}" ]; then
+          FF_GATE_SCOPE_NARROWING=unproven
+          FF_GATE_SCOPE_NARROW_WHY="the control run was read by a DIFFERENT runner grammar (${PROOF_SCOPE_CONTROL%% *}) from this leg (${FF_TIP_EXEC%% *}), so the two counts do not mean the same thing and comparing them would invent a result"
+        elif [ -n "$ctl_hit" ] \
+           || [ "${PROOF_SCOPE_CONTROL##* }" = "${FF_TIP_EXEC##* }" ] \
+           || [ "$ctl_want" = "${FF_TIP_EXEC##* }" ]; then
+          FF_GATE_SCOPE_NARROWING=unproven
+          FF_GATE_SCOPE_NARROW_WHY="this repo's testCommand executed THE SAME ${PROOF_SCOPE_CONTROL##* } test(s) with an EMPTY scope as this leg did with the ticket's file(s)${FF_GATE_TIP_EXEC_EACH:+ (per invocation: $FF_GATE_TIP_EXEC_EACH)} — the scope selected nothing and what ran was the runner's own discovery"
+          # D6 (fix round 3, LOW): the control MEASURED that the scope selected
+          # nothing, so the record says so. Before this, a leg made inconclusive
+          # by the control still carried `scopeSelectedNothing: false` while its
+          # own `reason` said the scope selected nothing — two fields of one
+          # record contradicting each other. The round-2 `scopeKind: "refused"`
+          # cure covers only the PRE-FLIGHT path, which never ran at all; this
+          # leg DID run, with that scope, so scopeKind stays truthful.
+          FF_GATE_SCOPE_SELNOTHING=true
+          emit_event proof_scope_not_narrowed implement \
+            "proof leg REFUSED — the repo's testCommand executed the SAME ${PROOF_SCOPE_CONTROL##* } test(s) with the ticket's file(s) as it did with an EMPTY scope, so the scope selected nothing and the run was the runner's own discovery" "ticket=$t" || :
+          _ff_finish "$t" "$parent" "$ffj" inconclusive \
+            "this repo's testCommand executed THE SAME ${PROOF_SCOPE_CONTROL##* } test(s) whether it was handed the ticket's test file(s) or an EMPTY directory — so the scope selected NOTHING and what ran was the runner's OWN discovery, not the ticket's tests. Nothing about this ticket could be proven either way, in either direction, and inconclusive is never a pass.
+  measured by re-running the repo's own testCommand with the scope pointed at an empty directory (${PROOF_SCOPE_CONTROL%% *}: ${PROOF_SCOPE_CONTROL##* } executed, the same as this leg)
+  what the TIP leg ran: $FF_TIP_CMD
+Nothing is wrong with the ticket's code: the repo's testCommand cannot SEE a test file at the path it was handed, so the runner received an EMPTY argument list and fell back to discovering its own tests. Either widen the command's own selection so it matches the ticket's test file(s), hand \"\$LCARS_TESTS_DIR\" to the runner directly (\`lcars update --fix-tests\`), or name the ticket's test files the way the existing selection expects." "$rels"
+          return $?
+        else
+          FF_GATE_SCOPE_NARROWING=proven
+          FF_GATE_SCOPE_NARROW_WHY="the control run executed ${PROOF_SCOPE_CONTROL##* } test(s) with the scope pointed at an EMPTY directory while this leg executed ${FF_TIP_EXEC##* }${FF_GATE_TIP_EXEC_EACH:+ (per invocation: $FF_GATE_TIP_EXEC_EACH)} under the same runner — handing the ticket's test file(s) over demonstrably changed what ran (measured under a ${FF_GATE_SCOPE_CONTROL_SECS}s control budget)"
+        fi
+      fi ;;
+    *)
+      FF_GATE_SCOPE_NARROWING=not-narrowed
+      FF_GATE_SCOPE_NARROW_WHY="this leg claimed no narrowing (scope kind '${FF_GATE_SCOPE_KIND:-none}'), so there is no narrowing for a control run to prove" ;;
+  esac
+  # === CURE 1: AN UNPROVABLE NARROWING MAY NOT YIELD A CONFIDENT VERDICT =====
+  # A leg that cannot establish that it ran the ticket's DECLARED tests is not
+  # allowed to say "the ticket's tests PASS/FAIL on the parent". The same-count
+  # branch above has its own, more specific refusal and has already returned;
+  # this is the one that closes the three routes nothing acted on — the control
+  # unreadable, the control killed, the grammars not comparable.
+  #
+  # IT IS A TIGHTENING, NOT A RELAXATION: the leg moves from a confident verdict
+  # it had no basis for to INCONCLUSIVE, and inconclusive is never a pass.
+  if [ "$FF_GATE_SCOPE_NARROWING" = unproven ]; then
+    emit_event proof_scope_narrowing_unproven implement \
+      "proof leg REFUSED — the gate could not PROVE that this leg ran the ticket's declared tests: $FF_GATE_SCOPE_NARROW_WHY" "ticket=$t" || :
+    _ff_finish "$t" "$parent" "$ffj" inconclusive \
+      "this gate could NOT PROVE that the leg ran the ticket's DECLARED test file(s), so it has no standing to say anything about the parent commit in either direction. Inconclusive is never a pass.
+  why the narrowing could not be proven: $FF_GATE_SCOPE_NARROW_WHY
+  what this leg executed: ${FF_TIP_EXEC##* } test(s) via ${FF_TIP_EXEC%% *}${FF_GATE_TIP_EXEC_EACH:+ (per invocation: $FF_GATE_TIP_EXEC_EACH)}
+  the control run: ${FF_GATE_SCOPE_CONTROL:-not readable} (budget ${FF_GATE_SCOPE_CONTROL_SECS:-unset}s)
+  what the TIP leg ran: $FF_TIP_CMD
+The control run re-runs this repo's OWN testCommand with \$LCARS_TESTS_DIR pointed at an EMPTY directory: if it executes the same tests as the narrowed leg, the scope selected nothing and the run was the runner's own discovery. When that control cannot be completed or read, the narrowing is unknown — not proven. Record this repo's real full-suite wall clock as \`gateTimeout\` in .git/lcars/config.json so the control has the budget it needs, or hand \"\$LCARS_TESTS_DIR\" to the runner directly (\`lcars update --fix-tests\`) so no fallback discovery is possible at all." "$rels"
+    return $?
+  fi
   if [ "$(resolve_stack)" = dotnet ]; then
     local dn_declared=0 dn_collected dn_one dn_rel2
     while IFS= read -r dn_rel2; do
@@ -12373,7 +13335,8 @@ FF_STAGE_EOF
   FF_PAR_RC="$PROOF_LEG_RC"
   FF_PAR_CMD="$PROOF_LEG_CMD"
   FF_PAR_TAIL="$(printf '%s' "$PROOF_LEG_OUT" | tail -20)"
-  FF_PAR_EXEC="$(proof_executed_count "$PROOF_LEG_OUT")"
+  FF_PAR_EXEC="$PROOF_LEG_EXEC"
+  local ff_par_zero="$PROOF_LEG_ZERO_EXEC"
   local par_out="$PROOF_LEG_OUT"
   # PRUNE FIRST — on every verdict path (behavior: pruned on success AND failure).
   proof_prune_scratch "$wt" "$scratch"
@@ -12404,6 +13367,85 @@ NOTE: the parent scratch worktree has been PRUNED, so the directory this leg's r
         parzero="the PARENT leg ran against a Cargo.toml that declares a \`harness\` key LCARS could not attribute to a cargo target, so it cannot tell whether that leg's scoreboard is real libtest output — red-on-parent is unproven, and inconclusive is never a pass. Exactly what defeated it: ${PROOF_ZERO_DETAIL:-unrecorded}" ;;
     esac
     _ff_finish "$t" "$parent" "$ffj" inconclusive "$parzero" "$rels"
+    return $?
+  fi
+  # === ROUTE (d), S308 fix round 2: ZERO EXECUTED IS NOT EVIDENCE ===========
+  # MEASURED on this gate with the bare-glob testCommand
+  #     node --test --test-concurrency=1 "$LCARS_TESTS_DIR"/*.test.js
+  # and a declared file whose name DOES match: the scope is a FILE, so
+  # `<file>/*.test.js` matches nothing, bash leaves the pattern literal, and
+  # `node --test` prints `pass 0 / fail 0` and EXITS 0. Both legs were GREEN on
+  # ZERO tests, so the gate printed the fully confident
+  #     ✗ flip-flop FAIL — the ticket's tests PASS on the PARENT commit
+  # with `executed {0,0}, checked:true` — a conclusion drawn from literally no
+  # evidence, and a PASS is reachable the same way whenever the parent happens
+  # to be red for an unrelated reason. The file-scoping S308 added is what makes
+  # an empty selection reachable at all.
+  #
+  # proof_zero_collected cannot see this one: its arms are the runners' OWN "no
+  # tests collected/ran" SENTENCES, and node:test prints no such sentence — it
+  # prints a NUMBER. So this check reads the number that was already recorded
+  # per invocation (PROOF_LEG_EXEC) instead of hunting another phrasing.
+  #
+  # IT IS DELIBERATELY NOT THE FIRST WORD ON A ZERO. When the PARENT executed
+  # tests and the tip executed none, that is GUTTING, and the S157 anti-gutting
+  # check below names it with both counts — a far more useful rejection than
+  # "zero". So this fires only when no such comparison is coming: either the
+  # parent executed nothing either, or its count is unreadable, or the modes
+  # mean the comparison is never made. Both ways out are INCONCLUSIVE, so no
+  # judgement is relaxed; this only decides WHICH true sentence is printed.
+  if [ -n "$ff_tip_zero" ]; then
+    local zev_gut=""
+    case "$FF_PAR_MODE" in
+      parent-own|mixed)
+        if [ -n "$FF_PAR_EXEC" ] && [ -n "$FF_TIP_EXEC" ] \
+           && [ "${FF_PAR_EXEC%% *}" = "${FF_TIP_EXEC%% *}" ] \
+           && [ "${FF_PAR_EXEC##* }" -gt 0 ] 2>/dev/null; then zev_gut=1; fi ;;
+    esac
+    if [ -z "$zev_gut" ]; then
+      local zev_par="${FF_PAR_EXEC##* }"; [ -n "$FF_PAR_EXEC" ] || zev_par="unreadable"
+      emit_event proof_leg_zero_executed implement \
+        "flip-flop INCONCLUSIVE for $t — the TIP leg's runner executed ZERO tests (parent: $zev_par), so neither leg carries evidence about the ticket" "ticket=$t" || :
+      _ff_finish "$t" "$parent" "$ffj" inconclusive \
+        "the TIP leg ran GREEN while its own runner reported executing ZERO tests (tip: 0, parent: $zev_par) — so this gate has NO evidence about the ticket in either direction: a green on nothing is not a pass, and the parent leg's colour cannot prove work that was never run. Inconclusive is never a pass.
+Nothing is necessarily wrong with the ticket's code. Either this repo's testCommand cannot SEE a test file at the scope it was handed — a filter or glob that matches nothing hands the runner an EMPTY argument list — or the declared file genuinely contains no test. Hand \"\$LCARS_TESTS_DIR\" to the runner directly (\`lcars update --fix-tests\`), or name the ticket's test files the way the existing selection expects.
+  what the TIP leg ran: $FF_TIP_CMD" "$rels"
+      return $?
+    fi
+  fi
+  # === CURE 3 (S308 fix round 3): THE SAME RULE ON THE **PARENT** LEG ========
+  # The zero-executed-green refusal above was implemented for the TIP leg only.
+  # MEASURED 22 Oct 2026 on this gate:
+  #     executed { parent: "0", tip: "1", checked: true }, parent rc 0,
+  #     parent tail `tests 0`   →   verdict FAIL,
+  #     "the ticket's tests PASS on the PARENT commit"
+  # The parent's count was read into a local and then IGNORED (that local,
+  # `ff_par_zero`, was assigned and never used anywhere in the file). Nothing
+  # ran on the parent, so "they pass there" describes a run that never happened
+  # — and that sentence sends a worker to rewrite a test that is fine.
+  #
+  # DIRECTION: this BLOCKS either way, so it is less severe than the false pass;
+  # what changes is that the record and the reason are TRUE, and the ticket is
+  # routed as "no evidence" (a fresh worker) rather than "your test asserts
+  # pre-existing behaviour" (a rewrite that cannot help).
+  #
+  # THE BOUND IS THE SAME AS THE TIP'S, and it is load-bearing: PROOF_LEG_ZERO_EXEC
+  # is only ever set on a GREEN leg (rc 0). ZERO EXECUTED ON A **RED** PARENT IS
+  # THE FLAGSHIP LEGITIMATE RED — the greenfield parent whose copy of the test
+  # DIES AT IMPORT because the module the ticket adds does not exist there yet
+  # registers no test at all, and that import death IS the red-on-parent this
+  # gate requires. So this can never reach it.
+  #
+  # NO BETTER SENTENCE IS COMING, unlike the tip's case: the S157 anti-gutting
+  # check needs the PARENT count to be > 0 to say anything, so when the parent
+  # is the zero there is nothing more specific left to print.
+  if [ -n "$ff_par_zero" ]; then
+    emit_event proof_leg_zero_executed implement \
+      "flip-flop INCONCLUSIVE for $t — the PARENT leg ran GREEN while its own runner executed ZERO tests (tip: ${FF_TIP_EXEC##* }), so red-on-parent could never have been produced there" "ticket=$t" || :
+    _ff_finish "$t" "$parent" "$ffj" inconclusive \
+      "the PARENT leg ran GREEN while its own runner reported executing ZERO tests (parent: 0, tip: ${FF_TIP_EXEC##* }) — so nothing on the parent commit was ever tested, and \"the ticket's tests pass on the parent\" would describe a run that never happened. Red-on-parent is UNPROVEN, not disproven, and inconclusive is never a pass.
+Nothing is necessarily wrong with the ticket's code. The parent leg's own selection found no test to run in the parent scratch worktree — a filter, glob or tracked-files query that matches nothing there hands the runner an EMPTY argument list, and the runner's own discovery then finds nothing either. Hand \"\$LCARS_TESTS_DIR\" to the runner directly (\`lcars update --fix-tests\`), or name the ticket's test files the way the existing selection expects.
+  what the PARENT leg ran: $FF_PAR_CMD" "$rels"
     return $?
   fi
   # THE GREEN PARENT = NO PROOF. The wording states what was ACTUALLY proven, per
@@ -12957,8 +13999,15 @@ post_commit_gate() { # ticket
 $rels
 PC_RELS_EOF
       if [ -n "$(printf '%s' "$_pcrels" | grep . || true)" ]; then
-        scope="$(intree_scope_for "$wt" "$_pcrels")"
-        out="$( cd "$run_dir" && LCARS_TESTS_DIR="$scope" bash -c "$cmd" 2>&1 )" || rc=$?
+        # S308: the ticket's DECLARED files, not the directory that happens to
+        # contain them — a flat tests/ layout made that directory the whole
+        # suite, so this gate re-ran 1255 tests to judge two. One invocation per
+        # scope; `intree_scoped_run` stops at the first failure, so the rc means
+        # exactly what it meant before.
+        intree_scopes_for "$wt" "$_pcrels" >/dev/null
+        scope="$INTREE_SCOPES"
+        proof_say_scope_kind "$INTREE_SCOPE_KIND" "$INTREE_SCOPE_WHY"
+        out="$(intree_scoped_run "$run_dir" "$cmd" "$scope")" || rc=$?
       fi
     fi
   fi
@@ -13304,20 +14353,156 @@ EOF
 # appended to the global $RETEST_FAILED list, and (when $RETEST_CAPTURE is set)
 # its combined stdout/stderr is captured to $RETEST_CAPTURE/<id>.log so the
 # reconcile author can quote the failure. Returns 0 iff every suite passed.
-# The absolute $LCARS_TESTS_DIR scope for a set of relpaths: the single file when
-# there is exactly one (precise positional filter), else the deepest COMMON ANCESTOR
-# dir of the files — so a ticket whose tests span multiple dirs re-tests
-# symmetrically here (post-commit / full-suite / reconcile). Empty rels → the tree.
-intree_scope_for() { # tree  rels(newline)
-  local tree="$1" rels="$2" n first ca
+# =============================================================================
+# THE $LCARS_TESTS_DIR SCOPE FOR A SET OF DECLARED RELPATHS (S308)
+# =============================================================================
+# WHAT A SCOPE IS FOR. Every proof leg (flip-flop tip/parent, post-commit,
+# full-suite retest, reconcile) runs the repo's testCommand with
+# $LCARS_TESTS_DIR pointing at the ticket's OWN tests, so the verdict is about
+# the ticket and nothing else. One declared file is a precise positional filter.
+#
+# THE DEFECT THIS REPLACES (B1-ROOT, measured on a real repo, 2026-10-21).
+# For TWO OR MORE declared files the scope used to be the deepest COMMON
+# ANCESTOR DIRECTORY of their dirnames. In a FLAT `tests/` layout — every module
+# directly under tests/, no tests/unit/ — that ancestor IS the tests directory,
+# so the "scoped" leg ran the ENTIRE suite: 1255 tests, 228s, terminated at the
+# 120s gate, recorded `flip-flop INCONCLUSIVE` five times running with a reason
+# that blamed a hang in the ticket's own two test files. Eight Copilot TDD
+# sessions were burned on verdicts that carried no information about the code.
+# It produced a VALID PATH, so nothing warned. (A degenerate ancestor of ""
+# collapsed even further: `${ca:+/$ca}` expanded to nothing and the scope became
+# the whole tree.)
+#
+# THE RULE NOW. A directory is a scope only when it selects NOTHING the ticket
+# did not declare. So:
+#   • 1 declared file                     → that file                 (kind: file)
+#   • n>1 whose common ancestor holds no
+#     UNDECLARED test file                → that ancestor dir     (kind: ancestor)
+#   • n>1 whose common ancestor holds
+#     other tests (the flat case), or
+#     which share no ancestor at all      → the n DECLARED FILES    (kind: files)
+#   • no declared relpaths at all         → the tree, which is the FULL SUITE,
+#                                           and it is SAID OUT LOUD    (kind: tree)
+# The nested arm is kept deliberately: a runner invoked ONCE over a directory
+# that contains exactly the ticket's tests collects them together, reports one
+# scoreboard, and is cheaper than n invocations — and the executed-count
+# comparison in the flip-flop gate reads that scoreboard. Only a WIDENING
+# directory is refused.
+#
+# WHY FILES AND NOT A MULTI-PATH $LCARS_TESTS_DIR: every testCommand LCARS
+# seeds interpolates the scope as ONE quoted argument (S148 — unquoted, a repo
+# path containing a space false-failed honest tickets). A space-separated list
+# would arrive as a single nonsense path. So a declared-files scope is run as
+# one invocation PER FILE, `&&`-joined, which needs no change to any repo's
+# existing testCommand.
+#
+# INTREE_SCOPE_KIND / INTREE_SCOPE_WHY are the RECORD of that decision (never
+# re-derived by a reader from the resulting path): the callers put them in the
+# leg's artifact and emit a named event, so a widened run is diagnosable in one
+# line instead of five sessions.
+# IT SETS GLOBALS AS WELL AS PRINTING, and a caller that needs the KIND must
+# call it WITHOUT a command substitution and read $INTREE_SCOPES — a `$( … )`
+# runs in a subshell, so the kind and the reason would be thrown away exactly
+# when they matter.
+INTREE_SCOPES=""       # newline-separated absolute scopes (also stdout)
+INTREE_SCOPE_KIND=""   # file | ancestor | files | tree
+INTREE_SCOPE_WHY=""
+intree_scopes_for() { # tree  rels(newline) → one ABSOLUTE scope per line
+  local tree="$1" rels="$2" n first ca extra rel
+  INTREE_SCOPES=""; INTREE_SCOPE_KIND=""; INTREE_SCOPE_WHY=""
   n="$(printf '%s' "$rels" | grep -c . || true)"
   first="$(printf '%s' "$rels" | grep . | head -1)"
-  [ -n "$first" ] || { printf '%s' "$tree"; return; }
-  if [ "$n" -eq 1 ]; then printf '%s/%s' "$tree" "$first"
+  if [ -z "$first" ]; then
+    INTREE_SCOPE_KIND=tree
+    INTREE_SCOPE_WHY="no declared test relpath reached this leg, so there was nothing to narrow to — it runs the FULL SUITE at $tree"
+    INTREE_SCOPES="$tree"
+  elif [ "$n" -eq 1 ]; then
+    INTREE_SCOPE_KIND=file
+    # S308 FIX ROUND 2: SAY WHAT LCARS DID, NOT WHAT IT HOPES THE RUNNER DID.
+    # Round 1's wording — "run as a precise positional filter" — asserted that
+    # the run WAS narrowed to this file. LCARS does not know that: the repo's
+    # own testCommand decides how to turn $LCARS_TESTS_DIR into a file list, and
+    # a selection inside it that matches nothing hands the runner an EMPTY
+    # argument list, after which the runner discovers its own tests. That is
+    # measured, not hypothetical (routes a–d of the 22 Oct report), and the
+    # false confidence was IN THIS SENTENCE. So the record now states the fact
+    # LCARS owns — what it handed over — and names the part it has not verified.
+    INTREE_SCOPE_WHY="one declared test file, handed to this repo's testCommand as \$LCARS_TESTS_DIR; whether the command's own file selection narrowed the run to that file is NOT verified by this record"
+    INTREE_SCOPES="$tree/$first"
   else
     ca="$(common_ancestor_dir "$rels")"
-    printf '%s%s' "$tree" "${ca:+/$ca}"
+    extra=1
+    [ -n "$ca" ] && extra="$(intree_dir_extra_tests "$tree" "$ca" "$rels")"
+    if [ -n "$ca" ] && [ "${extra:-1}" -eq 0 ]; then
+      INTREE_SCOPE_KIND=ancestor
+      INTREE_SCOPE_WHY="the $n declared test files' deepest common ancestor '$ca' holds no test file the ticket did not declare, so that directory selects exactly the ticket's tests"
+      INTREE_SCOPES="$tree/$ca"
+    else
+      if [ -n "$ca" ]; then
+        INTREE_SCOPE_WHY="the $n declared test files' deepest common ancestor '$ca' also holds other test file(s) the ticket never declared, so a directory scope would run them too (a flat tests/ layout collapses to the whole suite this way) — the leg runs the $n DECLARED FILES instead"
+      else
+        INTREE_SCOPE_WHY="the $n declared test files share no parent directory below the repo root, so a directory scope would be the whole repo — the leg runs the $n DECLARED FILES instead"
+      fi
+      INTREE_SCOPE_KIND=files
+      while IFS= read -r rel; do
+        [ -n "$rel" ] || continue
+        INTREE_SCOPES="${INTREE_SCOPES:+$INTREE_SCOPES
+}$tree/$rel"
+      done <<ITS_EOF
+$rels
+ITS_EOF
+    fi
   fi
+  printf '%s' "$INTREE_SCOPES"
+}
+
+# How many TEST-CLASSIFIED files under <tree>/<dir> the ticket did NOT declare.
+# Stops counting at 1 — the question is only "would this directory widen the
+# run?" — so it costs one bounded `find`, never a walk of a whole monorepo.
+# Provisioning and build trees are pruned (node_modules, .venv, target, …): they
+# are not authored tests, and on a repo that symlinks node_modules a find that
+# followed them would never return.
+intree_dir_extra_tests() { # tree dir rels → 0 or 1 (1 = the dir widens the run)
+  local tree="$1" dir="$2" rels="$3" root f rel
+  root="$tree${dir:+/$dir}"
+  [ -d "$root" ] || { printf 0; return 0; }
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    rel="${f#"$tree"/}"
+    proof_is_test_path "$rel" || continue
+    printf '%s\n' "$rels" | grep -Fxq -- "$rel" && continue
+    printf 1; return 0
+  done <<EOF
+$(find "$root" \( -name .git -o -name node_modules -o -name .venv -o -name venv \
+      -o -name vendor -o -name target -o -name dist -o -name build \
+      -o -name __pycache__ \) -prune -o -type f -print 2>/dev/null)
+EOF
+  printf 0
+}
+
+# The SINGLE-VALUE form, kept for any caller that can hand the runner only one
+# path: the first scope intree_scopes_for resolved. Every proof leg uses the
+# list form; this exists so a one-path caller cannot silently get a list.
+intree_scope_for() { # tree  rels(newline) → one scope
+  intree_scopes_for "$1" "$2" | head -1
+}
+
+# Run <cmd> once per SCOPE from <run_dir>, `&&`-style: stop at the first failing
+# scope and return its rc. Echoes the combined output of the invocations that
+# ran. One scope is byte-identical to the single run it replaces.
+intree_scoped_run() { # run_dir cmd scopes(newline) → output; rc = first failure
+  local run_dir="$1" cmd="$2" scopes="$3" out="" one sc rc=0
+  while IFS= read -r sc; do
+    [ -n "$sc" ] || continue
+    one="$( cd "$run_dir" && LCARS_TESTS_DIR="$sc" bash -c "$cmd" 2>&1 )" || rc=$?
+    out="${out}${one}
+"
+    [ "$rc" -eq 0 ] || break
+  done <<EOF
+$scopes
+EOF
+  printf '%s' "$out"
+  return "$rc"
 }
 
 RETEST_FAILED=""     # space-separated ticket ids that failed the last retest
@@ -13374,8 +14559,12 @@ retest_ticket_suites() { # run_dir  cmd  ordered ticketId...
 $rels
 RT_RELS_EOF
     [ -n "$(printf '%s' "$_rrels" | grep . || true)" ] || continue
-    scope="$(intree_scope_for "$run_dir" "$_rrels")"
-    out="$( cd "$trun" && LCARS_TESTS_DIR="$scope" bash -c "$cmd" 2>&1 )" || rc=$?
+    # S308: scoped to the ticket's DECLARED files (see intree_scopes_for) —
+    # same reason as the post-commit gate, and symmetric with it by design.
+    intree_scopes_for "$run_dir" "$_rrels" >/dev/null
+    scope="$INTREE_SCOPES"
+    proof_say_scope_kind "$INTREE_SCOPE_KIND" "$INTREE_SCOPE_WHY"
+    out="$(intree_scoped_run "$trun" "$cmd" "$scope")" || rc=$?
     if [ "$rc" -ne 0 ]; then
       RETEST_FAILED="${RETEST_FAILED:+$RETEST_FAILED }$id"
       [ -n "$RETEST_CAPTURE" ] && { mkdir -p "$RETEST_CAPTURE"; printf '%s\n' "$out" >"$RETEST_CAPTURE/$id.log"; }
@@ -23307,6 +24496,32 @@ FSG_EOF
   # against a mission fixture and prints its rc as a parseable token, so the
   # flip-flop / declared-edits / quality-floor / v2-result contracts are
   # exercised offline + token-free. Inert for every real subcommand.
+  # S308 test hook: the REAL scope resolver (the one every proof leg calls) over
+  # a ticket's declared test relpaths. With --sha it reads the relpaths out of
+  # the diff exactly as the flip-flop gate does; with no --sha it resolves the
+  # EMPTY set, which is the one case that genuinely cannot be narrowed — so the
+  # full-suite fallback's named event and its stated reason are provable without
+  # having to construct a repo the harness cannot scope. Prints KIND / WHY /
+  # SCOPES; emits the same event a live leg emits. Inert for real subcommands.
+  intree-scope-test)
+    locate_mission "$MISSION_ID"
+    __is_rels=""
+    [ -n "$RC_SHA" ] && __is_rels="$(proof_test_rels_in_diff "$RC_SHA" "${POSARG:-$REPO_ROOT}" existing)"
+    intree_scopes_for "${POSARG:-$REPO_ROOT}" "$__is_rels" >/dev/null
+    proof_say_scope_kind "$INTREE_SCOPE_KIND" "$INTREE_SCOPE_WHY"
+    printf 'KIND=%s\n' "$INTREE_SCOPE_KIND"
+    printf 'WHY=%s\n'  "$INTREE_SCOPE_WHY"
+    printf 'SCOPES=%s\n' "$(printf '%s' "$INTREE_SCOPES" | tr '\n' ' ')"
+    # NOT in a command substitution. resolve_gate_timeout answers by SETTING
+    # GATE_TIMEOUT_SECS/SRC/NOTE as globals, and a `$( … )` runs it in a
+    # subshell — so the number came back right while the SOURCE label was
+    # thrown away and this diagnostic printed `default` whatever the real
+    # source was. The leg path gets this right with an explicit comment; the
+    # hook missed it. A lying diagnostic is worse than none.
+    resolve_gate_timeout "${POSARG:-$REPO_ROOT}" >/dev/null
+    printf 'TIMEOUT=%s SOURCE=%s\n' "$GATE_TIMEOUT_SECS" "$GATE_TIMEOUT_SRC"
+    printf 'NOTE=%s\n' "$GATE_TIMEOUT_NOTE"
+    exit 0 ;;
   flip-flop-gate-test)
     locate_mission "$MISSION_ID"
     [ -n "$TICKET" ] || die "usage: run.sh flip-flop-gate-test --mission <id> --ticket <t> --sha <parent-sha> [worktree]"

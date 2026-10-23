@@ -3442,12 +3442,23 @@ detect_stack() {
 # `zerotests` + proof_zero_collected phrasings from skills/lcars-run/run.sh
 # (keep the two in step).
 PROBE_TIMEOUT="${LCARS_PROBE_TIMEOUT:-120}"
+# S308: PROBE_SECS — the suite's measured WALL-CLOCK. This probe is the only
+# place LCARS ever times a repo's whole suite, and it used to throw the number
+# away: on the repo this was measured against it timed out and said only "fix
+# it before relying on the
+# Implement gates", while those gates went on to kill every proof leg at the
+# 120s default, five times, with nowhere for the repo to record what it needs.
+# Measured, not estimated; recorded, not inferred.
+PROBE_SECS=0
 run_probe() {
-  local cmd="$1"
+  local cmd="$1" _t0 _t1
   PROBE_OUT="$(mktemp "${TMPDIR:-/tmp}/lcars-probe.XXXXXX")"
+  _t0="$(date +%s 2>/dev/null || echo 0)"
   ( cd "$TOPLEVEL" && perl -e 'alarm shift; exec @ARGV or exit 127' \
       "$PROBE_TIMEOUT" bash -c "$cmd" ) >"$PROBE_OUT" 2>&1
   PROBE_RC=$?
+  _t1="$(date +%s 2>/dev/null || echo 0)"
+  PROBE_SECS=$((_t1 - _t0)); [ "$PROBE_SECS" -ge 0 ] || PROBE_SECS=0
   # S147: THREE VSTest phrasings, all exiting 0 (observed, SDK 10.0.107) — a
   # filter that matches nothing, a test project with no test methods, and a run
   # whose every discovered case was SKIPPED (`[Fact(Skip=…)]`), which prints
@@ -3492,7 +3503,7 @@ run_probe() {
 report_probe() {
   case "$PROBE_OUTCOME" in
     pass)
-      echo "  ✓ PROBE COMPLETE — test systems responding: the suite ran and passed." ;;
+      echo "  ✓ PROBE COMPLETE — test systems responding: the suite ran and passed in ${PROBE_SECS}s." ;;
     fail)
       echo "  ✗ PROBE FAILED — the suite ran but reported failures (exit $PROBE_RC)."
       tail -n 5 "$PROBE_OUT" 2>/dev/null | sed 's/^/      /' ;;
@@ -3506,6 +3517,59 @@ report_probe() {
     timeout)
       echo "  ⚠ PROBE TIMED OUT — no verdict within ${PROBE_TIMEOUT}s; the suite never settled." ;;
   esac
+}
+
+# ---------------------------------------------------------------------------
+# S308: SEED THE GATE TIMEOUT THE PROBE JUST MEASURED
+# ---------------------------------------------------------------------------
+# Every Implement proof leg runs the repo's suite under a hard timeout — the
+# 120s hang protection added 2026-07-23, which STAYS 120s. A repo whose suite
+# legitimately takes longer than that had nowhere to say so, so `lcars init`
+# certified it ready and every later proof leg was killed mid-run and recorded
+# INCONCLUSIVE. The probe already knows the number. Write it down.
+#
+# WHAT IS WRITTEN: twice the measured wall-clock (headroom for a cold cache and
+# a busy machine), rounded up to the next 30s, and never below the default.
+# WHEN: only when the measured suite EXCEEDS the current default, and only when
+# the captain has not already recorded a value of his own — a measurement never
+# overwrites his number. On a PROBE TIMEOUT the suite's real length is unknown,
+# so nothing is invented: the honest recommendation is the probe's own voice.
+#
+# $LCARS_GATE_TIMEOUT_DEFAULT moves the last-resort default only. It exists so
+# the suites can prove this behaviour with a 4-second fake suite instead of
+# shipping a 120-second one, and so a machine-wide floor is possible; the
+# SHIPPED default is unchanged.
+lcars_gate_timeout_default() { # → the default gate timeout in seconds
+  local d="${LCARS_GATE_TIMEOUT_DEFAULT:-120}"
+  case "$d" in ''|*[!0-9]*) d=120 ;; esac
+  [ "$d" -gt 0 ] 2>/dev/null || d=120
+  printf '%s' "$d"
+}
+# Echoes the recommendation line(s) it printed; writes the key when it applies.
+lcars_seed_gate_timeout() { # config-file measured-secs
+  local config="$1" secs="${2:-0}" dflt want existing
+  case "$secs" in ''|*[!0-9]*) return 0 ;; esac
+  dflt="$(lcars_gate_timeout_default)"
+  [ "$secs" -gt "$dflt" ] || return 0
+  [ -f "$config" ] || return 0
+  existing="$(lcars_config_get_raw "$config" gateTimeout)"
+  case "$existing" in
+    ''|null)
+      want=$(( secs * 2 ))
+      want=$(( ((want + 29) / 30) * 30 ))
+      [ "$want" -gt "$dflt" ] || want=$(( dflt + 30 ))
+      lcars_config_set_or_add_raw "$config" gateTimeout "$want"
+      echo "  ✓ this suite takes ${secs}s, which is longer than the ${dflt}s proof-gate timeout —"
+      echo "    recorded gateTimeout=$want in .git/lcars/config.json so the Implement gates"
+      echo "    run it to completion instead of killing it. Change that number any time; an"
+      echo "    LCARS_GATE_TIMEOUT in the environment still wins over it."
+      ;;
+    *)
+      echo "  · this suite takes ${secs}s; your recorded gateTimeout=$existing"
+      echo "    (.git/lcars/config.json) is left exactly as it is."
+      ;;
+  esac
+  return 0
 }
 
 # ---------------------------------------------------------------------------

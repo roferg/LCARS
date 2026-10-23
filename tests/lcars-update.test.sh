@@ -234,6 +234,7 @@ cat >"$cfgU" <<'JSON'
   "contextFile": null,
   "testCommand": "custom-runner ${LCARS_TESTS_DIR:-.}",
   "comprehensionBudget": 1200,
+  "gateTimeout": null,
   "numberOne": {"enabled": false},
   "created": "2019-09-09T00:00:00Z"
 }
@@ -295,6 +296,7 @@ cat >"$cfgUc" <<'JSON'
   "testCommand": null,
   "worktreeSetupCommand": "my-bespoke-provision --offline",
   "comprehensionBudget": 1200,
+  "gateTimeout": null,
   "numberOne": {"enabled": false},
   "lcarsVersion": "2099.1.1",
   "created": "2018-01-01T00:00:00Z"
@@ -347,6 +349,7 @@ cat >"$cfgS105" <<'JSON'
   "testCommand": "custom-runner ${LCARS_TESTS_DIR:-.}",
   "worktreeSetupCommand": "my-bespoke-provision",
   "comprehensionBudget": 1200,
+  "gateTimeout": null,
   "numberOne": {"enabled": false},
   "lcarsVersion": "2099.1.1",
   "created": "2019-09-09T00:00:00Z"
@@ -403,6 +406,7 @@ cat >"$cfgS105c" <<'JSON'
   "testCommand": null,
   "worktreeSetupCommand": null,
   "comprehensionBudget": 1200,
+  "gateTimeout": null,
   "numberOne": {"enabled": false},
   "lcarsVersion": "2099.1.1",
   "created": "2018-01-01T00:00:00Z"
@@ -451,6 +455,7 @@ cat >"$cfgS145" <<'JSON'
   "testCommand": "bundle exec rspec --my-flags spec/only",
   "worktreeSetupCommand": null,
   "comprehensionBudget": 1200,
+  "gateTimeout": null,
   "numberOne": {"enabled": false},
   "lcarsVersion": "2099.1.1",
   "created": "2020-02-02T00:00:00Z"
@@ -506,6 +511,7 @@ s148_repo() { # testCommand → repo dir with a pre-S148 config carrying it
   "testCommand": "$esc",
   "worktreeSetupCommand": null,
   "comprehensionBudget": 1200,
+  "gateTimeout": null,
   "numberOne": {"enabled": false},
   "lcarsVersion": "2099.1.1",
   "created": "2020-02-02T00:00:00Z"

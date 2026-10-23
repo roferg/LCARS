@@ -43,6 +43,7 @@
 100644 tests/fixtures/decisions/measured-prd.md
 100644 tests/fixtures/decisions/no-questions-prd.md
 100644 tests/fixtures/lcars-state-writer-last.py
+100644 tests/fixtures/mkflatrepo.sh
 100644 tests/fixtures/plan-mockup/bypass-buried-marker.json
 100644 tests/fixtures/plan-mockup/bypass-junk-anchor.json
 100644 tests/fixtures/plan-mockup/bypass-suffix.json

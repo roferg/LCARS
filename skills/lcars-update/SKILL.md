@@ -47,8 +47,15 @@ from `lcars-common.sh` so the two can never drift.)
 
 **LOCAL** — adds any **missing** `config.json` keys with their defaults via the
 merge-preserving writer. Existing values — a customized `testCommand`, `model`,
-or `comprehensionBudget` — are kept exactly as they are. `missions/` is left
-completely untouched.
+`comprehensionBudget` or `gateTimeout` — are kept exactly as they are.
+`missions/` is left completely untouched.
+
+`gateTimeout` (seconds) is the repo's own proof-gate timeout: how long an
+Implement proof leg may run its tests before the harness terminates it as a
+hang. `null` means the 120s default. The test PROBE seeds it when it measures a
+suite slower than that default, so a legitimately slow suite is recorded once
+instead of having every proof leg killed mid-run; `LCARS_GATE_TIMEOUT` in the
+environment still overrides it.
 
 **OUTPUT** — reports what was ADDED versus what was ALREADY PRESENT. On an
 up-to-date repo it changes nothing and prints `nothing to update`.

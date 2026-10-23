@@ -361,6 +361,9 @@ if [ -n "$VERB" ]; then
       echo "  ▸ probing test systems: $TC"
       run_probe "$TC"
       report_probe
+      # S308: the probe is the one place the whole suite is TIMED — record the
+      # gate timeout it implies instead of discarding the measurement.
+      [ "$PROBE_OUTCOME" = "pass" ] && lcars_seed_gate_timeout "$CONFIG" "$PROBE_SECS"
       [ "$PROBE_OUTCOME" = "pass" ] && exit 0
       die "test probe reported $PROBE_OUTCOME; test systems are not verified."
       ;;
@@ -421,7 +424,10 @@ AMB_EOF
         echo "  ▸ probing test systems…"
         run_probe "$NEWCMD"
         report_probe
-        if [ "$PROBE_OUTCOME" = "pass" ]; then print_verdict; exit 0; fi
+        if [ "$PROBE_OUTCOME" = "pass" ]; then
+          lcars_seed_gate_timeout "$CONFIG" "$PROBE_SECS"   # S308
+          print_verdict; exit 0
+        fi
         echo "  ⚠ TEST SYSTEMS SET BUT UNVERIFIED — the command is configured, but the probe reported ${PROBE_OUTCOME}; not declaring ready."
         exit 1
       fi
@@ -515,6 +521,7 @@ AMB_EOF
       run_probe "$NEWCMD"
       report_probe
       if [ "$PROBE_OUTCOME" = "pass" ]; then
+        lcars_seed_gate_timeout "$CONFIG" "$PROBE_SECS"      # S308
         print_verdict
         exit 0
       fi
@@ -597,6 +604,20 @@ CLONE_ID="$(lcars_clone_id "$CONFIG")"
 # on, so a pretty-printed object would be truncated at its first newline. Every
 # writer of this key (`lcars xo`, the board's toggle) emits one line for the
 # same reason.
+# S308 — `gateTimeout`, the proof-gate timeout this repo needs, in SECONDS.
+# It is in the desired schema for the reason cloneId and numberOne are:
+# lcars_config_merge treats this list as the canonical schema and DELETES every
+# top-level key absent from it, so an unlisted key would be wiped the first time
+# anyone ran `lcars update` — taking the repo's recorded timeout with it and
+# silently restoring the 120s default the Implement gates were killing legs at.
+#
+# `null` means "use the default" (120s; run.sh resolves env > config > default).
+# An existing value is PRESERVED by the merge — a measurement never overwrites
+# the captain's number — and the init-time probe seeds one only when it measures
+# a suite slower than the default (lcars_seed_gate_timeout).
+GATE_TIMEOUT_VALUE="$(lcars_config_get_raw "$CONFIG" gateTimeout)"
+case "$GATE_TIMEOUT_VALUE" in ''|*[!0-9]*) GATE_TIMEOUT_VALUE=null ;; esac
+
 DESIRED_CONFIG="cloneId=\"$CLONE_ID\"
 model=\"$DEFAULT_MODEL\"
 projectName=\"$PROJECT_NAME\"
@@ -605,6 +626,7 @@ stack=$STACK_VALUE
 testCommand=null
 worktreeSetupCommand=$WTSETUP_VALUE
 comprehensionBudget=1200
+gateTimeout=$GATE_TIMEOUT_VALUE
 numberOne={\"enabled\": false}$VERSION_LINE
 created=\"$CREATED\""
 lcars_config_merge "$CONFIG" "$DESIRED_CONFIG"

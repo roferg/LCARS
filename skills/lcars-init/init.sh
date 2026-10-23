@@ -460,6 +460,20 @@ fi
 # on, so a pretty-printed object would be truncated at its first newline. Every
 # writer of this key (`lcars xo`, the board's toggle) emits one line for the
 # same reason.
+# S308 — `gateTimeout`, the proof-gate timeout this repo needs, in SECONDS.
+# It is in the desired schema for the reason cloneId and numberOne are:
+# lcars_config_merge treats this list as the canonical schema and DELETES every
+# top-level key absent from it, so an unlisted key would be wiped the first time
+# anyone ran `lcars update` — taking the repo's recorded timeout with it and
+# silently restoring the 120s default the Implement gates were killing legs at.
+#
+# `null` means "use the default" (120s; run.sh resolves env > config > default).
+# An existing value is PRESERVED by the merge — a measurement never overwrites
+# the captain's number — and the init-time probe seeds one only when it measures
+# a suite slower than the default (lcars_seed_gate_timeout).
+GATE_TIMEOUT_VALUE="$(lcars_config_get_raw "$CONFIG" gateTimeout)"
+case "$GATE_TIMEOUT_VALUE" in ''|*[!0-9]*) GATE_TIMEOUT_VALUE=null ;; esac
+
 DESIRED_CONFIG="cloneId=\"$CLONE_ID\"
 model=\"$DEFAULT_MODEL\"$WORKERBIN_LINE
 projectName=\"$PROJECT_NAME\"
@@ -468,6 +482,7 @@ stack=$STACK_VALUE
 testCommand=$TESTCMD_VALUE
 worktreeSetupCommand=$WTSETUP_VALUE
 comprehensionBudget=1200
+gateTimeout=$GATE_TIMEOUT_VALUE
 numberOne={\"enabled\": false}$VERSION_LINE
 created=\"$CREATED\""
 if [ "$DRY_RUN" -eq 1 ]; then
@@ -599,7 +614,18 @@ if [ "${LCARS_TESTREADY_STATUS:-}" = "ready" ] && [ -z "${LCARS_INIT_SKIP_PROBE:
   run_probe "$LCARS_TESTREADY_TESTCMD"
   report_probe
   case "$PROBE_OUTCOME" in
-    pass) echo "  ✓ TEST SYSTEMS ONLINE — verified by a live run; missions will be proof-gated with: $LCARS_TESTREADY_TESTCMD" ;;
+    pass) echo "  ✓ TEST SYSTEMS ONLINE — verified by a live run; missions will be proof-gated with: $LCARS_TESTREADY_TESTCMD"
+          # S308: the probe just TIMED this repo's whole suite. If it is slower
+          # than the proof-gate timeout, record that here rather than leave every
+          # Implement leg to be killed mid-run and recorded INCONCLUSIVE.
+          lcars_seed_gate_timeout "$CONFIG" "$PROBE_SECS" ;;
+    timeout)
+          echo "    The suite did not finish inside ${PROBE_TIMEOUT}s, so LCARS cannot tell whether it is"
+          echo "    SLOW or HUNG, and it will not guess. If it is simply slow, time it yourself and"
+          echo "    record that in .git/lcars/config.json as \`gateTimeout\` (seconds) — the Implement"
+          echo "    gates kill a proof leg at $(lcars_gate_timeout_default)s by default and record it INCONCLUSIVE."
+          echo "    Missions are proof-gated on this command, so fix it before relying on the"
+          echo "    Implement gates: \`lcars update --fix-tests\` repairs the common causes." ;;
     *)    echo "    Missions are proof-gated on this command, so fix it before relying on the"
           echo "    Implement gates: \`lcars update --fix-tests\` repairs the common causes." ;;
   esac
