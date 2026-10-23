@@ -15649,6 +15649,15 @@ escalate_full_suite_regression() { # reason  ordered ticketId...
   # parked-green one it was wrongly borrowing. A worker DID go out, so the
   # 0-dispatch wording is wrong — but it came back with no result at all, so
   # "PASSED its proof gates" is a false claim, and it was the first thing he read.
+  # S320 (D18): the reconcile that went GREEN and did not LAND, over a gate that
+  # then passed WITHOUT it. ¶1 must not borrow any of the stories below: the
+  # reconcile did NOT fail to clear the break (it passed every gate), nothing was
+  # discarded for a park, and the worker did produce a result. What is false here
+  # is the GREEN — and this is the one stop where the harness is telling him that
+  # its own last measurement does not mean what it says, so it comes first and
+  # does not depend on the victims line resolving.
+  elif [ "${SELFHEAL_STOP_REASON:-}" = heal-unverified ]; then
+    summary="A test that was green when it was built no longer passes on the branch${victims:+ — $victims}. The harness's reconcile DID run and went GREEN, but its commit would not LAND — so the harness went and READ THE BRANCH TIP ITSELF, looking for the ticket's own declared proof test(s) there and re-running them, and ${SELFHEAL_UNVERIFIED_VERDICT:-the repair could NOT be verified on the branch}: ${SELFHEAL_UNVERIFIED_WHY:-the tip could not be read}. The full-suite gate's green therefore is not evidence the repair worked, and the harness refuses to call this healed. READ THE BRANCH TIP YOURSELF before you trust it: the regression may still be live there. Free whatever holds the branch, then reply with how to reconcile, send the mission back to re-fix, or drop one."
   elif [ -n "$victims" ] && [ "${SELFHEAL_STOP_REASON:-}" = worker-no-result ]; then
     summary="A test that was green when it was built no longer passes on the branch — $victims. A reconcile worker WAS dispatched and it produced NO RESULT: no result file, no commit, no proof gate was ever run — so nothing was rebuilt, nothing passed, and nothing was accomplished. The regression is still live on the branch and no cause has been established. Repair the worker first (below); answering this gate on its own will only send another worker that fails the same way."
   elif [ -n "$victims" ] && [ "${SELFHEAL_STOP_REASON:-}" = mission-parked ]; then
@@ -15687,6 +15696,13 @@ WHAT ACTUALLY STOPPED THE SELF-HEAL: the mission branch is ${SELFHEAL_DRIFT_BEHI
       summary="$summary
 
 WHAT ACTUALLY STOPPED THE SELF-HEAL: ${SELFHEAL_APPLY_FAILURES:-0} rebuild(s) were built and green and then would not LAND on the mission branch. That is an infrastructure fault, not a defect another worker session can fix, and ${SELFHEAL_ROUNDS_SPENT:-0} of $SELFHEAL_CAP self-heal round(s) were spent.${SELFHEAL_REANCHOR_FIX:+ Re-anchor the branch first: $SELFHEAL_REANCHOR_FIX} $(selfheal_recovery_order "free whatever holds the mission branch")" ;;
+    # S320 (D18): the same apply failure, but the gate that followed it went
+    # GREEN. Before S320 that green was taken as a heal unconditionally and this
+    # mission advanced to Verify with the regression live and the inbox empty.
+    heal-unverified)
+      summary="$summary
+
+WHAT ACTUALLY STOPPED THE SELF-HEAL: ${SELFHEAL_APPLY_FAILURES:-0} rebuild(s) were built and green and would not LAND on the mission branch, and the full-suite gate then went GREEN anyway. The harness does NOT take that green on trust: it checks the tip for the ticket's own DECLARED proof test(s) and re-runs them there, and here ${SELFHEAL_UNVERIFIED_VERDICT:-the repair could NOT be verified} — ${SELFHEAL_UNVERIFIED_WHY:-the tip could not be read}. That matters because an unlanded rebuild can leave the ticket's declaration naming a file the branch does not have, in which case the gate skips that ticket and passes without testing it at all. So no heal is claimed and no defect round was charged (${SELFHEAL_ROUNDS_SPENT:-0} of $SELFHEAL_CAP spent). What is broken is the LANDING, not the code. (Where that same check FINDS the ticket's declared test on the branch and it PASSES, the harness resolves the mission itself instead of asking you — this stop means it could not.)${SELFHEAL_REANCHOR_FIX:+ Re-anchor the branch first: $SELFHEAL_REANCHOR_FIX} $(selfheal_recovery_order "free whatever holds the mission branch, and re-run the failing suite at the branch tip yourself")" ;;
     # S310 FIX 2 D1: the GREEN reconcile that could not land. Distinguished from
     # ticket-session-cap by a NEW ticket_flagged event — present there, absent
     # here. Nothing was flagged, no defect verdict was reached, and no round is
@@ -15758,7 +15774,7 @@ READ THE ROUNDS TOGETHER: they each failed for a DIFFERENT reason (${SELFHEAL_RO
   # still there once the infrastructure is cleared. It was legible only by
   # subtracting two numbers out of a paragraph.
   case "${SELFHEAL_STOP_REASON:-}" in
-    apply-failed|base-drift|stale-attribution|contradiction|attempt-cap|no-regressor|mission-parked)
+    apply-failed|base-drift|stale-attribution|contradiction|attempt-cap|no-regressor|mission-parked|heal-unverified)
       if [ "${SELFHEAL_ROUNDS_SPENT:-0}" = 0 ]; then
         summary="$summary
 
@@ -15784,6 +15800,15 @@ YOUR REPAIR BUDGET IS UNTOUCHED: 0 of $SELFHEAL_CAP self-heal round(s) were spen
   case "${SELFHEAL_STOP_REASON:-}" in
     apply-failed)
       what="full-suite regression — the rebuild would not LAND (infrastructure, not a defect); $spent" ;;
+    # S320 (D18): this stop's whole point is that the last green was not a heal,
+    # so the FIRST line he reads has to say that and nothing friendlier.
+    # S320 FIX 1: …but it says only what was MEASURED. This line used to assert
+    # "the repair is NOT on the branch" on every unverified path, and a tester
+    # read it over a tip whose source was repaired and whose own test exited 0.
+    # The verdict is now the one the evidence supports — see
+    # selfheal_repair_on_branch.
+    heal-unverified)
+      what="full-suite regression — the gate went GREEN but ${SELFHEAL_UNVERIFIED_VERDICT:-the repair could NOT be verified on the branch}, so NO heal is claimed; $spent" ;;
     base-drift)
       what="full-suite regression — self-heal REFUSED, the branch is behind its base; $spent" ;;
     stale-attribution)
@@ -15991,6 +16016,90 @@ JSON
 selfheal_branch_tip() { # branch
   [ -n "${1:-}" ] || return 0
   "$GIT_BIN" rev-parse --verify -q "refs/heads/$1" 2>/dev/null || true
+}
+
+# S320: IS THE TICKET'S REPAIR IN EFFECT ON THE BRANCH? Positive evidence, read
+# at the tip — never inferred from a gate verdict, which is the whole of D18.
+# Consulted ONLY after a replay FAILED, to answer the one case the apply-failure
+# comment below was written to protect: the work landed by ANOTHER ROUTE (a
+# sibling replay, or the captain's own checkout committing the fix while it held
+# the branch — the very thing that made the landing worktree unattachable).
+#
+# THIS REPLACES THE SHA-IDENTITY CHECK that stood here (`merge-base
+# --is-ancestor` on the rebuild's own commit), and replaces rather than joins it
+# for two reasons. It never fired on any constructible case: the replay
+# cherry-picks with --allow-empty, so a patch already on the branch SUCCEEDS
+# there and never reaches this point, and `.commit-sha` is rewritten every round
+# so nothing can pre-place that object. And where the two could differ they
+# would DISAGREE — commit identity is a CORRELATE of "is the branch actually
+# fixed", and an unreachable commit whose effect is present is exactly the false
+# stop this cures. One check, and it measures the effect. (ORCHESTRATION.md:
+# inspect the thing, do not measure a correlate.) It is also precisely the check
+# the escalation text already asks the captain to perform by hand, so the
+# harness does it instead of asking him.
+#
+# BOTH LEGS ARE LOAD-BEARING, and the measurement says which catches what:
+#   PRESENT at the tip — an unlanded rebuild rewrites the ticket's proof
+#     snapshot to name a file that exists ONLY in that commit (measured: the
+#     snapshot afterwards named `tests/t-002-regression.test.js` and nothing
+#     else), so the full-suite gate finds nothing of that ticket's to re-run,
+#     SKIPS it, and goes green VACUOUSLY. That is D18 — absent, no claim.
+#   PASSES at the tip — a declared test that IS on the branch and FAILS there is
+#     a branch still broken, whatever any gate said.
+# Cost: one `git cat-file -e` per declared file plus ONE scoped re-run, through
+# the same selfheal_failing_set_green / retest_ticket_suites machinery every
+# other re-check in this file uses. That call also sets
+# SELFHEAL_RECHECK_UNMEASURED; every caller of this helper either returns or
+# breaks out of the round loop, so no later iteration reads a stale value.
+# S320 FIX 1 — THE HARNESS MAY NOT ASSERT WHAT IT HAS NOT ESTABLISHED. The first
+# cut of this cure printed one blanket headline, "the repair is NOT on the
+# branch", on every unverified path — including paths where it had established
+# no such thing. These two globals are the fix: VERDICT is the strongest claim
+# the evidence actually supports, WHY is the observation itself. Every surface
+# that reports this stop reads them instead of asserting.
+SELFHEAL_UNVERIFIED_WHY=""      # what was OBSERVED when a repair could NOT be verified
+SELFHEAL_UNVERIFIED_VERDICT=""  # the strongest claim that observation supports
+selfheal_repair_on_branch() { # branch  ticketId → 0 = the ticket's declared proof PASSES at the tip
+  local branch="${1:-}" id="${2:-}" rels rel missing=""
+  SELFHEAL_UNVERIFIED_WHY=""; SELFHEAL_UNVERIFIED_VERDICT=""
+  if [ -z "$branch" ] || [ -z "$id" ]; then
+    SELFHEAL_UNVERIFIED_VERDICT="the harness could NOT check whether the repair is on the branch"
+    SELFHEAL_UNVERIFIED_WHY="there is no mission branch to read, so nothing could be checked at a tip"
+    return 1
+  fi
+  if ! "$GIT_BIN" show-ref --verify --quiet "refs/heads/$branch"; then
+    SELFHEAL_UNVERIFIED_VERDICT="the harness could NOT check whether the repair is on the branch"
+    SELFHEAL_UNVERIFIED_WHY="the mission branch '$branch' does not exist, so nothing could be checked at its tip"
+    return 1
+  fi
+  rels="$(proof_snapshot_rels "$id")"
+  if [ -z "$(printf '%s' "$rels" | grep . || true)" ]; then
+    SELFHEAL_UNVERIFIED_VERDICT="the harness could NOT check whether the repair is on the branch"
+    SELFHEAL_UNVERIFIED_WHY="ticket $id declares no proof test of its own, so nothing could show whether its repair is in effect"
+    return 1
+  fi
+  while IFS= read -r rel; do
+    [ -n "$rel" ] || continue
+    "$GIT_BIN" cat-file -e "refs/heads/$branch:$rel" 2>/dev/null \
+      || missing="${missing:+$missing }$rel"
+  done <<SH_REL_EOF
+$rels
+SH_REL_EOF
+  if [ -n "$missing" ]; then
+    # THE ONE PATH THAT MAY SAY "ABSENT", because this is where it was measured.
+    SELFHEAL_UNVERIFIED_VERDICT="the repair is NOT on the mission branch"
+    SELFHEAL_UNVERIFIED_WHY="ticket $id's declared proof test(s) $missing are NOT at the tip of '$branch', so the gate had nothing of $id's to re-run and SKIPPED it — its green never touched the repair"
+    return 1
+  fi
+  selfheal_failing_set_green "$id" && return 0
+  if [ -n "${SELFHEAL_RECHECK_UNMEASURED:-}" ]; then
+    SELFHEAL_UNVERIFIED_VERDICT="the harness could NOT check whether the repair is on the branch"
+    SELFHEAL_UNVERIFIED_WHY="ticket $id's declared proof test(s) are at the tip of '$branch' but could NOT be re-run there — ${SELFHEAL_RECHECK_UNMEASURED}"
+  else
+    SELFHEAL_UNVERIFIED_VERDICT="the repair is NOT in effect on the mission branch"
+    SELFHEAL_UNVERIFIED_WHY="ticket $id's declared proof test(s) ARE at the tip of '$branch' and FAIL when re-run there, so that branch is still broken whatever the gate said"
+  fi
+  return 1
 }
 
 # BASE DRIFT BLOCKS A SELF-HEAL INSTEAD OF INFORMING IT. There is ONE
@@ -16390,9 +16499,15 @@ $(cat "$SELFHEAL_LAST_REASON")" \
     # SAME mutex-protected landing replay every other commit uses — the old inline
     # `checkout $branch` here is what left the captain's checkout stranded on the
     # mission branch after every heal (root-tree sovereignty).
-    local sha applied=1
+    # S320: `landing` is the RECORD of what happened to the commit, in the three
+    # states that are actually different — `none` (there was nothing to land),
+    # `landed` (it is on the branch), `absent` (something needed to land and did
+    # not). `applied` already held two of those and the heal decision below read
+    # neither; see the S320 note there.
+    local sha applied=1 landing=none
     sha="$(cat "$(ticket_dir "$regressor")/.commit-sha" 2>/dev/null || true)"
     if [ -n "$sha" ] && [ -n "$branch" ] && "$GIT_BIN" show-ref --verify --quiet "refs/heads/$branch"; then
+      landing=landed
       if ! replay_ticket_commit "$branch" "$sha" "$regressor"; then
         # S310: AN APPLY FAILURE IS AN INFRASTRUCTURE OUTCOME, NOT A DEFECT
         # ROUND. The rebuild is built and green — the live run said exactly that
@@ -16402,6 +16517,7 @@ $(cat "$SELFHEAL_LAST_REASON")" \
         # The ticket is named only as the owner of the commit; no defect is
         # attributed to it, because none was established.
         applied=0
+        landing=absent
         round=$((round - 1)); SELFHEAL_ROUNDS_SPENT="$round"
         SELFHEAL_APPLY_FAILURES=$((SELFHEAL_APPLY_FAILURES + 1))
         emit_event selfheal_apply_failed implement \
@@ -16409,6 +16525,10 @@ $(cat "$SELFHEAL_LAST_REASON")" \
           "ticket=$regressor" "attempt=$attempt" "roundsSpent=$SELFHEAL_ROUNDS_SPENT" \
           "applyFailures=$SELFHEAL_APPLY_FAILURES" "tip=${SELFHEAL_TIP:-}" || :
         selfheal_ledger_write apply-failed
+        # S320: whether the work reached the branch ANYWAY — the one case the
+        # comment below protects — is asked at the HEAL DECISION, not here,
+        # because the question is what the gate's green is worth and the gate
+        # has not run yet. See selfheal_repair_on_branch there.
       fi
     fi
 
@@ -16416,13 +16536,73 @@ $(cat "$SELFHEAL_LAST_REASON")" \
     # the gate, not the harness's guess, is what decides whether the branch is
     # clear — the work may have landed by another route, or the regression may
     # have cleared on its own, which is precisely what the live run missed.)
+    #
+    # S320 (D18, measured 2026-10-22/23 — the most serious finding of that
+    # night): THAT IS TRUE OF EVERYTHING EXCEPT THE ONE THING THE GATE CANNOT
+    # SEE. `applied` was computed above and consulted NOWHERE here, so a rebuild
+    # that was built, went green and would NOT LAND was reported as
+    # `selfheal_ok`, the ledger recorded "healed", the mission advanced to
+    # VERIFY and NOTHING was written to the inbox — while at the branch tip the
+    # source was still broken and the ticket's own test exited 1. The gate's
+    # green was not even evidence that the branch was clear: the gate re-runs
+    # each ticket's DECLARED tests, and this rebuild's declaration named a file
+    # that only existed in the commit that never landed, so the ticket was
+    # SKIPPED and the gate passed vacuously. A gate that never ran the repair
+    # cannot be evidence the repair worked.
+    #
+    # So the gate still decides, EXCEPT that a heal is only CLAIMED when the
+    # harness can show there was nothing to land (`none`) or that it landed
+    # (`landed`). The protected case survives intact: a regression that cleared
+    # on its own with nothing to land still resolves honestly — and the message
+    # now says WHICH of the three it was, instead of one sentence for all of
+    # them. This trades a possible FALSE STOP (parking work that was fine, which
+    # costs a session and arrives with a question he can answer) for the FALSE
+    # HEAL above (which ships a live break AND empties the inbox so nobody
+    # looks). That direction is deliberate.
     fssig="$MISSION_DIR/full-suite-signal.txt"; rm -f "$fssig"
     if FULL_SUITE_SIGNAL="$fssig" full_suite_gate $ordered; then
       rm -f "$fssig"
-      emit_event selfheal_ok implement "self-heal succeeded in round $round — every suite passes again" \
-        "ticket=$regressor" "round=$round"
-      SELFHEAL_STOP_REASON="healed"
-      selfheal_ledger_write healed
+      if [ "$landing" = absent ]; then
+        # S320 FIX 1 — BEFORE PARKING, INSPECT THE THING. The first cut of this
+        # cure parked on `absent` alone, and `absent` is a fact about THE
+        # COMMIT, not about the branch: measured 2026-10-23, a run whose rebuild
+        # could not land while an unrelated commit repaired the break ON the
+        # branch was parked awaiting-human with a headline asserting "the repair
+        # is NOT on the branch" — while the tip read `=> true` and the ticket's
+        # own test exited 0 there. That is a FALSE STOP, in exactly the case the
+        # comment above was written to protect. So ask the branch: are the
+        # ticket's DECLARED proof tests at the tip, and do they PASS there? If
+        # they do, the repair is in effect however it arrived, and that resolves
+        # under its OWN reason (`healed-elsewhere`) — never by borrowing
+        # `healed`'s "the rebuild landed" story. If they are ABSENT, the gate
+        # skipped the ticket and its green is VACUOUS: park, exactly as before.
+        if selfheal_repair_on_branch "$branch" "$regressor"; then
+          landing=elsewhere
+        else
+          # ONE STOP, ONE STOP EVENT (S310 FIX 1 D6): set the reason, record it,
+          # and leave the prose to the single selfheal_exhausted detail built
+          # after the loop — exactly as the apply-failed stop does.
+          SELFHEAL_STOP_REASON="heal-unverified"
+          selfheal_ledger_write heal-unverified
+          break
+        fi
+      fi
+      local healsay="self-heal succeeded in round $round — $regressor's rebuild LANDED on '$branch' and every suite passes again"
+      case "$landing" in
+        none)
+          healsay="self-heal succeeded in round $round — NO commit needed to land (the rebuild produced none) and every suite passes again" ;;
+        elsewhere)
+          healsay="self-heal succeeded in round $round — $regressor's own rebuild did NOT land, but $regressor's declared test(s) ARE at the tip of '$branch' and PASS when re-run there, so the repair reached the branch by another route; every suite passes again" ;;
+      esac
+      emit_event selfheal_ok implement "$healsay" \
+        "ticket=$regressor" "round=$round" "landing=$landing"
+      if [ "$landing" = elsewhere ]; then
+        SELFHEAL_STOP_REASON="healed-elsewhere"
+        selfheal_ledger_write healed-elsewhere
+      else
+        SELFHEAL_STOP_REASON="healed"
+        selfheal_ledger_write healed
+      fi
       return 0
     fi
     [ -f "$fssig" ] && cp "$fssig" "$SELFHEAL_LAST_REASON"
@@ -16457,6 +16637,10 @@ $(cat "$SELFHEAL_LAST_REASON")" \
       exh_detail="self-heal STOPPED after $SELFHEAL_APPLY_FAILURES failed attempt(s) to LAND a rebuild, WITHOUT exhausting its ${SELFHEAL_CAP}-round budget — every attempt produced green work that would not apply to '$branch', which is an infrastructure fault and not something another worker session can fix, and ${SELFHEAL_ROUNDS_SPENT} of $SELFHEAL_CAP defect round(s) were spent.${SELFHEAL_REANCHOR_FIX:+ Re-anchor first: $SELFHEAL_REANCHOR_FIX} Escalating." ;;
     attempt-cap)
       exh_detail="self-heal STOPPED at its attempt backstop — ${SELFHEAL_ROUNDS_SPENT} of $SELFHEAL_CAP defect round(s) were spent. Escalating." ;;
+    # S320: the stop that used to be a selfheal_ok. The gate went GREEN and the
+    # repair is NOT on the branch, so the green says nothing about the repair.
+    heal-unverified)
+      exh_detail="self-heal STOPPED WITHOUT claiming a heal — $SELFHEAL_APPLY_FAILURES rebuild(s) were built and green and would not LAND on '$branch', the full-suite gate then PASSED anyway, and a check of the tip for the ticket's own declared proof test(s) found that ${SELFHEAL_UNVERIFIED_VERDICT:-the repair could NOT be verified there} — ${SELFHEAL_UNVERIFIED_WHY:-the tip could not be read}. A gate that never ran the repair is not evidence the repair worked, so no heal is claimed and no defect round was charged for it (${SELFHEAL_ROUNDS_SPENT} of $SELFHEAL_CAP spent). What is broken is the LANDING, not the code. CHECK THE BRANCH TIP YOURSELF before trusting any green.${SELFHEAL_REANCHOR_FIX:+ Re-anchor first: $SELFHEAL_REANCHOR_FIX} Escalating." ;;
     *)
       [ -n "$SELFHEAL_MODE_SHIFT" ] && \
         exh_detail="self-heal exhausted $SELFHEAL_CAP round(s) — the rounds did NOT fail the same way, which points at a structural problem rather than one reducible regression, escalating" ;;

@@ -240,6 +240,42 @@ if [ -z "${RIG_WORKER_BAD:-}" ]; then
   printf 'exports.ok = () => true;\n' >"$mine"
   [ "${RIG_TOGGLE:-0}" = 1 ] && printf 'exports.ok = () => false;\n' >"$theirs"
 fi
+# S320 / D18 — $RIG_WORKER_NEWTEST: the worker writes a NEW regression test file
+# OF ITS OWN instead of restating the ticket's, declares it in `newTests`, and
+# never touches the ticket's existing test. Every proof gate is satisfied
+# HONESTLY (red on the parent where $mine is broken, green on the tip, declared,
+# a new test file in the diff) — this is not a cheat, it is what a real model
+# spontaneously did on 2026-10-22. The consequence is the whole point: the
+# ticket's proof-tests snapshot is REWRITTEN to name a file that exists only in
+# this rebuild, so if the rebuild never lands, the full-suite gate has no file
+# to re-run for that ticket and SKIPS it — going green over a branch whose own
+# test still exits 1.
+if [ -n "${RIG_WORKER_NEWTEST:-}" ]; then
+  cat >"tests/$att-regression.test.js" <<JS
+const { test } = require('node:test');
+const assert = require('node:assert');
+const { ok } = require('$rel');
+// reconcile pass $n — a NEW regression guard, declared with its reason.
+test('$att regression guard', () => { assert.strictEqual(ok(), true); });
+JS
+  [ -n "${RIG_AFTER_WORKER:-}" ] && bash -c "$RIG_AFTER_WORKER" >/dev/null 2>&1
+  # DECLARED THE SAME WAY the restating worker above declares its file — in
+  # `testEdits`, WITH A REASON. That is what the harness's own contract asks for
+  # and it is the declaration channel the pre-merge drift check reads
+  # (mission_declared_edit_paths globs test-edits.json; `newTests` is NOT in it).
+  # It matters: with the file declared only under `newTests`, an unlanded
+  # rebuild makes the full-suite gate see an UNDECLARED drift and `die` LOUDLY —
+  # wrong, but honest. Declared here, the drift is forgiven, the file is simply
+  # absent, the ticket is SKIPPED, and the gate goes green over a broken branch.
+  cat >"${LCARS_WORK_OUT:?}/result.json" <<JSON
+{ "ticketId": "$att", "passed": true, "attempts": 1,
+  "summary": "reconcile: repaired $mine and added a regression guard of its own",
+  "newTests": [],
+  "testEdits": [ { "path": "tests/$att-regression.test.js", "reason": "new regression guard for the break in $mine" } ],
+  "flipFlop": "expected" }
+JSON
+  exit 0
+fi
 # An HONEST restatement of the ticket's own test — same assertion, same test
 # count, DECLARED. The quality floor requires a new or changed test file in the
 # diff, and the flip-flop gate then has something to prove: red on the parent
@@ -343,6 +379,42 @@ PY
 }
 # The FIRST line he reads.
 headline() { printf '%s\n' "$1" | grep '^IMPLEMENT:' | head -1; }
+
+# S320: GROUND TRUTH, READ AT THE BRANCH TIP — never off a harness claim. The
+# whole D18 defect is that `selfheal_ok` was not evidence of anything, so every
+# assertion about whether the branch is actually repaired reads git, or runs the
+# ticket's own test by hand in a throwaway DETACHED worktree at that tip (a
+# detached cut works even while something else holds the branch, which is the
+# condition that makes the apply fail in the first place).
+sfield() { # base field → state.json field, off disk
+  "${LCARS_PYTHON_BIN:-python3}" - "$1/repo/.git/lcars/missions/$MID/state.json" "$2" <<'PY' 2>/dev/null
+import json, sys
+try:
+    d = json.load(open(sys.argv[1]))
+except Exception:
+    sys.exit(0)
+v = d.get(sys.argv[2])
+sys.stdout.write("" if v is None else str(v))
+PY
+}
+tip_blob() { # base relpath → the file's content AT THE BRANCH TIP (empty if absent)
+  git -C "$1/repo" show "lcars/$MID:$2" 2>/dev/null
+}
+tip_has() { # base relpath → 0 when the path exists at the branch tip
+  git -C "$1/repo" cat-file -e "lcars/$MID:$2" 2>/dev/null
+}
+handrun() { # base relpath → the rc of running that test BY HAND at the branch tip
+  # `local` expands ALL of its arguments before it assigns any of them, so $wt
+  # cannot be derived from $b on the same line (set -u kills the suite).
+  local b="$1" rel="$2" rc=0 wt
+  wt="$b/handcheck"
+  rm -rf "$wt"
+  git -C "$b/repo" worktree add -q --detach "$wt" "lcars/$MID" >/dev/null 2>&1 || return 99
+  ( cd "$wt" && node --test "$rel" >/dev/null 2>&1 ) || rc=$?
+  git -C "$b/repo" worktree remove --force "$wt" >/dev/null 2>&1 || rm -rf "$wt"
+  git -C "$b/repo" worktree prune >/dev/null 2>&1 || :
+  return "$rc"
+}
 
 # ===========================================================================
 # 0. THE PRODUCT WORKS AT ALL: a real self-heal runs on this fixture and its
@@ -610,6 +682,30 @@ grep -q '"type":"selfheal_attribution"' "$EV5" 2>/dev/null \
 grep -q '"type":"selfheal_ok"' "$EV5" 2>/dev/null \
   && ok "5f. the mission healed without a single worker session" \
   || bad "5f. no selfheal_ok after the stale attribution: $(printf '%s' "$DRIVE_OUT" | tail -2)"
+# S320 BEHAVIOUR 4. This IS the case the apply-failure comment was written to
+# protect — a regression that cleared for an unrelated reason, with NOTHING to
+# land — and it must still resolve honestly after D18's fix. It must also say
+# WHICH of the two it was, because "self-heal succeeded" over a repair that was
+# never applied is exactly the sentence D18 turned into a live break.
+[ "$(led "$B5" stopReason)" = healed-stale ] \
+  && ok "5g. a regression that cleared ON ITS OWN resolves under its own stop reason: healed-stale" \
+  || bad "5g. ledger stopReason='$(led "$B5" stopReason)' — expected healed-stale"
+[ "$(led "$B5" applyFailures)" = 0 ] \
+  && ok "5h. …with ZERO apply failures, because nothing ever needed to land" \
+  || bad "5h. ledger applyFailures='$(led "$B5" applyFailures)' on a path where nothing was built"
+OK5="$(grep '"type":"selfheal_ok"' "$EV5" 2>/dev/null | head -1)"
+case "$OK5" in
+  *"NO worker session"*)
+    ok "5i. …and the message names WHICH of the two it was: no worker ran, nothing was landed" ;;
+  *) bad "5i. the heal message does not distinguish 'nothing to land' from a landed repair: $(printf '%s' "$OK5" | cut -c1-240)" ;;
+esac
+case "$OK5" in
+  *LANDED*) bad "5j. it claims a rebuild LANDED on a path where nothing was ever built" ;;
+  *) ok "5j. …and it claims no rebuild landed" ;;
+esac
+[ "$(sfield "$B5" stage)" = verify ] \
+  && ok "5k. …and an honest resolution still ADVANCES the mission to Verify" \
+  || bad "5k. a regression that cleared on its own no longer advances: stage='$(sfield "$B5" stage)'"
 
 # ===========================================================================
 # 7. TWO ROUNDS, TWO DIFFERENT FAILURE MODES → the escalation SAYS SO.
@@ -1040,6 +1136,309 @@ for VAR in crash silent; do
 done
 
 # ===========================================================================
+# 16. S320 — THE CONTROL, AND IT IS WRITTEN FIRST ON PURPOSE.
+#
+#     A GENUINE heal must still heal and must still advance. Breaking this is
+#     the real risk of the D18 fix, so the control is the SAME worker shape as
+#     section 17 — it writes a new declared regression test file of its own —
+#     with exactly ONE variable changed: nothing holds the mission branch, so
+#     the rebuild LANDS. Everything is read at the branch tip.
+# ===========================================================================
+echo "-- 16. S320 CONTROL: a rebuild that LANDS is still a heal, and still advances --"
+B16="$(mkrig)"; mkworker "$B16"
+drive "$B16" LCARS_SELFHEAL_CAP=3 RIG_WORKER_NEWTEST=1
+EV16="$(ev_of "$B16")"
+[ "$(tdlog "$B16")" -ge 1 ] 2>/dev/null \
+  && ok "16-pre. the control really dispatched a reconcile worker" \
+  || bad "16-pre. no worker ran — the control is vacuous: $(printf '%s' "$DRIVE_OUT" | tail -3)"
+grep -q '"type":"selfheal_apply_failed"' "$EV16" 2>/dev/null \
+  && bad "16-pre2. the control's apply FAILED — it is no longer a control" \
+  || ok "16-pre2. and its apply succeeded — nothing held the branch"
+grep -q '"type":"selfheal_ok"' "$EV16" 2>/dev/null \
+  && ok "16a. a landed rebuild still emits selfheal_ok" \
+  || bad "16a. the fix broke a genuine heal — no selfheal_ok: $(grep -o '"type":"selfheal[a-z_]*"' "$EV16" 2>/dev/null | sort -u | tr '\n' ' ')"
+[ "$(led "$B16" stopReason)" = healed ] \
+  && ok "16b. …and the ledger still records stopReason healed" \
+  || bad "16b. ledger stopReason='$(led "$B16" stopReason)' — expected healed"
+[ "$(sfield "$B16" stage)" = verify ] \
+  && ok "16c. …and the mission still ADVANCES to Verify" \
+  || bad "16c. a genuine heal no longer advances: stage='$(sfield "$B16" stage)'"
+[ -z "$(sfield "$B16" awaitingHuman)" ] && [ -z "$(pq "$B16")" ] \
+  && ok "16d. …and no human gate is raised on a heal that really healed" \
+  || bad "16d. a genuine heal parked the mission: awaitingHuman='$(sfield "$B16" awaitingHuman)'"
+# GROUND TRUTH at the tip — the branch really is repaired.
+case "$(tip_blob "$B16" src/b.js)" in
+  *"=> true"*) ok "16e. GROUND TRUTH: src/b.js at the branch tip is repaired" ;;
+  *) bad "16e. the branch tip is NOT repaired: $(tip_blob "$B16" src/b.js | tr '\n' ' ')" ;;
+esac
+tip_has "$B16" tests/t-002-regression.test.js \
+  && ok "16f. GROUND TRUTH: the rebuild's own regression test IS on the branch" \
+  || bad "16f. the rebuild's test is absent from the branch — the apply did not land"
+handrun "$B16" tests/t-002.test.js \
+  && ok "16g. GROUND TRUTH: the ticket's OWN test passes when run by hand at the tip" \
+  || bad "16g. the ticket's own test fails at the tip of a mission reported HEALED (rc=$?)"
+case "$(grep '"type":"selfheal_ok"' "$EV16" 2>/dev/null | head -1)" in
+  *LANDED*) ok "16h. the heal message says WHICH heal it was — the rebuild LANDED" ;;
+  *) bad "16h. the heal message does not say the rebuild landed: $(grep '"type":"selfheal_ok"' "$EV16" 2>/dev/null | head -1 | cut -c1-240)" ;;
+esac
+
+# ===========================================================================
+# 17. S320 / D18 — A REPAIR THAT DID NOT LAND IS NEVER REPORTED AS A HEAL.
+#
+#     Measured on a live repo 2026-10-22/23 and the most serious finding of
+#     that night. The reconcile worker writes a NEW declared regression test
+#     file of its own, repairs the source and goes green — all honestly. Its
+#     commit will not LAND (something else holds the mission branch). The
+#     ticket's proof-tests snapshot has by then been rewritten to name that new
+#     file, which exists ONLY in the unlanded commit, so the full-suite gate
+#     finds nothing to re-run for that ticket, SKIPS it, and goes GREEN. The
+#     harness then reported:
+#
+#       selfheal_ok | "self-heal succeeded in round 0 — every suite passes again"
+#       ledger stopReason "healed" · state.json stage VERIFY
+#       NO awaitingHuman · NO pendingQuestion — the inbox was EMPTY
+#
+#     while at the branch tip the source was still broken, the reconcile commit
+#     was ABSENT, and the ticket's own test exited 1. A green gate that never
+#     ran the repair is not evidence the repair worked.
+# ===========================================================================
+echo "-- 17. S320/D18: the gate goes green WITHOUT the repair → no heal is claimed --"
+B17="$(mkrig)"; mkworker "$B17"
+# Hold the mission branch, exactly as section 1 does: the landing worktree then
+# cannot be attached and the commit CANNOT land, which is the real shape
+# (usually the captain's own checkout sitting on the mission branch).
+git -C "$B17/repo" worktree add -q "$B17/holder" "lcars/$MID" >/dev/null 2>&1
+HOLD17=$?
+if [ "$HOLD17" -ne 0 ] || [ ! -d "$B17/holder" ]; then
+  skip "17: could not hold the mission branch in a second worktree — SKIPPING"
+else
+  drive "$B17" LCARS_SELFHEAL_CAP=3 RIG_WORKER_NEWTEST=1
+  EV17="$(ev_of "$B17")"; PQ17="$(pq "$B17")"; H17="$(headline "$DRIVE_OUT")"
+
+  # --- did the scenario reproduce at all? Every check below is vacuous if not.
+  grep -q '"type":"selfheal_apply_failed"' "$EV17" 2>/dev/null \
+    && ok "17-pre1. the rebuild was built and green and its commit would NOT land" \
+    || bad "17-pre1. no apply failure — D18's precondition did not reproduce"
+  case "$(led "$B17" stopReason)" in
+    healed|heal-unverified)
+      ok "17-pre2. …and the full-suite gate then came back GREEN anyway (stopReason='$(led "$B17" stopReason)')" ;;
+    *) bad "17-pre2. the gate did not go green after the apply failure (stopReason='$(led "$B17" stopReason)') — D18 did not reproduce; every check below is vacuous" ;;
+  esac
+
+  # --- GROUND TRUTH AT THE BRANCH TIP. The gate said green; the branch is broken.
+  case "$(tip_blob "$B17" src/b.js)" in
+    *"=> false"*) ok "17-gt1. GROUND TRUTH: src/b.js at the branch tip is STILL BROKEN" ;;
+    *) bad "17-gt1. the branch tip is not broken, so there is no false heal to detect: $(tip_blob "$B17" src/b.js | tr '\n' ' ')" ;;
+  esac
+  tip_has "$B17" tests/t-002-regression.test.js \
+    && bad "17-gt2. the rebuild's test IS on the branch — the commit landed after all" \
+    || ok "17-gt2. GROUND TRUTH: the reconcile commit is ABSENT from the branch"
+  handrun "$B17" tests/t-002.test.js \
+    && bad "17-gt3. the ticket's own test passes at the tip — the branch is fine, so this is not D18" \
+    || ok "17-gt3. GROUND TRUTH: the ticket's OWN test EXITS NON-ZERO when run by hand at the tip"
+
+  # --- BEHAVIOUR 1: the outcome. No heal, no advance, and the inbox is not empty.
+  grep -q '"type":"selfheal_ok"' "$EV17" 2>/dev/null \
+    && bad "17a. the harness still claims selfheal_ok over a branch it never repaired" \
+    || ok "17a. NO selfheal_ok is emitted — no heal is claimed"
+  [ "$(led "$B17" stopReason)" = healed ] \
+    && bad "17b. the ledger still records stopReason 'healed'" \
+    || ok "17b. …and the ledger does not record a heal: stopReason='$(led "$B17" stopReason)'"
+  [ "$(sfield "$B17" stage)" = verify ] \
+    && bad "17c. the mission ADVANCED TO VERIFY with the regression live on the branch" \
+    || ok "17c. the mission does NOT advance to Verify: stage='$(sfield "$B17" stage)'"
+  [ -n "$PQ17" ] \
+    && ok "17d. a pendingQuestion EXISTS — the inbox is not empty" \
+    || bad "17d. pendingQuestion is EMPTY: nothing reaches \`lcars answer\` or the board"
+  [ "$(sfield "$B17" awaitingHuman)" = True ] || [ "$(sfield "$B17" awaitingHuman)" = true ] \
+    && ok "17e. …and the mission is parked awaiting the captain" \
+    || bad "17e. awaitingHuman='$(sfield "$B17" awaitingHuman)' — the card will not show as waiting on him"
+
+  # --- the two surfaces he reads, with the TRUE story.
+  case "$PQ17" in
+    "full-suite regression —"*) ok "17f. the keyed headline leads pendingQuestion on this stop too" ;;
+    *) bad "17f. pendingQuestion does not open with the keyed headline: $(printf '%s' "$PQ17" | head -1 | cut -c1-160)" ;;
+  esac
+  case "$PQ17" in
+    *"NOT on the mission branch"*|*"ABSENT from the branch"*|*"not on the branch"*)
+      ok "17g. …and it says plainly the repair is NOT on the branch" ;;
+    *) bad "17g. he is never told the repair is absent from the branch: $(printf '%s' "$PQ17" | tr '\n' ' ' | cut -c1-320)" ;;
+  esac
+  case "$PQ17" in
+    *"WHAT ACTUALLY STOPPED THE SELF-HEAL"*) ok "17h. the stop has its own clarifier, like every other S310 stop" ;;
+    *) bad "17h. no WHAT-ACTUALLY clarifier on this stop" ;;
+  esac
+  case "$H17" in
+    *"self-heal exhausted"*) bad "17i. the headline claims an exhausted defect budget: $H17" ;;
+    *) ok "17i. the headline does not claim an exhausted budget: $H17" ;;
+  esac
+  [ "$(printf '%s\n' "$DRIVE_OUT" | grep -c '^IMPLEMENT:')" = 1 ] \
+    && ok "17j. exactly one IMPLEMENT: line on stdout — one stop, one story" \
+    || bad "17j. $(printf '%s\n' "$DRIVE_OUT" | grep -c '^IMPLEMENT:') IMPLEMENT: lines on stdout"
+
+  # --- BEHAVIOUR 5: the ledger records the truth on the new path.
+  [ "$(led "$B17" applyFailures)" -ge 1 ] 2>/dev/null \
+    && ok "17k. the ledger records the apply failure(s): $(led "$B17" applyFailures)" \
+    || bad "17k. ledger applyFailures='$(led "$B17" applyFailures)'"
+  [ "$(led "$B17" stopReason)" = heal-unverified ] \
+    && ok "17l. …and names the stop for what it is: heal-unverified" \
+    || bad "17l. ledger stopReason='$(led "$B17" stopReason)' — expected heal-unverified"
+  [ "$(led "$B17" roundsSpent)" = 0 ] \
+    && ok "17m. …and charges NO defect round — nothing here was about code" \
+    || bad "17m. ledger roundsSpent='$(led "$B17" roundsSpent)'"
+  git -C "$B17/repo" worktree remove --force "$B17/holder" >/dev/null 2>&1
+fi
+
+# ===========================================================================
+# 18. S320 BEHAVIOUR 6 — TERMINATION STAYS BOUNDED, AND THE APPLY COUNTER IS
+#     CUMULATIVE: A SUCCESS MUST NEVER RESET IT.
+#
+#     The branch is held for the FIRST reconcile only — the worker frees it on
+#     its second dispatch — so this run contains an apply FAILURE and then an
+#     apply SUCCESS. The defect rounds must still be bounded by the cap, and
+#     the apply-failure count must still be on the ledger at the end.
+# ===========================================================================
+echo "-- 18. a successful apply does not reset the cumulative apply-failure count --"
+B18="$(mkrig)"; mkworker "$B18"
+git -C "$B18/repo" worktree add -q "$B18/holder" "lcars/$MID" >/dev/null 2>&1
+HOLD18=$?
+if [ "$HOLD18" -ne 0 ] || [ ! -d "$B18/holder" ]; then
+  skip "18: could not hold the mission branch in a second worktree — SKIPPING"
+else
+  drive "$B18" LCARS_SELFHEAL_CAP=2 RIG_TOGGLE=1 \
+    RIG_AFTER_WORKER="n=\$(grep -c 'role=implement-tdd' '$B18/dispatch.log' 2>/dev/null || echo 0); [ \"\$n\" -ge 2 ] && git -C '$B18/repo' worktree remove --force '$B18/holder' >/dev/null 2>&1; true"
+  AF18="$(led "$B18" applyFailures)"; RS18="$(led "$B18" roundsSpent)"
+  [ "${AF18:-0}" -ge 1 ] 2>/dev/null \
+    && ok "18-pre. an apply really did fail in this run ($AF18)" \
+    || bad "18-pre. no apply failure occurred — the mixed shape did not reproduce"
+  [ "${RS18:-0}" -ge 1 ] 2>/dev/null \
+    && ok "18-pre2. …and a later apply really did SUCCEED (a defect round was charged: $RS18)" \
+    || bad "18-pre2. no defect round was ever charged, so no apply succeeded; 18a is vacuous"
+  [ "${AF18:-0}" -ge 1 ] 2>/dev/null \
+    && ok "18a. the apply-failure count SURVIVES the later success — it is cumulative" \
+    || bad "18a. applyFailures='$AF18' — a successful apply reset the counter"
+  [ "${RS18:-0}" -le 2 ] 2>/dev/null \
+    && ok "18b. and the defect rounds stay bounded by the cap (spent $RS18 of 2)" \
+    || bad "18b. roundsSpent='$RS18' exceeded the 2-round cap"
+  A18="$(grep -c 'self-heal round' "$(ev_of "$B18")" 2>/dev/null | tr -d ' ')"
+  [ "${A18:-0}" -le 6 ] 2>/dev/null \
+    && ok "18c. the loop terminated inside its attempt backstop ($A18 round event(s))" \
+    || bad "18c. $A18 round events — the loop ran past cap+applyCap"
+  git -C "$B18/repo" worktree remove --force "$B18/holder" >/dev/null 2>&1
+fi
+
+# ===========================================================================
+# 19. S320 FIX ROUND 1 — A BRANCH THAT IS PROVABLY REPAIRED IS NOT PARKED.
+#
+#     The other direction of D18, and the cost of its cure. 3/3 reproducible
+#     on a fresh tester's rig 2026-10-23. THIS IS THE CASE THE ORIGINAL
+#     APPLY-FAILURE COMMENT WAS WRITTEN TO PROTECT — "the work may have landed
+#     by another route" — and the first cut of the cure broke it:
+#
+#       the mission branch is HELD, so the rebuild cannot land; while the
+#       worker runs, an UNRELATED commit repairs src/b.js ON the branch. The
+#       worker RESTATES the ticket's own declared test, so the full-suite gate
+#       re-runs the ticket's REAL test at the tip — a genuine, non-vacuous
+#       green. The branch is provably fine: src/b.js at the tip reads
+#       `=> true` and `tests/t-002.test.js` run BY HAND at the tip exits 0.
+#
+#     The harness nonetheless parked it (awaitingHuman, stage implement,
+#     stopReason heal-unverified) and its headline asserted as FACT something
+#     the tip contradicted: "the repair is NOT on the branch".
+#
+#     COMMIT-SHA IDENTITY IS A CORRELATE of "is the branch actually fixed".
+#     The thing itself is the ticket's declared proof test, PRESENT at the tip
+#     and PASSING there — which is precisely the check the escalation text was
+#     already telling the captain to perform by hand. The harness does it
+#     instead of asking, and resolves under its OWN reason (healed-elsewhere),
+#     never borrowing `healed`'s "the rebuild landed" story.
+#
+#     The control that separates this from section 17 is ONE variable: there
+#     the declared proof test is ABSENT at the tip (the worker wrote a NEW file
+#     that only exists in the unlanded commit), so the green is VACUOUS and the
+#     park is right. Here it is PRESENT and PASSES.
+# ===========================================================================
+echo "-- 19. S320: a provably-repaired branch resolves instead of parking --"
+B19="$(mkrig)"; mkworker "$B19"
+git -C "$B19/repo" worktree add -q "$B19/holder" "lcars/$MID" >/dev/null 2>&1
+HOLD19=$?
+if [ "$HOLD19" -ne 0 ] || [ ! -d "$B19/holder" ]; then
+  skip "19: could not hold the mission branch in a second worktree — SKIPPING"
+else
+  # The DEFAULT worker (it RESTATES the ticket's own test, so the gate's green
+  # is non-vacuous), plus an unrelated commit that repairs the break ON the
+  # branch while the worker is out — committed from the HOLDER worktree, which
+  # is the thing holding the branch, i.e. exactly the live shape.
+  drive "$B19" LCARS_SELFHEAL_CAP=3 \
+    RIG_AFTER_WORKER="printf 'exports.ok = () => true;\n' > '$B19/holder/src/b.js'; git -C '$B19/holder' add -A; git -C '$B19/holder' commit -qm 'unrelated fix: landed by another route'"
+  EV19="$(ev_of "$B19")"; PQ19="$(pq "$B19")"; H19="$(headline "$DRIVE_OUT")"
+
+  # --- did the scenario reproduce? Everything below is vacuous if not.
+  [ "$(tdlog "$B19")" -ge 1 ] 2>/dev/null \
+    && ok "19-pre1. a reconcile worker really was dispatched" \
+    || bad "19-pre1. no worker ran — the case is vacuous: $(printf '%s' "$DRIVE_OUT" | tail -3)"
+  grep -q '"type":"selfheal_apply_failed"' "$EV19" 2>/dev/null \
+    && ok "19-pre2. …and its rebuild was green and would NOT land (the branch is held)" \
+    || bad "19-pre2. no apply failure — the false-stop precondition did not reproduce"
+
+  # --- GROUND TRUTH AT THE TIP: the branch really is repaired. Read from git
+  #     and from running the ticket's own test by hand, never off a claim.
+  case "$(tip_blob "$B19" src/b.js)" in
+    *"=> true"*) ok "19-gt1. GROUND TRUTH: src/b.js at the branch tip is REPAIRED" ;;
+    *) bad "19-gt1. the branch tip is not repaired, so this is not the false-stop case: $(tip_blob "$B19" src/b.js | tr '\n' ' ')" ;;
+  esac
+  tip_has "$B19" tests/t-002.test.js \
+    && ok "19-gt2. GROUND TRUTH: the ticket's DECLARED proof test IS on the branch" \
+    || bad "19-gt2. the ticket's declared test is absent from the tip — that is section 17, not this"
+  handrun "$B19" tests/t-002.test.js \
+    && ok "19-gt3. GROUND TRUTH: the ticket's OWN test EXITS 0 when run by hand at the tip" \
+    || bad "19-gt3. the ticket's own test fails at the tip — the branch is not provably fine"
+
+  # --- THE DEFECT: it must not park, and it must not assert an absence.
+  [ "$(led "$B19" stopReason)" = heal-unverified ] \
+    && bad "19a. FALSE STOP: a provably-repaired branch is parked as heal-unverified" \
+    || ok "19a. the provably-repaired branch is NOT parked as heal-unverified"
+  [ -z "$(sfield "$B19" awaitingHuman)" ] && [ -z "$PQ19" ] \
+    && ok "19b. …no human gate is raised over a branch the harness can verify itself" \
+    || bad "19b. parked: awaitingHuman='$(sfield "$B19" awaitingHuman)' pendingQuestion='$(printf '%s' "$PQ19" | head -1 | cut -c1-120)'"
+  [ "$(sfield "$B19" stage)" = verify ] \
+    && ok "19c. …and the mission ADVANCES to Verify" \
+    || bad "19c. the mission did not advance: stage='$(sfield "$B19" stage)'"
+  case "$H19$PQ19" in
+    *"NOT on the branch"*|*"NOT on the mission branch"*|*"ABSENT from the branch"*)
+      bad "19d. it asserts the repair is absent while the tip contradicts it: $H19" ;;
+    *) ok "19d. nothing asserts the repair is absent from a branch that carries it" ;;
+  esac
+
+  # --- AND IT RESOLVES UNDER ITS OWN REASON, not by borrowing `healed`'s story.
+  [ "$(led "$B19" stopReason)" = healed-elsewhere ] \
+    && ok "19e. it resolves under its OWN stop reason: healed-elsewhere" \
+    || bad "19e. ledger stopReason='$(led "$B19" stopReason)' — expected healed-elsewhere"
+  grep -q '"type":"selfheal_ok"' "$EV19" 2>/dev/null \
+    && ok "19f. a selfheal_ok is emitted — the heal is real and it is claimed" \
+    || bad "19f. no selfheal_ok: $(grep -o '"type":"selfheal[a-z_]*"' "$EV19" 2>/dev/null | sort -u | tr '\n' ' ')"
+  OK19="$(grep '"type":"selfheal_ok"' "$EV19" 2>/dev/null | head -1)"
+  case "$OK19" in
+    *"rebuild LANDED"*) bad "19g. it claims the rebuild LANDED when the apply failed: $(printf '%s' "$OK19" | cut -c1-240)" ;;
+    *) ok "19g. …and it does NOT claim the rebuild landed" ;;
+  esac
+  case "$OK19" in
+    *"declared"*|*"another route"*|*"at the tip"*)
+      ok "19h. …it says HOW it knows: the ticket's declared test was run at the tip" ;;
+    *) bad "19h. the message does not say what was verified: $(printf '%s' "$OK19" | cut -c1-240)" ;;
+  esac
+  # --- the honest accounting survives: the apply failure is still recorded and
+  #     no defect round is charged for an infrastructure fault.
+  [ "$(led "$B19" applyFailures)" -ge 1 ] 2>/dev/null \
+    && ok "19i. the apply failure is STILL recorded on the ledger: $(led "$B19" applyFailures)" \
+    || bad "19i. ledger applyFailures='$(led "$B19" applyFailures)' — the failure was swallowed"
+  [ "$(led "$B19" roundsSpent)" = 0 ] \
+    && ok "19j. …and NO defect round is charged — nothing here was about code" \
+    || bad "19j. ledger roundsSpent='$(led "$B19" roundsSpent)'"
+  git -C "$B19/repo" worktree remove --force "$B19/holder" >/dev/null 2>&1
+fi
+
+# ===========================================================================
 # 13. ZERO MODEL SPEND, AUDITED FROM THE HARNESS'S OWN LEDGER. The worker is a
 #     PURE FAKE ($base/worker) and every dispatch above was handed to it via
 #     $LCARS_WORKER_BIN, so each mission's usage.json must total ZERO cost. A
@@ -1084,6 +1483,23 @@ while IFS= read -r b; do
   N13=$((N13 + ${n:-0}))
 done <"$BASEFILE"
 printf '  note SHIM INVOCATIONS: %s implement-tdd dispatch(es), all to the pure-fake worker, $0 billed\n' "$N13"
+# S320: AND THE OTHER SHIM — mkflatrepo's PATH-shimmed `claude` AND `copilot`.
+# $LCARS_WORKER_BIN is only one of the three ways an engine arrives, so the
+# zero-spend claim is not "the env var was set", it is "both binary names were
+# shadowed by a pure fake and here is how many times either was reached". The
+# shims record `model=yes` when the invocation carried a `--model` flag, i.e.
+# when it would have selected and billed a model.
+P13=0; M13=0
+while IFS= read -r b; do
+  [ -n "$b" ] || continue
+  [ -f "$b/worker-calls.log" ] || continue
+  n="$(grep -c . "$b/worker-calls.log" 2>/dev/null | tr -d ' ')"; P13=$((P13 + ${n:-0}))
+  n="$(grep -c 'model=yes' "$b/worker-calls.log" 2>/dev/null | tr -d ' ')"; M13=$((M13 + ${n:-0}))
+done <"$BASEFILE"
+printf '  note MODEL-CLI SHIM: %s invocation(s) of the faked `claude`/`copilot` across every fixture, %s of them carrying --model\n' "$P13" "$M13"
+[ "$P13" = 0 ] \
+  && ok "13b. the faked claude/copilot binaries were NEVER reached in ANY fixture" \
+  || bad "13b. $P13 invocation(s) of a model CLI ($M13 with --model) — only the shim stood between that and real spend"
 
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]
