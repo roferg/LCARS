@@ -2262,6 +2262,89 @@ lcars_xo_default_engine() { # [config]
   return 0
 }
 
+# ===========================================================================
+# S309 — THE ENGINE THIS RUN RECORDED, read rather than re-guessed.
+#
+# THE DEFECT, MEASURED on the 21–22 Oct 2026 hands-off run: the run was started
+# `lcars-ech init --engine copilot`, which WROTE `engine: copilot` into
+# `.git/lcars/autopilot.json` — and `lcars init` then seeded
+# `"model": "claude-sonnet"` anyway, because the seed was a constant that never
+# looked at any engine at all. The two live missions were safe only because
+# their own state.json happened to pin `workerBin: copilot`; a mission filed
+# without an explicit engine would have run on Claude and billed a captain who
+# had asked for Copilot-only. A cost surprise, not an inconsistency.
+#
+# This is the pre-flight *infer-vs-record* rule applied to configuration: the
+# producer (`lcars-ech init`) already wrote the fact down, so the consumer reads
+# the record instead of re-deriving it from what happens to be installed.
+#
+# A RECORD FOR AN ENGINE THAT IS NOT INSTALLED IS SKIPPED, never obeyed — the
+# same rule `lcars_default_engine` and `lcars_xo_default_engine` already apply
+# to a pin. Empty when there is no record, so a caller can tell "recorded" from
+# "detected" and say which it used.
+# ===========================================================================
+lcars_recorded_run_engine() { # <lcars-dir> → the recorded engine, or empty
+  local dir="${1:-}" ap e=""
+  [ -n "$dir" ] || return 0
+  ap="$dir/autopilot.json"
+  [ -f "$ap" ] || return 0
+  # autopilot.json is a NESTED record, but `engine` is a top-level scalar on its
+  # own line (ech.sh writes it with json.dump), so the flat reader answers it.
+  e="$(lcars_config_get "$ap" engine)"
+  [ -n "$e" ] || return 0
+  lcars_engine_available "$e" || return 0
+  printf '%s' "$e"
+}
+
+# ===========================================================================
+# S309 fix round 1, D2 — THE RECORD AS IT IS WRITTEN, before the availability
+# filter. `lcars_recorded_run_engine` above answers "which recorded engine can
+# we actually use", so it answers EMPTY for a record naming an engine that is
+# not installed — which is correct, and is exactly why a caller cannot tell
+# "nothing was recorded" from "a record was read and skipped".
+#
+# The readout needs that difference. Init was measured saying "nothing records
+# which engine this repo runs on" with `{"engine":"copilot"}` sitting on disk:
+# the record had been read, discarded as unavailable, and then denied. Skipping
+# an unavailable pin is right; denying it is not. This reader exists ONLY so the
+# sentence can be true — it is never used to choose an engine.
+# ===========================================================================
+lcars_recorded_run_engine_raw() { # <lcars-dir> → the engine as recorded, or empty
+  local dir="${1:-}" ap
+  [ -n "$dir" ] || return 0
+  ap="$dir/autopilot.json"
+  [ -f "$ap" ] || return 0
+  lcars_config_get "$ap" engine
+}
+
+# ===========================================================================
+# S309 — THE MODEL AN ENGINE ACTUALLY RUNS. The ONE place `lcars init` and
+# `lcars update` answer "what goes in config.json's `model` for engine X".
+#
+#   claude  → `claude-sonnet`   the historical seed, unchanged, so every repo
+#                               set up on Claude comes out byte-identical.
+#   copilot → `claude-opus-5.5` what a copilot worker is REALLY spawned with.
+#
+# WHY copilot IS OPUS. That is run.sh's standing policy, not a new choice here:
+# `alias_for_tier` (skills/lcars-run/run.sh) pins BOTH copilot tiers to
+# `claude-opus-5.5`, and `web/lcars_serve/board.py` and `actions.py` each carry
+# the same answer for their own surface. THE POLICY'S ONE HOME IS STILL
+# `alias_for_tier` — this function is the SEED, the value a fresh config starts
+# with, and it is deliberately not a second copy of the tier ladder (no
+# estimator, no per-stage tiers, no `modelAliases` read). If the copilot model
+# id moves again, the four places that name it move together; the grep is
+# `claude-opus-5.5`.
+#
+# An unknown or empty engine answers the historical default rather than nothing:
+# a config with no `model` key at all breaks every reader downstream.
+# ===========================================================================
+lcars_default_model_for_engine() { # <engine> → the model string for a fresh config
+  case "${1:-}" in
+    copilot) printf 'claude-opus-5.5' ;;
+    *)       printf 'claude-sonnet' ;;
+  esac
+}
+
 # lcars_config_has_key — 0 if the config file has a top-level "key": present.
 lcars_config_has_key() {
   local config="$1" key="$2"
@@ -4335,8 +4418,20 @@ lcars_readiness_line() {
 # absent from an older config — INSERT it as the first key after the opening
 # brace. Line-oriented and jq-free like its siblings; every other line is
 # preserved byte-for-byte.
+# S309 fix round 1, D6 — OPTIONAL <after-key>: insert the new key's line
+# immediately AFTER that key's line instead of at the top. `lcars init` writes
+# `workerBin` straight after `model`, so `lcars update --engine` adding it at
+# the top meant the first init/update afterwards REORDERED one key (identical
+# values, one shot, then stable). Harmless, and still a diff in a file the
+# captain reads; a sibling writer can now place a key in the same slot.
+#
+# IT FALLS BACK RATHER THAN RISK THE FILE. The <after-key> is used only when its
+# line both EXISTS and ends in a comma — inserting a comma-terminated line after
+# the file's LAST key would produce invalid JSON. Anything else takes the
+# historical path (first key after the opening brace), where the inserted line's
+# own comma is always correct.
 lcars_config_set_or_add_string() {
-  local config="$1" key="$2" value="$3"
+  local config="$1" key="$2" value="$3" after="${4:-}"
   [ -f "$config" ] || return 1
   if lcars_config_has_key "$config" "$key"; then
     lcars_config_set_string "$config" "$key" "$value"
@@ -4344,15 +4439,27 @@ lcars_config_set_or_add_string() {
   fi
   local esc; esc="$(lcars_json_escape "$value")"
   local tmp="$config.tmp.$$" line inserted=0
+  if [ -n "$after" ]; then
+    grep -q "\"$after\":.*,[[:space:]]*$" "$config" || after=""
+  fi
   while IFS= read -r line || [ -n "$line" ]; do
     printf '%s\n' "$line"
     if [ "$inserted" -eq 0 ]; then
-      case "$line" in
-        '{'*)
-          printf '  "%s": "%s",\n' "$key" "$esc"
-          inserted=1
-          ;;
-      esac
+      if [ -n "$after" ]; then
+        case "$line" in
+          *"\"$after\":"*)
+            printf '  "%s": "%s",\n' "$key" "$esc"
+            inserted=1
+            ;;
+        esac
+      else
+        case "$line" in
+          '{'*)
+            printf '  "%s": "%s",\n' "$key" "$esc"
+            inserted=1
+            ;;
+        esac
+      fi
     fi
   done <"$config" >"$tmp"
   mv "$tmp" "$config"

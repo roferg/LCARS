@@ -623,6 +623,263 @@ check "S201 update: config.json is valid JSON after the backfill" \
 
 
 # ==========================================================================
+# S309 — `lcars update --engine` / `--model`: a wrong seed is correctable
+#        by a VERB, not by hand-editing JSON.
+# ==========================================================================
+# THE DEFECT: `lcars init` used to seed `model: claude-sonnet` whatever engine
+# the run had recorded, and there was NO verb that could change it — so the only
+# cure for a repo that had been set up on the wrong engine was to open
+# config.json in an editor. A product that records a fact and then offers no way
+# to correct the record is asking the captain to edit its own state file.
+#
+# IT FOLLOWS THE SANCTIONED-WRITER CONTRACT EXACTLY: a verb invocation does
+# ONLY its verb (no label sync, no version stamp), it changes ONLY what it was
+# asked to change, and every other byte of the captain's config survives.
+make_copilot_stub_upd() {
+  local p="$1"
+  printf '#!/usr/bin/env bash\necho "copilot/0.0.1-test"\n' >"$p"
+  chmod +x "$p"
+}
+
+repoEng="$(new_repo)"
+init_repo "$repoEng"
+make_copilot_stub_upd "$repoEng/copilot"
+CFGENG="$repoEng/.git/lcars/config.json"
+# The captain's own customisations, hand-written over the seeded config: a
+# testCommand that is nothing LCARS would ever detect, plus a changed budget.
+python3 - "$CFGENG" <<'PY'
+import json, re, sys
+p = sys.argv[1]
+s = open(p).read()
+s = re.sub(r'"testCommand": [^\n]*,', '"testCommand": "make check-everything --captains-own",', s)
+s = re.sub(r'"comprehensionBudget": [^\n,]*', '"comprehensionBudget": 4242', s)
+open(p, 'w').write(s)
+json.load(open(p))
+PY
+cp "$CFGENG" "$repoEng/config.before.json"
+export GH_LOG="$repoEng/gh.log"; : >"$GH_LOG"
+rcEng=0
+( cd "$repoEng" && LCARS_GH_BIN="$repoEng/gh" LCARS_COPILOT_BIN="$repoEng/copilot" \
+    bash "$SCRIPT" --engine copilot >outeng.txt 2>&1 ) || rcEng=$?
+check "S309-3: lcars update --engine copilot succeeds" "[ '$rcEng' -eq 0 ]"
+check "S309-3: it REWRITES the model to the one copilot actually runs" \
+  "grep -q '\"model\": *\"claude-opus-5.5\"' '$CFGENG'"
+check "S309-3: it RECORDS the engine as the repo's pin" \
+  "grep -q '\"workerBin\": *\"copilot\"' '$CFGENG'"
+check "S309-3: the captain's customised testCommand is untouched" \
+  "grep -qF '\"testCommand\": \"make check-everything --captains-own\"' '$CFGENG'"
+check "S309-3: config.json is still valid JSON" \
+  "python3 -c 'import json,sys; json.load(open(sys.argv[1]))' '$CFGENG'"
+# THE REAL ASSERTION: EVERY OTHER KEY IS BYTE-IDENTICAL. Comparing the parsed
+# objects key by key is what catches a writer that reflowed the file, dropped an
+# unlisted key, or quietly refreshed the version stamp on a verb invocation.
+check "S309-3: every key except model/workerBin is byte-identical" \
+  "python3 -c '
+import json, sys
+a = json.load(open(sys.argv[1])); b = json.load(open(sys.argv[2]))
+changed = {k for k in set(a) | set(b) if a.get(k, 0) != b.get(k, 1)}
+assert changed <= {\"model\", \"workerBin\"}, changed
+' '$repoEng/config.before.json' '$CFGENG'"
+check "S309-3: numberOne is STILL on one line (readers depend on it)" \
+  "grep -q '\"numberOne\": {' '$CFGENG' && [ \"\$(grep -c '\"numberOne\"' '$CFGENG')\" = 1 ]"
+check "S309-3: a verb invocation syncs NO labels" "[ ! -s '$repoEng/gh.log' ]"
+check "S309-3: it says what it changed" \
+  "grep -qi 'copilot' '$repoEng/outeng.txt' && grep -q 'claude-opus-5.5' '$repoEng/outeng.txt'"
+
+# …and back again: the verb is symmetric, so a repo recorded wrong the other way
+# is correctable too, and the model follows the engine both directions.
+( cd "$repoEng" && LCARS_GH_BIN="$repoEng/gh" bash "$SCRIPT" --engine claude >outeng2.txt 2>&1 )
+check "S309-3: --engine claude moves the model back" \
+  "grep -q '\"model\": *\"claude-sonnet\"' '$CFGENG' && grep -q '\"workerBin\": *\"claude\"' '$CFGENG'"
+
+# `--model` alone sets the model VERBATIM and never touches the engine pin.
+( cd "$repoEng" && LCARS_GH_BIN="$repoEng/gh" bash "$SCRIPT" --model 'opus' >outeng3.txt 2>&1 )
+check "S309-3: --model sets the model verbatim" \
+  "grep -q '\"model\": *\"opus\"' '$CFGENG'"
+check "S309-3: --model alone leaves the engine pin alone" \
+  "grep -q '\"workerBin\": *\"claude\"' '$CFGENG'"
+
+# Both together: the engine is recorded, and the explicit model wins over the
+# engine's default (the captain named it).
+( cd "$repoEng" && LCARS_GH_BIN="$repoEng/gh" LCARS_COPILOT_BIN="$repoEng/copilot" \
+    bash "$SCRIPT" --engine copilot --model 'claude-sonnet-4.6' >outeng4.txt 2>&1 )
+check "S309-3: --engine with an explicit --model honours the captain's model" \
+  "grep -q '\"model\": *\"claude-sonnet-4.6\"' '$CFGENG' && grep -q '\"workerBin\": *\"copilot\"' '$CFGENG'"
+
+# An unknown engine is REFUSED, and nothing is written.
+cp "$CFGENG" "$repoEng/before-bad.json"
+rcBad=0
+( cd "$repoEng" && LCARS_GH_BIN="$repoEng/gh" bash "$SCRIPT" --engine gpt5 >outbad.txt 2>&1 ) || rcBad=$?
+check "S309-3: an unknown engine is refused non-zero" "[ '$rcBad' -ne 0 ]"
+check "S309-3: …naming the engines it knows" \
+  "grep -q 'claude' '$repoEng/outbad.txt' && grep -q 'copilot' '$repoEng/outbad.txt'"
+check "S309-3: …and config.json is untouched by the refusal" \
+  "cmp -s '$repoEng/before-bad.json' '$CFGENG'"
+# An empty value is refused too, rather than writing an empty pin.
+rcBad=0
+( cd "$repoEng" && LCARS_GH_BIN="$repoEng/gh" bash "$SCRIPT" --model '' >outbad2.txt 2>&1 ) || rcBad=$?
+check "S309-3: an empty --model is refused, not written" \
+  "[ '$rcBad' -ne 0 ] && cmp -s '$repoEng/before-bad.json' '$CFGENG'"
+
+# --- S309: a PLAIN `lcars update` must not DELETE the engine pin ------------
+# lcars_config_merge treats its desired list as the canonical schema and DROPS
+# every top-level key absent from it. `workerBin` was never on update's list, so
+# a plain `lcars update` silently un-pinned the repo — the exact failure S196
+# paid for with cloneId and S308 paid for with gateTimeout. A verb that records
+# the engine is worthless if the next ordinary update throws the record away.
+repoKeep="$(new_repo)"
+init_repo "$repoKeep"
+make_copilot_stub_upd "$repoKeep/copilot"
+CFGKEEP="$repoKeep/.git/lcars/config.json"
+( cd "$repoKeep" && LCARS_GH_BIN="$repoKeep/gh" LCARS_COPILOT_BIN="$repoKeep/copilot" \
+    bash "$SCRIPT" --engine copilot >/dev/null 2>&1 )
+export GH_LOG="$repoKeep/gh.log"; : >"$GH_LOG"
+( cd "$repoKeep" && LCARS_GH_BIN="$repoKeep/gh" bash "$SCRIPT" >outkeep.txt 2>&1 )
+check "S309-3: a plain lcars update PRESERVES the recorded engine pin" \
+  "grep -q '\"workerBin\": *\"copilot\"' '$CFGKEEP'"
+check "S309-3: …and preserves the model that goes with it" \
+  "grep -q '\"model\": *\"claude-opus-5.5\"' '$CFGKEEP'"
+
+# --- S309 fix round 1, D1: AN EMPTY OR MISSING `--engine` IS A REFUSAL -----
+# MEASURED, side by side, against the fix that shipped this session:
+#
+#   args=[--engine]            RC=0  OUT=[]                 config untouched
+#   args=[--engine ""]         RC=0  OUT=[]                 config untouched
+#   args=[--model]             RC=1  "an empty model names nothing"
+#   args=[--model ""]          RC=1  "an empty model names nothing"
+#
+# and its sharpest form, `--engine '' --model 'only-model-given'`: RC=0, a tick
+# printed for the model, the model WRITTEN, and the engine SILENTLY DROPPED. A
+# caller doing `update --engine "$E" --model "$M"` with $E unset reads a tick
+# and believes the engine was recorded.
+#
+# THAT IS THIS SESSION'S OWN FAILURE CLASS reproduced inside the fix for it:
+# something did not happen and nothing said so. The `--model` guard was already
+# right; `--engine` had no equivalent anywhere in the file. Both flags now
+# refuse BEFORE ANY WRITE, non-zero, naming the flag that was empty.
+repoArg="$(new_repo)"
+init_repo "$repoArg"
+CFGARG="$repoArg/.git/lcars/config.json"
+cp "$CFGARG" "$repoArg/arg.before.json"
+arg_case() { # <label> <expected-rc 0|nonzero> <args...>
+  local label="$1" want="$2"; shift 2
+  local rc=0
+  cp "$repoArg/arg.before.json" "$CFGARG"
+  ( cd "$repoArg" && LCARS_GH_BIN="$repoArg/gh" bash "$SCRIPT" "$@" \
+      >"$repoArg/arg.out" 2>&1 ) || rc=$?
+  ARG_RC="$rc"
+}
+# The two halves of the asymmetry, now symmetric.
+arg_case "engine-missing" x --engine
+check "S309-D1: a MISSING --engine value is refused non-zero" "[ '$ARG_RC' -ne 0 ]"
+check "S309-D1: …naming the flag, not nothing" \
+  "grep -qF -- '--engine' '$repoArg/arg.out' && grep -qi 'nothing was written' '$repoArg/arg.out'"
+check "S309-D1: …and config.json is untouched" \
+  "cmp -s '$repoArg/arg.before.json' '$CFGARG'"
+arg_case "engine-empty" x --engine ''
+check "S309-D1: an EMPTY --engine value is refused non-zero" "[ '$ARG_RC' -ne 0 ]"
+check "S309-D1: …and config.json is untouched" \
+  "cmp -s '$repoArg/arg.before.json' '$CFGARG'"
+arg_case "model-missing" x --model
+check "S309-D1: a MISSING --model value is still refused non-zero" "[ '$ARG_RC' -ne 0 ]"
+arg_case "model-empty" x --model ''
+check "S309-D1: an EMPTY --model value is still refused non-zero" "[ '$ARG_RC' -ne 0 ]"
+
+# THE SHARPEST FORM: the engine must not be dropped while the model is written.
+arg_case "engine-empty-model-given" x --engine '' --model 'only-model-given'
+check "S309-D1: an empty --engine beside a valid --model is REFUSED" \
+  "[ '$ARG_RC' -ne 0 ]"
+check "S309-D1: …the refusal happens BEFORE any write — no model landed" \
+  "cmp -s '$repoArg/arg.before.json' '$CFGARG' && ! grep -q 'only-model-given' '$CFGARG'"
+check "S309-D1: …and it never printed a tick for work it dropped" \
+  "! grep -q '✓ model set' '$repoArg/arg.out'"
+
+# The valid rows of the same matrix still work, so the guard refuses the empty
+# value and nothing else.
+arg_case "engine-valid" 0 --engine claude
+check "S309-D1: a VALID --engine value still succeeds" \
+  "[ '$ARG_RC' -eq 0 ] && grep -q '\"workerBin\": *\"claude\"' '$CFGARG'"
+arg_case "model-valid" 0 --model 'claude-opus-5.5'
+check "S309-D1: a VALID --model value still succeeds" \
+  "[ '$ARG_RC' -eq 0 ] && grep -q '\"model\": *\"claude-opus-5.5\"' '$CFGARG'"
+
+# D5 — A FLAG-SHAPED VALUE IS A MISSING VALUE. `--engine --model 'zzz'` used to
+# let `--engine` swallow `--model` as its value and then refuse with
+# `unknown option "zzz"`, which names the wrong token: the mistake is the empty
+# --engine, not the model string.
+arg_case "engine-swallows-flag" x --engine --model 'zzz'
+check "S309-D5: a flag-shaped --engine value is refused as a MISSING value" \
+  "[ '$ARG_RC' -ne 0 ] && grep -qF -- '--engine' '$repoArg/arg.out'"
+check "S309-D5: …and it does not blame the token that was not the mistake" \
+  "! grep -qF 'unknown option \"zzz\"' '$repoArg/arg.out'"
+check "S309-D5: …and config.json is untouched" \
+  "cmp -s '$repoArg/arg.before.json' '$CFGARG'"
+
+# --- S309 fix round 2, D15: `--model` TAKES THE SAME FLAG-SHAPED RULE -------
+# MEASURED on the fix-round-1 shipment: `--engine` learned that a value
+# beginning with `-` is a MISSING value (D5 above) and `--model` did not. So
+# `lcars update --model $M --engine $E` with BOTH variables unset and unquoted
+# collapses to `--model --engine` — and that WROTE the literal string
+# `--engine` into config.json as the model, exited 0, and printed
+#
+#   ✓ model set: --engine
+#
+# The engine was silently dropped behind a success tick: this session's own
+# failure class (something did not happen and nothing said so) reproduced in
+# the flag this session added. The two flags now read a flag-shaped value the
+# same way, so the refusal names whichever flag lost its value and NOTHING is
+# written.
+arg_case "model-swallows-flag" x --model --engine
+check "S309-D15: a flag-shaped --model value is refused as a MISSING value" \
+  "[ '$ARG_RC' -ne 0 ]"
+check "S309-D15: …it never prints a tick for a model it did not set" \
+  "! grep -qF '✓ model set' '$repoArg/arg.out'"
+check "S309-D15: …the flag it was handed is NEVER written as the model" \
+  "[ \"\$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get(\"model\",\"\"))' '$CFGARG')\" != '--engine' ]"
+check "S309-D15: …the refusal precedes every write — config.json is untouched" \
+  "cmp -s '$repoArg/arg.before.json' '$CFGARG'"
+check "S309-D15: …and config.json is still valid JSON" \
+  "python3 -c 'import json,sys; json.load(open(sys.argv[1]))' '$CFGARG'"
+
+# The rest of the matrix: a flag-shaped --model value followed by anything at
+# all is still a missing value, and the refusal names --model rather than
+# blaming the next token (D5's lesson, applied to the other flag).
+arg_case "model-flag-then-junk" x --model --engine zzz
+check "S309-D15: --model --engine zzz is refused, config untouched" \
+  "[ '$ARG_RC' -ne 0 ] && cmp -s '$repoArg/arg.before.json' '$CFGARG'"
+check "S309-D15: …naming the flag that lost its value, not the next token" \
+  "grep -qF -- '--model' '$repoArg/arg.out' \
+     && ! grep -qF 'unknown option' '$repoArg/arg.out'"
+arg_case "model-flag-then-engine" x --model --engine copilot
+check "S309-D15: --model --engine copilot is refused, config untouched" \
+  "[ '$ARG_RC' -ne 0 ] && cmp -s '$repoArg/arg.before.json' '$CFGARG'"
+check "S309-D15: …and it never ticked a model it never set" \
+  "! grep -qF '✓ model set' '$repoArg/arg.out'"
+
+# --- S309 fix round 1, D6: --engine puts `workerBin` WHERE INIT PUTS IT -----
+# `--engine` added the key through the generic single-key writer, which inserts
+# a brand-new key as the FIRST key after the opening brace — while `lcars init`
+# writes it straight after `model`. So the first init or update after an engine
+# verb REORDERED one key (identical values, one shot, then stable). Harmless,
+# and still a diff in a file the captain reads. The key now lands in the same
+# slot both writers use.
+repoOrd="$(new_repo)"
+init_repo "$repoOrd"
+make_copilot_stub_upd "$repoOrd/copilot"
+CFGORD="$repoOrd/.git/lcars/config.json"
+( cd "$repoOrd" && LCARS_GH_BIN="$repoOrd/gh" LCARS_COPILOT_BIN="$repoOrd/copilot" \
+    bash "$SCRIPT" --engine copilot >/dev/null 2>&1 )
+ord_keys() { python3 -c 'import json,sys,collections; print(" ".join(json.load(open(sys.argv[1]), object_pairs_hook=collections.OrderedDict).keys()))' "$1"; }
+check "S309-D6: --engine writes workerBin immediately after model, as init does" \
+  "[ \"\$(ord_keys '$CFGORD' | sed 's/.*\(model workerBin\).*/\1/')\" = 'model workerBin' ]"
+check "S309-D6: …and config.json is still valid JSON" \
+  "python3 -c 'import json,sys; json.load(open(sys.argv[1]))' '$CFGORD'"
+cp "$CFGORD" "$repoOrd/ord.after-verb.json"
+( cd "$repoOrd" && LCARS_GH_BIN="$repoOrd/gh" bash "$SCRIPT" >/dev/null 2>&1 )
+check "S309-D6: …so the NEXT plain update reorders nothing" \
+  "[ \"\$(ord_keys '$repoOrd/ord.after-verb.json')\" = \"\$(ord_keys '$CFGORD')\" ]"
+
+# ==========================================================================
 echo
 printf 'lcars update: %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

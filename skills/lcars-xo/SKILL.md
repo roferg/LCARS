@@ -635,9 +635,36 @@ or *not installed*, detected through the one shared probe
 captain's, and a product that prices a choice for you is making the choice for
 you. Do not add them to any surface, ever.
 
-**No terminal and no `--engine` is a loud refusal**, the `lcars adopt`
-precedent. Choosing an engine in silence *is* the defect; failing loudly is the
-cure.
+**No terminal and no `--engine` reads the RECORD first, and only then refuses
+loudly** (S309). `pick_engine` consults `numberOne.engine` in
+`.git/lcars/config.json` — the engine an earlier `lcars xo on --engine <e>`
+wrote down — and engages on it; a recorded engine that is **not installed** is
+skipped, exactly as every other picker skips an uninstallable pin. It is
+deliberately **not** `lcars_xo_default_engine`: that helper falls back to the
+first installed engine of the preference order, so it would answer on every
+machine and this branch could never refuse at all — replacing a loud refusal
+with an unattended engine nobody chose.
+
+A record naming an engine that is **not installed here** gets its own sentence
+— `'copilot' is recorded for Number One but is not on this machine …` — because
+"no record" and "recorded, but not runnable here" are different facts and the
+wrong one sends the reader in a circle (he re-runs `lcars xo on --engine
+copilot`, which dies with the correct message). It is still non-zero and still
+says `NO REVIEW HAPPENED`.
+
+A record naming something LCARS does not drive at all (`gpt5`) is a **third**
+fact, not that one — there is no binary to look for and nothing to install — so
+it gets `lcars update --engine`'s sentence: `'gpt5' is recorded for Number One
+but is not an engine LCARS drives — it knows claude and copilot`. Non-zero,
+`NO REVIEW HAPPENED`, record untouched, as ever.
+
+With **no record either**, it exits **non-zero** and says **`NO REVIEW
+HAPPENED`** (and, on `--sweep`, that the sweep did not run and no mission was
+reviewed). That wording is the whole finding: measured on an unattended run,
+`lcars xo on --sweep` refused while the engine was already recorded, nothing
+was reviewed, and a seat that did not read the text took the code review as
+done. A no-op that cannot be told from a completed review is the defect;
+choosing an engine in silence is the other half of it.
 
 ## The two records
 

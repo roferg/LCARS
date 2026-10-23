@@ -1469,12 +1469,67 @@ engine_at_row() {
   return 1
 }
 
-pick_engine() {
-  local tty=0 avail def ans e mark n row
+pick_engine() { # [for-sweep 0|1] — the engine, or a non-zero refusal
+  local for_sweep="${1:-0}" tty=0 avail def ans e mark n row recorded LOST HERE
   { [ -t 0 ] || [ "${LCARS_ASSUME_TTY:-}" = "1" ]; } && tty=1
   avail="$(lcars_available_engines)"
   if [ "$tty" -eq 0 ]; then
-    die "no terminal to ask at, and no \`--engine\` given — Number One is not engaged. Re-run as \`lcars xo on --engine <engine>\`$( [ -n "$avail" ] && printf ' (installed here: %s)' "$(printf '%s' "$avail" | tr '\n' ' ' | sed 's/ *$//')")."
+    # ── S309: READ THE RECORD BEFORE REFUSING ────────────────────────────
+    # MEASURED on the 21–22 Oct 2026 hands-off run: this refused on an
+    # unattended `lcars xo on --sweep` even though config.json ALREADY held
+    # `numberOne {enabled: true, engine: copilot}` from an earlier
+    # `lcars xo on --engine copilot`. The fact was recorded and this function
+    # re-asked for it. Nothing was reviewed, and a seat that did not read the
+    # text believed the review had happened — a code review silently skipped
+    # before a merge.
+    #
+    # IT IS `cfg_engine`, THE RECORD, AND DELIBERATELY NOT
+    # `lcars_xo_default_engine`. That helper falls back to the first INSTALLED
+    # engine of the preference order, so it would answer on EVERY machine and
+    # this branch could never refuse at all — which would replace a loud
+    # refusal with an unattended engine nobody chose. A pin that is not
+    # installed is skipped here for the same reason every other picker skips
+    # one: engaging an engine that cannot run is not engaging anything.
+    recorded="$(cfg_engine)"
+    if [ -n "$recorded" ] && lcars_engine_available "$recorded"; then
+      printf '%s' "$recorded"; return 0
+    fi
+    # ── AND THE REFUSAL SAYS WHAT DID NOT HAPPEN ─────────────────────────
+    # The old sentence named the setting ("Number One is not engaged"), which
+    # reads as a config detail. On the sweep path what was actually lost is a
+    # REVIEW, so the message says that in those words — the whole finding is
+    # that a skipped review was indistinguishable from a completed one.
+    #
+    # ── AND IT DOES NOT DENY A RECORD IT JUST READ (fix round 1, D3) ──────
+    # MEASURED on the shipped fix: with `numberOne {"enabled": true, "engine":
+    # "copilot"}` on disk and copilot absent from PATH, this refused with "no
+    # engine is recorded for Number One" while the file plainly held the engine.
+    # Every critical property was right — non-zero, config untouched, nothing
+    # swept, the words NO REVIEW HAPPENED — but the DIAGNOSIS sent the reader
+    # round in circles: he then runs `lcars xo on --engine copilot`, which dies
+    # with the correct message. "No record" and "recorded, but not installed
+    # here" are different facts, so they get different sentences.
+    LOST=" — NO REVIEW HAPPENED$( [ "$for_sweep" = 1 ] && printf ', the sweep did not run and no mission was reviewed'; )."
+    HERE="$( [ -n "$avail" ] && printf ' (installed here: %s)' "$(printf '%s' "$avail" | tr '\n' ' ' | sed 's/ *$//')")"
+    #
+    # ── AND A GARBAGE RECORD IS NOT A MISSING INSTALL (fix round 2, D16) ──
+    # MEASURED on the shipped fix: `numberOne {"engine": "gpt5"}` — a name
+    # LCARS does not drive at all — took the "not installed here" sentence
+    # below and produced `(looked for '')`, because there IS no binary to look
+    # for, plus "install gpt5", which points at something that does not exist.
+    # The actual fault was never said. So the NAME is checked before the
+    # availability branch is chosen: "not an engine" and "an engine that is not
+    # here" are different facts and get different sentences, exactly as
+    # "no record" and "a record" already do. The words come from
+    # `lcars update --engine`, which has carried the right sentence all along.
+    if [ -n "$recorded" ]; then
+      case " $LCARS_ENGINES " in
+        *" $recorded "*) : ;;
+        *) die "'$recorded' is recorded for Number One but is not an engine LCARS drives — it knows $(printf '%s' "$LCARS_ENGINES" | sed 's/ / and /'), and there is no terminal to ask at$LOST Record an engine LCARS drives with \`lcars xo on --engine <engine>\`, or pass \`--engine <engine>\` on this command$HERE." ;;
+      esac
+      die "'$recorded' is recorded for Number One but is not on this machine (looked for '$(lcars_engine_bin "$recorded")'), and there is no terminal to ask at$LOST The record stands — install $recorded, or pass \`--engine <engine>\` on this command$HERE."
+    fi
+    die "no engine is recorded for Number One and there is no terminal to ask at$LOST Record an engine with \`lcars xo on --engine <engine>\`, or pass \`--engine <engine>\` on this command$HERE."
   fi
   # THE DEFAULT IS NOT DECIDED HERE. `lcars_xo_default_engine` (lcars-common.sh)
   # is the one place it is decided, and the daemon spawns the same function to
@@ -1624,7 +1679,9 @@ cmd_on() {
     return 0
   fi
 
-  [ -n "$engine" ] || engine="$(pick_engine)" || exit $?
+  # S309 — the picker is told whether a SWEEP was asked for, so its refusal can
+  # name what did not happen (a review) rather than only what is not set.
+  [ -n "$engine" ] || engine="$(pick_engine "$sweep")" || exit $?
   lcars_engine_available "$engine" \
     || die "'$engine' is not an engine on this machine — nothing was engaged."
   [ -n "$model" ] || model="$(cfg_model)"

@@ -823,7 +823,7 @@ grep -q 'proof_scope_not_narrowed' "$(ev_of "$B21")" 2>/dev/null \
 #     narrowingProven false. Downgrading on that would turn every leg in exactly
 #     the repos this session exists for — a full suite slower than the gate —
 #     into INCONCLUSIVE: five consecutive no-information verdicts, which is the
-#     pagesai burn this whole session is fixing. A regression dressed as a
+#     measured live-run burn this whole session is fixing. A regression dressed as a
 #     safety fix.
 #
 #     SO THE CONTROL GETS ITS OWN BUDGET: it is the FULL-SUITE-SHAPED run, so it
@@ -837,7 +837,7 @@ echo "-- 19. the control is budgeted against the FULL SUITE, and false is acted 
 # B1 is the trap fixture itself: ~10s suite, LCARS_GATE_TIMEOUT=5, narrow leg ~2s.
 [ "$(jq_ff "$B1" 'd["verdict"]')" = pass ] \
   && ok "19a. the flat slow repo's honest leg still PASSES (no blanket INCONCLUSIVE)" \
-  || bad "19a. B1 verdict was '$(jq_ff "$B1" 'd["verdict"]')' — cure 1 recreated the pagesai burn: $(jq_ff "$B1" 'd["reason"]' | head -c 200)"
+  || bad "19a. B1 verdict was '$(jq_ff "$B1" 'd["verdict"]')' — cure 1 recreated the measured live-run burn: $(jq_ff "$B1" 'd["reason"]' | head -c 200)"
 [ "$(jq_ff "$B1" 'd["scopeControl"]["narrowingProven"]')" = True ] \
   && ok "19b. and its narrowing is PROVEN — the control was not killed by the narrow gate" \
   || bad "19b. B1 narrowingProven is '$(jq_ff "$B1" 'd["scopeControl"]["narrowingProven"]')' (the control ran out of the LEG's budget, so a ~10s-suite repo gets no coverage)"

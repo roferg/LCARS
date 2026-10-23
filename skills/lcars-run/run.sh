@@ -11951,7 +11951,7 @@ proof_undeclared_test_exists() { # tree rels(newline) → 0 when one exists
 # So in exactly the repos this session exists for — a full suite slower than the
 # gate — the control gave ZERO coverage. Make cure 1 act on that `false` and
 # every such leg becomes INCONCLUSIVE: five consecutive no-information verdicts,
-# which is the pagesai burn this whole session is fixing. A regression dressed
+# which is the measured live-run burn this whole session is fixing. A regression dressed
 # as a safety fix.
 #
 # THE RESOLUTION: budget the control against the FULL-SUITE number, never the

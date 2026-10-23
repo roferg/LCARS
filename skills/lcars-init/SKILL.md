@@ -72,12 +72,83 @@ The script handles everything above and prints a readiness summary. Show its
 output to the user. It looks like:
 
 ```
+  ◇ NO ENGINE RECORDED — model seeded as "claude-sonnet" for claude:
+    nothing records which engine this repo runs on, so init took claude — LCARS's historical default.
+    If this repo should run on another engine, record it rather than letting a
+    mission re-guess it:  lcars update --engine <engine>
   ✓ .git/lcars/ created
   ✓ config.json written  (model: claude-sonnet, context: CONTEXT.md)
   ✓ Claude CLI verified  (2.0.44 (Claude Code))
   ✓ 20 labels created on github.com/owner/repo
   LCARS ready — run `lcars file` to start your first Mission.
 ```
+
+### The `model` seed follows the recorded engine (S309)
+
+`model` is **not** a constant. It is seeded from the engine this repo or this
+run actually **recorded**, in this order:
+
+1. `$LCARS_MODEL` — the captain named it; it wins outright.
+2. an existing `model` in `config.json` — preserved by the merge, never clobbered.
+3. the repo's `workerBin` pin, else an ECH run's `.git/lcars/autopilot.json`
+   `engine` (a record for an engine that is **not installed** is skipped, never
+   obeyed), then `lcars_default_model_for_engine`: `claude` → `claude-sonnet`,
+   `copilot` → `claude-opus-5.5`.
+4. nothing recorded → the engine installed here, and init prints the
+   `◇ NO ENGINE RECORDED` line above naming the engine, the reason and the verb
+   that corrects it (`lcars update --engine <engine>`). It is a calm readout
+   line, not a `⚠`: a fresh repo with nothing recorded is the normal first run.
+
+**A record that was read and skipped is never reported as no record.** When a
+record exists but names an engine that is **not installed here**, the skip is
+correct — and saying nothing was recorded would be false, at the one moment the
+captain most needs telling (on an unattended leg with a trimmed PATH, the record
+that would have saved him the bill is the thing being thrown away). Init says
+which of the two happened:
+
+```
+  ◇ RECORDED ENGINE NOT INSTALLED — model seeded as "claude-sonnet" for claude:
+    this repo's run record names 'copilot', but 'copilot' is not on this machine
+    (looked for 'copilot'). The record stands and was NOT obeyed:
+    init seeded the model for claude, the engine that IS installed here.
+    Install copilot, or record the engine this repo should run on:  lcars update --engine <engine>
+```
+
+And a record naming something LCARS does not drive at all is a THIRD case, not
+that one: there is no binary to look for and nothing to install, so saying
+"not installed (looked for '')" would send the captain after a thing that does
+not exist. It gets `lcars update --engine`'s sentence instead:
+
+```
+  ◇ RECORDED ENGINE NOT RECOGNISED — model seeded as "claude-sonnet" for claude:
+    this repo's run record names 'gpt5', but 'gpt5' is not an engine LCARS drives —
+    it knows claude and copilot. There is nothing to install.
+    The record stands and was NOT obeyed: init seeded the model for claude,
+    the engine that IS installed here.
+    Record the engine this repo should run on:  lcars update --engine <engine>
+```
+
+**And an incoherent pair is named, not left silent.** When init records an
+engine pin for the first time while PRESERVING a `model` the repo already
+carried — both individually correct — the pair it leaves can disagree, so it
+says so in one line and names the verb that aligns them. It is a note, never a
+refusal: top-level `model` is read by `lcars xo` (Number One's model) and not by
+run.sh's resolver, which uses `modelAliases` / `stages.*.model`.
+
+```
+  ◇ ENGINE AND MODEL DISAGREE — engine recorded as "copilot", model left as "claude-sonnet":
+    a model this repo already records is never clobbered, so init kept yours, and copilot
+    runs "claude-opus-5.5". Align them when you want to —
+    `lcars update --engine copilot` records the engine and moves the model with it;
+    `lcars update --model '<model>'` sets the model alone.
+```
+
+This closes a measured **cost surprise**: a run started
+`lcars-ech init --engine copilot` had its engine recorded in `autopilot.json`
+and init wrote `claude-sonnet` anyway, so a mission filed without an explicit
+engine would have billed a captain who asked for Copilot only. When the engine
+is recorded, init also writes the `workerBin` pin, so no later stage re-guesses
+it. `numberOne.enabled` stays `false` — the model seeding changed, not the switch.
 
 ## Notes & failure modes
 

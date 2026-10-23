@@ -41,7 +41,12 @@ fi
 # detector, which reads this same $LCARS_CLAUDE_BIN seam.
 CLAUDE_BIN="${LCARS_CLAUDE_BIN:-claude}"
 GH_BIN="${LCARS_GH_BIN:-gh}"
-DEFAULT_MODEL="${LCARS_MODEL:-claude-sonnet}"
+# S309 — THE MODEL SEED IS NO LONGER A CONSTANT. `$LCARS_MODEL` is still the
+# captain's own override and still wins outright; with it unset the seed is
+# resolved from the engine this repo/run actually RECORDED, below, once that
+# engine is known. It used to read `${LCARS_MODEL:-claude-sonnet}` here, which
+# wrote a Claude model into a repo a captain had asked to run on Copilot only.
+DEFAULT_MODEL="${LCARS_MODEL:-}"
 
 # Shared label set + merge-preserving config writer (also used by `lcars update`).
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -85,6 +90,41 @@ CONFIG="$LCARS_DIR/config.json"
 # answer is claude and nothing about init changes. With NEITHER it is empty,
 # and THAT is the fatal case — named for both engines, since either one cures it.
 ENGINE_CHOSEN="$(lcars_default_engine "$CONFIG")"
+
+# S309 — AND THE ENGINE THIS RUN RECORDED OUTRANKS DETECTION.
+#
+# `lcars_default_engine` answers from the repo's own CONFIG pin and then from
+# what is INSTALLED. On the measured live run neither of those knew anything:
+# config.json did not exist yet, both CLIs were installed, so the answer was
+# `claude` — on a run the captain had started `lcars-ech init --engine copilot`,
+# which had already written that engine down in `.git/lcars/autopilot.json`.
+# The fact was recorded and the next step re-guessed it.
+#
+# PRECEDENCE, AND WHY IT IS THIS WAY ROUND. A config `workerBin` pin still wins:
+# it is the repo's own standing record and `lcars_default_engine` has always
+# decided from it, so this only ever fills a gap where NOTHING was recorded
+# before. That keeps the change to the one case that was wrong, and keeps the
+# S196 ruling intact — config.json gains no say in engine precedence it did not
+# already have, because an unpinned repo on a claude laptop is still unpinned
+# (see WORKERBIN_LINE below).
+#
+# ENGINE_RECORDED is kept as its OWN variable, not folded into ENGINE_CHOSEN,
+# because "we read this" and "we chose this" are different sentences and the
+# model-seed note below has to be able to say which one happened.
+ENGINE_RECORDED=""
+# ENGINE_RECORD_RAW is the record AS WRITTEN, before the availability filter —
+# kept only so the readout can tell "nothing was recorded" from "a record was
+# read and skipped" (fix round 1, D2). It never chooses an engine.
+ENGINE_RECORD_RAW=""
+if ! lcars_config_has_key "$CONFIG" workerBin; then
+  ENGINE_RECORD_RAW="$(lcars_recorded_run_engine_raw "$LCARS_DIR")"
+  ENGINE_RECORDED="$(lcars_recorded_run_engine "$LCARS_DIR")"
+  [ -n "$ENGINE_RECORDED" ] && ENGINE_CHOSEN="$ENGINE_RECORDED"
+fi
+# A config pin is a record too — the captain's — so a repo that carries one is
+# not guessing either, and the note below must stay quiet for it.
+lcars_config_has_key "$CONFIG" workerBin && ENGINE_RECORDED="$ENGINE_CHOSEN"
+
 if [ "$DRY_RUN" -eq 0 ]; then
   if [ -z "$ENGINE_CHOSEN" ]; then
     die "no worker CLI found — LCARS drives missions with Claude Code (looked for '$(lcars_engine_bin claude)') or the GitHub Copilot CLI (looked for '$(lcars_engine_bin copilot)'). Install either one and re-run: https://claude.com/claude-code"
@@ -473,6 +513,118 @@ fi
 # a suite slower than the default (lcars_seed_gate_timeout).
 GATE_TIMEOUT_VALUE="$(lcars_config_get_raw "$CONFIG" gateTimeout)"
 case "$GATE_TIMEOUT_VALUE" in ''|*[!0-9]*) GATE_TIMEOUT_VALUE=null ;; esac
+
+# ---------------------------------------------------------------------------
+# S309 — SEED `model` FROM THE ENGINE, AND SAY SO WHEN IT WAS A CHOICE.
+#
+# `$LCARS_MODEL` still wins outright (the captain named it). Otherwise the seed
+# comes from `lcars_default_model_for_engine` — the ONE place that answers "what
+# model does engine X run" — so a repo recorded as Copilot can never come out
+# carrying a Claude model.
+#
+# WHEN IT CANNOT TELL, IT SAYS SO. If nothing RECORDED the engine, the seed is a
+# choice made from what happens to be installed, and a silent choice is how a
+# Copilot-only captain ends up billed. So the note names the engine, the reason,
+# and the verb that corrects it. It is printed only when init is actually
+# SEEDING the key: over a config that already carries `model` the merge
+# preserves the captain's value, and announcing a choice we did not make would
+# be a second kind of lie.
+#
+# IT IS A CALM READOUT LINE ON STDOUT, NOT A `⚠` ON STDERR, and both halves of
+# that are load-bearing. A fresh repo with nothing recorded is the NORMAL first
+# run, not a fault — the S146 contract is that a greenfield init prints ONE calm
+# bootstrap status and no `⚠` config lecture — and `lcars init --dry-run` is
+# asserted to write NOTHING to stderr at all. Telling the captain which engine
+# his model was seeded for is information; dressing it as a warning would fire
+# an alarm on every single setup.
+[ -n "$DEFAULT_MODEL" ] || DEFAULT_MODEL="$(lcars_default_model_for_engine "$ENGINE_CHOSEN")"
+MODEL_SEED_NOTE=""
+if [ -z "${LCARS_MODEL:-}" ] && [ -z "$ENGINE_RECORDED" ] \
+   && ! lcars_config_has_key "$CONFIG" model; then
+  if [ -n "$ENGINE_RECORD_RAW" ]; then
+    # ── A RECORD WAS READ AND SKIPPED. SAY THAT (fix round 1, D2) ──────────
+    # MEASURED: with `{"engine":"copilot"}` on disk and copilot not on this
+    # PATH, init printed "nothing records which engine this repo runs on". The
+    # record HAD been read — and discarded as unavailable, which is correct and
+    # documented — and then DENIED, which is not. This is the single moment the
+    # captain most needs telling: on an unattended leg with a trimmed PATH, the
+    # record that would have saved him the bill is thrown away and the readout
+    # claims there never was one. `lcars update --engine` already carried the
+    # right sentence for this exact situation; this is its shape.
+    # ── AND A GARBAGE RECORD IS NOT A MISSING INSTALL (fix round 2, D16) ──
+    # MEASURED on the shipped fix: `{"engine":"gpt5"}` — a name LCARS does not
+    # drive at all — took the sentence below and produced `(looked for '')`,
+    # because there IS no binary to look for, plus "Install gpt5", which sends
+    # the captain after something that does not exist. The one diagnosis that
+    # would end the loop — gpt5 is not an engine LCARS drives — was never said.
+    # So the NAME is validated before the "not installed here" branch is
+    # chosen, and the words come from `lcars update --engine`, which has
+    # carried the right sentence all along.
+    case " $LCARS_ENGINES " in
+      *" $ENGINE_RECORD_RAW "*)
+    MODEL_SEED_NOTE="  ◇ RECORDED ENGINE NOT INSTALLED — model seeded as \"$DEFAULT_MODEL\" for $ENGINE_CHOSEN:
+    this repo's run record names '$ENGINE_RECORD_RAW', but '$ENGINE_RECORD_RAW' is not on this machine
+    (looked for '$(lcars_engine_bin "$ENGINE_RECORD_RAW")'). The record stands and was NOT obeyed:
+    init seeded the model for $ENGINE_CHOSEN, the engine that IS installed here.
+    Install $ENGINE_RECORD_RAW, or record the engine this repo should run on:  lcars update --engine <engine>"
+        ;;
+      *)
+    MODEL_SEED_NOTE="  ◇ RECORDED ENGINE NOT RECOGNISED — model seeded as \"$DEFAULT_MODEL\" for $ENGINE_CHOSEN:
+    this repo's run record names '$ENGINE_RECORD_RAW', but '$ENGINE_RECORD_RAW' is not an engine LCARS drives —
+    it knows $(printf '%s' "$LCARS_ENGINES" | sed 's/ / and /'). There is nothing to install.
+    The record stands and was NOT obeyed: init seeded the model for $ENGINE_CHOSEN,
+    the engine that IS installed here.
+    Record the engine this repo should run on:  lcars update --engine <engine>"
+        ;;
+    esac
+  else
+    if [ "$(lcars_available_engines | grep -c .)" = "1" ]; then
+      MODEL_SEED_WHY="$ENGINE_CHOSEN is the only engine installed here, and nothing records which engine this repo runs on"
+    else
+      MODEL_SEED_WHY="nothing records which engine this repo runs on, so init took $ENGINE_CHOSEN — LCARS's historical default"
+    fi
+    MODEL_SEED_NOTE="  ◇ NO ENGINE RECORDED — model seeded as \"$DEFAULT_MODEL\" for $ENGINE_CHOSEN:
+    $MODEL_SEED_WHY.
+    If this repo should run on another engine, record it rather than letting a
+    mission re-guess it:  lcars update --engine <engine>"
+  fi
+fi
+[ -n "$MODEL_SEED_NOTE" ] && printf '%s\n' "$MODEL_SEED_NOTE"
+
+# ---------------------------------------------------------------------------
+# S309 fix round 1, D4 — AND WHEN IT LEAVES AN INCOHERENT PAIR, IT NAMES IT.
+#
+# MEASURED: an existing config carrying `model: claude-sonnet`, plus a run
+# record of `copilot` with copilot installed, came out of init as
+# `model='claude-sonnet' workerBin='copilot'` at rc 0 with nothing said. BOTH
+# HALVES ARE INDIVIDUALLY RIGHT and both must stay: the pin is recorded so no
+# stage re-guesses the engine, and a `model` the captain already recorded is
+# never clobbered. It is the PAIR that is incoherent, and nothing named it or
+# pointed at the verb that aligns it.
+#
+# ONE ACCURATE LINE, NOT A REFUSAL. Top-level `model` is read by `xo`'s
+# cfg_model (Number One's model) and NOT by run.sh's resolver, which uses
+# `modelAliases.*` / `stages.*.model` — so the mismatch looks confined to
+# Number One and does not warrant stopping a setup.
+#
+# IT FIRES ONLY WHEN INIT ITSELF CREATED THE PAIR THIS RUN: the pin is being
+# written for the first time (the key was not already there) while an existing
+# model is preserved, and the two disagree. A repo the captain already pinned
+# and already gave a model to is his standing choice, not news, and must not be
+# nagged on every init.
+ENGINE_MODEL_NOTE=""
+EXISTING_MODEL=""
+lcars_config_has_key "$CONFIG" model && EXISTING_MODEL="$(lcars_config_get "$CONFIG" model)"
+if [ -n "$WORKERBIN_LINE" ] && [ -n "$ENGINE_CHOSEN" ] && [ -n "$EXISTING_MODEL" ] \
+   && ! lcars_config_has_key "$CONFIG" workerBin \
+   && [ "$EXISTING_MODEL" != "$(lcars_default_model_for_engine "$ENGINE_CHOSEN")" ]; then
+  ENGINE_MODEL_NOTE="  ◇ ENGINE AND MODEL DISAGREE — engine recorded as \"$ENGINE_CHOSEN\", model left as \"$EXISTING_MODEL\":
+    a model this repo already records is never clobbered, so init kept yours, and $ENGINE_CHOSEN
+    runs \"$(lcars_default_model_for_engine "$ENGINE_CHOSEN")\". Align them when you want to —
+    \`lcars update --engine $ENGINE_CHOSEN\` records the engine and moves the model with it;
+    \`lcars update --model '<model>'\` sets the model alone."
+fi
+[ -n "$ENGINE_MODEL_NOTE" ] && printf '%s\n' "$ENGINE_MODEL_NOTE"
 
 DESIRED_CONFIG="cloneId=\"$CLONE_ID\"
 model=\"$DEFAULT_MODEL\"$WORKERBIN_LINE
