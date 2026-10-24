@@ -261,6 +261,7 @@ The token-free driver that sequences it (and spends nothing) sits beside it:
 lcars-ech next      # the ONE next step
 lcars-ech status    # the one screen
 lcars-ech playbook  # action → HOLOGRAM-COMMAND-MODE.md heading
+lcars-ech grant reapprove --mission <id> --once  # only on the captain's actual grant
 ```
 
 ### The first 20 minutes
@@ -282,6 +283,13 @@ lcars-ech playbook  # action → HOLOGRAM-COMMAND-MODE.md heading
    after a context compaction, re-read it first.
 
 Then loop on `lcars-ech next` and follow the heading it names.
+
+**A grant acts, and is ledgered.** A recorded, scoped `reapprove` grant lets
+`land` give that exact LCARS sign-off without re-asking, after the hologram's
+own live-check pass. It never permits a hand-rolled merge or bypasses a refusal.
+Preflight asks once whether Number One should be ON (recommended, with the
+run's engine); with nobody there it proceeds on ON without waiting. This does
+not change the OFF default in `lcars init`.
 
 **A `wait` is never the end of the loop.** `next` prints the wait's LIMIT
 (30 min), how to RE-CHECK, and what to do when the limit passes.

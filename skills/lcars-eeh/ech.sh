@@ -35,6 +35,7 @@
 #   ech.sh drive <mission>
 #   ech.sh stalled
 #   ech.sh land <mission>
+#   ech.sh grant reapprove [--mission <id>] [--once|--run]
 #   ech.sh push-gated
 #   ech.sh worktree <mission> | worktree --branch <branch>
 #   ech.sh live-check <mission> --type cli|web|workflow[,…]
@@ -68,6 +69,7 @@
 #   LCARS_LOG_SCRIPT LCARS_FILE_SCRIPT LCARS_RESOLVE_LOGS_SCRIPT
 #   LCARS_ESTABLISH_VISION_BIN                         (sibling skills)
 #   LCARS_NOTIFY          the walk-away ping           (lcars-run/notify.sh)
+#   LCARS_ECH_GRANTED_BY  grant attribution             (default captain)
 #   LCARS_SELF_CMD        the name this driver calls itself in its own output
 #                         (default: derived from $0, else `lcars-ech`)
 #
@@ -165,6 +167,9 @@ usage() {
                        raise a question YOURSELF (a product call, a scope change, a
                        standing-rule conflict). It lands in .questions with a real id and
                        pings him once. NEVER hand-edit .pending — it is a derived mirror.
+  grant reapprove [--mission <id>] [--once|--run]
+                       record the captain's exact sign-off authority, not a shell command.
+                       Default: one attempt. --run permits reuse in this run only.
 
   drive <mission>      run.sh drive --mission, backgrounded, waiter on the PROCESS
   stalled              what the crontab heartbeat calls; decides from recorded pids
@@ -1953,6 +1958,60 @@ pf_q_engine_permission() {
   return 0
 }
 
+pf_q_number_one() {
+  local choice eng out rc decision
+  local what="the preflight Number One choice could not be applied."
+  choice="$(ap_j numberOne.choice)"
+  if [ -n "$choice" ] && [ -n "$(ap_j numberOne.appliedAt)" ]; then
+    say ""
+    say "6. Number One: already recorded $choice (engine $(ap_j numberOne.engine)) — not asking."
+    return 0
+  fi
+  eng="$(ap_j engine)"
+  if [ -z "$choice" ]; then
+    say ""
+    say "6. Number One: RECOMMENDED: ON, using the run's engine ($eng)."
+    choice="on"
+    if pf_prompt "6. Enable Number One for this run? ON is recommended; its engine is $eng." "ON"; then
+      case "$PF_VALUE" in
+        ON|on|On|true|1) choice="on" ;;
+        OFF|off|Off|no|NO|n|N|false|0) choice="off" ;;
+        *) say "   '$PF_VALUE' is not ON or OFF — taking the stated recommendation, ON." ;;
+      esac
+    else
+      say "   Nobody is there: PROCEEDS on the recommended default, ON."
+    fi
+    decision="$("$PY" - "$choice" "$eng" "$(now)" <<'PY'
+import json, sys
+choice, engine, ts = sys.argv[1:]
+print(json.dumps({"choice": choice, "enabled": choice == "on",
+                  "engine": engine, "settledAt": int(ts)}))
+PY
+)" || die "preflight: could not assemble the Number One decision."
+    ap_set numberOne "$decision" || die "preflight: could not record the Number One decision."
+  else
+    eng="$(ap_j numberOne.engine)"
+    say "6. Number One: applying the recorded choice $choice ($eng); not asking again."
+  fi
+  if [ "$choice" = "on" ]; then
+    out="$(cd "$CWD" && bash "$XO_SCRIPT" on --engine "$eng" --sweep 2>&1)"; rc=$?
+  else
+    out="$(cd "$CWD" && bash "$XO_SCRIPT" off 2>&1)"; rc=$?
+  fi
+  [ -z "$out" ] || printf '%s\n' "$out" | sed 's/^/  | /'
+  if [ "$rc" != 0 ]; then
+    PF_STOPS=$((PF_STOPS + 1))
+    write_pending "-" "$what" \
+      "Number One was requested $choice with engine $eng, but the LCARS verb refused (exit $rc): $out" \
+      "$SELF_CMD preflight   # after clearing the Number One refusal; the choice is already recorded" \
+      "the choice is preserved, but it is not recorded as applied."
+    return 0
+  fi
+  ap_set numberOne.appliedAt "$(now)" || die "preflight: could not record Number One's application."
+  pf_withdraw_say "$what" "the recorded Number One choice was applied by its LCARS verb."
+  say "   Number One $choice applied with the run's engine $eng."
+}
+
 # cmd_preflight — the one round. Exits 10 when something stopped it, which is
 # this driver's existing "a question for the captain was recorded" code.
 cmd_preflight() {
@@ -1997,6 +2056,7 @@ cmd_preflight() {
   pf_q_somewhere_to_push
   pf_q_forge_login
   pf_q_engine_permission
+  pf_q_number_one
 
   trap - TTIN TTOU 2>/dev/null || true
   say ""
@@ -2122,6 +2182,90 @@ PY
   # point naming the next step of a run that cannot finish.
   cmd_preflight || return $?
   cmd_next
+}
+
+# ==========================================================================
+# grant — a named authority, scoped and durable across seats
+# ==========================================================================
+cmd_grant() {
+  require_state
+  local action="${1:-}" mission="" duration="once" duration_set=0
+  [ $# -gt 0 ] && shift
+  [ "$action" = "reapprove" ] || die "grant: action '$action' is forbidden; only the named action reapprove is grantable."
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --mission)
+        [ $# -ge 2 ] && [ -n "$2" ] && [ "${2#--}" = "$2" ] || die "grant: --mission needs an id."
+        [ -z "$mission" ] || die "grant: name only one mission."
+        mission="$2"; shift 2 ;;
+      --once|--run)
+        [ "$duration_set" = 0 ] || die "grant: choose --once OR --run."
+        duration="${1#--}"; duration_set=1; shift ;;
+      *) die "grant: unknown argument '$1'." ;;
+    esac
+  done
+  [ -z "$mission" ] || mexists "$mission" || die "grant: no mission $mission in $MISSIONS."
+  ap_lock
+  "$PY" - "$APJSON" "$action" "$mission" "$duration" "${LCARS_ECH_GRANTED_BY:-captain}" "$(now)" <<'PY'
+import json, os, sys, uuid
+f, action, mission, duration, who, ts = sys.argv[1:]
+d = json.load(open(f))
+grant = {
+    "id": uuid.uuid4().hex, "action": action,
+    "scope": "mission" if mission else "run", "mission": mission or None,
+    "duration": duration, "who": who, "grantedAt": int(ts),
+    "runStartedAt": d["startedAt"],
+}
+d.setdefault("grants", []).append(grant)
+tmp = f + ".tmp.%d" % os.getpid()
+with open(tmp, "w") as fh:
+    json.dump(d, fh, indent=2)
+    fh.write("\n")
+os.replace(tmp, f)
+print("recorded grant %s: %s (%s, %s)" % (
+    grant["id"], action, mission or "this run", duration))
+PY
+  local rc=$?
+  ap_unlock
+  [ "$rc" = 0 ] || die "grant: could not record the authority."
+}
+
+# Claim before executing: a crashed seat must not spend a one-shot grant twice.
+grant_claim_reapprove() {
+  ap_lock
+  "$PY" - "$APJSON" "$1" "$(now)" <<'PY'
+import json, os, sys
+f, mission, ts = sys.argv[1:]
+d = json.load(open(f))
+for g in d.get("grants", []):
+    if (g.get("action") != "reapprove" or not g.get("who")
+            or not isinstance(g.get("grantedAt"), int)
+            or g.get("runStartedAt") != d.get("startedAt")
+            or g.get("duration") not in ("once", "run")
+            or (g.get("duration") == "once" and g.get("usedAt"))):
+        continue
+    if g.get("scope") == "mission":
+        if g.get("mission") != mission:
+            continue
+    elif g.get("scope") != "run" or g.get("mission") is not None:
+        continue
+    check = d.get("liveChecks", {}).get(mission, {})
+    if check.get("verdict") != "pass" or not os.path.exists(check.get("evidence") or ""):
+        sys.exit(12)
+    g["usedAt"] = int(ts)
+    g["usedFor"] = mission
+    g["uses"] = g.get("uses", 0) + 1
+    tmp = f + ".tmp.%d" % os.getpid()
+    with open(tmp, "w") as fh:
+        json.dump(d, fh, indent=2)
+        fh.write("\n")
+    os.replace(tmp, f)
+    print(g["id"])
+    break
+PY
+  local rc=$?
+  ap_unlock
+  return "$rc"
 }
 
 # ==========================================================================
@@ -3053,13 +3197,61 @@ cmd_land() {
   # (a land that reports success is invisible to the drive-failure cap), and it
   # FALSIFIES the record of what shipped. The mission's OWN state.json is the
   # evidence, so read it back: landed only when the stage is really `done`.
-  # The mode never passes --reapprove itself. That sign-off is the captain's by
-  # design, so this is a real stop-and-ask and the question carries his command.
   local st; st="$(mstate "$m" stage)"
+  local signoff_what="approve exited 0 but did NOT merge $m — it is still at stage '${st:-unknown}', not done."
+  local live_what="the hologram's own live check for $m is not recorded as pass with existing evidence."
+  local grant="" claim_rc=0
+  if [ "$st" = "verify" ] && [ "$(mstate "$m" reconcileStatus)" = "awaiting-reapprove" ]; then
+    grant="$(grant_claim_reapprove "$m")"; claim_rc=$?
+    if [ "$claim_rc" = 12 ]; then
+      write_pending "$m" "$live_what" \
+        "The grant is recorded, but Number One's recommendation cannot substitute for the hologram's own live check." \
+        "$SELF_CMD live-check $m --type <types>   # look, record pass, then: $SELF_CMD land $m" \
+        "nothing was merged and the grant was not consumed."
+      exit 10
+    fi
+    [ "$claim_rc" = 0 ] || die "land: could not claim the recorded grant; no sign-off attempted."
+  fi
+  if [ -n "$grant" ]; then
+    local evidence live_evidence entry
+    mkdir -p "$APDIR" || die "land: could not create the grant evidence directory."
+    evidence="$(mktemp "$APDIR/granted-action.XXXXXX")" || die "land: could not create the command evidence."
+    live_evidence="$(ap_j "liveChecks.$m.evidence")"
+    say "grant $grant acts: approve --mission $m --reapprove (no second question)."
+    out="$(cd "$CWD" && bash "$APPROVE_SCRIPT" --mission "$m" --reapprove 2>&1)"; rc=$?
+    printf '%s\n' "$out" >"$evidence" || die "land: command ran but its evidence could not be written."
+    printf '%s\n' "$out" | sed 's/^/  | /'
+    entry="$("$PY" - "$grant" "$m" "$APPROVE_SCRIPT" "$out" "$rc" "$evidence" "$live_evidence" <<'PY'
+import json, shlex, sys
+grant, mission, script, output, rc, evidence, live = sys.argv[1:]
+argv = ["bash", script, "--mission", mission, "--reapprove"]
+print(json.dumps({
+    "kind": "granted-action", "grant": grant, "action": "reapprove",
+    "mission": mission, "argv": argv,
+    "command": " ".join(shlex.quote(a) for a in argv),
+    "output": output, "exitCode": int(rc), "evidence": evidence,
+    "liveEvidence": live,
+}))
+PY
+)" || die "land: command ran but its decision could not be assembled."
+    ledger_append decisions "$entry" || die "land: command ran but its decision could not be ledgered."
+    st="$(mstate "$m" stage)"
+    if [ "$rc" != 0 ] || [ "$st" != "done" ]; then
+      write_pending "$m" \
+        "LCARS refused the granted reapprove for $m (exit $rc, stage '${st:-unknown}'): $out" \
+        "A grant is not a second route around a permission-classifier refusal or a merge LCARS refused on its merits." \
+        "bash $APPROVE_SCRIPT --mission $m   # clear the refusal's cause first; no automatic retry" \
+        "no merge is claimed; the attempt and its output are recorded at $evidence."
+      exit 10
+    fi
+    ap_withdraw "$signoff_what" "fulfilled by recorded grant $grant; command and evidence are in decisions.jsonl." >/dev/null
+    ap_withdraw "$live_what" "the hologram's own live check is now recorded with evidence." >/dev/null
+  fi
   if [ "$st" != "done" ]; then
+    say "refusal: ungranted-reapprove — no recorded authority for this sign-off."
     write_pending "$m" \
-      "approve exited 0 but did NOT merge $m — it is still at stage '${st:-unknown}', not done." \
-      "LCARS reconciled main into the branch and re-tested it green, then stopped for your reapprove; reapprove is YOUR sign-off, so the mode will not give it and will not claim a merge that did not happen." \
+      "$signoff_what" \
+      "LCARS stopped without merging. Reapprove is your sign-off; without a matching recorded grant the mode will not give it or claim a merge that did not happen." \
       "bash $APPROVE_SCRIPT --mission $m --reapprove   # then: $SELF_CMD land $m" \
       "nothing was merged and no post-merge hygiene ran, so there is nothing to undo."
     exit 10
@@ -4578,6 +4770,7 @@ case "$SUB" in
   await)       cmd_await "$@" ;;
   playbook)    cmd_playbook "$@" ;;
   record)      cmd_record "$@" ;;
+  grant)       cmd_grant "$@" ;;
   answered)    cmd_answered "$@" ;;
   ask)         cmd_ask "$@" ;;
   drive)       cmd_drive "$@" ;;

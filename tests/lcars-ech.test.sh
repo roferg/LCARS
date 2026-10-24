@@ -1096,8 +1096,8 @@ kill -9 "$lp" 2>/dev/null || true
 # FALSIFIES the captain's record of what shipped: four laps produced six false
 # "merged" entries and nothing merged.
 # The cure is to re-read the mission's OWN state.json: landed only when the
-# stage is actually `done`. The mode must NEVER pass --reapprove itself —
-# that sign-off is the captain's by design.
+# stage is actually `done`. Without a grant the mode must not pass --reapprove;
+# S315's grant cases below prove the explicitly authorised path separately.
 R5E="$(new_repo)"
 ap "$R5E" init --spec "$TMPROOT/spec.md" --scope M0 >/dev/null 2>&1
 AP5E="$R5E/.git/lcars/autopilot.json"
@@ -1127,7 +1127,7 @@ check "the question reports the stage the mission is actually at" \
   "printf '%s' \"\$(jget '$AP5E' 'd[\"pending\"]')\" | qgrep -q 'verify'"
 check "it pings the captain (this is a real stop-and-ask)" \
   "qgrep -q 'notify.sh lcars-reapp-1' '$STUB_LOG'"
-check "the mode NEVER passes --reapprove to approve itself" \
+check "without a grant the mode never passes --reapprove to approve itself" \
   "! qgrep -q -- '--reapprove' '$STUB_LOG'"
 check "approve was still called exactly once (no retry loop)" \
   "[ \"\$(grep -c 'approve.sh --mission lcars-reapp-1' '$STUB_LOG')\" = 1 ]"
@@ -3368,23 +3368,22 @@ cage_first() { printf '%s\n' "$1" | sed -n 1p; }
 
 # --- B1 + B2: ONE repo state, the two arms, different answers ---------------
 # Both repos are identical and fully provisioned (a testCommand in config.json
-# and a real origin), so the ONLY question outstanding is where the launch
-# copies go — which is exactly the question that must be asked, or defaulted
-# and SAID, rather than waited on.
+# and a real origin), so launch copies and Number One are the two outstanding
+# defaultable questions. Answer both rather than timing out on the new sixth row.
 PFA="$(new_repo)"
 PFB="$(new_repo)"
 printf 'M0 the CLI\n' >"$TMPROOT/pf-spec.md"
 
-pfa="$(ap_pty "$PFA" "" init --spec "$TMPROOT/pf-spec.md" --scope M0)"
+pfa="$(ap_pty "$PFA" "|" init --spec "$TMPROOT/pf-spec.md" --scope M0)"
 pfb="$(ap_caged 30 "$PFB" init --spec "$TMPROOT/pf-spec.md" --scope M0)"
 PFA_J="$PFA/.git/lcars/autopilot.json"
 PFB_J="$PFB/.git/lcars/autopilot.json"
 echo "    [terminal arm]   $(printf '%s' "$pfa" | sed -n '/PTYEXIT/p')"
 echo "    [no-terminal arm] $(cage_first "$pfb")"
 
-# B1 — a terminal is present, so it ASKS, once, with a recommended default.
+# B1 — a terminal is present, so it asks both with recommended defaults.
 check "B1 a terminal present: starting a run ASKS its setup question" \
-  "printf '%s' \"\$pfa\" | qgrep -q 'asked 1 question'"
+  "printf '%s' \"\$pfa\" | qgrep -q 'asked 2 question'"
 check "B1 the question carries a RECOMMENDED default" \
   "printf '%s' \"\$pfa\" | qgrep -q 'RECOMMENDED'"
 check "B1 the recommended default is the value it proposes to use" \
@@ -3394,7 +3393,9 @@ check "B1 return accepts it, and the answer is RECORDED, not re-derived later" \
 check "B1 'yes to all' is offered, so one keystroke answers the block" \
   "printf '%s' \"\$pfa\" | qgrep -qi 'yes'"
 check "B1 RIG CONTROL: the rig actually answered the prompt it was shown" \
-  "printf '%s' \"\$pfa\" | qgrep -q 'PTYPROMPTS 1 ANSWERED 1'"
+  "printf '%s' \"\$pfa\" | qgrep -q 'PTYPROMPTS 2 ANSWERED 2'"
+check "S315. the terminal's bare return also accepts Number One ON with the run's engine" \
+  "[ \"\$(jget '$PFA_J' 'd[\"numberOne\"][\"enabled\"]')\" = true ] && [ \"\$(jget '$PFA_J' 'd[\"numberOne\"][\"engine\"]')\" = copilot ]"
 check "B1 the terminal arm exits 0" \
   "printf '%s' \"\$pfa\" | qgrep -q 'PTYEXIT 0'"
 
@@ -3419,7 +3420,7 @@ check "B2 no terminal: the default it proceeded on is RECORDED all the same" \
 check "B2 CONTROL: the terminal arm did NOT take the no-terminal path" \
   "! printf '%s' \"\$pfa\" | qgrep -q 'NO TERMINAL'"
 check "B2 CONTROL: the two arms disagree about how many questions were asked" \
-  "printf '%s' \"\$pfa\" | qgrep -q 'asked 1 question' && printf '%s' \"\$pfb\" | qgrep -q 'asked 0 question'"
+  "printf '%s' \"\$pfa\" | qgrep -q 'asked 2 question' && printf '%s' \"\$pfb\" | qgrep -q 'asked 0 question'"
 
 # --- B4: the questions cover all three prerequisites -----------------------
 check "B4 covers where the launch copies go" \
@@ -3441,9 +3442,20 @@ check "B3 satisfied: a second run with a terminal asks NOTHING" \
   "printf '%s' \"\$pfa2\" | qgrep -q 'asked 0 question'"
 check "B3 satisfied: it says the recorded answer is why" \
   "printf '%s' \"\$pfa2\" | qgrep -qi 'already recorded'"
-check "B3 CONTROL: the FIRST run on that same repo did ask one" \
-  "printf '%s' \"\$pfa\" | qgrep -q 'asked 1 question'"
+check "B3 CONTROL: the FIRST run on that same repo did ask both" \
+  "printf '%s' \"\$pfa\" | qgrep -q 'asked 2 question'"
 check "B3 satisfied: exits 0" "printf '%s' \"\$pfa2\" | qgrep -q 'PTYEXIT 0'"
+
+# S315: an explicit OFF at the sixth row is also a durable, once-only answer.
+PFNO="$(new_repo)"
+pfno="$(ap_pty "$PFNO" "|OFF" init --spec "$TMPROOT/pf-spec.md" --scope M0)"
+check "S315. the preflight rig actually answered Number One OFF at its own prompt" \
+  "printf '%s' \"\$pfno\" | qgrep -q 'PTYPROMPTS 2 ANSWERED 2' && printf '%s' \"\$pfno\" | qgrep -q 'PTYEXIT 0'"
+check "S315. explicit Number One OFF is recorded, not replaced by the recommendation" \
+  "[ \"\$(jget '$PFNO/.git/lcars/autopilot.json' 'd[\"numberOne\"][\"enabled\"]')\" = false ]"
+pfno2="$(ap_pty "$PFNO" NONE preflight)"
+check "S315. an already-settled Number One OFF never asks again" \
+  "printf '%s' \"\$pfno2\" | qgrep -q 'asked 0 question' && printf '%s' \"\$pfno2\" | qgrep -q 'PTYEXIT 0'"
 
 # --- B2 (stdin closed, terminal still attached) ----------------------------
 # THE REGRESSION THIS PINS, MEASURED. The first cut of this detected a human by
@@ -3469,7 +3481,7 @@ check "B2-stdin: and it came back fast — no bounded read was entered at all" \
 # CONTROL: the SAME rig, the SAME repo, stdin left on the pty — it asks. The only
 # variable is fd 0, which is what makes this a measurement and not a tautology.
 PFS2="$(new_repo)"
-pfs2="$(ap_pty "$PFS2" "" init --spec "$TMPROOT/pf-spec.md" --scope M0)"
+pfs2="$(ap_pty "$PFS2" "yes" init --spec "$TMPROOT/pf-spec.md" --scope M0)"
 check "B2-stdin CONTROL: with stdin left on the terminal the same run DOES ask" \
   "printf '%s' \"\$pfs2\" | qgrep -q 'asked 1 question' && printf '%s' \"\$pfs2\" | qgrep -q 'PTYPROMPTS 1 ANSWERED 1'"
 
@@ -3673,7 +3685,7 @@ check "F1 it asked nothing (a background job cannot be answered)" \
 # THE LIVE CONTROL. The same driver, the same repo state, the same pty — in the
 # FOREGROUND. It asks. Two arms, one variable (the process group), two answers.
 PF1C="$(new_repo)"
-pf1c="$(ap_pty "$PF1C" "" init --spec "$TMPROOT/pf-spec.md" --scope M0)"
+pf1c="$(ap_pty "$PF1C" "yes" init --spec "$TMPROOT/pf-spec.md" --scope M0)"
 check "F1 CONTROL: in the FOREGROUND of a terminal the same run DOES ask" \
   "printf '%s' \"\$pf1c\" | qgrep -q 'asked 1 question' && printf '%s' \"\$pf1c\" | qgrep -q 'PTYPROMPTS 1 ANSWERED 1'"
 check "F1 CONTROL: and the foreground arm says nothing about a background job" \
@@ -6402,6 +6414,30 @@ check "S305-R9-D13. it re-states that \$HOME is still refused, and why a child i
   "printf '%s\n' \"\$LD_FLAT\" | qgrep -qiE 'HOME. is still refused' && printf '%s\n' \"\$LD_FLAT\" | qgrep -qiE 'not its parent'"
 check "S305-R9-D13. it is still ONE NAMED directory, said so" \
   "printf '%s\n' \"\$LD_FLAT\" | qgrep -qiE 'one named director'"
+
+echo "-- S315. scoped grants, refusal locks, and preflight authority --"
+for grant_case in \
+  test_04_ungranted_reapprove_stops_once_with_four_fields \
+  test_05_mission_scope_records_authority_but_refuses_another_mission \
+  test_06a_hand_rolled_gh_pr_merge_is_never_grantable \
+  test_06b_permission_classifier_refusal_has_no_second_route \
+  test_06c_lcars_merits_refusal_is_not_overridden_by_a_grant \
+  test_02_03_07_granted_reapprove_runs_ledgers_and_never_reasks \
+  test_02b_granted_command_executes_in_the_target_checkout \
+  test_08_number_one_preflight_recommends_on_once_without_a_tty \
+  test_08b_number_one_applies_to_the_target_checkout \
+  test_09_merge_policy_and_landing_agree_that_a_grant_acts \
+  test_once_grant_is_consumed_even_across_new_seats \
+  test_run_grant_can_act_for_two_missions_but_not_a_new_run \
+  test_granted_refusal_is_ledgered_without_retry_or_false_merge \
+  test_number_one_cannot_replace_own_live_evidence_for_a_grant \
+  test_legacy_boolean_is_not_a_grant \
+  test_grant_does_not_clear_an_unrecognised_gate \
+  test_invalid_grants_do_not_change_authority \
+  test_number_one_off_and_failed_application_are_persisted
+do
+  check "S315. $grant_case" "python3 '$DIR/lcars-ech-grants.test.py' 'Grants.$grant_case'"
+done
 
 echo
 echo "=== lcars-ech: $pass passed, $fail failed ==="

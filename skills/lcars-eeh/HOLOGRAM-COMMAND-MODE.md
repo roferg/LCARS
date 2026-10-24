@@ -408,9 +408,10 @@ captain can answer in a word:
 3. **Where it deploys**, and what "live" means for this product. Record it —
    there is a key for it: `lcars-ech record deploy '{"where":"…","liveMeans":"…"}'`.
 4. **What to do if LCARS itself breaks** — the default is *stop and report*.
-5. **The pre-authorisations** (§ 9): may you do a manual merge if `approve` hits
-   a known LCARS bug and the merged suite is green? May live checks write to the
-   product repo? Both default to **no**.
+5. **The pre-authorisations** (§ 7): may `land` give the specific
+   `--reapprove` sign-off after LCARS reconciles green? Record an actual grant
+   with `lcars-ech grant reapprove`; never infer one from general encouragement.
+   May live checks write to the product repo? Both default to **no**.
 
 Then write it all down and start:
 
@@ -424,7 +425,7 @@ lcars-ech heartbeat install
 
 `init` finishes by running `lcars-ech preflight`, and that is on purpose:
 it is the one moment a human is reliably in the room. **Do not walk away before
-that round has printed `proceeding`.** It settles five things the run cannot
+that round has printed `proceeding`.** It settles six things the run cannot
 settle for itself later:
 
 | # | what it settles | with nobody there |
@@ -434,10 +435,18 @@ settle for itself later:
 | 3 | somewhere to push — and whether that remote **answers**, probed with a bounded `git ls-remote` | STOPS |
 | 4 | the forge login a pull request needs (`gh auth status`) | STOPS |
 | 5 | the engine's unattended permission — whatever `COPILOT_ALLOW_ALL` the environment carries, on a copilot run | PROCEEDS: reported, never required (see the setup section above) |
+| 6 | Number One: RECOMMENDED **ON**, using the run's engine | PROCEEDS on the recommended default, ON; runs `xo on --engine <run-engine> --sweep` once and records the choice |
 
-1 and 2 carry a RECOMMENDED default, so `yes` answers the block. Re-run
+1, 2 and 6 carry a RECOMMENDED default, so `yes` answers the block. Re-run
 `lcars-ech preflight` any time; a prerequisite already recorded is not
 asked about again.
+
+Number One is asked for **once, at preflight**, never later at a merge gate.
+No tty means proceed on ON without waiting for input; an explicit OFF is
+preserved too. The decision and its engine live in `autopilot.json.numberOne`;
+the real `xo` verb applies it. A refused verb is reported, not called success.
+This is a run choice, **not** a change to `lcars init`: its
+`numberOne.enabled` default stays **false**.
 
 3 is a **reachability** check, not a name check: a deleted repo, a typo'd host
 and revoked auth all leave `origin` in the config and die at the pull-request
@@ -1052,7 +1061,18 @@ prints the whole table.
 | low, for **infrastructure** reasons only | pass | **override** — fix the cause, verify that one point live, record the override |
 
 **THE MERGE IS THE HOLOGRAM'S CALL.** Number One *recommends*; the hologram
-running the mission decides.
+running the mission decides within LCARS's gates and the captain's recorded
+authority. **The hologram's own live check is REQUIRED before every merge.**
+**Number One's recommendation is not a substitute for having looked.**
+Read the actual live evidence, record pass or bugs, and take the table's action;
+a grant never turns bugs into pass.
+
+**A grant acts, and is ledgered.** A matching recorded grant runs the exact
+LCARS-sanctioned command without a second question, as § 7 specifies.
+**An ungranted refusal raises one pre-staged question and stops that milestone.**
+Neither Number One's advice nor the hologram's judgement can bypass a refusal
+on its merits or a permission classifier.
+
 It scored every CLI or integration milestone `low` for reasons it could not
 reach, which is why a `bugs` live check sends back even a `high`, and why a
 `low` that is purely about infrastructure is an override rather than a stop. It
@@ -1145,22 +1165,58 @@ every folded child (LCARS does not release them on fold), remove any stale
 reconciles `main` into the branch, re-tests it green and then waits for the
 captain's `--reapprove` — exit 0, nothing merged, the Mission still at `verify`.
 So `land` re-reads the Mission's own `state.json` and claims it landed only when
-the stage is really `done`. Otherwise it runs **no** hygiene, writes **no**
-`merged` ledger line, raises the pre-staged question naming the exact
-`--reapprove` command, and exits **10**. Reapprove is the captain's sign-off:
-the mode never gives it.
+the stage is really `done`.
+
+**A grant acts, and is ledgered.** At `verify` with
+`reconcileStatus=awaiting-reapprove`, a matching recorded `reapprove` grant
+lets `land` run **only** `approve.sh --mission <id> --reapprove`, without
+re-asking. The hologram must have recorded its own live-check pass with an
+existing evidence path first. The attempt writes a `decisions.jsonl` line
+with its grant id, mission, exact command and argv, output, exit code,
+command-output evidence path and live-evidence path. It continues to hygiene
+only if LCARS actually records `done`.
+
+**An ungranted refusal raises one pre-staged question and stops that milestone.**
+Without a matching grant, the existing behaviour stays: **no** hygiene,
+**no** `merged` ledger line, the four-field question naming `--reapprove`,
+and exit **10**. Reapprove is still the captain's sign-off; a recorded grant
+is how he authorises the hologram to give that specific sign-off for him.
+
+### Record the authority, not a promise to ask faster
+
+Only record a grant the captain actually gave. Never mint one for yourself,
+infer one from Number One's recommendation, or confuse a grant with engine
+tool permissions.
+
+```bash
+lcars-ech grant reapprove --mission <mission-id> --once
+lcars-ech land <mission-id>
+```
+
+`reapprove` is the named action, **not prose or an arbitrary shell command**.
+`autopilot.json.grants` records its id, action, scope, mission, duration, who
+granted it (`captain`, or `LCARS_ECH_GRANTED_BY`), `grantedAt` and the run's
+`startedAt`. Every new seat reads that record after a restart or compaction.
+`--mission <id>` limits it to that Mission; without it, the scope is this run.
+`--once` (the default) permits **one attempt**, claimed durably before execution
+so a crash cannot reuse it. `--run` permits reuse for this run, still within
+any named mission scope. No grant carries into another run. A failed attempt
+is ledgered too; it stops rather than trying another route.
 
 **You never merge by hand.** Not with a better justification, not "just this
 once", not by another route when the permission classifier blocks the first one.
+**A grant never authorises a hand-rolled `gh pr merge`.**
+**A grant never authorises a second route around a permission-classifier refusal.**
+**A grant never authorises a merge LCARS refused on its merits.**
 When LCARS refuses a merge, `land` exits **10** and writes ONE pre-staged
 question to `autopilot.json.pending` with four fields — what is blocked, why it
 is safe, the one command that would run, and the rollback. Surface that
 question and **stop that milestone**. Other milestones carry on.
 
-If the captain pre-authorised the manual merge in § 1
-(`preauthorised.manualMergeWhenApproveHitsKnownBug`), the question still gets
-raised — you pre-stage it with the suite already run on the merged state so his
-"OK" costs seconds. His OK is what runs it, not the pre-authorisation alone.
+The legacy `preauthorised.manualMergeWhenApproveHitsKnownBug` boolean is
+**not a scoped grant** and cannot authorise a command. Record the exact named
+authority above instead. A grant authorises the LCARS sign-off, not a manual
+merge around LCARS.
 
 Pushing is also not yours to hand-roll:
 
