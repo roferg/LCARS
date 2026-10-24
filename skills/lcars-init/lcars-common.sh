@@ -4785,13 +4785,29 @@ lcars_prd_questions_gate() {
   lcars_concept_open_questions "$@" > "$qf"
   local rc=0
   "${LCARS_PYTHON_BIN:-python3}" - "$prd" "$LCARS_PRD_QUESTIONS_HEADING" "$qf" <<'S175_PY' || rc=$?
-import re, sys
+import os, re, sys
 prd_path, heading, qfile = sys.argv[1], sys.argv[2], sys.argv[3]
 with open(qfile) as fh:
     qs = [ln.strip() for ln in fh if ln.strip()]
 with open(prd_path) as fh:
     prd = fh.read()
 want = re.sub(r"[^a-z0-9]+", " ", heading.lower()).strip()
+
+occurrences = []
+for number, ln in enumerate(prd.replace("\r\n", "\n").split("\n"), 1):
+    m = re.match(r"^(#{1,6})\s+(.*)$", ln)
+    if m and re.sub(r"[^a-z0-9]+", " ", m.group(2).lower()).strip().startswith(want):
+        occurrences.append((number, ln))
+if len(occurrences) > 1:
+    sys.stderr.write(
+        "PRD has duplicate '%s' headings. Keep ONE section containing every "
+        "question, not a copied idea section plus an appended hand-off section. "
+        "Occurrences:\n%s\n"
+        % (heading, "\n".join("  line %d: %s" % row for row in occurrences)))
+    sys.exit(1)
+
+if os.environ.get("LCARS_PRD_QUESTIONS_UNIQUENESS_ONLY") == "1":
+    sys.exit(0)
 
 section, lvl, found = [], None, False
 for ln in prd.replace("\r\n", "\n").split("\n"):
@@ -4878,8 +4894,14 @@ if len(missing) > spare:
         "or resolved with the captain and recorded as resolved. It may NOT "
         "quietly become an assertion, and quoting it elsewhere in the PRD does "
         "not count: the section is what the captain and the Plan Stage read. "
-        "Missing:\n%s\n"
+        "The question text must appear VERBATIM for a text match (line wrapping "
+        "is fine); a paraphrase of a STILL OPEN question does not match. A "
+        "declared RESOLVED entry may instead account for a settled question. "
+        "For example, copy this correct line:\n  - STILL OPEN: %s\n"
+        "Or retain that question text after `RESOLVED with the captain:` and "
+        "append ` — DECIDED: <the captain's answer>`.\nMissing:\n%s\n"
         % (len(unaccounted), len(qs), heading,
+           unaccounted[0],
            "\n".join("  - " + q for q in unaccounted)))
     sys.exit(1)
 S175_PY

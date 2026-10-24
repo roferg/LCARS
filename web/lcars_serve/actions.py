@@ -7971,30 +7971,26 @@ class Actions(LogFacts):
         if not questions:
             return ""
         answers = answers if isinstance(answers, dict) else {}
-        out = ["## Open questions from the design session", "",
-               "These were raised while the design was being drawn. An answered "
+        guidance = ("These were raised while the design was being drawn. An answered "
                "one is the captain's own decision and is a requirement. For any "
-               "marked NO ANSWER RECORDED, READ THE QUESTION'S OWN LINE FIRST — "
+               "marked STILL OPEN (NO ANSWER RECORDED), READ THE QUESTION'S OWN LINE FIRST — "
                "it is quoted verbatim from the design doc, and if it records "
                "its own settlement then it IS settled and must not be asked "
                "again. Raise a human gate (`lcars:awaiting-human`) only for one "
                "the line leaves genuinely undecided. Never settle one yourself "
                "by taking whatever the mockup happens to show, and never treat "
-               "one as agreed because nobody objected.", ""]
-        for i, q in enumerate(questions):
+               "one as agreed because nobody objected.")
+        out = ["## Open questions from the design session", ""]
+        for q in questions:
             said = str(answers.get(q["id"], "") or "").strip()
-            out.append("%d. Q: %s" % (i + 1, q["text"]))
             if said:
-                out.append("   ANSWERED by the captain: %s" % said)
+                out.append("- RESOLVED with the captain: %s — DECIDED: %s"
+                           % (q["text"], said))
             else:
-                # THE FACT, AND ONLY THE FACT. It used to add "he was not asked,
-                # or did not answer" — a disjunction the daemon invented, whose
-                # first half the promote dialog makes false — and "Treat as
-                # undecided", which is a verdict on a line it never read.
-                out.append("   ⚠ NO ANSWER RECORDED at filing — he typed "
-                           "nothing in the box. Read the line above before "
-                           "you spend a gate on it.")
-        return "\n".join(out) + "\n"
+                out.append("- STILL OPEN: %s" % q["text"])
+        guidance += (" NO ANSWER RECORDED at filing means he typed nothing in "
+                     "the box; read the question before spending a gate on it.")
+        return "\n".join(out + ["", "## Design question guidance", "", guidance]) + "\n"
 
     @classmethod
     def _handoff_idea(cls, idea, scope, concept_text="", answers=None):

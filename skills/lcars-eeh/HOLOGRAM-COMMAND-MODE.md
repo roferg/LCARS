@@ -666,7 +666,7 @@ LCARS_VIEWSCREEN_ALLOW_AI=1 lcars-viewscreen --port 8765 >/tmp/lcars-viewscreen.
 #    and not a top-level key. `repo` is the ABSOLUTE path of the product repo.
 curl -s -X POST http://127.0.0.1:8765/api/holodeck/start \
   -H 'Content-Type: application/json' \
-  -d '{"repo":"/abs/path/to/product-repo","program":"M0 screens","mode":"grounding"}'
+  -d '{"repo":"/abs/path/to/product-repo","program":"M0 screens","mode":"grounding","engine":"copilot"}'
 
 # 3. POST /api/holodeck/<sessionId>/say — ONE authoring turn. `intent` is
 #    "build" or "ask"; omitted it means "build".
@@ -751,7 +751,10 @@ curl -s -X POST http://127.0.0.1:8765/api/holodeck/<sessionId>/end \
 #    session id). It WARM-RESTARTS the program — a FRESH sessionId, the whole
 #    transcript replayed in as context, the mockup exactly as it was left.
 curl -s -X POST http://127.0.0.1:8765/api/holodeck/open \
-  -H 'Content-Type: application/json' -d '{"room":"m0-screens"}'
+  -H 'Content-Type: application/json' -d '{"room":"m0-screens","engine":"copilot"}'
+
+curl -s -X POST http://127.0.0.1:8765/api/holodeck/duplicate \
+  -H 'Content-Type: application/json' -d '{"room":"m0-screens","program":"M1 screens","engine":"copilot"}'
 
 # READS are GETs. /api/holodeck is the Program list — every program in this
 # repo's sidecar, live or on disk, each with its `room`. /api/holodeck/<sessionId>

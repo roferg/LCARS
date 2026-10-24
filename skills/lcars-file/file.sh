@@ -64,6 +64,32 @@ die() { printf 'lcars file: %s\n' "$1" >&2; exit 1; }
 # with exactly the judgement they had.
 die_prd() { printf 'lcars file: %s\n' "$1" >&2; exit 3; }
 
+refuse_questions() {
+  local msg="$1" attempt
+  attempt="$("${LCARS_PYTHON_BIN:-python3}" - "$LCARS_DIR" "$msg" <<'PY'
+import fcntl, hashlib, os, sys
+root, message = sys.argv[1:]
+root = os.path.join(root, "question-refusals")
+os.makedirs(root, exist_ok=True)
+key = hashlib.sha256(message.encode()).hexdigest()
+with open(os.path.join(root, key), "a+") as fh:
+    fcntl.flock(fh, fcntl.LOCK_EX)
+    fh.seek(0)
+    attempt = int(fh.read().strip() or "0") + 1
+    fh.seek(0)
+    fh.truncate()
+    fh.write(str(attempt))
+print(attempt)
+PY
+)" || die_prd "$msg
+Could not record the question-refusal attempt; see the error above."
+  if [ "$attempt" -gt 1 ]; then
+    msg="Question carry-forward refusal, attempt $attempt in this repository: this refusal has already been reported. Repair the question section using the instructions below.
+$msg"
+  fi
+  die_prd "$msg"
+}
+
 # --- version check + ask-to-update (interactive; S129) ---------------------
 # `lcars file` is an interactive entry point, so BEFORE any real work we run the
 # throttled version check in ASK mode. Fully guarded (`|| true`) + honours the
@@ -475,7 +501,7 @@ _validate_prd() { # prd-path [attachment-path…]
   # lcars_prd_questions_gate in lcars-init/lcars-common.sh for the measurement.
   local qmsg
   if ! qmsg="$(lcars_prd_questions_gate "$p" "${@:2}" 2>&1)"; then
-    die_prd "$qmsg"
+    refuse_questions "$qmsg"
   fi
 }
 
@@ -1195,11 +1221,17 @@ require_section "Constraints"        'Constraints'
 # S175 — and the design brief's own OPEN QUESTIONS must survive this boundary.
 # Same gate as the --complete lane (_validate_prd), reading the SOURCE attachment
 # paths since nothing is staged yet. A no-op for every mission with no concept
-# doc and for one whose brief left nothing open, so their filing is untouched.
+# doc and for one whose brief left nothing open, except duplicate headings are
+# always refused before filing.
+QGATE_RC=0
 if [ "${#ATTACHMENTS[@]}" -gt 0 ]; then
   QGATE_MSG="$(lcars_prd_questions_gate "$PRD_SRC" "${ATTACHMENTS[@]}" 2>&1)" \
-    || die_prd "$QGATE_MSG"
+    || QGATE_RC=$?
+else
+  QGATE_MSG="$(LCARS_PRD_QUESTIONS_UNIQUENESS_ONLY=1 \
+    lcars_prd_questions_gate "$PRD_SRC" 2>&1)" || QGATE_RC=$?
 fi
+[ "$QGATE_RC" -eq 0 ] || refuse_questions "$QGATE_MSG"
 
 # --- when an ADR set is provided, shape-check it ---------------------------
 # SHAPE validation only — NOT depth policy. Whether a Mission is complex enough

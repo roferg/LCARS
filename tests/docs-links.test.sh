@@ -586,5 +586,22 @@ n="$(grep -cEi 'session [0-9]|\.dev/|grill' "$TMP/leaky.md")"
   || bad "control: the vocabulary patterns matched nothing in a deliberately leaky file"
 
 echo
+if python3 - <<'PY'
+import json, pathlib, re
+doc = pathlib.Path("skills/lcars-eeh/HOLOGRAM-COMMAND-MODE.md").read_text()
+section = doc.split("## 4. ", 1)[1].split("## 4a.", 1)[0]
+examples = re.findall(
+    r"curl[^\n]+/api/holodeck/(start|open|duplicate)\s*\\\n"
+    r"\s*-H[^\n]*?(?:\\\n\s*)?-d '([^']+)'", section)
+assert sorted(name for name, _ in examples) == ["duplicate", "open", "start"], examples
+for name, payload in examples:
+    assert json.loads(payload).get("engine") == "copilot", (name, payload)
+PY
+then
+  ok "S314: all three holodeck session curl examples explicitly select copilot"
+else
+  bad "S314: all three holodeck session curl examples explicitly select copilot"
+fi
+
 printf 'docs-links: %d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

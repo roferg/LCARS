@@ -383,8 +383,16 @@ section, and `file.sh` refuses a PRD that drops any of them:
 ## Open questions from the design session
 
 - STILL OPEN: <the question, as the brief wrote it>
-- RESOLVED with the captain: <the question> — <the answer he gave>
+- RESOLVED with the captain: <the question> — DECIDED: <the answer he gave>
 ```
+
+Keep exactly ONE such section: filing refuses duplicate headings and names
+each occurrence's line number. Do not copy the idea's section and append a
+second one. Keep guidance outside its bullet list, under a separate heading.
+For a text match, carry the question VERBATIM (wrapping is fine), not as a
+paraphrased STILL OPEN line. The gate also accepts a declared RESOLVED summary
+for a question settled with the captain. A refusal gives a copyable example;
+repeating the same refusal records and reports its attempt number.
 
 Every bullet the brief left open appears here, **as what it is**. Resolving one
 with the captain during the grill is the *ideal* outcome — record the answer and
