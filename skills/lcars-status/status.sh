@@ -191,12 +191,93 @@ stage_failure() { # events.jsonl
     END { if (f) printf "%s\t%s\n", st, lg }
   ' "$1"
 }
+
+# S312 — THE SAME QUESTION, ASKED OF MISSION STATE FIRST.
+#
+# `stage_failure` above reads events.jsonl, which S218 made the record. That is
+# still correct and is still read. But the mission that sat dead for 4h49m was
+# invisible to every reader that asks MISSION STATE "how is this mission?",
+# because `stage` in state.json is the resume pointer and said `align`. S312
+# writes the fact where those readers look (failedStage/failedAt/failedReason,
+# beside awaitingHuman), so this prefers that record and falls back to the event
+# log for every mission that predates it.
+#
+# Prints "<stage>$RS<log>$RS<reason>" (log and reason may be empty), or nothing.
+# ONE function, two sources, so the row glyph and the footer can never disagree
+# about whether a mission is currently failed.
+#
+# $RS, NOT A TAB, AND THE REASON IS THE ONE ALREADY WRITTEN AT THE TOP OF THIS
+# FILE. Tab is IFS *whitespace*, so `read` collapses a run of them into one
+# delimiter and drops empty leading/trailing fields — and the state.json lane's
+# middle field (the log path) is ALWAYS empty. Written with tabs, this function
+# shipped the REASON into the LOG slot and `lcars status` printed
+# "Research failed — log: research failed: the question-generator worker…".
+# 0x1f is not IFS whitespace, so empty fields survive and the split is
+# positional. Measured on a real failed drive, not reasoned about.
+mission_failure() { # mission-dir
+  local st why lg ev
+  st="$(json_str "$1/state.json" failedStage)"
+  if [ -n "$st" ]; then
+    why="$(json_str "$1/state.json" failedReason)"
+    lg="$(json_str "$1/state.json" failedLog)"
+    printf '%s%s%s%s%s\n' "$st" "$RS" "$lg" "$RS" "$why"
+    return 0
+  fi
+  ev="$(stage_failure "$1/events.jsonl")"
+  [ -n "$ev" ] || return 0
+  # the event lane still answers in tabs; re-separate it, preserving its empty
+  # log field, and append an empty reason (the event log records no third fact).
+  printf '%s%s\n' "$(printf '%s' "$ev" | tr '\t' "$RS")" "$RS"
+}
 # A live driver holds <mission>/driver.lock/pid — a new run is under way, so
 # the last failure is not the news (mirrors local_adapter._driver_running).
 driver_live() { # mission-dir
   local pid; pid="$(cat "$1/driver.lock/pid" 2>/dev/null)" || return 1
   case "$pid" in ''|*[!0-9]*) return 1 ;; esac
   kill -0 "$pid" 2>/dev/null
+}
+
+# S312 fix round 1 — THE SECOND WITNESS: a live `worker-adapter` working out of
+# THIS mission's directory.
+#
+# WHY A SECOND ONE IS NEEDED NOW. S312's recorded failure used to be cleared when
+# the next attempt STARTED — which is exactly what made a drive killed mid-stage
+# invisible (the driver died before it could re-write the record), so it is now
+# cleared when a stage SUCCEEDS. That means the stale record sits on disk for as
+# long as a retry runs, and a RUNNING mission must not wear the failed glyph.
+# `driver_live` above covers every `drive` (it holds the lock), but run.sh calls
+# `acquire_driver_lock` from `cmd_drive` ALONE: a bare `lcars run <stage>` works a
+# mission with NO lock, and before this round the stage_start clear is what kept
+# that path from reading as failed. So this view reads the same witness the ECH's
+# `stalled` reads (mission_worker_adapter_live in ech.sh), from the adapter's OWN
+# argv — run.sh spawns every cold worker as
+# `bash worker-adapter.sh spawn <cli> <role> <outdir> <prompt>` and <outdir> is
+# always under .git/lcars/missions/<id>/.
+#
+# IT IS CONSULTED LAZILY — only for a mission that would otherwise be reported
+# failed — so a healthy board never reads the process table at all.
+#
+# THE SNAPSHOT IS TAKEN FIRST, ON PURPOSE. Matching with a `grep worker-adapter`
+# in the pipeline makes the matcher's own command line a match for ITSELF: a
+# check that is permanently "live" and therefore permanently silent. `ps` is
+# captured into a variable whose own argv says nothing about adapters, and the
+# matching happens in this already-running shell.
+#
+# AND THE DIRECTION IS DELIBERATE: this probe can only ever BUY SILENCE. It
+# cannot invent a failure, so a wrong answer costs a report that arrives when the
+# worker exits — against a false ✖ on live work, which is the defect that teaches
+# the captain to ignore his own board.
+worker_adapter_live() { # mission-id
+  local m="$1" snap line
+  [ -n "$m" ] || return 1
+  snap="$(ps -eo pid=,command= 2>/dev/null)" || return 1
+  while IFS= read -r line; do
+    case "$line" in *worker-adapter*) ;; *) continue ;; esac
+    case "$line" in *"missions/$m/"*) return 0 ;; esac
+  done <<WAL_EOF
+$snap
+WAL_EOF
+  return 1
 }
 
 rows=()
@@ -279,12 +360,19 @@ for s in "${states[@]}"; do
   # label's (stage from the label, S191) — the row wears ✖ and the footer
   # below says which Stage failed and where its log is.
   sfail=""
-  driver_live "$(dirname "$s")" || sfail="$(stage_failure "$(dirname "$s")/events.jsonl")"
+  # S312: mission_failure, not stage_failure — state.json's recorded `failed`
+  # fact first, the event log as the fallback. Still gated on an IDLE mission:
+  # a live driver means a new run is under way and the last failure is not the
+  # news.
+  driver_live "$(dirname "$s")" || sfail="$(mission_failure "$(dirname "$s")")"
+  # …and the second witness, for the paths that hold no lock (see above). Only a
+  # mission that would otherwise be reported failed pays for the probe.
+  if [ -n "$sfail" ] && worker_adapter_live "$id"; then sfail=""; fi
   if [ -n "$sfail" ]; then
-    IFS=$'\t' read -r fstage flog <<<"$sfail"
+    IFS="$RS" read -r fstage flog fwhy <<<"$sfail"
     glyph="${glyph:+$glyph}$FAILED_GLYPH"
     any_failed=1
-    failures+=("$id"$'\t'"$issue_disp"$'\t'"${fstage:-a stage}"$'\t'"${flog:-}")
+    failures+=("$id$RS$issue_disp$RS${fstage:-a stage}$RS${flog:-}$RS${fwhy:-}")
   fi
   [ -n "$glyph" ] && any_glyph=1
 
@@ -377,13 +465,19 @@ if [ "${#failures[@]}" -gt 0 ]; then
   echo
   echo "Stopped on a failure:"
   for fl in "${failures[@]}"; do
-    IFS=$'\t' read -r xid xissue xstage xlog <<<"$fl"
+    IFS="$RS" read -r xid xissue xstage xlog xwhy <<<"$fl"
     xname="$(printf '%s' "$xstage" | awk '{ n = split($0, w, "-"); o = ""; for (i = 1; i <= n; i++) o = o (i > 1 ? " " : "") toupper(substr(w[i], 1, 1)) substr(w[i], 2); print o }')"
     if [ -n "$xlog" ]; then
       printf '  %s (%s): %s failed — log: %s\n' "$xid" "$xissue" "$xname" "$xlog"
     else
       printf '  %s (%s): %s failed.\n' "$xid" "$xissue" "$xname"
     fi
+    # S312 — AND THE RECORDED REASON, WHOLE, ON ITS OWN LINE. The footer used to
+    # name the Stage and point at a log; the awaiting-human footer below has
+    # always printed the question itself, and that is the precedent being
+    # followed. A line that says only "Implement failed" is one more thing the
+    # captain has to go and look up at 01:36.
+    [ -n "$xwhy" ] && printf '      reason: %s\n' "$xwhy"
     printf '      → the whole sentence: lcars status --once %s\n' "$xid"
   done
 fi

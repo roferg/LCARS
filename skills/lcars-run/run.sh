@@ -441,6 +441,10 @@ json_escape() { # string → JSON-string-safe (printed, no surrounding quotes)
 emit_event() { # type stage detail [key=value ...]
   [ -n "${MISSION_DIR:-}" ] || return 0
   local ts type stage detail mid
+  # S312 — the RAW type, kept before the `shift 3` below, for the supersede rule
+  # at the end of this function. `$type` is json-escaped and `$1` is a data pair
+  # by then, so neither can answer "what kind of event was this".
+  local ev_type="${1:-}"
   ts="${LCARS_NOW:-$(date +%s)}"
   type="$(json_escape "${1:-}")"
   stage="$(json_escape "${2:-}")"
@@ -464,6 +468,45 @@ emit_event() { # type stage detail [key=value ...]
 
   printf '{"ts":%s,"mission":"%s","stage":"%s","type":"%s","detail":"%s"%s}\n' \
     "$ts" "$mid" "$stage" "$type" "$detail" "$data" >>"$MISSION_DIR/events.jsonl"
+
+  # S312 — THE SUPERSEDE RULE LIVES WITH THE EVENT, not with the drive loop.
+  # A Stage advanced by anything other than the drive loop (a `--step` resume,
+  # the daemon, a hand-run `emit-event`) must clear the record too, and wiring
+  # this into the drive loop instead left exactly those paths behind: the
+  # event-log failure went and the state.json one stood, so `lcars status` kept
+  # calling a healthy mission failed. One rule, one place, for both readers.
+  #
+  # S312 FIX ROUND 1 — AND IT IS CLEARED BY A STAGE THAT **SUCCEEDS**, NEVER BY
+  # ONE THAT STARTS. `stage_start` used to be in this list (mirroring the event
+  # log's own rule), and a fresh tester measured what that costs: fail Research,
+  # start a retry, hard-kill the driver mid-stage — the record was cleared when
+  # the attempt STARTED and never re-written, because the driver died before it
+  # could write anything. The mission went from visible to INVISIBLE by having a
+  # doomed drive started on it, on all four surfaces at once. And that is the
+  # ORDINARY case: the captain's laptop sleeps after one minute, on mains, so an
+  # unattended retry interrupted mid-stage is what normally happens.
+  #
+  # So an attempt that STARTS no longer erases what the last one proved; only an
+  # attempt that gets somewhere does. `stage_done` is a Stage that finished and
+  # `gate` is a run that stopped on a question (a mission parked awaiting-human
+  # is a visible state of its own) — both are real supersedes. The failure arms
+  # in the drive loop re-write the record themselves, so a retry that fails
+  # again lands a fresh failedAt rather than inheriting a stale one.
+  #
+  # DOES THIS DRIFT FROM THE EVENT LOG'S RULE? No, because the two are never both
+  # consulted: status.sh's `mission_failure` and local_adapter._stage_failure
+  # PREFER this record and fall back to the event log only for a mission that has
+  # none (everything filed before S312). The event lane's own rule is unchanged.
+  #
+  # THE PRICE, PAID DELIBERATELY: while a retry is in flight the stale record is
+  # still on disk, so every surface that renders it has to be guarded by a
+  # liveness check or a running mission reads as failed. All four are
+  # (mission_work_live in ech.sh; driver_live + worker_adapter_live in status.sh;
+  # _driver_running + _worker_adapter_running in local_adapter), and the control
+  # for it is tests/stage-failed-state.test.sh § 3.
+  case "$ev_type" in
+    stage_done|gate) drive_clear_stage_failed ;;
+  esac
 }
 # --- durable dedup/indexing helpers (derive from events.jsonl, not a local) --
 # The Implement stage is RE-INVOKED on real runs (a manual `lcars run` retry, or
@@ -24514,6 +24557,135 @@ drive_base_recheck() {
   return 0
 }
 
+# === S312 — "FAILED AND IDLE" IS A STATE YOU CAN SEE ========================
+#
+# THE DEFECT, MEASURED. On a real mission a retry failed at 01:36 and the
+# mission sat UNTOUCHED FOR 4 HOURS 49 MINUTES. Nothing surfaced it, because
+# nothing in MISSION STATE said it had failed:
+#   • the ECH's `stalled` reported nothing — the driver had exited NORMALLY
+#     after the stage stop, which is a clean exit 0;
+#   • `status` showed `stage=implement`, which is what healthy work shows;
+#   • the hourly heartbeat printed that same line every hour.
+# S218 already records the failure in events.jsonl and the board and `lcars
+# status` already render it. But `stage` in state.json is the RESUME POINTER —
+# a freshly-filed mission whose Research died still reads `"stage": "align"` —
+# and every reader that asks mission state "how is this mission?" therefore got
+# the same answer for a dead mission as for a new one.
+#
+# SO THE FACT GOES WHERE THOSE READERS LOOK, following the `awaitingHuman`
+# precedent exactly: a flat field on state.json, written by the drive, cleared
+# when the condition passes. Three fields, because "it failed" without what,
+# when and why is another thing nobody can act on.
+#
+# IT IS A DISTINCT FACT FROM THE STAGE. A mission is "at implement, FAILED",
+# never "at failed". `stage` is NOT touched here — collapsing the two would
+# break every resume path, every label and every column.
+drive_mark_stage_failed() { # <stage> <one-line reason> [failure-log relpath]
+  local st="${1:-}" why="${2:-}" lg="${3:-}"
+  [ -n "$st" ] || return 0
+  # ONE LINE. The reason is read back and printed whole by `lcars status`, the
+  # board and the ECH's heartbeat, so a multi-line blob here would wreck all
+  # three. The drive's own `err_tail` is already one line; this is the guard for
+  # every other caller.
+  why="$(printf '%s' "$why" | tr '\n' ' ')"
+  lcars_state_set_string "$STATE" failedStage "$st"
+  lcars_state_set_string "$STATE" failedAt "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  lcars_state_set_string "$STATE" failedReason "$why"
+  # THE LOG PATH IS PART OF THE RECORD, when this run wrote one. S218 put it on
+  # the event as `data.log` and both the card and `lcars status` print it; a
+  # state.json record without it would be a record that LOSES information the
+  # moment it becomes the preferred source, which is exactly what happened the
+  # first time this was written with three fields (tests/lcars-research-failure
+  # 7e caught it). Unset, never an empty string, so a run that wrote no log is
+  # absent rather than carrying a blank path.
+  if [ -n "$lg" ]; then
+    lcars_state_set_string "$STATE" failedLog "$lg"
+  else
+    lcars_state_unset "$STATE" failedLog
+  fi
+  return 0
+}
+
+# …and the record describes the LAST ATTEMPT, so a SUCCESSFUL one supersedes it.
+# Its one caller is emit_event, on `stage_done` (a Stage finished) and `gate` (the
+# run stopped on a question) — NOT on `stage_start`. The reasoning, and the
+# measurement that changed it, are on that call site; the short version is that a
+# record cleared when an attempt STARTS does not survive the attempt being
+# killed, and an interrupted drive is the ordinary case on a laptop that sleeps.
+drive_clear_stage_failed() {
+  # Called from emit_event, which runs on paths where no mission has been
+  # located yet (and in subcommands that never touch state). No state file ⇒
+  # nothing to clear, and never an error.
+  [ -n "${STATE:-}" ] && [ -f "$STATE" ] || return 0
+  [ -n "$(json_str "$STATE" failedStage)" ] || return 0
+  lcars_state_unset "$STATE" failedStage
+  lcars_state_unset "$STATE" failedAt
+  lcars_state_unset "$STATE" failedReason
+  lcars_state_unset "$STATE" failedLog
+  return 0
+}
+
+# === S312 — THE UNDECLARED-DRIFT CHECK, AT DRIVE START ======================
+#
+# THE GATE IS NOT RELAXED AND NOT RE-IMPLEMENTED. `proof_drift_declared_ok` is
+# the same function the pre-merge gate calls (retest_ticket_suites), with the
+# same refusal words and the same `drift_cure_block` cure. All that changes is
+# WHEN it is first consulted.
+#
+# WHY EARLY. The drift a rebase leaves behind is a CONTENT difference, so it
+# survives a clean rebase with no error in the log, and the gate only re-fired
+# at the END of the next Implement pass — ~20 minutes of worker time on the real
+# mission, every time, for a run that could never have merged. This runs it in
+# cmd_drive's post-lock, pre-stage-loop slot (beside drive_base_recheck, for the
+# same two reasons: after the lock so two drives cannot race it, before the
+# stage loop so it is once per drive and nothing has been spawned yet).
+#
+# IT IS SILENT WHEN IT HAS NOTHING TO SAY. No recorded proof snapshot (every
+# mission before its first green ticket) ⇒ no opinion, no output, return 0. A
+# worktree it cannot cut ⇒ no opinion either: this is an EARLY WARNING for a
+# refusal the pre-merge gate will still make, so it must never turn a rig
+# problem into a mission failure.
+drive_early_drift_check() {
+  local snap t ids="" branch wt wt_base undecl
+  for snap in "$MISSION_DIR"/tickets/*/proof-tests.sha256; do
+    [ -f "$snap" ] || continue
+    t="$(basename "$(dirname "$snap")")"
+    ids="${ids:+$ids }$t"
+  done
+  [ -n "$ids" ] || return 0
+
+  branch="$(json_str "$STATE" branch)"
+  wt_base="$MISSION_DIR/earlydrift-wt"
+  # The MISSION BRANCH's tip is the tree that matters — the ambient checkout is
+  # whatever the captain last looked at, and judging that would be the S110
+  # wrong-tree failure. No branch ⇒ no tree to judge ⇒ no opinion.
+  wt="$(make_ticket_worktree "$wt_base" "$branch" "earlydrift" 2>/dev/null)" || wt=""
+  [ -n "$wt" ] || return 0
+
+  local bad_id="" bad_rels=""
+  for t in $ids; do
+    if ! undecl="$(proof_drift_declared_ok "$t" "$wt")"; then
+      bad_id="$t"; bad_rels="$undecl"; break
+    fi
+  done
+
+  local cure=""
+  [ -n "$bad_id" ] && cure="$(drift_cure_block "$bad_id" "$bad_rels" "$wt")"
+  "$GIT_BIN" worktree remove --force "$wt" >/dev/null 2>&1 || rm -rf "$wt"
+  "$GIT_BIN" worktree prune >/dev/null 2>&1 || :
+  rm -rf "$wt_base" 2>/dev/null || :
+  [ -n "$bad_id" ] || return 0
+
+  local stage; stage="$(json_str "$STATE" stage)"
+  emit_event ticket_locked_test_tampered "$stage" \
+    "ticket $bad_id — committed test drifted from the proof-time snapshot with no declaring ticket (caught at drive START, before any stage work)" \
+    "ticket=$bad_id" || :
+  drive_mark_stage_failed "$stage" \
+    "PRE-MERGE UNDECLARED TEST DRIFT on ticket $bad_id: $(printf '%s' "$bad_rels" | tr '\n' ' ')"
+  die "PRE-MERGE UNDECLARED TEST DRIFT: ticket $bad_id's COMMITTED test file(s) no longer match the proof-time snapshot and NO ticket declared that edit (test-edits.json): $(printf '%s' "$bad_rels" | tr '\n' ' '). BLOCKED: the Mission cannot merge an undeclared test edit, and this is NOT a self-healable regression. CAUGHT AT DRIVE START — no stage work was done, so nothing was wasted finding out.
+$cure"
+}
+
 # --- the PR merge-state poll: "merged" iff the host says state MERGED OR
 # mergedAt is a non-null value. gh absent/failing → echoes nothing → not merged
 # (best-effort: a transient failure just keeps the Mission in review, never a
@@ -25508,6 +25680,11 @@ cmd_drive() {
   # produced). It never blocks — see drive_base_recheck.
   drive_base_recheck
 
+  # S312 — UNDECLARED DRIFT, HERE, NOT TWENTY MINUTES FROM NOW. Same slot, same
+  # two reasons as the base re-check above (after the lock, once per drive,
+  # before anything is spawned). Same gate, same refusal; only earlier.
+  drive_early_drift_check
+
   local summary=""
   while :; do
     # Re-read the live state each pass (a Stage subprocess just rewrote it).
@@ -25618,6 +25795,10 @@ cmd_drive() {
 
     # Live BEGIN: log + print before the (output-captured) stage subprocess runs,
     # so a tail/scrollback shows the Stage starting in real time.
+    # S312 — a NEW attempt supersedes the last one's failure record. There is no
+    # second call here: emit_event itself clears it on stage_start, so the drive
+    # loop, a `--step` resume, the daemon and a hand-run emit-event all obey one
+    # rule instead of three.
     emit_event stage_start "$action" "starting"
     printf '%-12s ▶  running…\n' "$action"
     # S218 fix round 1 (F1) — the size of this Stage's failure log BEFORE it
@@ -25667,6 +25848,11 @@ cmd_drive() {
         # Mission sits, so a Research timeout banded itself ALIGN on the board
         # while the sentence beside it said Research.
         emit_event error "$action" "$action timed out under the stage watchdog (${stage_timeout}s) — escalated to awaiting-human" stageFailure=1
+        # S312 — the SAME fact, in state.json, for the readers that ask mission
+        # state rather than the event log. A timeout IS a failed attempt; it is
+        # awaiting-human AS WELL, and those are two facts, not one.
+        drive_mark_stage_failed "$action" \
+          "$action timed out under the stage watchdog (${stage_timeout}s) — escalated to awaiting-human"
         drive_print_summary "$summary"
         printf '⏱ stopped: %s timed out under the watchdog — flagged the human (resolve with: %s).\n' "$action" "$(respond_hint)"
         printf '%s\n' "$out"
@@ -25778,6 +25964,16 @@ cmd_drive() {
     [ -n "$fail_log_size1" ] && [ "$fail_log_size1" != "${fail_log_size0:-}" ] \
       && fail_log_kv+=("log=$fail_log_rel")
     emit_event error "$action" "$action failed${err_tail:+: $err_tail}" "${fail_log_kv[@]}"
+    # S312 — AND THE SAME FACT IN MISSION STATE. This is the exact arm the real
+    # mission took at 01:36: the driver then exited 0-ish and normally, the
+    # event log knew, and state.json said `"stage": "align"` — indistinguishable
+    # from a mission filed five seconds ago. `$action` (the stage that RAN), not
+    # `$stage` (where the mission sits) — the S214 D2 distinction.
+    # The log rides the record under the SAME condition it rides the event: only
+    # when THIS run actually wrote to it (fail_log_kv carries `log=` iff so).
+    local fail_log_rec=""
+    case " ${fail_log_kv[*]} " in *" log=$fail_log_rel "*) fail_log_rec="$fail_log_rel" ;; esac
+    drive_mark_stage_failed "$action" "$action failed${err_tail:+: $err_tail}" "$fail_log_rec"
     drive_print_summary "$summary"
     printf '⏹ stopped: %s failed\n' "$action"
     printf '%s\n' "$out"

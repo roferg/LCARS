@@ -561,6 +561,96 @@ slots_in_use() {
 }
 
 # ==========================================================================
+# S312 — IS THIS MISSION'S OWN WORK IN FLIGHT? (a SECOND question, deliberately)
+# ==========================================================================
+# `driver_live` above answers "is the drive THE ECH STARTED still running", and
+# that is the right question for every one of its six call sites: the slot
+# count, `next`, `status`'s driver column, `drive`'s single-instance refusal and
+# `land`'s pre-check all reason about the ECH's OWN driver, and widening it
+# would change what each of those five means. It is left exactly as it was.
+#
+# `stalled` asks a DIFFERENT question, and that is the defect. It asked
+# `driver_live` and then said "nobody is working on this", which is a
+# non-sequitur: a mission advanced by `lcars respond … answer` starts its own
+# driver outside the ECH's ledger and writes the MISSION's own drive lock, so
+# the pid the ECH recorded is a dead intermediate while a live validator works
+# the mission. The report then read "abandoned", and its suggested cure — clear
+# the lock and re-drive — would write mission state UNDER A RUNNING WORKER. That
+# is the worker fence, and a false stall is the one thing that endangers it.
+#
+# So: THREE measurements, and ANY of them being live is enough to stay silent.
+# All three are probes of real processes (`kill -0`, and the process table),
+# never a reading of log prose, and the conservative direction is silence: when
+# in doubt about a live worker, say nothing, because the cost of a missed stall
+# is a report an hour later and the cost of a false one is a fence breach.
+
+# mission_drive_lock_live <mission> — the owner of the MISSION's own drive lock
+# (run.sh's $MISSION_DIR/driver.lock, a dir with a pid file), probed. This is
+# the SAME record `lcars status` and the board's `_driver_running` read, so the
+# three surfaces cannot disagree about whether a drive is in flight.
+# A missing, garbage or STALE pid is NOT live — a crashed driver's leftover lock
+# must never buy silence, or the fix re-creates the invisibility it cures.
+mission_drive_lock_live() {
+  local pid; pid="$(cat "$MISSIONS/$1/driver.lock/pid" 2>/dev/null)" || return 1
+  case "$pid" in ''|*[!0-9]*) return 1 ;; esac
+  kill -0 "$pid" 2>/dev/null
+}
+
+# mission_worker_adapter_live <mission> — is a `worker-adapter` process working
+# out of THIS mission's directory right now? run.sh spawns every cold worker as
+# `bash worker-adapter.sh spawn <cli> <role> <outdir> <prompt>`, and <outdir> is
+# always under .git/lcars/missions/<id>/, so the mission is identified by the
+# adapter's own argv rather than guessed.
+#
+# THE SNAPSHOT IS TAKEN FIRST, ON PURPOSE. Matching with a `grep worker-adapter`
+# in the pipeline would make the matcher's own command line a match for itself —
+# a check that is permanently "live" for every mission and therefore
+# permanently silent. `ps` is captured into a variable whose own argv says
+# nothing about adapters, and the matching happens inside this already-running
+# shell, so there is nothing for it to find but real workers.
+mission_worker_adapter_live() {
+  local m="$1" snap line
+  snap="$(ps -eo pid=,command= 2>/dev/null)" || return 1
+  while IFS= read -r line; do
+    case "$line" in *worker-adapter*) ;; *) continue ;; esac
+    case "$line" in *"missions/$m/"*) return 0 ;; esac
+  done <<MWAL_EOF
+$snap
+MWAL_EOF
+  return 1
+}
+
+# mission_work_live <mission> — the three measurements, in cheapest-first order.
+mission_work_live() {
+  driver_live "$1" && return 0
+  mission_drive_lock_live "$1" && return 0
+  mission_worker_adapter_live "$1"
+}
+
+# mission_ids — every mission with a state.json, whether or not the ECH's own
+# drivers ledger has ever heard of it. `stalled`'s failed-and-idle lane needs
+# this: the 4h49m mission's driver exited NORMALLY, so there was nothing in the
+# ledger to iterate over.
+mission_ids() {
+  local d
+  [ -d "$MISSIONS" ] || return 0
+  for d in "$MISSIONS"/*; do
+    [ -f "$d/state.json" ] || continue
+    printf '%s\n' "$(basename "$d")"
+  done
+}
+
+# mission_failed <mission> — the S312 `failed` fact out of the mission's own
+# state.json: "<stage>\t<at>\t<reason>", or nothing. A DISTINCT fact from the
+# stage, so this never answers "what stage is it at" — only "did its last
+# attempt fail, and what did it say".
+mission_failed() {
+  local st; st="$(mstate "$1" failedStage)"
+  [ -n "$st" ] || return 1
+  printf '%s\t%s\t%s\n' "$st" "$(mstate "$1" failedAt)" "$(mstate "$1" failedReason)"
+}
+
+# ==========================================================================
 # THE PLAYBOOK TABLE — the contract between this script and HOLOGRAM-COMMAND-MODE.md.
 # `next` emits one of these actions and cites its heading; the suite asserts
 # every heading exists VERBATIM in the installed HOLOGRAM-COMMAND-MODE.md. Rename a heading
@@ -2345,6 +2435,18 @@ cmd_status() {
     local gate="-"
     [ "$(mstate "$id" awaitingHuman)" = "true" ] && gate="awaiting-human"
     [ "$stage" = "verify" ] && gate="verify"
+    # S312 — AND SAY SO WHEN THE LAST ATTEMPT FAILED. This screen read
+    # `stage=implement gate=- driver=-` for the mission that sat dead for 4h49m,
+    # which is byte-identical to a mission between stages. The gate cell now
+    # carries the failed stage, and it is ADDITIVE to whatever else is true
+    # (a timeout is failed AND awaiting-human — two facts, not one).
+    local fstage; fstage="$(mstate "$id" failedStage)"
+    if [ -n "$fstage" ] && ! mission_work_live "$id"; then
+      case "$gate" in
+        -) gate="FAILED:$fstage" ;;
+        *) gate="$gate+FAILED" ;;
+      esac
+    fi
     [ "$verified" = "true" ] && gate="$gate (live-verified)"
     printf '    %-5s %-26s stage=%-12s gate=%-14s driver=%s\n' "$ms" "$id" "$stage" "$gate" "$drv"
   done
@@ -2493,24 +2595,128 @@ cmd_waiter() {
 # is a measurement; a driver log is prose that a human also writes into, and a
 # marker-grep heuristic over it has mis-read a live pipeline as finished before.
 # It always exits 0: a heartbeat that fails is a heartbeat the captain deletes.
+# ==========================================================================
+# stalled — the one question the heartbeat asks: who is nobody advancing?
+# ==========================================================================
+# S312 FIX ROUND 1 — ONE LANE, THREE WITNESSES. It used to be TWO LANES, and they
+# were MUTUALLY EXCLUSIVE with the GENERIC one winning: lane 1 walked the drivers
+# ledger and printed `STALLED:`, then lane 2 skipped every mission lane 1 had
+# already `seen`. `drive` ALWAYS writes a driver record, so an ECH-DRIVEN failed
+# mission — which is what the 4h49m incident was — was always claimed by lane 1
+# and NEVER reached lane 2's informative message. A fresh tester measured it on a
+# real drive: state.json carried failedStage, failedAt and failedReason the whole
+# time and the operator was told `STALLED: … (stage=align, exit=1) — its driver
+# ended and nobody picked it up.` Deleting the drivers key produced the right
+# line; re-adding it suppressed it again; exitCode 0 behaved the same. So the
+# feature fired only on missions the ECH had never driven.
+#
+# Reordering the two loops would have fixed that one case and left the same trap
+# armed for the next witness, so there is now ONE pass over the UNION of both
+# records. Each mission is judged by every witness it has and reported ONCE, with
+# the best one — and the others are appended rather than dropped, because the
+# choice of headline must not lose a measurement.
+#
+# AND EVERY LINE CARRIES THE CURE THAT SILENCES **IT**. The old footer printed one
+# cure for every line alike; the tester ran it against a FAILED AND IDLE line and
+# the line printed again unchanged, because that cure belongs to the STALLED lane.
+# A refusal that names a cure which does not work is the defect S311 spent a whole
+# session fixing one file over.
+#
+# NOTHING NEEDS AN ACKNOWLEDGEMENT TO GO QUIET, deliberately: a mission that is
+# still failed and still idle an hour later is still a mission nobody is
+# advancing, and a human promising to look is not a mission being advanced.
 cmd_stalled() {
   require_state
-  local m pid exited picked stage n=0
-  for m in $(ap_keys drivers); do
-    if driver_live "$m"; then continue; fi
-    exited="$(ap_j "drivers.$m.exitedAt")"
-    [ -n "$exited" ] || continue
-    picked="$(ap_j "drivers.$m.pickedUpAt")"
-    if [ -n "$picked" ] && [ "$picked" -ge "$exited" ] 2>/dev/null; then continue; fi
+  local m n=0 stage f fstage fat fwhy exited picked lockpid unclaimed
+  local headline extra cure cands tab
+  tab="$(printf '\t')"
+  # EVERY MISSION THIS REPO KNOWS, from BOTH records, in one pass. The ECH's own
+  # drivers ledger can hold a mission whose state.json has gone, and `mission_ids`
+  # holds every mission the ledger never heard of (the 4h49m one included), so
+  # the candidate set is the union — and `sort -u` is what makes it a set, which
+  # is what makes "reported once" true by construction rather than by a
+  # bookkeeping variable the next edit can forget to update.
+  cands="$(printf '%s\n%s\n' "$(ap_keys drivers)" "$(mission_ids)" | sort -u)"
+  for m in $cands; do
+    [ -n "$m" ] || continue
+    # THE WORKER FENCE COMES FIRST, for every witness alike. `driver_live` alone
+    # answered the wrong question here (see mission_work_live above): a mission
+    # advanced outside the ECH's ledger has a dead recorded pid and a LIVE
+    # worker, and reporting that one invites a write under a running worker.
+    if mission_work_live "$m"; then continue; fi
     stage="$(mstate "$m" stage)"
     [ "$stage" = "done" ] && continue
+
+    # --- WITNESS 1 (the best): the mission's OWN record of a failed attempt.
+    # run.sh's drive_mark_stage_failed writes it; it survives a killed attempt
+    # because it is cleared by a stage that SUCCEEDS, not by one that starts.
+    f=""
+    f="$(mission_failed "$m")" || f=""
+
+    # --- WITNESS 2: the ECH's driver ledger — a drive that ended, unclaimed.
+    unclaimed=""
+    exited="$(ap_j "drivers.$m.exitedAt")"
+    if [ -n "$exited" ]; then
+      picked="$(ap_j "drivers.$m.pickedUpAt")"
+      if [ -n "$picked" ] && [ "$picked" -ge "$exited" ] 2>/dev/null; then
+        :
+      else
+        unclaimed=1
+      fi
+    fi
+
+    # --- WITNESS 3: a drive lock whose owner is DEAD. mission_work_live already
+    # said no live owner, so the lock dir simply being here means the attempt
+    # that took it never ran its release trap: a kill -9, a crash, a closed lid.
+    # A mission with a stale lock and nothing else to show is still a mission
+    # nobody is advancing, so it is reported in its own right.
+    lockpid=""
+    if [ -d "$MISSIONS/$m/driver.lock" ]; then
+      lockpid="$(cat "$MISSIONS/$m/driver.lock/pid" 2>/dev/null)" || lockpid=""
+      [ -n "$lockpid" ] || lockpid="unrecorded"
+    fi
+
+    # --- ONE MISSION, ONE HEADLINE: the best witness it has, and the cure that
+    # actually silences THAT line.
+    headline=""; extra=""; cure=""
+    if [ -n "$f" ]; then
+      IFS="$tab" read -r fstage fat fwhy <<SF_EOF
+$f
+SF_EOF
+      headline="$(printf 'FAILED AND IDLE: %s — its %s stage FAILED at %s and nothing has run since: %s' \
+        "$m" "${fstage:-a stage}" "${fat:-an unrecorded time}" "${fwhy:-no reason was recorded}")"
+      cure="  → what clears it: \`$SELF_CMD drive $m\`. The record is cleared by a stage that SUCCEEDS — not by starting one, so an interrupted retry leaves this line standing.
+  → \`$SELF_CMD record drivers.$m.pickedUpAt\` does NOT silence this line; that cure belongs to a STALLED one."
+    elif [ -n "$unclaimed" ]; then
+      headline="$(printf 'STALLED: %s (stage=%s, exit=%s) — its driver ended and nobody picked it up.' \
+        "$m" "${stage:-unknown}" "$(ap_j "drivers.$m.exitCode")")"
+      cure="  → what clears it: \`$SELF_CMD record drivers.$m.pickedUpAt $(now)\` once you have picked it up; \`$SELF_CMD next\` names the step."
+    elif [ -n "$lockpid" ]; then
+      headline="$(printf 'STALLED: %s (stage=%s) — its drive lock is held by pid %s, which is DEAD: an attempt was interrupted and nothing is advancing it.' \
+        "$m" "${stage:-unknown}" "$lockpid")"
+      cure="  → what clears it: \`$SELF_CMD drive $m\` — a new drive reclaims a lock whose owner is dead, so nothing has to be removed by hand."
+    else
+      continue
+    fi
+    # …and the witness the headline did not carry, so nothing measured is lost to
+    # the choice of headline. Only when the headline came from witness 1 or 2 —
+    # witness 3's own line already says this.
+    if [ -n "$lockpid" ] && [ -n "$f$unclaimed" ]; then
+      extra="  ⚠ its drive lock is still held by pid $lockpid, which is DEAD — that attempt was interrupted rather than finished."
+    fi
     n=$((n + 1))
-    printf 'STALLED: %s (stage=%s, exit=%s) — its driver ended and nobody picked it up.\n' \
-      "$m" "${stage:-unknown}" "$(ap_j "drivers.$m.exitCode")"
+    printf '%s\n' "$headline"
+    [ -n "$extra" ] && printf '%s\n' "$extra"
+    printf '%s\n' "$cure"
   done
   if [ "$n" -gt 0 ]; then
-    printf '%s stalled mission(s). Run `%s next` for the step, then `%s record drivers.<id>.pickedUpAt %s`.\n' \
-      "$n" "$SELF_CMD" "$SELF_CMD" "$(now)"
+    # NO ONE-SIZE CURE DOWN HERE. This footer used to prescribe
+    # `record drivers.<id>.pickedUpAt <ts>` for every reported mission alike, and
+    # a tester ran it against a FAILED AND IDLE line and watched the line print
+    # again unchanged: that command silences the STALLED lane only. Each line
+    # above now carries its own cure, so this says how many and gets out of the way.
+    printf '%s mission(s) need attention — each line above names what clears it. Run `%s next` for the step.\n' \
+      "$n" "$SELF_CMD"
   fi
   return 0
 }

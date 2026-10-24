@@ -312,6 +312,90 @@ TBL9b="$(cd "$R9" && LCARS_GH_BIN="$BIN/gh" bash "$STATUS" 2>&1)"
 check "9c. a MARKED research error after it is surfaced by lcars status" \
   "printf '%s' \"\$TBL9b\" | grep -E '^$MID .*align +✖' >/dev/null && printf '%s' \"\$TBL9b\" | grep -q 'Research failed'"
 
+# =========================================================================
+printf '\n  -- 10. S312: "FAILED AND IDLE" READS DIFFERENTLY FROM IN-FLIGHT --\n'
+# =========================================================================
+# THE 4h49m MISSION. Section 9 proves the EVENT-LOG half (S218). This is the
+# MISSION-STATE half: the mission that sat dead for 4 hours 49 minutes had
+# `"stage": "implement"` in state.json and nothing else, and every reader that
+# asks mission state "how is this mission?" — the ECH, the heartbeat, the
+# hourly line — got the same answer as for healthy work. S312 records the fact
+# where those readers look (failedStage/failedAt/failedReason, beside
+# awaitingHuman) and both surfaces now read it.
+#
+# THE CONTROL IS THE POINT OF THIS SECTION. Each check below is paired with the
+# SAME mission in the healthy shape, so a pass means "these two render
+# differently" and not merely "the failed one rendered something".
+
+# --- the HEALTHY control: an in-flight mission, nothing recorded as failed.
+R10="$(new_repo)"
+TBL10h="$(cd "$R10" && LCARS_GH_BIN="$BIN/gh" bash "$STATUS" 2>&1)"
+check "10a. CONTROL — a healthy mission carries no ✖ and no failure footer" \
+  "! printf '%s' \"\$TBL10h\" | grep -q '✖' && ! printf '%s' \"\$TBL10h\" | grep -q 'Stopped on a failure'"
+
+# --- the FAILED one: the same mission, with S312's recorded fact and NOTHING
+#     in events.jsonl at all. That is the real shape — the driver exited
+#     normally and the mission simply stopped being advanced.
+"$PY" - "$R10/.git/lcars/missions/$MID/state.json" <<'PY10'
+import json, sys
+d = json.load(open(sys.argv[1]))
+d["stage"] = "implement"
+d["failedStage"] = "implement"
+d["failedAt"] = "2026-10-23T01:36:00Z"
+d["failedReason"] = "implement failed: the self-heal round could not apply its fix"
+json.dump(d, open(sys.argv[1], "w"), indent=2)
+PY10
+check "10-setup. there is no events.jsonl for this mission at all" \
+  "[ ! -f '$R10/.git/lcars/missions/$MID/events.jsonl' ]"
+TBL10="$(cd "$R10" && LCARS_GH_BIN="$BIN/gh" bash "$STATUS" 2>&1)"
+check "10b. the row carries the ✖ failed glyph" \
+  "printf '%s' \"\$TBL10\" | grep -qE '^$MID .*✖'"
+check "10c. …and the legend explains it, so one line is readable on its own" \
+  "printf '%s' \"\$TBL10\" | grep -q '✖ stage failed'"
+check "10d. the footer names it as stopped on a failure" \
+  "printf '%s' \"\$TBL10\" | grep -q 'Stopped on a failure'"
+check "10e. …names the STAGE that failed" \
+  "printf '%s' \"\$TBL10\" | grep -q 'Implement failed'"
+check "10f. …and prints the recorded REASON, whole (the awaiting-human precedent)" \
+  "printf '%s' \"\$TBL10\" | grep -q 'could not apply its fix'"
+# AND THE TWO RENDERINGS ARE GENUINELY DIFFERENT — asserted directly, because
+# "it printed something" is not the behaviour; "a human can tell them apart" is.
+check "10g. the failed rendering DIFFERS from the healthy one" \
+  "[ \"\$TBL10\" != \"\$TBL10h\" ]"
+
+# --- a LIVE driver means a new run is under way, so the last failure is not
+#     the news. Same state, a real live lock holder.
+( exec -a lcars-fake-driver sh -c 'while :; do sleep 1; done' ) </dev/null >/dev/null 2>&1 &
+live10=$!
+mkdir -p "$R10/.git/lcars/missions/$MID/driver.lock"
+printf '%s\n' "$live10" >"$R10/.git/lcars/missions/$MID/driver.lock/pid"
+TBL10L="$(cd "$R10" && LCARS_GH_BIN="$BIN/gh" bash "$STATUS" 2>&1)"
+check "10h. a mission with a LIVE driver is NOT shown as failed (it is working)" \
+  "! printf '%s' \"\$TBL10L\" | grep -q 'Stopped on a failure'"
+kill -9 "$live10" 2>/dev/null; wait "$live10" 2>/dev/null || true
+rm -rf "$R10/.git/lcars/missions/$MID/driver.lock"
+
+# --- THE BOARD API half of behaviour 3: the card carries the failure read from
+#     state.json, in the SAME `failure` shape the front end already renders.
+CARD10="$(cd "$REPO_ROOT/web" && "$PY" -c '
+import json, sys
+from lcars_serve.local_adapter import LocalAdapter
+b = LocalAdapter(sys.argv[1], read_only=True).board()
+c = [m for m in b["missions"] if m["id"] == sys.argv[2]][0]
+print(json.dumps(c.get("failure")))' "$R10" "$MID" 2>&1)"
+check "10i. the board card carries a failure object from state.json" \
+  "printf '%s' \"\$CARD10\" | grep -q '\"stage\": \"implement\"'"
+check "10j. …carrying the recorded sentence" \
+  "printf '%s' \"\$CARD10\" | grep -q 'could not apply its fix'"
+CARD10h="$(cd "$REPO_ROOT/web" && "$PY" -c '
+import json, sys
+from lcars_serve.local_adapter import LocalAdapter
+b = LocalAdapter(sys.argv[1], read_only=True).board()
+c = [m for m in b["missions"] if m["id"] == sys.argv[2]][0]
+print(json.dumps(c.get("failure")))' "$(new_repo)" "$MID" 2>&1)"
+check "10k. CONTROL — a healthy mission's card carries NO failure" \
+  "printf '%s' \"\$CARD10h\" | grep -qx 'null'"
+
 echo
 printf 'lcars research failure: %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

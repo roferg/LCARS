@@ -120,7 +120,20 @@ fi
 # with one commit, plus a local bare "origin" so `push-gated` has something to
 # push to for real.
 new_repo() {
-  local repo; repo="$(mktemp -d "$TMPROOT/repo.XXXXXX")"
+  # THE FENCE, MEASURED THE HARD WAY (S312 fix round 1). If $TMPROOT has gone —
+  # a concurrently running suite sweeping $TMPDIR will do it — `mktemp -d` fails,
+  # `$repo` is EMPTY, and every `git … "$repo"` below then operates on the CWD,
+  # which is the LCARS CHECKOUT ITSELF: `git init --bare ""` made the real repo
+  # bare, `git config user.email` overwrote the captain's identity in it, and
+  # `git branch lcars/<id> main` left five junk refs. It happened. So an empty or
+  # missing path is a REFUSAL, never a git command: no suite may write to the
+  # repo it is testing.
+  [ -n "${TMPROOT:-}" ] && [ -d "$TMPROOT" ] \
+    || { echo "FENCE: TMPROOT is missing — refusing to run git with an empty path" >&2; exit 97; }
+  local repo; repo="$(mktemp -d "$TMPROOT/repo.XXXXXX")" \
+    || { echo "FENCE: mktemp failed under $TMPROOT — refusing" >&2; exit 97; }
+  [ -n "$repo" ] && [ -d "$repo" ] \
+    || { echo "FENCE: empty repo path from mktemp — refusing" >&2; exit 97; }
   local bare="$repo.git"
   git init -q --bare "$bare"
   git init -q -b main "$repo"
@@ -621,6 +634,361 @@ ap "$R4b" record 'missions.M0.id' lcars-done-1 >/dev/null 2>&1
 ap "$R4b" record "drivers.lcars-done-1.exitedAt" 1 >/dev/null 2>&1
 check "a done mission is never reported stalled" \
   "! ap '$R4b' stalled 2>&1 | qgrep -q 'lcars-done-1'"
+
+# ==========================================================================
+# 4b. S312 — stalled CANNOT LIE ABOUT A LIVE WORKER, and it SEES "failed and idle"
+# ==========================================================================
+# TWO DEFECTS, ONE VERB, both measured on a real mission.
+#
+# (1) THE DANGEROUS ONE. cmd_stalled decided liveness from the ECH-RECORDED
+#     driver pid alone. A mission advanced by `lcars respond … answer` starts
+#     its OWN driver and writes the MISSION's own drive lock, so the pid the ECH
+#     recorded is a dead intermediate while a live validator works the mission.
+#     From the outside that read as abandoned. Acting on the report — clear the
+#     lock, re-drive — writes mission state UNDER A RUNNING WORKER and breaches
+#     the worker fence. So liveness is now THREE measurements, and any one of
+#     them being live is enough to stay silent.
+#
+# (2) THE INVISIBLE ONE. A stage that FAILED left the driver exiting NORMALLY,
+#     so there was nothing for `stalled` to notice at all and the mission sat
+#     for 4h49m. `stalled` now also reports FAILED AND IDLE, read from the
+#     mission's own state.json (S312's failedStage/failedAt/failedReason).
+#
+# EVERY LIVENESS CASE HERE USES A REAL PROCESS. A pid in a file with a made-up
+# number is a stub of the very thing under test: `kill -0` on an invented pid
+# answers whichever way the host's pid space happens to fall, so a suite built
+# on one cannot tell a working check from a broken one.
+echo "-- 4b. stalled vs a LIVE worker, and failed-and-idle (S312) --"
+R4c="$(new_repo)"
+ap "$R4c" init --spec "$TMPROOT/spec.md" --scope M0 >/dev/null 2>&1
+M4C="$R4c/.git/lcars/missions"
+
+# --- B5: the mission's OWN drive lock is held by a LIVE process, while the
+#         ECH-recorded pid is DEAD. This is the dangerous case.
+new_mission "$R4c" lcars-locked-1 implement
+ap "$R4c" record 'missions.M0.id' lcars-locked-1 >/dev/null 2>&1
+( exec -a lcars-fake-lockholder sh -c 'while :; do sleep 1; done' ) </dev/null >/dev/null 2>&1 &
+lock_pid=$!; BG_PIDS="$BG_PIDS $lock_pid"
+mkdir -p "$M4C/lcars-locked-1/driver.lock"
+printf '%s\n' "$lock_pid" >"$M4C/lcars-locked-1/driver.lock/pid"
+# …and a DEAD recorded driver that exited and was never picked up: exactly the
+# shape that made the old check shout.
+( exec -a lcars-dead-intermediate sh -c 'exit 0' ) </dev/null >/dev/null 2>&1 &
+dead_pid=$!; wait "$dead_pid" 2>/dev/null || true
+ap "$R4c" record "drivers.lcars-locked-1.pid" "$dead_pid" >/dev/null 2>&1
+ap "$R4c" record "drivers.lcars-locked-1.exitedAt" 1 >/dev/null 2>&1
+check "B5-setup. the lock holder is a REAL live process" "kill -0 $lock_pid 2>/dev/null"
+check "B5-setup. the ECH-recorded pid is genuinely dead" "! kill -0 $dead_pid 2>/dev/null"
+s4d="$(ap "$R4c" stalled 2>&1)"; rc4d=$?
+check "B5. stalled exits 0 (the heartbeat never fails)" "[ $rc4d -eq 0 ]"
+check "B5. a mission whose OWN driver.lock is held by a LIVE process is NOT reported" \
+  "! printf '%s' \"\$s4d\" | qgrep -q 'lcars-locked-1'"
+# …and the OTHER direction: kill the real holder and it MUST be reported. A
+# check that is silent both ways is useless, which is the regression risk here.
+kill -9 "$lock_pid" 2>/dev/null; wait "$lock_pid" 2>/dev/null || true
+s4e="$(ap "$R4c" stalled 2>&1)"
+check "B5. once the REAL lock holder dies, the same mission IS reported" \
+  "printf '%s' \"\$s4e\" | qgrep -q 'lcars-locked-1'"
+
+# --- B6: a LIVE worker-adapter working out of this mission's directory. No
+#         drive lock at all — the adapter process is the only witness.
+new_mission "$R4c" lcars-worker-1 implement
+WA_DIR="$TMPROOT/wa"; mkdir -p "$WA_DIR"
+cat >"$WA_DIR/worker-adapter.sh" <<'WAEOF'
+#!/usr/bin/env bash
+while :; do sleep 1; done
+WAEOF
+chmod +x "$WA_DIR/worker-adapter.sh"
+mkdir -p "$M4C/lcars-worker-1/implement"
+bash "$WA_DIR/worker-adapter.sh" spawn claude repo-write \
+  "$M4C/lcars-worker-1/implement" '<prompt 1234 bytes>' </dev/null >/dev/null 2>&1 &
+wa_pid=$!; BG_PIDS="$BG_PIDS $wa_pid"
+( exec -a lcars-dead-intermediate-2 sh -c 'exit 0' ) </dev/null >/dev/null 2>&1 &
+dead2=$!; wait "$dead2" 2>/dev/null || true
+ap "$R4c" record "drivers.lcars-worker-1.pid" "$dead2" >/dev/null 2>&1
+ap "$R4c" record "drivers.lcars-worker-1.exitedAt" 1 >/dev/null 2>&1
+check "B6-setup. a REAL worker-adapter process is running for this mission" \
+  "kill -0 $wa_pid 2>/dev/null && ps -p $wa_pid -o command= | qgrep -q 'worker-adapter'"
+s4f="$(ap "$R4c" stalled 2>&1)"
+check "B6. a mission with a LIVE worker-adapter is NOT reported stalled" \
+  "! printf '%s' \"\$s4f\" | qgrep -q 'lcars-worker-1'"
+kill -9 "$wa_pid" 2>/dev/null; wait "$wa_pid" 2>/dev/null || true
+s4g="$(ap "$R4c" stalled 2>&1)"
+check "B6. once that REAL worker exits, the same mission IS reported" \
+  "printf '%s' \"\$s4g\" | qgrep -q 'lcars-worker-1'"
+
+# --- B4: FAILED AND IDLE. The 4h49m case: the driver exited NORMALLY after the
+#         stage stop, so there is nothing in the drivers ledger to notice. The
+#         mission's own state.json is the witness.
+R4d="$(new_repo)"
+ap "$R4d" init --spec "$TMPROOT/spec.md" --scope M0 >/dev/null 2>&1
+M4D="$R4d/.git/lcars/missions"
+new_mission "$R4d" lcars-failed-1 implement
+ap "$R4d" record 'missions.M0.id' lcars-failed-1 >/dev/null 2>&1
+check "B4-setup. no drivers ledger entry at all for this mission" \
+  "[ -z \"\$(jget '$R4d/.git/lcars/autopilot.json' 'd.get(\"drivers\",{}).get(\"lcars-failed-1\")')\" ]"
+s4h="$(ap "$R4d" stalled 2>&1)"
+check "B4-control. before the failure is recorded, it is NOT reported" \
+  "! printf '%s' \"\$s4h\" | qgrep -q 'lcars-failed-1'"
+python3 - "$M4D/lcars-failed-1/state.json" <<'PY2'
+import json, sys
+d = json.load(open(sys.argv[1]))
+d["failedStage"] = "implement"
+d["failedAt"] = "2026-10-23T01:36:00Z"
+d["failedReason"] = "implement failed: the self-heal round could not apply its fix"
+json.dump(d, open(sys.argv[1], "w"), indent=2)
+PY2
+s4i="$(ap "$R4d" stalled 2>&1)"; rc4i=$?
+check "B4. stalled exits 0 when it reports a failed mission" "[ $rc4i -eq 0 ]"
+check "B4. a FAILED AND IDLE mission is reported" \
+  "printf '%s' \"\$s4i\" | qgrep -q 'lcars-failed-1'"
+check "B4. …and it says FAILED, not just 'stalled'" \
+  "printf '%s' \"\$s4i\" | qgrep -qi 'failed'"
+check "B4. …and names the STAGE it failed at" \
+  "printf '%s' \"\$s4i\" | qgrep -q 'implement'"
+check "B4. …and WHEN it failed" \
+  "printf '%s' \"\$s4i\" | qgrep -q '2026-10-23T01:36:00Z'"
+check "B4. …and the one-line REASON" \
+  "printf '%s' \"\$s4i\" | qgrep -q 'could not apply its fix'"
+# A failed mission is still a mission: a LIVE worker on it outranks the record,
+# because acting on it would breach the worker fence just the same.
+( exec -a lcars-fake-lockholder-2 sh -c 'while :; do sleep 1; done' ) </dev/null >/dev/null 2>&1 &
+lock2=$!; BG_PIDS="$BG_PIDS $lock2"
+mkdir -p "$M4D/lcars-failed-1/driver.lock"
+printf '%s\n' "$lock2" >"$M4D/lcars-failed-1/driver.lock/pid"
+s4j="$(ap "$R4d" stalled 2>&1)"
+check "B4. a FAILED mission with a LIVE worker is NOT reported (fence first)" \
+  "! printf '%s' \"\$s4j\" | qgrep -q 'lcars-failed-1'"
+kill -9 "$lock2" 2>/dev/null; wait "$lock2" 2>/dev/null || true
+# A DONE mission is never reported, failed record or not.
+new_mission "$R4d" lcars-failed-done done
+python3 - "$M4D/lcars-failed-done/state.json" <<'PY3'
+import json, sys
+d = json.load(open(sys.argv[1]))
+d["failedStage"] = "implement"
+d["failedReason"] = "an old failure, since shipped"
+json.dump(d, open(sys.argv[1], "w"), indent=2)
+PY3
+check "B4. a DONE mission is never reported, failed record or not" \
+  "! ap '$R4d' stalled 2>&1 | qgrep -q 'lcars-failed-done'"
+
+# --- B8 REGRESSION: a genuinely abandoned driver is STILL reported. This is
+#     what stops the liveness fix making the whole check useless — and it is
+#     asserted against a mission with NO lock dir and NO worker anywhere.
+R4e="$(new_repo)"
+ap "$R4e" init --spec "$TMPROOT/spec.md" --scope M0 >/dev/null 2>&1
+new_mission "$R4e" lcars-abandoned-1 implement
+ap "$R4e" record 'missions.M0.id' lcars-abandoned-1 >/dev/null 2>&1
+( exec -a lcars-abandoned-driver sh -c 'exit 0' ) </dev/null >/dev/null 2>&1 &
+ab_pid=$!; wait "$ab_pid" 2>/dev/null || true
+ap "$R4e" record "drivers.lcars-abandoned-1.pid" "$ab_pid" >/dev/null 2>&1
+ap "$R4e" record "drivers.lcars-abandoned-1.exitedAt" 1 >/dev/null 2>&1
+check "B8-setup. there is no driver.lock dir for this mission" \
+  "[ ! -d '$R4e/.git/lcars/missions/lcars-abandoned-1/driver.lock' ]"
+s4k="$(ap "$R4e" stalled 2>&1)"
+check "B8 REGRESSION. a genuinely abandoned driver is STILL reported stalled" \
+  "printf '%s' \"\$s4k\" | qgrep -q 'lcars-abandoned-1'"
+check "B8 REGRESSION. …and the report still names the stage and the exit" \
+  "printf '%s' \"\$s4k\" | qgrep -q 'stage=implement'"
+# A STALE lock (a crashed driver's pid file, owner long gone) must NOT buy
+# silence — that would be the liveness fix re-creating the invisibility it cures.
+mkdir -p "$R4e/.git/lcars/missions/lcars-abandoned-1/driver.lock"
+printf '%s\n' "$ab_pid" >"$R4e/.git/lcars/missions/lcars-abandoned-1/driver.lock/pid"
+s4l="$(ap "$R4e" stalled 2>&1)"
+check "B8 REGRESSION. a STALE driver.lock (dead owner) does not buy silence" \
+  "printf '%s' \"\$s4l\" | qgrep -q 'lcars-abandoned-1'"
+# …nor does a lock file with GARBAGE in it (a truncated write, a stray editor).
+printf 'not-a-pid\n' >"$R4e/.git/lcars/missions/lcars-abandoned-1/driver.lock/pid"
+s4m="$(ap "$R4e" stalled 2>&1)"
+check "B8 REGRESSION. a GARBAGE driver.lock pid does not buy silence either" \
+  "printf '%s' \"\$s4m\" | qgrep -q 'lcars-abandoned-1'"
+
+# ==========================================================================
+# 4c. S312 FIX ROUND 1 — ONE LANE, THE BEST MESSAGE, EXACTLY ONCE
+# ==========================================================================
+# MEASURED BY A FRESH TESTER, on a real `ech drive` of the fixture whose worker
+# produced nothing. The headline S312 shipped NEVER PRINTED on the only kind of
+# mission the incident actually happened to:
+#
+#   DID      a real drive, research genuinely failed, driver exited, `stalled`
+#   EXPECTED FAILED AND IDLE: … its research stage FAILED at … <reason>
+#   SAW      STALLED: … (stage=align, exit=1) — its driver ended and nobody
+#            picked it up.          …while state.json carried all three fields.
+#
+# MECHANISM: two lanes, mutually exclusive, and the GENERIC one won. Lane 1 walked
+# the drivers ledger and printed `STALLED:`; lane 2 then skipped any mission lane 1
+# had `seen`. `ech drive` ALWAYS writes a driver record, so an ECH-driven failed
+# mission was always claimed by the worse message. Isolated by the tester:
+# deleting the `drivers.<id>` key produced the right line, re-adding it suppressed
+# it again — and it reproduced with exitCode 0 too, so it was never about the code.
+#
+# AND A SECOND BLINDNESS, in the ordinary case: the captain's laptop sleeps after
+# one minute, even on mains. A drive interrupted that way leaves a `driver.lock`
+# whose owner is DEAD and (before this round) nothing at all in state.json, and
+# every surface went quiet. A stale lock with a dead owner is now reported in its
+# own right — a mission nobody is advancing is the whole question this verb asks.
+#
+# So there is ONE lane with THREE witnesses (a recorded failure, an unclaimed
+# driver exit, a dead lock owner); each mission is reported ONCE, with the best
+# witness it has; and every line carries the cure that actually silences IT.
+echo "-- 4c. stalled: one lane, best message, once (S312 fix round 1) --"
+R4f="$(new_repo)"
+ap "$R4f" init --spec "$TMPROOT/spec.md" --scope M0 >/dev/null 2>&1
+M4F="$R4f/.git/lcars/missions"
+
+# mkfailed <missions-dir> <id> [stage] — S312's recorded failure, the three fields.
+mkfailed() {
+  python3 - "$1/$2/state.json" "${3:-implement}" <<'PYF'
+import json, sys
+d = json.load(open(sys.argv[1]))
+d["failedStage"] = sys.argv[2]
+d["failedAt"] = "2026-10-23T01:36:00Z"
+d["failedReason"] = "implement failed: the self-heal round could not apply its fix"
+json.dump(d, open(sys.argv[1], "w"), indent=2)
+PYF
+}
+
+# headlines <output> <id> — how many REPORT LINES name this mission. The cure
+# lines beneath a headline also name it (they have to — they carry a command), so
+# "reported once" is counted on the headline prefixes, not on the id.
+headlines() { printf '%s\n' "$1" | grep -cE "^(STALLED|FAILED AND IDLE): $2 " ; }
+
+# --- D1: AN ECH-DRIVEN FAILED MISSION. A driver record IS present, exactly as a
+#         real drive leaves it: a recorded pid that is now dead, an exitedAt, an
+#         exit code, and nobody having picked it up.
+new_mission "$R4f" lcars-echdriven-1 implement
+ap "$R4f" record 'missions.M0.id' lcars-echdriven-1 >/dev/null 2>&1
+mkfailed "$M4F" lcars-echdriven-1 research
+( exec -a lcars-echdrive-dead sh -c 'exit 1' ) </dev/null >/dev/null 2>&1 &
+ed_pid=$!; wait "$ed_pid" 2>/dev/null || true
+ap "$R4f" record "drivers.lcars-echdriven-1.pid" "$ed_pid" >/dev/null 2>&1
+ap "$R4f" record "drivers.lcars-echdriven-1.exitedAt" 1 >/dev/null 2>&1
+ap "$R4f" record "drivers.lcars-echdriven-1.exitCode" 1 >/dev/null 2>&1
+check "D1-setup. the ECH-recorded driver pid is genuinely dead" \
+  "! kill -0 $ed_pid 2>/dev/null"
+check "D1-setup. a driver record IS present (this is what made the headline inert)" \
+  "[ -n \"\$(jget '$R4f/.git/lcars/autopilot.json' 'd[\"drivers\"][\"lcars-echdriven-1\"][\"exitedAt\"]')\" ]"
+s4n="$(ap "$R4f" stalled 2>&1)"; rc4n=$?
+check "D1. stalled still exits 0 (the heartbeat never fails)" "[ $rc4n -eq 0 ]"
+check "D1. an ECH-DRIVEN failed mission gets the INFORMATIVE message" \
+  "printf '%s' \"\$s4n\" | qgrep -q 'FAILED AND IDLE: lcars-echdriven-1'"
+check "D1. …and NOT the generic STALLED line that used to pre-empt it" \
+  "! printf '%s' \"\$s4n\" | qgrep -q 'STALLED: lcars-echdriven-1'"
+check "D1. …it names the STAGE that failed" \
+  "printf '%s' \"\$s4n\" | qgrep -q 'research stage FAILED'"
+check "D1. …WHEN it failed" \
+  "printf '%s' \"\$s4n\" | qgrep -q '2026-10-23T01:36:00Z'"
+check "D1. …and WHY" \
+  "printf '%s' \"\$s4n\" | qgrep -q 'could not apply its fix'"
+check "D1. REPORTED EXACTLY ONCE — one headline, not one per lane" \
+  "[ \"\$(headlines \"\$s4n\" lcars-echdriven-1)\" = 1 ]"
+
+# …and with exitCode 0, which is what the real incident had: the driver exited
+# NORMALLY after the stage stop. The tester reproduced the suppression both ways,
+# so it was never about the exit code.
+ap "$R4f" record "drivers.lcars-echdriven-1.exitCode" 0 >/dev/null 2>&1
+s4n0="$(ap "$R4f" stalled 2>&1)"
+check "D1. …and the same holds with exitCode 0 (the real incident's shape)" \
+  "printf '%s' \"\$s4n0\" | qgrep -q 'FAILED AND IDLE: lcars-echdriven-1'"
+check "D1. …still exactly one headline for it" \
+  "[ \"\$(headlines \"\$s4n0\" lcars-echdriven-1)\" = 1 ]"
+
+# --- D2: THE ADVICE NAMES SOMETHING THAT WORKS. The tester ran the cure the old
+#         footer printed — `record drivers.<id>.pickedUpAt <ts>` — and the line
+#         printed again unchanged: that cure silences a STALLED lane, not this
+#         one. A refusal naming a cure that does not work is the defect S311
+#         spent a whole session fixing one file over.
+ap "$R4f" record "drivers.lcars-echdriven-1.pickedUpAt" 9 >/dev/null 2>&1
+s4p="$(ap "$R4f" stalled 2>&1)"
+check "D2. picking the DRIVER up does not clear a FAILED ATTEMPT (it is a different fact)" \
+  "printf '%s' \"\$s4p\" | qgrep -q 'FAILED AND IDLE: lcars-echdriven-1'"
+check "D2. …so the line says plainly that pickedUpAt does NOT silence it" \
+  "printf '%s' \"\$s4p\" | qgrep -q 'pickedUpAt.*does NOT silence'"
+check "D2. …and names the cure that DOES clear it: a re-drive" \
+  "printf '%s' \"\$s4p\" | qgrep -q 'drive lcars-echdriven-1'"
+check "D2. …and the footer no longer prescribes pickedUpAt for every mission alike" \
+  "! printf '%s' \"\$s4p\" | qgrep -qE 'mission\(s\) need attention.*pickedUpAt'"
+
+# --- D3: NO DRIVER RECORD AT ALL — the lane that DID work. Regression.
+new_mission "$R4f" lcars-nodriver-1 implement
+mkfailed "$M4F" lcars-nodriver-1 implement
+s4r="$(ap "$R4f" stalled 2>&1)"
+check "D3-setup. this mission has NO drivers ledger entry" \
+  "[ -z \"\$(jget '$R4f/.git/lcars/autopilot.json' 'd.get(\"drivers\",{}).get(\"lcars-nodriver-1\")')\" ]"
+check "D3 REGRESSION. a failed mission with no driver record still gets the message" \
+  "printf '%s' \"\$s4r\" | qgrep -q 'FAILED AND IDLE: lcars-nodriver-1'"
+check "D3 REGRESSION. …exactly once" \
+  "[ \"\$(headlines \"\$s4r\" lcars-nodriver-1)\" = 1 ]"
+
+# --- D4: A DRIVE KILLED MID-STAGE. No failure record (the driver died before it
+#         could write one) and no ledger exit (it never got to record one) — just
+#         a `driver.lock` whose owner is DEAD. This is the lid-closing case.
+new_mission "$R4f" lcars-killedlock-1 implement
+( exec -a lcars-killed-driver sh -c 'while :; do sleep 1; done' ) </dev/null >/dev/null 2>&1 &
+kl_pid=$!; BG_PIDS="$BG_PIDS $kl_pid"
+mkdir -p "$M4F/lcars-killedlock-1/driver.lock"
+printf '%s\n' "$kl_pid" >"$M4F/lcars-killedlock-1/driver.lock/pid"
+check "D4-setup. the lock holder is a REAL live process" "kill -0 $kl_pid 2>/dev/null"
+check "D4-setup. there is no failure record and no ledger entry" \
+  "[ -z \"\$(jget '$M4F/lcars-killedlock-1/state.json' 'd.get(\"failedStage\")')\" ] \
+   && [ -z \"\$(jget '$R4f/.git/lcars/autopilot.json' 'd.get(\"drivers\",{}).get(\"lcars-killedlock-1\")')\" ]"
+s4s="$(ap "$R4f" stalled 2>&1)"
+check "D4-control. while that drive is LIVE the mission is NOT reported (fence first)" \
+  "! printf '%s' \"\$s4s\" | qgrep -q 'lcars-killedlock-1'"
+kill -9 "$kl_pid" 2>/dev/null; wait "$kl_pid" 2>/dev/null || true
+s4t="$(ap "$R4f" stalled 2>&1)"
+check "D4. a stale driver.lock whose owner is DEAD is reported — in its own right" \
+  "printf '%s' \"\$s4t\" | qgrep -q 'lcars-killedlock-1'"
+check "D4. …and the line says the lock owner is dead, so the operator knows why" \
+  "printf '%s' \"\$s4t\" | qgrep -qi 'dead'"
+check "D4. …and names the re-drive, which reclaims a stale lock by itself" \
+  "printf '%s' \"\$s4t\" | qgrep -q 'drive lcars-killedlock-1'"
+check "D4. …exactly once" \
+  "[ \"\$(headlines \"\$s4t\" lcars-killedlock-1)\" = 1 ]"
+
+# --- D5: THE STALLED LANE'S OWN CURE, PROVEN BY DOING IT. An unclaimed driver
+#         exit, no failure record, no lock: the generic line is the best witness
+#         there is, and `pickedUpAt` really does silence it.
+new_mission "$R4f" lcars-unclaimed-1 implement
+( exec -a lcars-unclaimed-driver sh -c 'exit 0' ) </dev/null >/dev/null 2>&1 &
+uc_pid=$!; wait "$uc_pid" 2>/dev/null || true
+ap "$R4f" record "drivers.lcars-unclaimed-1.pid" "$uc_pid" >/dev/null 2>&1
+ap "$R4f" record "drivers.lcars-unclaimed-1.exitedAt" 1 >/dev/null 2>&1
+ap "$R4f" record "drivers.lcars-unclaimed-1.exitCode" 0 >/dev/null 2>&1
+s4u="$(ap "$R4f" stalled 2>&1)"
+check "D5. with no better witness, the generic STALLED line is still printed" \
+  "printf '%s' \"\$s4u\" | qgrep -q 'STALLED: lcars-unclaimed-1'"
+check "D5. …and it still carries the stage and the exit code" \
+  "printf '%s' \"\$s4u\" | qgrep -q 'stage=implement' && printf '%s' \"\$s4u\" | qgrep -q 'exit=0'"
+check "D5. …and its cure line names pickedUpAt" \
+  "printf '%s\n' \"\$s4u\" | grep -A2 'STALLED: lcars-unclaimed-1' | qgrep -q 'pickedUpAt'"
+ap "$R4f" record "drivers.lcars-unclaimed-1.pickedUpAt" 2 >/dev/null 2>&1
+s4v="$(ap "$R4f" stalled 2>&1)"
+check "D5. …and DOING IT silences that line (the advice is proven, not asserted)" \
+  "! printf '%s' \"\$s4v\" | qgrep -q 'lcars-unclaimed-1'"
+
+# --- D6: ALL THREE WITNESSES AT ONCE on a mission whose work is LIVE: total
+#         silence. This is the false-positive this whole round risks.
+new_mission "$R4f" lcars-allthree-1 implement
+mkfailed "$M4F" lcars-allthree-1 implement
+( exec -a lcars-allthree-holder sh -c 'while :; do sleep 1; done' ) </dev/null >/dev/null 2>&1 &
+at_pid=$!; BG_PIDS="$BG_PIDS $at_pid"
+mkdir -p "$M4F/lcars-allthree-1/driver.lock"
+printf '%s\n' "$at_pid" >"$M4F/lcars-allthree-1/driver.lock/pid"
+ap "$R4f" record "drivers.lcars-allthree-1.pid" "$uc_pid" >/dev/null 2>&1
+ap "$R4f" record "drivers.lcars-allthree-1.exitedAt" 1 >/dev/null 2>&1
+s4w="$(ap "$R4f" stalled 2>&1)"
+check "D6-setup. the lock holder is a REAL live process" "kill -0 $at_pid 2>/dev/null"
+check "D6. a failed record + an unclaimed exit + a LIVE lock = total silence" \
+  "! printf '%s' \"\$s4w\" | qgrep -q 'lcars-allthree-1'"
+kill -9 "$at_pid" 2>/dev/null; wait "$at_pid" 2>/dev/null || true
+s4x="$(ap "$R4f" stalled 2>&1)"
+check "D6. …and once the real holder dies it is reported, with the BEST witness" \
+  "printf '%s' \"\$s4x\" | qgrep -q 'FAILED AND IDLE: lcars-allthree-1'"
+check "D6. …still exactly one headline, though all three witnesses apply" \
+  "[ \"\$(headlines \"\$s4x\" lcars-allthree-1)\" = 1 ]"
+check "D6. …and the extra witness is not lost: the dead lock is mentioned too" \
+  "printf '%s\n' \"\$s4x\" | grep -A3 'FAILED AND IDLE: lcars-allthree-1' | qgrep -qi 'lock'"
 
 # ==========================================================================
 # 5. land — the approve path, its refusals, and the hygiene

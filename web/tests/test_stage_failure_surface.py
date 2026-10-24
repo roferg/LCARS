@@ -339,3 +339,238 @@ class StartRefusalTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# ===========================================================================
+# S312 — THE SAME FACT, READ FROM MISSION STATE, AND A CARD THAT READS AS FAILED
+# ===========================================================================
+# S218 (everything above) put the failure in the EVENT LOG and rendered a NOTE
+# on the card. Two things were still missing, and both cost 4 hours 49 minutes
+# on a real mission:
+#
+#   1. Nothing in MISSION STATE said the mission had failed. `state.json.stage`
+#      is the resume pointer, so a mission whose Implement died read
+#      `"stage": "implement"` — byte-identical to healthy work — and every
+#      reader that asks mission state rather than the event log (the ECH, its
+#      `status`, the hourly heartbeat) saw nothing wrong. S312 writes
+#      failedStage / failedAt / failedReason there, beside `awaitingHuman`,
+#      which is the precedent for a non-working state.
+#
+#   2. The CARD carried a note but kept the chrome of healthy work. A mission
+#      that has died must not LOOK like one that is working.
+#
+# WHAT THESE TESTS CANNOT SEE, stated plainly because the last time it was not
+# written down it cost three fix rounds: every harness in this directory calls
+# render()/cardNode() itself, so none of them can tell a working board from a
+# blank one. The class assertion below proves the class is COMPUTED; it does not
+# prove the page paints or that the rule resolves to a visible colour. That is
+# proven in real Chrome by tests/drives/browser/smoke.sh and the screenshot a
+# human then opens.
+
+def _plant_state_failed(root, stage="implement", **extra):
+    """A mission with S312's recorded failure and NO events.jsonl at all.
+
+    That absence is the real shape: the driver exited normally after the stage
+    stop, so there is nothing in the event log to supersede or to read.
+    """
+    fx.plant_simple(root, MID, stage=stage, issue=7)
+    sp = os.path.join(fx.mission_dir(root, MID), "state.json")
+    with open(sp) as fh:
+        st = json.load(fh)
+    st["failedStage"] = stage
+    st["failedAt"] = "2026-10-23T01:36:00Z"
+    st["failedReason"] = "implement failed: the self-heal round could not apply its fix"
+    st.update(extra)
+    with open(sp, "w") as fh:
+        json.dump(st, fh)
+
+
+class StateFailureTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_the_recorded_failed_state_reaches_the_card(self):
+        _plant_state_failed(self.tmp)
+        self.assertFalse(os.path.exists(os.path.join(
+            fx.mission_dir(self.tmp, MID), "events.jsonl")),
+            "the fixture must have NO event log — that is the real shape")
+        self.assertEqual(_card(self.tmp).get("failure"), {
+            "stage": "implement",
+            "sentence": "implement failed: the self-heal round could not apply its fix",
+            "log": None,
+        })
+
+    def test_the_recorded_log_path_rides_it(self):
+        # A record that becomes the PREFERRED source must not lose what the
+        # event lane carried. Caught in the real suite before it shipped.
+        _plant_state_failed(self.tmp, failedLog=LOG)
+        self.assertEqual(_card(self.tmp)["failure"]["log"], LOG)
+
+    def test_no_log_recorded_is_none_not_empty(self):
+        _plant_state_failed(self.tmp)
+        self.assertIsNone(_card(self.tmp)["failure"]["log"])
+
+    def test_a_healthy_mission_still_has_no_failure(self):
+        # The control. Same fixture, no recorded failure.
+        fx.plant_simple(self.tmp, MID, stage="implement", issue=7)
+        self.assertIsNone(_card(self.tmp).get("failure"))
+
+    def test_the_stage_is_not_collapsed_into_failed(self):
+        # "at implement, FAILED" — never "at failed". The column is unchanged.
+        _plant_state_failed(self.tmp)
+        board = LocalAdapter(self.tmp).board()
+        self.assertEqual([m["id"] for m in board["columns"]["implement"]], [MID])
+        self.assertEqual(_card(self.tmp)["stage"], "implement")
+
+    def test_the_event_log_still_wins_when_state_has_no_record(self):
+        # No regression on S218's lane: a mission with only the event-log fact
+        # reads exactly as it did before S312, log path and all.
+        _plant(self.tmp, _events_failed())
+        self.assertEqual(_card(self.tmp).get("failure"),
+                         {"stage": "research", "sentence": SENTENCE, "log": LOG})
+
+    def test_hidden_while_a_driver_is_live(self):
+        # Same rule as the event-log lane: a live run means the last failure is
+        # not the news. Written with a REAL pid — this process's own — because
+        # an invented one answers whichever way the host's pid space falls.
+        _plant_state_failed(self.tmp)
+        lock = os.path.join(fx.mission_dir(self.tmp, MID), "driver.lock")
+        os.makedirs(lock, exist_ok=True)
+        with open(os.path.join(lock, "pid"), "w") as fh:
+            fh.write("%d\n" % os.getpid())
+        self.assertIsNone(_card(self.tmp).get("failure"))
+
+
+@unittest.skipUnless(NODE, "node is required for the board.js vm harness")
+class FailedCardChromeTest(unittest.TestCase):
+    """The CARD reads as failed, not as in-progress-with-a-note.
+
+    This is the `.awaiting` precedent: `cardNode` adds a class to the card
+    itself off the same `m.failure` fact the note already reads.
+    """
+
+    def test_a_failed_card_carries_the_failed_class(self):
+        cls = _node(CARD_HARNESS, _CARD)["cls"]
+        self.assertIn("failed", cls.split(),
+                      "the card itself must read as failed, not just carry a note")
+
+    def test_a_healthy_card_does_not(self):
+        m = dict(_CARD)
+        m.pop("failure")
+        cls = _node(CARD_HARNESS, m)["cls"]
+        self.assertNotIn("failed", cls.split())
+
+    def test_the_failed_chrome_has_a_stylesheet_rule(self):
+        # A class nothing styles is a class that paints nothing — the exact
+        # failure mode that made a legend swatch invisible while every markup
+        # assertion passed. This checks the rule EXISTS; real Chrome checks it
+        # resolves to something you can see.
+        css = os.path.join(REPO, "web", "static", "board.css")
+        with open(css) as fh:
+            text = fh.read()
+        self.assertIn(".card.failed{", text)
+
+
+# ===========================================================================
+# S312 FIX ROUND 1 — THE LIVENESS GUARD, WIDENED TO MATCH THE RECORD'S LIFE
+# ===========================================================================
+# S312 cleared the recorded failure when the next attempt STARTED, and a fresh
+# tester hard-killed a drive mid-stage: the record was gone and never re-written
+# (the driver died first), so every surface — this one included — went blind.
+# `failure: null` on a mission nobody was advancing.
+#
+# The cure is that the record is cleared by a stage that SUCCEEDS. Which means
+# that WHILE A RETRY IS IN FLIGHT the stale record is still on disk, and this
+# card must not read as failed. `_driver_running` (the mission's driver.lock)
+# already covers a drive, and every drive holds that lock.
+#
+# IT DOES NOT COVER A BARE STAGE RUN. `acquire_driver_lock` is called from
+# `cmd_drive` alone, so `lcars run <stage>` works a mission with no lock and no
+# drive record at all — and before this round the stage_start clear is what hid
+# the stale record on that path. So the guard reads the SECOND witness the ECH's
+# `stalled` already reads: a live `worker-adapter` process whose own argv names
+# this mission's directory. It is consulted ONLY for a mission that would
+# otherwise be reported failed, so a healthy board pays nothing for it.
+#
+# THE DIRECTION IS DELIBERATE: this probe can only ever BUY SILENCE. It cannot
+# invent a failure, so the worst a wrong answer costs is a report that arrives
+# when the worker exits — against a false ✖ on live work, which is the defect
+# that teaches a captain to ignore his own board.
+#
+# REAL PROCESSES ONLY. A made-up pid in a lock file is a stub of the very thing
+# under test: `kill -0` on an invented pid answers whichever way the host's pid
+# space happens to fall.
+class LivenessGuardTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.procs = []
+
+    def tearDown(self):
+        # Killed BY PID — only the processes this test started.
+        for p in self.procs:
+            try:
+                p.kill()
+                p.wait(timeout=5)
+            except Exception:
+                pass
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _adapter_proc(self, mission_dir):
+        """A REAL process whose argv looks like run.sh's cold-worker spawn."""
+        script = os.path.join(self.tmp, "worker-adapter.sh")
+        with open(script, "w") as fh:
+            fh.write("#!/usr/bin/env bash\nwhile :; do sleep 1; done\n")
+        os.chmod(script, 0o755)
+        p = subprocess.Popen(
+            ["bash", script, "spawn", "claude", "repo-write",
+             os.path.join(mission_dir, "implement"), "<prompt 1234 bytes>"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        self.procs.append(p)
+        return p
+
+    def test_a_live_worker_adapter_hides_the_failure(self):
+        _plant_state_failed(self.tmp)
+        d = fx.mission_dir(self.tmp, MID)
+        self.assertFalse(os.path.exists(os.path.join(d, "driver.lock")),
+                         "a bare stage run holds no lock — that is the point")
+        p = self._adapter_proc(d)
+        self.assertIsNone(p.poll(), "the fixture worker must really be running")
+        self.assertIsNone(_card(self.tmp).get("failure"))
+
+    def test_and_once_that_worker_exits_the_failure_is_shown_again(self):
+        _plant_state_failed(self.tmp)
+        d = fx.mission_dir(self.tmp, MID)
+        p = self._adapter_proc(d)
+        self.assertIsNone(_card(self.tmp).get("failure"))
+        p.kill()
+        p.wait(timeout=5)
+        self.assertIsNotNone(
+            _card(self.tmp).get("failure"),
+            "a guard that is silent both ways is not a guard")
+
+    def test_an_adapter_working_a_DIFFERENT_mission_buys_no_silence(self):
+        # The argv match must be anchored on THIS mission's directory, or one
+        # live worker anywhere would silence the whole board.
+        _plant_state_failed(self.tmp)
+        other = os.path.join(os.path.dirname(fx.mission_dir(self.tmp, MID)),
+                             "m-someone-else")
+        os.makedirs(other, exist_ok=True)
+        p = self._adapter_proc(other)
+        self.assertIsNone(p.poll())
+        self.assertIsNotNone(_card(self.tmp).get("failure"))
+
+    def test_a_dead_lock_owner_does_not_buy_silence(self):
+        # The killed-mid-stage shape: the lock dir is still there and its owner
+        # is gone. A real process, started and reaped, so the pid is genuinely
+        # dead rather than merely unlikely.
+        _plant_state_failed(self.tmp)
+        p = subprocess.Popen(["true"])
+        p.wait(timeout=5)
+        lock = os.path.join(fx.mission_dir(self.tmp, MID), "driver.lock")
+        os.makedirs(lock, exist_ok=True)
+        with open(os.path.join(lock, "pid"), "w") as fh:
+            fh.write("%d\n" % p.pid)
+        self.assertIsNotNone(_card(self.tmp).get("failure"))

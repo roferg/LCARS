@@ -3792,6 +3792,13 @@ function cardNode(m) {
   clearLogRunOnState(m);
   var card = el("div", "card");
   if (m.awaiting) card.className += " awaiting";
+  /* S312: …AND THE CARD ITSELF READS AS FAILED, not merely as in-progress with
+     a note on it. S218 added the one-line "✖ <Stage> failed" NOTE below, but
+     the card body kept exactly the chrome of healthy work — which is the whole
+     defect this round is about: a mission that has died must not look like one
+     that is working. This is the `.awaiting` precedent one line above, applied
+     to the same `m.failure` fact the note already reads. */
+  if (m.failure) card.className += " failed";
   // UX-21/UX-22: paused AND pausing both carry the .paused chrome (dimmed body),
   // but the status label + action button are kept high-contrast (see below).
   if (rs === "paused" || rs === "pausing") card.className += " paused";
