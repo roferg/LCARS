@@ -898,6 +898,14 @@ the *other* slot (§ 8) — not for watching.
 
 ## 6. The Verify gate — Number One, then the live check
 
+**Verify is not completion.** An accurate summary saying the work is unfinished
+is not permission to stop. Run `lcars-ech live-check <mission-id> --type <types>`
+now, record the target and known-fail control verdicts, run
+`lcars-ech policy --mission <mission-id> --live-check pass|bugs`, and take its
+one action. If it permits landing, run `lcars-ech land <mission-id>`; otherwise
+follow the send-back loop. Then run `lcars-ech next` again. Continue until the
+scope is done or a recorded captain-only condition actually blocks the work.
+
 For test commands and evidence capture, follow
 [the repository-root/downward rule](#unattended-copilot-commands-start-at-the-repository-root-and-write-downward)
 above; do not redirect upward from the live-check worktree.
@@ -910,6 +918,34 @@ the live check. Its misses were all *reach* errors, never judgement: no screen
 to look at, nothing seeded, stubs that made the seam untestable.
 
 ### 6.1 Set it up with one command, then do the looking
+
+1. **A green check carries a control.** ANY CHECK WHICH CAN RETURN GREEN
+   WITHOUT HAVING OBSERVED THE THING must carry a control case known to fail.
+   Apply the same detector to both, and report BOTH verdicts and observations
+   with distinct evidence. For a web check render/open the target AND a signed-out
+   login wall beside it: a produced screenshot is not a checked product page.
+   A detector that calls the login wall green cannot support a green target.
+   `live-check` prints a target/control pair for every checklist item and writes
+   `.git/lcars/missions/<id>/live-check/checks.json`. Each control's `input`
+   names a concrete known-fail artifact; render the supplied login-wall HTML
+   beside the target for web checks, or use a product-specific failing input.
+   Fill every row's `detector`,
+   `target` and `control`: each needs a `verdict` (`pass` or `fail`), nonempty
+   `evidence` file path and `observation`; the control also names its
+   `knownFailure`. `live-check done --verdict pass` is REFUSED unless every
+   target passes AND every known-fail control fails. Never call an unobserved
+   item passed; record bugs or say **not checked**.
+
+2. **Enumerate, don't sample.** A claim about a MISSION needs every ticket,
+   not the two on screen. Enumerate the mission's complete ticket list, name
+   each verdict and its evidence, and count anything unobserved as **not checked**.
+   The paired checklist is a floor, not permission to omit ticket acceptance
+   criteria; add their target/control cases to your evidence too.
+
+3. **Read the board.** Use the harness-maintained mission and ticket states
+   shown by the board's own API; never invent a completion metric beside one
+   the harness already maintains. Read the board response, not a sampled
+   screenshot or a clean log, before claiming completion.
 
 ```bash
 lcars-ech live-check <mission-id> --type cli,web,workflow
@@ -1231,6 +1267,11 @@ of this gate once matched the word `FAILED` as success and pushed a red `main`.
 
 ## 8. Waiting, two missions at a time, and the crontab heartbeat
 
+**The guard must not share a kill-space with what it guards.** Kill only by
+recorded pid (or the isolated process group created for that pid), never by
+broad process-name or command-line pattern. Use `lcars-ech watch stop` for the
+guard; do not sweep waiters and accidentally kill the independent heartbeat.
+
 **Two missions at a time is the ceiling**, and only when their write sets do not
 overlap. Two was measured safe on a 10-core Mac; three drove load average to 170
 and killed workers. `lcars-ech next` enforces it and tells you to wait;
@@ -1285,15 +1326,29 @@ It calls `lcars-ech stalled`, which reports a mission whose driver ended with
 nobody picking it up — decided from the **recorded pid**, not by grepping a log.
 Act on it, then `lcars-ech record drivers.<id>.pickedUpAt <ts>`.
 
-**If `heartbeat install` refuses, carry on without it.** The crontab WRITE is
+**If `heartbeat install` refuses, fall back to the timerless watcher.** The crontab WRITE is
 bounded (`LCARS_ECH_CRONTAB_TIMEOUT`, 10s): a seat reported it "produced no
 output and remained running until terminated", and on macOS the table lands in
 `/var/at/tabs`, which needs Full Disk Access for the writing process — without
 it the permission request blocks with nobody there to answer. `install` now
-says exactly that and exits **11** instead of hanging. **The heartbeat is
-OPTIONAL**: you lose only the automatic stalled-driver check, which you can run
-yourself with `lcars-ech stalled` each time round the loop. Do not stop the run
-over it and do not raise it with the captain.
+says exactly that and exits **11** instead of hanging, after starting
+`lcars-ech watch start`. An immediate crontab refusal also reports its error,
+starts the same fallback, and exits **11**. **The heartbeat is OPTIONAL**, not the guard:
+confirm `lcars-ech watch status` says running and read `.git/lcars/autopilot/watch.log`
+for wake events. Do not stop the run over it and do not raise it with the captain.
+
+**The timerless watcher is a different thing from `await --limit`.**
+Run `lcars-ech watch` in the seat's background tool to receive its output, or
+`lcars-ech watch start` to record its pid and write wake events to
+`.git/lcars/autopilot/watch.log`. It has no deadline, never needs re-arming, and continues
+after a slot frees. It wakes on failed-and-idle missions even when both slots
+are occupied; act on the named mission through LCARS, never write beneath a
+live worker. It exits **10** only when a recorded question genuinely needs a
+human. `await --limit` remains the bounded wait INSIDE the seat's loop; the
+watcher outlives that loop. At wrap-up use `lcars-ech watch stop`, which kills
+only its recorded pid and confirms termination before reporting success, leaving
+the heartbeat and drivers alone. If termination cannot be confirmed, it reports
+the failure and retains the recorded pid.
 
 Why a crontab line and not the host harness's own cron tool: LCARS ships to
 people who are not inside Claude Code, so a harness-only tool cannot be this

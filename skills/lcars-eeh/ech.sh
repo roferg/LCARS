@@ -32,6 +32,7 @@
 #   ech.sh status
 #   ech.sh next [--all]
 #   ech.sh await [--limit <secs>]
+#   ech.sh watch [start|stop|status]
 #   ech.sh drive <mission>
 #   ech.sh stalled
 #   ech.sh land <mission>
@@ -81,7 +82,7 @@
 # rather than a clock.
 set -uo pipefail
 
-SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 SELF="$SELF_DIR/$(basename "${BASH_SOURCE[0]}")"
 SKILLS_DIR="$(cd "$SELF_DIR/.." && pwd)"
 
@@ -160,6 +161,8 @@ usage() {
                        PROCESSES. Returns 0 on a free slot, 124 when the bound passes
                        (default 30 min) with the one command to run then. A wait has
                        a way out: it can never sit for ever.
+  watch [start|stop|status]
+                       timerless guard; wake on actionable changes, exit 10 for a human
   playbook             the action -> heading table the contract test locks
   record <k.k> <v>     write one key (JSON value if it parses; empty value deletes)
   answered <id> "<a>"  close ONE open question (ids come from `status`); never deletes it
@@ -933,11 +936,9 @@ pf_bounded() {
     # THE WHOLE GROUP: `git ls-remote` execs a transport helper (and over ssh an
     # `ssh` of its own), and killing only the parent leaves it holding the
     # socket open until the TCP stack gives up — minutes later, at `ppid 1`.
-    # `kill -9 -$p` is the group; the two narrower kills stay as belt and braces
-    # for anything that left the group on its own.
+    # Only the recorded group and pid are ours to kill; never select by name.
     ( sleep "$secs"; : >"$mark"
       kill -9 -"$p" >/dev/null 2>&1
-      pkill -9 -P "$p" >/dev/null 2>&1
       kill -9 "$p" >/dev/null 2>&1 ) </dev/null >/dev/null 2>&1 &
     local w=$!
     local crc=0
@@ -2446,6 +2447,14 @@ EOF
   fi
   say "WHY: $why"
   say "PLAYBOOK: $(playbook_heading "$action")"
+  if [ "$action" = "verify-gate" ]; then
+    say "RUN NOW: $SELF_CMD live-check $arg --type <types>   # every product type touched"
+    say "THEN: record both verdicts (target and known-fail control), run"
+    say "  \`$SELF_CMD policy --mission $arg --live-check pass|bugs\`, and take its action."
+    say "  If it permits landing: \`$SELF_CMD land $arg\`; otherwise follow the send-back."
+    say "CONTINUE: \`$SELF_CMD next\` after that action. Verify is not completion;"
+    say "  an accurate unfinished summary is not permission to stop."
+  fi
   # A question for the captain is the top line, but it is HIS step, not the
   # mode's: the work on every other milestone is still runnable and is named
   # here, so one open question cannot park the run.
@@ -2551,6 +2560,104 @@ cmd_await() {
   say "  verb-level workaround (§ 9's fourth category): raise it with \`$SELF_CMD ask\`"
   say "  and carry on with the other work."
   return 124
+}
+
+# Unlike await, this guard outlives the seat's bounded wait. A free slot wakes
+# the seat through output, never retires the guard. Only a human gate retires it.
+watch_pid_live() {
+  local pid="$1" command
+  case "$pid" in ''|*[!0-9]*) return 1 ;; esac
+  kill -0 "$pid" 2>/dev/null || return 1
+  command="$(ps -p "$pid" -o command= 2>/dev/null)"
+  case "$command" in *"bash $SELF watch") return 0 ;; esac
+  return 1
+}
+
+cmd_watch() {
+  require_state
+  local pid attempts state
+  pid="$(ap_j watch.pid)"
+  case "${1:-}" in
+    start)
+      [ $# -eq 1 ] || die "watch start: no arguments or limit"
+      if watch_pid_live "$pid"; then
+        say "watch: already running (pid $pid), timerless."
+        return 0
+      fi
+      mkdir -p "$APDIR"
+      LCARS_ECH_CWD="$CWD" bash "$SELF" watch </dev/null >>"$APDIR/watch.log" 2>&1 &
+      pid=$!
+      ap_set watch.pid "$pid"
+      ap_set watch.startedAt "$(now)"
+      say "watch: started timerless guard (pid $pid); output: $APDIR/watch.log"
+      return 0 ;;
+    stop)
+      [ $# -eq 1 ] || die "watch stop: no arguments"
+      if watch_pid_live "$pid"; then
+        kill "$pid" || die "watch: could not stop recorded pid $pid"
+        attempts=0
+        while kill -0 "$pid" 2>/dev/null; do
+          state="$(ps -p "$pid" -o stat= 2>/dev/null)"
+          case "$state" in *Z*) break ;; esac
+          [ "$attempts" -lt 50 ] || die "watch: could not confirm termination of recorded pid $pid"
+          sleep 0.1
+          attempts=$((attempts + 1))
+        done
+      elif [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+        die "watch: recorded pid $pid is alive but its identity does not match; refusing to stop it"
+      fi
+      ap_set watch.pid ""
+      say "watch: stopped recorded guard pid ${pid:-none}."
+      return 0 ;;
+    status)
+      [ $# -eq 1 ] || die "watch status: no arguments"
+      if watch_pid_live "$pid"; then
+        say "watch: running (pid $pid), timerless; output: $APDIR/watch.log"
+      else
+        say "watch: not running."
+      fi
+      return 0 ;;
+  esac
+  [ $# -eq 0 ] || die "watch: no limit; use watch without arguments"
+  local previous="" event plan sleeper="" m failure failures
+  local interval="${LCARS_ECH_WATCH_INTERVAL:-5}"
+  case "$interval" in ''|*[!0-9.]*|.*|*.*.*) die "watch: invalid poll interval" ;; esac
+  trap '[ -z "$sleeper" ] || { kill "$sleeper" 2>/dev/null || true; wait "$sleeper" 2>/dev/null || true; }; exit 0' TERM INT HUP
+  say "watch: timerless guard active (pid $$); no re-arming required."
+  while :; do
+    if [ -n "$(open_questions)" ]; then
+      say "HUMAN NEEDED: $(open_questions)"
+      cmd_next --all
+      return 10
+    fi
+    event=""
+    failures=""
+    for m in $(mission_ids); do
+      [ "$(mstate "$m" stage)" = done ] && continue
+      mission_work_live "$m" && continue
+      failure="$(mission_failed "$m")"
+      if [ -n "$failure" ] || [ "$(mstate "$m" stage)" = failed ]; then
+        failures="${failures}failed mission $m: $failure
+"
+      fi
+    done
+    [ -z "$failures" ] || event="$failures"
+    if [ "$(slots_in_use)" -lt "$MAX_SLOTS" ]; then
+      plan="$(build_plan)"
+      event="${event}slot available
+$plan"
+    fi
+    if [ -n "$event" ] && [ "$event" != "$previous" ]; then
+      say "WAKE: $event"
+      [ -z "$failures" ] || cmd_stalled
+      cmd_next --all
+    fi
+    previous="$event"
+    sleep "$interval" </dev/null &
+    sleeper=$!
+    wait "$sleeper" || true
+    sleeper=""
+  done
 }
 
 # ==========================================================================
@@ -3449,8 +3556,8 @@ hb_hung_say() {
   say "  Either:  grant Full Disk Access to your terminal (System Settings ->"
   say "           Privacy & Security -> Full Disk Access), then re-run"
   say "           \`$SELF_CMD heartbeat install\`"
-  say "  Or:      carry on without it and run \`$SELF_CMD stalled\` yourself every time"
-  say "           you run \`$SELF_CMD next\` — that is all the heartbeat was doing."
+  say "  Instead: install falls back to \`$SELF_CMD watch start\`, the timerless guard."
+  say "           It watches failed missions as well as free slots; no re-arming."
   say "  (nothing was written, so there is nothing to undo.)"
 }
 
@@ -3495,13 +3602,18 @@ cmd_heartbeat() {
       { if [ -n "$keep" ]; then printf '%s\n' "$keep"; fi; hb_line; } >"$tbl"
       hb_write install "$tbl"; wrc=$?
       rm -f "$tbl"
-      if [ "$wrc" = 124 ]; then
+      if [ "$wrc" != 0 ]; then
+        if [ "$wrc" != 124 ]; then
+          say "heartbeat: crontab refused the new table (exit $wrc)."
+          say "  DO NOT STOP THE RUN over it, and do not raise it with the captain."
+        fi
+        cmd_watch start || die "heartbeat: timerless fallback could not start" 11
+        say "FALLBACK: timerless watcher active; inspect \`$SELF_CMD watch status\`."
         # 11 is this driver's "a mechanical pre-check refused" code: NOT 10,
         # which is reserved for a question recorded for the captain, and not 0,
         # which would claim an install that did not happen.
         exit 11
       fi
-      [ "$wrc" = 0 ] || die "heartbeat: crontab refused the new table"
       say "heartbeat installed (one crontab line, minute 17):"
       hb_line | sed 's/^/  /'
       say "  it calls \`$SELF_CMD stalled\` and acts only when a pipeline ended with nobody picking it up."
@@ -3752,6 +3864,52 @@ cmd_live_check() {
   ap_set "liveChecks.$m.evidence" "$evdir"
   ap_set "liveChecks.$m.worktree" "$wt"
   ap_set "liveChecks.$m.home"     "$home"
+  ap_set "liveChecks.$m.verdict" ""
+  ap_set "liveChecks.$m.checks" ""
+  ap_set "liveChecks.$m.at" ""
+  local label; label="$(label_for "$m" || true)"
+  [ -z "$label" ] || ap_set "missions.$label.liveCheck" ""
+  local targets
+  targets="$("$PY" - "$LIVE_CHECK_LOCAL" "$evdir/checks.json" $tlist <<'PY'
+import json, pathlib, re, sys
+base, dest, *types = sys.argv[1:]
+controls = {
+    "cli": "missing product output or deliberately wrong data",
+    "web": "a signed-out login wall, not the product page",
+    "workflow": "a failed run with no published artifact",
+}
+rows = []
+inputs = {
+    "cli": ("control-cli.txt", "ERROR: no product output; deliberately wrong data\n"),
+    "web": ("control-web.html", "<!doctype html><title>Sign in</title><h1>Sign in</h1>"
+            "<p>Authentication required. The product content is absent.</p>\n"),
+    "workflow": ("control-workflow.json", '{"conclusion":"failure","artifacts":[]}\n'),
+}
+for kind in types:
+    name, content = inputs[kind]
+    control_input = pathlib.Path(dest).parent / name
+    control_input.write_text(content)
+    for number, title in re.findall(r"^### (\d+)\. (.+)$",
+                                    (pathlib.Path(base) / (kind + ".md")).read_text(), re.M):
+        rows.append({"id": kind + ":" + number, "check": title,
+                     "detector": "", "target": {"verdict": None, "evidence": "", "observation": ""},
+                     "control": {"knownFailure": controls[kind], "input": str(control_input), "verdict": None,
+                                 "evidence": "", "observation": ""}})
+pathlib.Path(dest).write_text(json.dumps(rows, indent=2) + "\n")
+print(json.dumps([r["id"] for r in rows]))
+PY
+)" || die "live-check: could not prepare target/control pairs"
+  ap_set "liveChecks.$m.targets" "$targets"
+  say "PAIRED EVIDENCE: $evdir/checks.json"
+  say "  Fill EVERY row: same detector on target and known-fail control, distinct evidence"
+  say "  and observations. Render/open BOTH for visual checks; a login wall is not the product."
+  "$PY" - "$evdir/checks.json" <<'PY'
+import json, sys
+for row in json.load(open(sys.argv[1])):
+    print("TARGET %s: %s" % (row["id"], row["check"]))
+    print("KNOWN-FAIL CONTROL %s: %s (%s); apply the SAME check, expect fail." %
+          (row["id"], row["control"]["knownFailure"], row["control"]["input"]))
+PY
 
   say "CHECKLISTS: $LIVE_CHECK_LOCAL"
   say "  inside this repository, refreshed from the installed LCARS on every run."
@@ -3762,7 +3920,7 @@ cmd_live_check() {
     cat "$LIVE_CHECK_LOCAL/$t.md"
     say ""
   done
-  say "WHEN DONE:  $SELF live-check done $m --verdict pass|bugs"
+  say "WHEN DONE:  $SELF live-check done $m --verdict pass|bugs   # reads checks.json"
   say "A BUG:      $SELF file-bug --parent $m --prd <bug-prd.md>   (template: $BUG_PRD_LOCAL)"
 }
 
@@ -3789,20 +3947,80 @@ cmd_live_check_done() {
   esac
   local evdir; evdir="$(ap_j "liveChecks.$m.evidence")"
   [ -n "$evdir" ] || evdir="$MISSIONS/$m/live-check"
+  local checks
+  checks="$("$PY" - "$APJSON" "$m" "$evdir/checks.json" "$verdict" <<'PY'
+import json, pathlib, sys
+ap, mission, manifest, verdict = sys.argv[1:]
+def refuse(why):
+    sys.stderr.write("live-check done: REFUSED: %s\n" % why)
+    raise SystemExit(1)
+expected = json.load(open(ap)).get("liveChecks", {}).get(mission, {}).get("targets", [])
+path = pathlib.Path(manifest)
+try:
+    rows = json.loads(path.read_text()) if path.exists() else []
+except (OSError, ValueError) as e:
+    refuse("cannot read paired evidence: %s" % e)
+if not isinstance(rows, list) or any(not isinstance(r, dict) for r in rows):
+    refuse("checks.json must be a list of target/control pairs")
+if verdict == "pass":
+    ids = [r.get("id") for r in rows]
+    if (not expected or any(not isinstance(i, str) for i in ids)
+            or len(ids) != len(expected) or set(ids) != set(expected)):
+        refuse("enumerate every prepared target, exactly once; no sampling or missing controls")
+for row in rows:
+    for role in ("target", "control"):
+        if role in row and not isinstance(row[role], dict):
+            refuse("%s: %s must be a verdict/evidence/observation object" % (row.get("id"), role))
+    if verdict != "pass" and (row.get("target") or {}).get("verdict") != "pass":
+        continue
+    if not isinstance(row.get("detector"), str) or not row["detector"].strip():
+        refuse("%s: name the same detector used on BOTH cases" % row.get("id"))
+    for role, wanted in (("target", "pass"), ("control", "fail")):
+        result = row.get(role)
+        if not isinstance(result, dict) or result.get("verdict") != wanted:
+            refuse("%s: target must pass AND known-fail control must fail" % row.get("id"))
+        if not isinstance(result.get("observation"), str) or not result["observation"].strip():
+            refuse("%s: %s needs an observation, not just a produced screenshot" % (row.get("id"), role))
+        if not isinstance(result.get("evidence"), str) or not result["evidence"]:
+            refuse("%s: %s needs an evidence file path" % (row.get("id"), role))
+        evidence = pathlib.Path(result["evidence"])
+        if not evidence.is_absolute():
+            evidence = path.parent / evidence
+        if not evidence.is_file() or evidence.stat().st_size == 0:
+            refuse("%s: %s needs nonempty evidence" % (row.get("id"), role))
+        result["evidence"] = str(evidence.resolve())
+    if not isinstance(row["control"].get("knownFailure"), str) or not row["control"]["knownFailure"].strip():
+        refuse("%s: name why the control is known to fail" % row.get("id"))
+    if row["target"]["evidence"] == row["control"]["evidence"]:
+        refuse("%s: the target cannot be its own control" % row.get("id"))
+print(json.dumps(rows))
+PY
+)" || return 1
+  ap_set "liveChecks.$m.checks" "$checks"
   ap_set "liveChecks.$m.verdict" "$verdict"
   ap_set "liveChecks.$m.at"      "$(now)"
   ap_set "liveChecks.$m.evidence" "$evdir"
   [ -n "$note" ] && ap_set "liveChecks.$m.note" "$note"
   local label; label="$(label_for "$m" || true)"
   [ -n "$label" ] && ap_set "missions.$label.liveCheck" "$verdict"
-  ledger_append decisions "$("$PY" - "$m" "$verdict" "$evdir" "$note" <<'PY'
+  ledger_append decisions "$("$PY" - "$m" "$verdict" "$evdir" "$note" "$checks" <<'PY'
 import json, sys
 print(json.dumps({"kind": "live-check", "mission": sys.argv[1],
                   "verdict": sys.argv[2], "evidence": sys.argv[3],
-                  "note": sys.argv[4]}))
+                  "note": sys.argv[4], "checks": json.loads(sys.argv[5])}))
 PY
 )" || die "live-check done: the ledger refused the entry"
   say "live check for $m recorded: $verdict"
+  "$PY" - "$checks" <<'PY'
+import json, sys
+rows = json.loads(sys.argv[1])
+if not rows:
+    print("  target=not checked control=not checked; no green claim")
+for row in rows:
+    print("  %s: target=%s control=%s" %
+          (row.get("id", "?"), (row.get("target") or {}).get("verdict") or "not checked",
+           (row.get("control") or {}).get("verdict") or "not checked"))
+PY
   say "  evidence: $evdir"
   [ -n "$label" ] && say "  milestone $label updated"
   if [ "$verdict" = bugs ]; then
@@ -4768,6 +4986,7 @@ case "$SUB" in
   status)      cmd_status "$@" ;;
   next)        cmd_next "$@" ;;
   await)       cmd_await "$@" ;;
+  watch)       cmd_watch "$@" ;;
   playbook)    cmd_playbook "$@" ;;
   record)      cmd_record "$@" ;;
   grant)       cmd_grant "$@" ;;

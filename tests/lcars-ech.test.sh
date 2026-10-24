@@ -576,8 +576,9 @@ check "LCARS_GATE_TIMEOUT came from the config" \
   "qgrep -q 'gate timeout is 600' '$R3/.git/lcars/autopilot/drive-lcars-drive-1.log'"
 check "the drive called run.sh drive --mission (it did not re-sequence stages)" \
   "qgrep -q 'run-long.sh drive --mission lcars-drive-1' '$STUB_LOG'"
+WAITER_SOURCE="$(sed -n '/^cmd_waiter() {/,/^}/p' "$SCRIPT")"
 check "no sleep-polling in the waiter: it blocks on the process" \
-  "! qgrep -qE '^[^#]*(sleep [0-9]+ *; *(kill|done)|while .*kill -0)' '$SCRIPT'"
+  "[ -n \"\$WAITER_SOURCE\" ] && ! printf '%s\n' \"\$WAITER_SOURCE\" | qgrep -qE '^[^#]*(sleep [0-9]+ *; *(kill|done)|while .*kill -0)'"
 
 # Kill the DRIVER; the waiter must notice through the process, within 5 s.
 kill -9 "$dpid" 2>/dev/null
@@ -2334,6 +2335,18 @@ LCDBAD="$(ap "$RLC" live-check done lcars-20261001-001 --verdict probably 2>&1)"
 check "a verdict that is neither pass nor bugs is REFUSED" "[ $lcdbrc -ne 0 ]"
 LCDNOV="$(ap "$RLC" live-check done lcars-20261001-001 2>&1)"; lcdnrc=$?
 check "\`done\` with no --verdict is REFUSED (no silent pass)" "[ $lcdnrc -ne 0 ]"
+python3 - "$LCEV/checks.json" <<'PYPAIRS'
+import json, pathlib, sys
+manifest = pathlib.Path(sys.argv[1])
+rows = json.loads(manifest.read_text())
+for row in rows:
+    row["detector"] = "inspect fixture product output"
+    for role, verdict in (("target", "pass"), ("control", "fail")):
+        evidence = manifest.parent / (row["id"].replace(":", "-") + "-" + role + ".txt")
+        evidence.write_text(role + " observed\n")
+        row[role].update(verdict=verdict, evidence=str(evidence), observation=role + " inspected")
+manifest.write_text(json.dumps(rows))
+PYPAIRS
 LCDONE2="$(ap "$RLC" live-check done lcars-20261001-001 --verdict pass 2>&1)"
 check "a second done OVERWRITES the verdict (a re-verify round can clear it)" \
   "[ \"\$(jget '$APLC' 'd[\"liveChecks\"][\"lcars-20261001-001\"][\"verdict\"]')\" = pass ]"
@@ -4614,6 +4627,7 @@ check "S305-2. CONTROL: a crontab that WORKS still installs and exits 0" \
 check "S305-2. CONTROL: and it still says it installed" \
   "printf '%s' \"\$hb5ok\" | qgrep -qi 'installed'"
 ap "$RHB5" heartbeat remove >/dev/null 2>&1
+ap "$RHB5" watch stop >/dev/null 2>&1
 check "S305-2. CONTROL: a crontab that WORKS still removes the line" \
   "! qgrep -q 'LCARS-ECH' '$CRONFILE'"
 
@@ -6437,6 +6451,27 @@ for grant_case in \
   test_number_one_off_and_failed_application_are_persisted
 do
   check "S315. $grant_case" "python3 '$DIR/lcars-ech-grants.test.py' 'Grants.$grant_case'"
+done
+
+echo "-- S316. continuity, independent guard, and controlled evidence --"
+for continuity_case in \
+  test_verify_gives_executable_move_and_continuation \
+  test_watch_stays_on_free_slot_and_exits_for_human \
+  test_watch_wakes_on_failed_mission_even_with_full_slots \
+  test_watch_suppresses_failed_wake_while_drive_lock_is_live \
+  test_watch_wakes_on_stale_failure_fields_outside_failed_stage \
+  test_managed_watch_outlives_injected_old_bound_on_monotonic_clock \
+  test_watch_identity_survives_equivalent_paths \
+  test_watch_status_does_not_invent_a_running_guard \
+  test_watch_stop_refuses_unconfirmed_termination \
+  test_no_verb_kills_by_broad_pattern \
+  test_refused_heartbeat_starts_timerless_fallback \
+  test_immediate_heartbeat_refusal_starts_timerless_fallback \
+  test_playbook_names_the_written_watch_log \
+  test_live_check_pairs_every_target_and_refuses_uncontrolled_green \
+  test_numbered_control_enumeration_and_board_rules_have_teeth
+do
+  check "S316. $continuity_case" "PYTHONDONTWRITEBYTECODE=1 python3 '$DIR/lcars-ech-continuity.test.py' 'Continuity.$continuity_case'"
 done
 
 echo

@@ -96,8 +96,17 @@ PY
         evidence = self.data / "missions" / mission / "live-check"
         evidence.mkdir(parents=True, exist_ok=True)
         (evidence / "01-cli.txt").write_text("fixture live check: pass\n")
+        (evidence / "control.txt").write_text("fixture known-fail control: fail\n")
+        targets = ["cli:" + str(n) for n in range(1, 10)]
+        rows = [{"id": target, "detector": "inspect fixture product output",
+                 "target": {"verdict": "pass", "evidence": str(evidence / "01-cli.txt"),
+                            "observation": "product output present"},
+                 "control": {"verdict": "fail", "evidence": str(evidence / "control.txt"),
+                             "observation": "product output absent",
+                             "knownFailure": "missing product output"}} for target in targets]
+        self.write(evidence / "checks.json", rows)
         self.run_ech("record", "liveChecks." + mission,
-                     json.dumps({"evidence": str(evidence), "types": ["cli"]}))
+                     json.dumps({"evidence": str(evidence), "types": ["cli"], "targets": targets}))
         self.run_ech("live-check", "done", mission, "--verdict", "pass")
         return evidence
 
