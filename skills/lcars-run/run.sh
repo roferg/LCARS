@@ -3788,9 +3788,32 @@ LCARS_AWK_CRIT_EOF
 # non-empty, three further DECLARATION checks apply; none of them reads a
 # ticket's prose to decide anything (see the design note above
 # plan_mockup_contract_block).
-validate_plan_json() { # file [mockup-basenames] [mockup-place-names]
-  awk -v mock="${2:-}" -v places="${3:-}" "$LCARS_AWK_CRIT"'
+validate_plan_json() { # file [mockup-basenames] [mockup-place-names] [final-attempt]
+  awk -v mock="${2:-}" -v places="${3:-}" -v rl_final="${4:-0}" "$LCARS_AWK_CRIT"'
     function fail(msg) { failed=1; printf "lcars run: %s\n", msg > "/dev/stderr"; exit 1 }
+    # === S313: DOES THIS TICKET NAME ITSELF A REGRESSION LOCK? ===============
+    # The vocabulary a planner uses when it writes a characterisation / golden /
+    # snapshot ticket. This is HALF of a two-signal rule and it is deliberately
+    # the WEAKER half: a text search cannot tell a lock ticket from a ticket
+    # that merely mentions one (the S174 history above this function is a
+    # catalogue of text rules beaten in an afternoon). It only ever runs beside
+    # the arithmetic the planner itself declared — estimatedNewLoc 0 with test
+    # LoC on the same ticket — and a miss here costs nothing: an undetected lock
+    # ticket meets the flip-flop gate refusal, which since S313 names the same
+    # cure this message does.
+    function rl_locktext(s) {
+      return (s ~ /golden/ \
+           || s ~ /characteri[sz]ation/ \
+           || s ~ /characteri[sz]ing/ \
+           || s ~ /snapshot test/ \
+           || s ~ /regression[ -]lock/ \
+           || s ~ /lock (in |down |the )?(today|current|existing)/ \
+           || s ~ /lock[a-z]* (today|current|existing)/ \
+           || s ~ /preserv(e|es|ing) (the )?(existing|current|today)/ \
+           || s ~ /no behaviou?r change/ \
+           || s ~ /behaviou?r is unchanged/ \
+           || s ~ /unchanged behaviou?r/)
+    }
     # --- S174: EVERY criterion DECLARES where it came from --------------------
     # S169 closed "no criterion names the drawing" and left "at least one does".
     # MEASURED on lcars-20260814-001: t-012 named attachment-01.html in criterion
@@ -3924,7 +3947,9 @@ validate_plan_json() { # file [mockup-basenames] [mockup-place-names]
     # which writes its plans with json.dump(indent=2).)
     /^[[:space:]]*\{[[:space:]]*$/ && !in_ac && !in_deps {
       inobj=1; delete have; delete crit; acok=0; id=""; ndep=0; in_ac=0; actext=""; visual=""
-      in_deps=0; deptext=""; next
+      in_deps=0; deptext=""
+      ttl=""; enew=-1; etest=-1          # S313 — the regression-lock signals
+      next
     }
     /^[[:space:]]*\}[,]?[[:space:]]*$/ && !in_ac && !in_deps {
       if (!inobj) next
@@ -4023,6 +4048,20 @@ validate_plan_json() { # file [mockup-basenames] [mockup-place-names]
           if (tbad != "") s174bad = s174bad "\n  ticket " tickets " (" id "):" tbad
         }
       }
+      # === S313: CLASSIFY THIS TICKET — regression lock, or not? ============
+      # TWO SIGNALS, BOTH REQUIRED, and the arithmetic one comes FIRST because
+      # the planner declared it as a number rather than as prose:
+      #   estimatedNewLoc == 0  AND  estimatedTestLoc > 0  — by its own account
+      #     this ticket authors tests and adds NO production code, so there is
+      #     nothing in it for a test to be red against;
+      #   rl_locktext()         — and it NAMES the shape in its own title or
+      #     criteria (golden / characterisation / lock todays behaviour / …).
+      # Judged in END, never here: whether this is a DEFECT depends on the rest
+      # of the plan (see the refusal), and one ticket cannot know that.
+      rl_is = 0
+      if (enew == 0 && etest > 0 && rl_locktext(tolower(ttl " " actext))) rl_is = 1
+      if (rl_is) { rl_n++; rl_id[rl_n]=id; rl_no[rl_n]=tickets; rl_lock[id]=1 }
+      else       { rl_free_n++; rl_free_id[rl_free_n]=id }
       ids[id]=1
       for (d=1; d<=ndep; d++) { depof[++drefs]=dep[d]; depticket[drefs]=id }
       inobj=0; next
@@ -4052,6 +4091,20 @@ validate_plan_json() { # file [mockup-basenames] [mockup-place-names]
       if (n < 2) next
       key=a[2]; have[key]=1
       if (key=="id") id=a[4]
+      # S313 — the TITLE text (taken as the whole line minus the key, for the
+      # same escaped-quote reason the criteria accumulator gives below) and the
+      # two LoC declarations the regression-lock rule reads. A bare numeric value
+      # carries no quotes, so it is read off the raw token after the colon
+      # exactly as the slice-pressure reader does.
+      else if (key=="title") {
+        v=$0; sub(/.*"title"[[:space:]]*:[[:space:]]*/, "", v); ttl=v
+      }
+      else if (key=="estimatedNewLoc") {
+        v=a[3]; gsub(/[^0-9]/, "", v); if (v != "") enew=v+0
+      }
+      else if (key=="estimatedTestLoc") {
+        v=a[3]; gsub(/[^0-9]/, "", v); if (v != "") etest=v+0
+      }
       else if (key=="acceptanceCriteria") {
         if (n >= 4) acok=1          # inline ["a", …] — criterion text on this line
         # S169: accumulate this ticket'"'"'s CRITERIA TEXT for the mockup check. The
@@ -4160,6 +4213,96 @@ validate_plan_json() { # file [mockup-basenames] [mockup-place-names]
         : "\n  This drawing carries NO element ids, so nothing can check WHICH place an anchor names — \"drawnAt\" only has to be a non-empty string here, and it is on you to make it point somewhere real.\n")
       if (s174bad != "" && !failed)
         fail("this plan'"'"'s screen-changing tickets do not declare where their criteria come from. This Mission carries a mockup (" mock "), so on every ticket with \"changesScreenAppearance\": true, EVERY entry of \"acceptanceCriteria\" must be an object — {\"text\": \"…\", …} — carrying EXACTLY ONE of:\n    \"drawnAt\":   \"<the screen id / section / row of " mockname[1] " this criterion'"'"'s surface appears in>\"\n    \"notDrawn\":  \"<why this VISIBLE thing is not in the drawing>\"   (legitimate — and the captain sees every one at Verify)\n    \"notVisual\": true                                          (this criterion makes no visual claim at all)\n" s174bad "\n" vocab "  A plain string stays fine on a changesScreenAppearance:false ticket, and on every Mission without a mockup. Open the drawing, then declare each criterion once.")
+      # === S313: A STANDALONE REGRESSION-LOCK TICKET IS UNLANDABLE ===========
+      # MEASURED on a real mission, on a ticket titled "Lock todays anchor-less
+      # comment thread rendering with golden tests": NINE Copilot TDD sessions
+      # and three human gates, ping-ponging declared-edits FAIL -> flip-flop FAIL (no red) ->
+      # result-v2 FAIL, each session curing the gate that complained last and
+      # tripping another. Two gates, each CORRECT on its own, are jointly
+      # impossible for that ticket: a characterisation test passes on the parent
+      # BY CONSTRUCTION so the flip-flop can never see red, and the escape
+      # (flipFlop "not-applicable") is refused beside a non-empty newTests. The
+      # tests ARE the deliverable, so "drop the tests" drops the ticket.
+      #
+      # LCARS PLAN WROTE THAT TICKET. It titled it, so it knew the shape. This is
+      # the one place that can stop it being born.
+      #
+      # IT CANNOT DEADLOCK A PLAN, and that bound is load-bearing — read the S175
+      # note above about the plan-wide mockup rule that WAS a deadlock: there was
+      # no honest plan that passed it, and the Stage stopped at three attempts. So
+      # this refuses ONLY when the cure it names is actually available in this
+      # plan: at least one NON-lock ticket to fold into. A plan whose tickets are
+      # ALL locks is a Mission that genuinely is a characterisation exercise;
+      # nothing here can fold it anywhere, so it is passed through untouched and
+      # the Implement-stage refusals (which name this same cure since S313) carry
+      # it.
+      if (rl_n > 0 && rl_free_n > 0 && !failed) {
+        rl_msg = ""
+        for (i = 1; i <= rl_n; i++)
+          rl_msg = rl_msg "\n    ticket " rl_no[i] " (" rl_id[i] ")"
+        rl_targets = ""
+        for (i = 1; i <= rl_free_n; i++)
+          rl_targets = rl_targets (rl_targets == "" ? "" : ", ") rl_free_id[i]
+        # WHICH non-lock ticket could PLAUSIBLY hold these goldens? MEASURED
+        # (fix round 1): a plan of "Add a dark-mode toggle" + "Lock todays CSV
+        # export column order with golden tests" was told, as its PRIMARY
+        # instruction, to fold the CSV lock into the dark-mode toggle. The out
+        # that was actually correct — it is not this Mission scope — came last.
+        #
+        # NOTHING HERE COMPUTES RELATEDNESS. Deciding whether a toggle and a CSV
+        # exporter are "about the same behaviour" is an inference, and an
+        # inference is exactly what the text half of this rule already warns is
+        # beatable in an afternoon. So it reads the one honest, cheap signal the
+        # planner WROTE DOWN: a declared DEPENDENCY EDGE between a lock ticket
+        # and a non-lock ticket, either direction. That edge is the planner
+        # stating itself that the two belong together, and it is the link the
+        # measured mission had (t-005 depended on t-002). With such an edge the
+        # FOLD leads; with none, the honest answer leads and the fold is offered
+        # second and conditionally. BOTH orderings still REFUSE — this changes
+        # which cure is read first, never whether the shape is accepted.
+        rl_linked = ""
+        for (i = 1; i <= drefs; i++) {
+          rl_cand = ""
+          if (rl_lock[depticket[i]] && ids[depof[i]] && !rl_lock[depof[i]]) rl_cand = depof[i]
+          else if (!rl_lock[depticket[i]] && rl_lock[depof[i]])             rl_cand = depticket[i]
+          if (rl_cand != "" && !rl_cseen[rl_cand]++)
+            rl_linked = rl_linked (rl_linked == "" ? "" : ", ") rl_cand
+        }
+        rl_why = "\n  NO worker can prove such a ticket. A characterisation test asserts behaviour that ALREADY EXISTS, so it passes on the parent commit by construction, the flip-flop gate finds no red, and declaring flipFlop \"not-applicable\" to get out is refused beside new tests. Measured once at nine TDD sessions and three human gates.\n"
+        if (rl_linked != "")
+          rl_cure = "  FOLD IT — the guard is real and it must SURVIVE, and this plan already says where it goes: the planner declared a dependency edge between the lock ticket(s) above and " rl_linked ", which is its own statement that they are about the same behaviour. Move those acceptance criteria, and the golden tests themselves as supporting tests riding along, INTO the ticket that CHANGES the behaviour they guard. That ticket has its own new tests to flip red on the parent and green on the tip, the goldens ride along declared, and the guard is still committed and still guarding. Guard preserved, proof honest.\n  Then retire the now-empty lock ticket and re-point any dependency that named it.\n  NOT THIS MISSION SCOPE is the other answer, and it is the right one if NO ticket here really changes the behaviour these goldens guard: say so in the ticket you do emit, and do not invent a ticket to hold the lock.\n  Either way, keep every golden you wrote. Relocating the guard is the cure; losing it is not."
+        else
+          rl_cure = "  NOT THIS MISSION SCOPE — read this answer FIRST. NO ticket in this plan declares any dependency relationship to the lock ticket(s) above, so nothing you have written says this Mission touches the behaviour those goldens guard. If it does not, then locking that behaviour is not work this Mission was asked for: retire the lock ticket, note in the ticket you do emit that the behaviour is left exactly as it is, and do not invent a ticket to hold the lock.\n  FOLD IT — only if one of the other tickets here (" rl_targets ") DOES change the behaviour those goldens guard. Then move those acceptance criteria, and the golden tests themselves as supporting tests riding along, INTO that ticket: its own new tests flip red on the parent and green on the tip, the goldens ride along declared, and the guard is still committed and still guarding. Guard preserved, proof honest. Then retire the now-empty lock ticket and re-point any dependency that named it.\n  Either way, keep every golden you wrote. Relocating the guard is the cure; losing it is not."
+        # ADVISORY ON THE LAST ATTEMPT, and this is not a softening — it is the
+        # SAME ruling, for the same reason, as the S178 over-correction guard
+        # below: a valid plan must never deadlock the Stage on a guard it cannot
+        # be rescued from. MEASURED (fix round 1): a worker that kept emitting
+        # the standalone-lock plan burned all three attempts — the refusal DID
+        # reach attempts 2 and 3 — and then the Stage died with "failed
+        # validation after 3 attempt(s) — Stage stopped, no advance", stage
+        # still `plan`, no awaitingHuman, no pendingQuestion. The card read "in
+        # Plan" over a Mission that was dead: precisely the invisibility S312
+        # had just finished curing.
+        #
+        # SAFE BECAUSE THIS RULE IS PREVENTIVE, NOT THE ENFORCEMENT. If the
+        # shape does install on the last attempt, the ticket still meets the
+        # flip-flop no-red refusal, which since S313 names this same fold and
+        # forecloses `not-applicable` by name. The shape is still caught; it is
+        # caught one step later, by the gate that was always going to catch it.
+        # So an honest plan can never be deadlocked here, and a dishonest one
+        # still cannot land.
+        #
+        # IT SAYS SO OUT LOUD. This goes down the channel cmd_plan_save ALWAYS
+        # replays (`[ -s "$_verr" ] && cat "$_verr" >&2`, which exists for
+        # exactly this case — a check that passes the plan while having
+        # something to report), so the plan is recorded as installed WITH the
+        # lock-shape warning rather than silently passing. `failed` is NOT set
+        # and nothing exits: every later check in this END block still runs.
+        if (rl_final+0 == 1)
+          printf "lcars run: %s\n", "⚠ REGRESSION-LOCK SHAPE UNRESOLVED — the last planning attempt still carries a standalone regression-lock ticket. The plan is otherwise VALID, so it is SAVED and handed to Plan Review WITH THIS WARNING rather than deadlocking the Mission here:" rl_msg rl_why "  WHY IT IS SAVED AND NOT REFUSED: this rule is PREVENTIVE, not the enforcement, and refusing a valid plan on the final attempt is how a preventive guard becomes a permanent deadlock. NOTHING IS WAIVED — if this shape really is unprovable, the Implement stage flip-flop refusal still catches it and names this same cure, one step later. Plan Review sees this plan and this warning.\n" rl_cure > "/dev/stderr"
+        else
+          fail("this plan emits a STANDALONE REGRESSION-LOCK ticket, and the proof gates cannot accept that shape from anyone. These ticket(s) declare \"estimatedNewLoc\": 0 beside test LoC AND name a golden / characterisation / lock-existing-behaviour deliverable in their own title or criteria:" rl_msg rl_why rl_cure)
+      }
       if (sdbad != "" && !failed)
         fail("this plan links a criterion to a requirement with \"serves\" but does not STATE which way round it is. Every acceptanceCriteria entry that carries \"serves\" MUST also carry \"direction\": \"delivers\" (the criterion makes that requirement true) or \"direction\": \"removes\" (it deliberately takes that requirement away) — nothing reads your prose to decide polarity, because that guess has been wrong before. Add the missing field on:" sdbad "\n  A criterion that links to no single requirement stays a plain string and declares neither.")
     }
@@ -5237,8 +5380,14 @@ cmd_plan_save() {
   # note is a COPY, filling a channel that was empty.
   local _verr; _verr="$(mktemp)"
   local _vrc=0
+  # The 4th argument is WHICH ATTEMPT THIS IS. Only the S313 regression-lock
+  # rule reads it, and only to go advisory on the last one — see the long note
+  # at that rule, and the identical reason given at the S178 over-correction
+  # guard below: a valid plan must never deadlock the Stage on a PREVENTIVE
+  # guard. Absent (a hand-run plan-save) it is 0, i.e. not the last attempt,
+  # which is the strict reading.
   validate_plan_json "$PLAN" "$(mission_mockup_names)" "$(mission_mockup_place_names)" \
-    2>"$_verr" || _vrc=$?
+    "${FINAL_ATTEMPT:-0}" 2>"$_verr" || _vrc=$?
   if [ "$_vrc" -eq 0 ]; then
     # S236 — the seams/entrypoints contract. Runs AFTER the shape validator so a
     # half-formed plan is never failed twice for the same thing, and so a
@@ -14401,8 +14550,44 @@ Nothing is necessarily wrong with the ticket's code. The parent leg's own select
     [ -n "$FF_PAR_REFUSED" ] && greenreason="$greenreason
 
 $FF_PAR_REFUSED"
-    _ff_finish "$t" "$parent" "$ffj" fail "$greenreason" "$rels"
-    return $?
+    # === S313: THE REFUSAL NAMES THE ESCAPE ================================
+    # A GREEN parent is the no-red case, and ONE of its causes is not a code
+    # fault at all: the ticket is a REGRESSION LOCK (golden / characterisation
+    # tests over behaviour that already exists), which passes on the parent BY
+    # CONSTRUCTION. No rewrite of the implementation can produce a red for it,
+    # so a worker handed only the sentence above does the one thing left — it
+    # tries the other gate, is refused there too, and comes back. MEASURED:
+    # nine Copilot TDD sessions and three human gates on one such ticket,
+    # declared-edits FAIL -> flip-flop FAIL -> result-v2 FAIL, each session
+    # curing the complaint it saw last.
+    #
+    # The finding asked for exactly this and said why: the timeout verdict
+    # became diagnosable in a SINGLE READ the day it named
+    # $LCARS_GATE_TIMEOUT. So this names BOTH the real cure (fold the goldens
+    # into the ticket that changes the behaviour they guard) and the FALSE one
+    # it must not waste a session on (flipFlop "not-applicable", which the
+    # result gate refuses beside new tests).
+    #
+    # TEXT ONLY, AND DELIBERATELY OUTSIDE THE VERDICT. The gate still FAILS,
+    # with the same rc, the same event and a `reason` recorded in
+    # flip-flop.json that is BYTE-IDENTICAL to pre-S313 (tests/proof-gates.test.sh
+    # pins that string at C5b/P3d and it must keep holding). This paragraph is
+    # printed beside it, which is enough to reach every reader that matters: the
+    # terminal, and the bounce prompt of the next session (_tdd_reject carries
+    # the gate OUTPUT as well as the json).
+    local __ffrc=0
+    _ff_finish "$t" "$parent" "$ffj" fail "$greenreason" "$rels" || __ffrc=$?
+    printf '    ─ if those are CHARACTERISATION tests — a golden / snapshot / REGRESSION LOCK
+      over behaviour that ALREADY EXISTS — then this ticket cannot be proven AS
+      DRAWN, and no change to your implementation will alter that: there is no red
+      for them to flip from. Declaring flipFlop "not-applicable" is NOT the way
+      out either; the result gate refuses "not-applicable" beside a non-empty
+      newTests, and that loop has cost nine sessions before. The cure is a PLAN
+      cure: FOLD the goldens into the ticket that CHANGES the behaviour they
+      guard, where the tests that ticket adds supply the red and the goldens ride
+      along as declared supporting tests. Keep the guard, report this shape in
+      your summary, and stop — never weaken a test to manufacture a red.\n' >&2
+    return $__ffrc
   fi
   # S193 (D2): the parent sha + tip worktree are passed so the kinding can ask a
   # GIT question — is the module python could not import a file this ticket ADDS?
@@ -14655,7 +14840,26 @@ if not isinstance(nt, list) or any(not (isinstance(p, str) and p) for p in nt):
 # repo FIRST test AND waives, because its parent has no runner for that test to
 # be red against. Every other ticket keeps the original rule verbatim.
 if d.get("flipFlop") == "not-applicable" and nt and os.environ.get("LCARS_FF_SCAFFOLD") != "1":
-    print("proof-gate: result.json REJECTED — the result declares new tests yet claims flip-flop \"not-applicable\"; a ticket that authors tests must expect them to flip. Declare flipFlop \"expected\", or drop the tests."); sys.exit(1)
+    # S313: THE REFUSAL STANDS, AND NOW IT NAMES THE CURE. The rule is
+    # unchanged — a ticket that authors genuinely new tests must expect them
+    # to flip, and declaring the waiver beside them is still REFUSED, in the
+    # same opening words (tests/init-mission.test.sh B8 and
+    # tests/proof-gates.test.sh I3 pin them, and both still pass). What was
+    # missing is the sentence after it. MEASURED: this refusal and the
+    # flip-flop no-red refusal are jointly impossible for a pure
+    # regression-lock ticket, and a worker shown only one of them fixes that
+    # one and trips the other — nine sessions, three human gates.
+    #
+    # THE ESCAPE NO LONGER CONTRADICTS THE PARAGRAPH AFTER IT. The inherited
+    # sentence ended "Declare flipFlop \"expected\", or drop the tests." and the
+    # paragraph below then said "Do not drop the guard" — so a worker that
+    # acted on the FIRST sentence it read DELETED THE GUARD, the exact outcome
+    # this rule exists to prevent, and "drop the tests" was never an option it
+    # could take anyway when the tests ARE the deliverable. The escape now
+    # POINTS AT the paragraph instead of offering the one thing the paragraph
+    # forbids. Only that clause moved: the opening clause and the verdict are
+    # byte-identical.
+    print("proof-gate: result.json REJECTED — the result declares new tests yet claims flip-flop \"not-applicable\"; a ticket that authors tests must expect them to flip. Declare flipFlop \"expected\" — and if you cannot honestly declare that, the TICKET is what is wrong and not the declaration, so read the next paragraph rather than touching a test.\n  If EVERY test this ticket authors is a CHARACTERISATION test over behaviour that already exists (a golden / snapshot / regression lock), it can never be red on its parent, so neither gate can pass this ticket as drawn. FOLD those goldens into the ticket that CHANGES the behaviour they guard — the tests that ticket adds supply the red, the goldens ride along as declared supporting tests, and the guard still ships. Keep every test you wrote: never weaken a test to manufacture a red, and never lose the guard to get past this gate."); sys.exit(1)
 def bad(e):
     return not (isinstance(e, dict) and isinstance(e.get("path"), str) and e["path"]
                 and isinstance(e.get("reason"), str) and e["reason"])

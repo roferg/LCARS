@@ -116,6 +116,32 @@ it is drawn where it is. The ticket is the only thing the Implement stage
 receives; a slice without its rationale is how the Implementer builds the wrong
 thing.
 
+## A REGRESSION LOCK IS NEVER A TICKET OF ITS OWN
+
+Golden tests, snapshot tests, characterisation tests — anything whose job is to
+**pin behaviour that already exists** — are a real and valuable guard. They are
+**not a ticket**. Never emit a ticket whose only deliverable is that guard
+(a title like *"Lock today's … rendering with golden tests"* is the tell).
+
+Why: a characterisation test **passes on the parent commit by construction** —
+that is what makes it a characterisation test. The Implement stage proves every
+ticket by a flip-flop (its tests RED on the parent, GREEN on the tip), so a
+standalone lock ticket has no red to flip from and **no worker can ever prove
+it**. Declaring `flipFlop: "not-applicable"` does not rescue it either: the
+result gate refuses that beside a non-empty `newTests`. The shape is
+unlandable, and it is Plan that creates it. Measured once: one such ticket
+burned **nine** TDD sessions and three human gates before a human folded it.
+
+**FOLD, do not drop.** Put the characterisation criteria — and the goldens
+themselves, as supporting tests riding along in the same ticket — **inside the
+ticket that CHANGES the behaviour they guard**. That ticket's own new tests
+supply the red, the goldens ride along as declared tests, and the guard is
+still committed and still guarding. Guard preserved, proof honest.
+
+If you believe behaviour needs locking that **no ticket in this plan touches**,
+that work is not in this Mission's scope — say so in the ticket you do emit,
+and do not invent a lock ticket to hold it.
+
 ## Declare shared infrastructure — `establishesSharedInfrastructure`
 
 Every ticket carries a boolean **`establishesSharedInfrastructure`**. Set it

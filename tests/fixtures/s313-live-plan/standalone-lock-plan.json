@@ -1,0 +1,34 @@
+[
+  {
+    "id": "t-001",
+    "title": "Pin today's anchor-less thread markup with golden tests",
+    "description": "Add characterisation (golden) tests in tests/ that pin the EXACT string renderThread() in src/thread.js returns today for threads with no anchor, so any later change that alters anchor-less output fails the suite. Do not change src/thread.js behaviour in this ticket. Golden strings are captured from the current implementation (today: `<div class=\"thread\">${body}</div>`), covering several bodies: a plain word, an empty string, a body containing HTML-special characters (&, <, >, quotes) — the current output does NOT escape them and that is what is pinned — and a multi-line body. Anchor-less means the input object has no `anchor` property, or `anchor` is undefined or null. Tests run with `node --test tests`.",
+    "acceptanceCriteria": [{"text": "For each of the bodies 'x', '', 'a & <b> \"q\" \\'s\\'' and 'line1\\nline2', renderThread({ body }) is strictly equal (===) to the exact golden string '<div class=\"thread\">' + body + '</div>' recorded from today's implementation", "serves": "The current anchor-less output is protected by tests so a later change cannot silently alter it", "direction": "delivers"}, {"text": "renderThread({ body: 'x', anchor: undefined }) and renderThread({ body: 'x', anchor: null }) are each strictly equal to '<div class=\"thread\">x</div>'", "serves": "The current anchor-less output is protected by tests so a later change cannot silently alter it", "direction": "delivers"}, "The golden tests live under tests/ and pass when run with `node --test tests` against the unmodified src/thread.js", "src/thread.js is not modified by this ticket"],
+    "seams": [],
+    "seamsNote": "tests only; renderThread() is a pure string function and this ticket writes no state another code path reads.",
+    "entrypoints": [],
+    "entrypointsNote": "adds no CLI command and no workflow; tests run via the existing `node --test tests` command.",
+    "estimatedReadLoc": 10,
+    "estimatedTestLoc": 40,
+    "estimatedNewLoc": 0,
+    "dependencies": [],
+    "establishesSharedInfrastructure": false,
+    "rationale": "The PRD requires the anchor-less output be protected by tests; characterisation tests must capture today's output BEFORE the renderer is changed, so pinning is its own behaviour (regression guard) landed first, separate from the new chip behaviour."
+  },
+  {
+    "id": "t-002",
+    "title": "Render an anchor chip on anchored comment threads",
+    "description": "Extend renderThread() in src/thread.js (the only renderer — do not add a second one) so a thread object with a non-empty string `anchor` (the anchor's name, e.g. 'L42') renders a chip naming that anchor inside the thread markup: an element with class \"anchor-chip\" whose text content is the anchor name, placed inside the <div class=\"thread\"> container alongside the body. Threads with no anchor (property absent, undefined or null) must keep returning the exact same string as today; the golden tests from t-001 must stay green unchanged. Creating or editing anchors is out of scope. Visual appearance of the chip ('small') is judged at Verify.",
+    "acceptanceCriteria": [{"text": "renderThread({ body: 'x', anchor: 'L42' }) returns markup containing exactly one element with class \"anchor-chip\" whose text content is 'L42'", "serves": "An anchored thread renders a chip naming its anchor", "direction": "delivers"}, {"text": "The anchor-chip element is inside the outer <div class=\"thread\"> element, and the anchored output still contains the body text 'x' inside that same container", "serves": "An anchored thread renders a chip naming its anchor", "direction": "delivers"}, {"text": "Different anchors produce chips naming each: renderThread({ body: 'x', anchor: 'L7' }) contains an anchor-chip with text 'L7' and does not contain 'L42'", "serves": "An anchored thread renders a chip naming its anchor", "direction": "delivers"}, {"text": "renderThread({ body: 'x' }), renderThread({ body: 'x', anchor: undefined }) and renderThread({ body: 'x', anchor: null }) each still return exactly '<div class=\"thread\">x</div>' and contain no 'anchor-chip'", "serves": "An anchor-less thread renders byte-identically to today", "direction": "delivers"}, {"text": "All golden tests added by t-001 pass unmodified under `node --test tests`", "serves": "The current anchor-less output is protected by tests so a later change cannot silently alter it", "direction": "delivers"}],
+    "seams": [],
+    "seamsNote": "renderThread() is a pure renderer returning a string from its argument; it writes no state that another code path in this repo reads.",
+    "entrypoints": [],
+    "entrypointsNote": "adds no CLI command and no workflow; tests run via the existing `node --test tests` command.",
+    "estimatedReadLoc": 50,
+    "estimatedTestLoc": 50,
+    "estimatedNewLoc": 10,
+    "dependencies": ["t-001"],
+    "establishesSharedInfrastructure": false,
+    "rationale": "This is the single new user-observable behaviour (the chip). It depends on t-001 because it must be built against the golden tests that pin today's anchor-less output, which are the regression guard for this exact change; building it first would let the pinned output be captured after the renderer changed."
+  }
+]

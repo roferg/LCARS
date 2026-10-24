@@ -1,0 +1,18 @@
+[
+  {
+    "id": "t-001",
+    "title": "Render an anchor chip on anchored comment threads",
+    "description": "Extend the single renderer renderThread in src/thread.js so a thread object carrying an anchor renders a chip element naming that anchor inside the thread markup. Threads with no anchor must render byte-identically to today's output (`<div class=\"thread\">${body}</div>`). The characterisation (golden) tests that pin today's anchor-less markup ride along in THIS ticket as supporting tests — they are not a separate ticket; the new anchored-chip tests supply the red. Do not add a second renderer. Creating or editing anchors is out of scope. Chip visual styling is judged by the captain at Verify. Tests live in tests/ and run with `node --test tests`.",
+    "acceptanceCriteria": [{"text": "renderThread({ body, anchor }) with a non-empty anchor returns markup containing a chip element (e.g. class \"anchor-chip\") inside the thread div whose text content is the anchor's name", "serves": "An anchored thread renders a chip naming its anchor", "direction": "delivers"}, {"text": "renderThread({ body }) with no anchor (anchor absent, undefined, null or empty string) returns exactly `<div class=\"thread\">` + body + `</div>`, byte-for-byte equal to the pre-change output", "serves": "An anchor-less thread renders byte-identically to today", "direction": "delivers"}, {"text": "Golden tests in tests/ assert strict string equality of renderThread output for several anchor-less inputs (plain body, empty body, body containing HTML-special characters) against literal expected strings captured from today's renderer, and run under `node --test tests`", "serves": "The current anchor-less output is protected by tests so a later change cannot silently alter it", "direction": "delivers"}, "The existing test in tests/thread.test.js continues to pass", "`node --test tests` exits 0"],
+    "seams": [],
+    "seamsNote": "renderThread is a pure function from a thread object to a string; this ticket writes no state that another code path reads back.",
+    "entrypoints": [],
+    "entrypointsNote": "this ticket adds no CLI command and no CI workflow; tests run via the existing `node --test tests` command.",
+    "estimatedReadLoc": 10,
+    "estimatedTestLoc": 60,
+    "estimatedNewLoc": 15,
+    "dependencies": [],
+    "establishesSharedInfrastructure": false,
+    "rationale": "The mission is one behaviour change in one renderer. The validated plan's golden tests pin existing anchor-less output, so on their own they would pass on the parent commit and could not be proved by flip-flop; they are folded into the ticket that changes renderThread, where the new anchored-chip tests provide the red and the goldens guard the anchor-less branch while it is edited."
+  }
+]
