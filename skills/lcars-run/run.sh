@@ -12344,12 +12344,21 @@ PROOF_SCOPE_CONTROL=""   # "<runner> <executed>" | "" when it could not be read
 # signature, which is deliberately tight and already anchored against a healthy
 # suite that merely prints a zero), never from an absent number.
 PROOF_SCOPE_CONTROL_ZERO=""
-proof_scope_control_exec() { # run_dir cmd [secs]
-  PROOF_SCOPE_CONTROL=""; PROOF_SCOPE_CONTROL_ZERO=""
-  local rd="$1" cmd="$2" secs="${3:-120}" d of rc=0 cout
+PROOF_SCOPE_CONTROL_WHY=""
+proof_scope_control_exec() { # run_dir cmd [secs] [runner]
+  PROOF_SCOPE_CONTROL=""; PROOF_SCOPE_CONTROL_ZERO=""; PROOF_SCOPE_CONTROL_WHY=""
+  local rd="$1" cmd="$2" secs="${3:-120}" runner="${4:-}" d of rc=0 cout
   case "$secs" in ''|*[!0-9]*) secs=120 ;; esac
   [ -n "$rd" ] && [ -n "$cmd" ] || return 0
-  d="$(mktemp -d "${TMPDIR:-/tmp}/lcars-ctlscope.XXXXXX" 2>/dev/null)" || return 0
+  if [ "$runner" = unittest ]; then
+    # An explicit unittest top-level directory requires an importable child.
+    d="$(mktemp -d "$rd/lcars_ctlscope_XXXXXX" 2>/dev/null)" || {
+      PROOF_SCOPE_CONTROL_WHY="the gate could not create its unittest control package in $rd"; return 0;
+    }
+    : >"$d/__init__.py"
+  else
+    d="$(mktemp -d "${TMPDIR:-/tmp}/lcars-ctlscope.XXXXXX" 2>/dev/null)" || return 0
+  fi
   of="$(mktemp "${TMPDIR:-/tmp}/lcars-ctlout.XXXXXX" 2>/dev/null)" || { rm -rf "$d"; return 0; }
   ( cd "$rd" 2>/dev/null || exit 0
     LCARS_TESTS_DIR="$d" run_with_hard_timeout "$secs" "$of" bash -c "$cmd" ) || rc=$?
@@ -12360,6 +12369,10 @@ proof_scope_control_exec() { # run_dir cmd [secs]
     if [ -z "$PROOF_SCOPE_CONTROL" ] && suite_collected_zero_tests "$cout"; then
       PROOF_SCOPE_CONTROL_ZERO=true
     fi
+    PROOF_SCOPE_CONTROL_WHY="the control exited $rc without a readable test count or zero-test result; runner output:
+$(printf '%s\n' "$cout" | tail -8)"
+  else
+    PROOF_SCOPE_CONTROL_WHY="the control exceeded the ${secs}s budget chosen by the gate and was terminated; this does not establish a narrowing failure or a repository defect"
   fi
   rm -rf "$d"; rm -f "$of"
   return 0
@@ -12421,12 +12434,96 @@ proof_scope_control_exec() { # run_dir cmd [secs]
 # PROOF_FILE_EXEC_RC  the run's own rc, so a TIMEOUT is never stored as a zero
 #                     (fix round 1, D6: a timed-out ablation was reported as
 #                     "no run executed a single test out of <file>").
-PROOF_FILE_EXEC=""; PROOF_FILE_EXEC_RC=""
+PROOF_FILE_EXEC=""; PROOF_FILE_EXEC_RC=""; PROOF_FILE_COLLECTED_ZERO=""
+proof_scope_command() { # cmd scope -> runnable cmd; directory scopes stay byte-identical
+  [ -f "$2" ] || { printf '%s' "$1"; return 0; }
+  "${LCARS_PYTHON_BIN:-python3}" - "$1" "$2" "${3:-discover}" "${4:-$PWD}" <<'PY'
+import os, re, shlex, sys
+cmd, scope, mode, run_dir = sys.argv[1:]
+try:
+    args = shlex.split(cmd)
+except ValueError:
+    print(cmd, end="")
+    sys.exit(0)
+# Only adapt the direct unittest CLI. Other runners retain their own file API;
+# compound commands and wrappers are not safe to reconstruct as an argv.
+if (len(args) < 5 or args[1:4] != ["-m", "unittest", "discover"]
+        or any(c in cmd for c in (";", "&", "|", ">", "<", "`", "$("))):
+    print(cmd, end="")
+    sys.exit(0)
+words = list(re.finditer(r"""(?:[^\s'"\\]|\\[\s\S]|'[^']*'|"(?:\\[\s\S]|[^"\\])*")+""", cmd))
+if [shlex.split(w.group())[0] for w in words] != args:
+    print(cmd, end="")
+    sys.exit(0)
+if mode == "support":
+    # Load the file itself, without discovery's filename or -k filters.
+    print(words[0].group() + " -m unittest " + shlex.quote(os.path.relpath(scope, run_dir))
+          + ' || { rc=$?; [ "$rc" -eq 5 ] || exit "$rc"; }', end="")
+    sys.exit(0)
+variables = {"$LCARS_TESTS_DIR", "${LCARS_TESTS_DIR}", "${LCARS_TESTS_DIR:-tests}"}
+start = None
+for i, arg in enumerate(args):
+    if arg in ("-s", "--start-directory") and i + 1 < len(args):
+        start = (i+1, "", args[i+1])
+    elif arg.startswith("--start-directory="):
+        start = (i, "--start-directory=", arg.split("=", 1)[1])
+if start is None or start[2] not in variables:
+    print(cmd, end="")
+    sys.exit(0)
+# Edit only the scope word; retain all other shell expansion and quoting.
+i, prefix, _ = start
+word = words[i]
+adapted = cmd[:word.start()] + shlex.quote(prefix + os.path.dirname(scope)) + cmd[word.end():]
+# unittest permits repeated -p/--pattern options and the LAST one wins.
+adapted += " -p " + shlex.quote(os.path.basename(scope))
+# Python 3.14 exits 5 for an empty discovery. Let sibling files run; the
+# gate still sees its zero count and cannot certify an entirely empty leg.
+print(adapted + ' || { rc=$?; [ "$rc" -eq 5 ] || exit "$rc"; }', end="")
+PY
+}
+proof_unittest_support_file() { # run_dir raw_cmd file budget -> positive no-tests evidence
+  local rd="$1" cmd="$2" scope="$3" secs="$4" probe of out rc=0
+  # A module can suppress both discovery and direct loading. Only inert source
+  # can establish absence independently; all executable module code is unknown.
+  "${LCARS_PYTHON_BIN:-python3}" - "$scope" <<'PY' || return 1
+import ast, sys, tokenize
+try:
+    with tokenize.open(sys.argv[1]) as source:
+        tree = ast.parse(source.read())
+except (OSError, SyntaxError, UnicodeError):
+    sys.exit(1)
+for node in tree.body:
+    if isinstance(node, ast.Pass):
+        continue
+    if isinstance(node, ast.Expr) and isinstance(node.value, ast.Constant) \
+            and isinstance(node.value.value, str):
+        continue
+    if isinstance(node, ast.FunctionDef):
+        args = node.args
+        parameters = args.posonlyargs + args.args + args.kwonlyargs
+        parameters += [arg for arg in (args.vararg, args.kwarg) if arg is not None]
+        if (node.name != "load_tests" and not node.name.startswith("__")
+                and not node.decorator_list and not node.returns
+                and not getattr(node, "type_params", [])
+                and not args.defaults and not any(args.kw_defaults)
+                and not any(arg.annotation for arg in parameters)):
+            continue
+    sys.exit(1)
+PY
+  probe="$(proof_scope_command "$cmd" "$scope" support "$rd")"
+  [ "$probe" != "$cmd" ] || return 1
+  of="$(mktemp "${TMPDIR:-/tmp}/lcars-supportout.XXXXXX" 2>/dev/null)" || return 1
+  ( cd "$rd" && run_with_hard_timeout "$secs" "$of" bash -c "$probe" ) || rc=$?
+  out="$(cat "$of" 2>/dev/null)"; rm -f "$of"
+  [ "$rc" -eq 0 ] && [ "$(proof_executed_count_ext "$out")" = "unittest 0" ] \
+    && printf '%s\n' "$out" | grep -q '^Ran 0 tests in '
+}
 proof_file_scope_exec() { # run_dir cmd scope-abs [secs]
-  PROOF_FILE_EXEC=""; PROOF_FILE_EXEC_RC=""
-  local rd="$1" cmd="$2" sc="$3" secs="${4:-120}" of rc=0 cout
+  PROOF_FILE_EXEC=""; PROOF_FILE_EXEC_RC=""; PROOF_FILE_COLLECTED_ZERO=""
+  local rd="$1" cmd="$2" sc="$3" secs="${4:-120}" of rc=0 cout rawcmd="$2"
   case "$secs" in ''|*[!0-9]*) secs=120 ;; esac
   [ -n "$rd" ] && [ -n "$cmd" ] && [ -n "$sc" ] || return 0
+  cmd="$(proof_scope_command "$cmd" "$sc")"
   of="$(mktemp "${TMPDIR:-/tmp}/lcars-declout.XXXXXX" 2>/dev/null)" || return 0
   # The rc is DELIBERATELY ignored except for the hard timeout: a measurement
   # run that goes RED still produced a count, and this measurement is about
@@ -12437,6 +12534,11 @@ proof_file_scope_exec() { # run_dir cmd scope-abs [secs]
   if [ "$rc" != 124 ]; then
     cout="$(cat "$of" 2>/dev/null)"
     PROOF_FILE_EXEC="$(proof_executed_count_ext "$cout")"
+    if [ "$rc" -eq 0 ] && [ "$PROOF_FILE_EXEC" = "unittest 0" ] \
+       && printf '%s\n' "$cout" | grep -q '^Ran 0 tests in ' \
+       && proof_unittest_support_file "$rd" "$rawcmd" "$sc" "$secs"; then
+      PROOF_FILE_COLLECTED_ZERO=true
+    fi
   fi
   rm -f "$of"
   return 0
@@ -12471,6 +12573,7 @@ proof_decl_file_is_empty() { # abs-path
 #                    correct files)
 PROOF_DECL_METHOD=""; PROOF_DECL_EACH=""; PROOF_DECL_UNACC=""; PROOF_DECL_WHY=""
 PROOF_DECL_FIX=""
+PROOF_DECL_EXCLUDED=""
 # Set when the leg's own count was unreadable and the ablation lane re-measured
 # the un-ablated leg with the extended reader: "<runner> <executed>".
 PROOF_DECL_RECOUNT=""
@@ -12552,13 +12655,39 @@ proof_ablate_signal_exit() { # exit-code
   exit "${1:-143}"
 }
 
-proof_declared_accounting() { # wt rels kind leg-exec exec-each run_dir raw_cmd budget leg-rc
+proof_declared_accounting() { # wt rels kind leg-exec exec-each run_dir raw_cmd budget leg-rc [excluded]
   PROOF_DECL_METHOD=""; PROOF_DECL_EACH=""; PROOF_DECL_UNACC=""; PROOF_DECL_WHY=""
   PROOF_DECL_FIX=""; PROOF_DECL_RECOUNT=""
-  local wt="$1" rels="$2" kind="$3" legexec="$4" execeach="$5"
+  PROOF_DECL_EXCLUDED="${10:-}"
+  local wt="$1" rels="$2" scope_rels="$2" kind="$3" legexec="$4" execeach="$5"
   local rundir="$6" rawcmd="$7" budget="$8" legrc="${9:-0}"
   local n legn legrunner rel idx c crunner sum=0 names
   local hold="" held="" scope="" contrib tmo="" anc="" sym=""
+  # Discovery and direct loading can both be suppressed. Exclusion requires
+  # inert source as well as a successful direct load reporting zero tests.
+  local eligible="" eligible_each="" original_idx=0
+  while IFS= read -r rel; do
+    [ -n "$rel" ] || continue
+    original_idx=$((original_idx + 1))
+    if [ "$kind" = ancestor ] \
+       && [ "$(proof_scope_command "$rawcmd" "$wt/$rel")" != "$rawcmd" ]; then
+      proof_file_scope_exec "$rundir" "$rawcmd" "$wt/$rel" "$budget"
+      if [ -n "$PROOF_FILE_COLLECTED_ZERO" ]; then
+        PROOF_DECL_EXCLUDED="${PROOF_DECL_EXCLUDED}${PROOF_DECL_EXCLUDED:+
+}$rel"
+      fi
+    fi
+    if printf '%s\n' "$PROOF_DECL_EXCLUDED" | grep -qxF "$rel"; then
+      continue
+    fi
+    eligible="${eligible}${eligible:+
+}$rel"
+    c="$(printf '%s\n' "$execeach" | awk -v i="$original_idx" '{ print $i }' | head -1)"
+    eligible_each="${eligible_each}${eligible_each:+ }$c"
+  done <<PDA_ELIGIBLE
+$rels
+PDA_ELIGIBLE
+  rels="$eligible"; execeach="$eligible_each"
   n="$(printf '%s\n' "$rels" | grep -c . | tr -d '[:space:]')"
   case "$n" in ''|*[!0-9]*) n=0 ;; esac
   if [ "$n" -eq 0 ]; then
@@ -12614,8 +12743,8 @@ PDA_EMPTY
   # untouched.
   case "$legn" in
     ''|*[!0-9]*)
-      if [ "$kind" = ancestor ] && [ "$n" -ge 2 ]; then
-        anc="$(common_ancestor_dir "$rels")"
+      if [ "$kind" = ancestor ]; then
+        anc="$(common_ancestor_dir "$scope_rels")"
         scope="$wt${anc:+/$anc}"
         if [ -d "$scope" ]; then
           proof_file_scope_exec "$rundir" "$rawcmd" "$scope" "$budget"
@@ -12772,7 +12901,7 @@ PDA_FILES
       # declare (intree_dir_extra_tests), and this arm is only reached with n>=2,
       # so every ablation leaves at least one declared test file in the scope.
       PROOF_DECL_METHOD=ablation
-      anc="$(common_ancestor_dir "$rels")"
+      anc="$(common_ancestor_dir "$scope_rels")"
       scope="$wt${anc:+/$anc}"
       hold="$(mktemp -d "${TMPDIR:-/tmp}/lcars-ablate.XXXXXX" 2>/dev/null)" || hold=""
       if [ -z "$hold" ] || [ ! -d "$scope" ]; then
@@ -13022,6 +13151,9 @@ PROOF_LEG_RC=0; PROOF_LEG_OUT=""; PROOF_LEG_CMD=""
 PROOF_LEG_TIMEOUT=120; PROOF_LEG_TIMEOUT_SRC=default; PROOF_LEG_TIMEOUT_NOTE=""
 PROOF_LEG_SCOPE_KIND=""; PROOF_LEG_SCOPE_WHY=""; PROOF_LEG_SCOPE_SELECTED_NOTHING=""
 PROOF_LEG_EXEC=""; PROOF_LEG_EXEC_EACH=""
+PROOF_LEG_FAILED_EXEC=""
+PROOF_LEG_FAILED_OUT=""
+PROOF_LEG_EXCLUDED=""
 # PROOF_LEG_ZERO_EXEC (S308 fix round 2, route d) — this leg's own runner said
 # it executed ZERO tests on a run that EXITED GREEN. Recorded, never decided
 # here; see the block where it is set and flip_flop_gate's zero-evidence check.
@@ -13036,6 +13168,9 @@ proof_scoped_leg_run() { # leg-root rels(newline)
   PROOF_LEG_RC=0; PROOF_LEG_OUT=""; PROOF_LEG_CMD=""
   PROOF_LEG_SCOPE_KIND=""; PROOF_LEG_SCOPE_WHY=""; PROOF_LEG_SCOPE_SELECTED_NOTHING=""
   PROOF_LEG_EXEC=""; PROOF_LEG_EXEC_EACH=""; PROOF_LEG_ZERO_EXEC=""
+  PROOF_LEG_FAILED_EXEC=""
+  PROOF_LEG_FAILED_OUT=""
+  PROOF_LEG_EXCLUDED=""
   PROOF_LEG_RUN_DIR=""; PROOF_LEG_RAW_CMD=""
   first="$(printf '%s\n' "$rels" | grep . | head -1)"
   local stack; stack="$(resolve_stack)"
@@ -13207,19 +13342,35 @@ Nothing is wrong with the ticket's code: the repo's testCommand cannot SEE a tes
     rc=0
     while IFS= read -r scope; do
       [ -n "$scope" ] || continue
-      local one_rec
-      one_rec="cd $(proof_shq "$run_dir") && LCARS_TESTS_DIR=$(proof_shq "$scope") bash -c $(proof_shq "$cmd")"
+      local one_rec scope_cmd
+      scope_cmd="$(proof_scope_command "$cmd" "$scope")"
+      one_rec="cd $(proof_shq "$run_dir") && LCARS_TESTS_DIR=$(proof_shq "$scope") bash -c $(proof_shq "$scope_cmd")"
       if [ -n "$csep" ]; then cmdrec="$cmdrec$csep( $one_rec )"; else cmdrec="$one_rec"; fi
       csep=" && "
       used=$(( $(date +%s 2>/dev/null || echo 0) - t0 ))
       rem=$(( gsecs - used )); [ "$rem" -ge 1 ] || rem=1
-      ( cd "$run_dir" && LCARS_TESTS_DIR="$scope" run_with_hard_timeout "$rem" "$gof" bash -c "$cmd" ); rc=$?
+      ( cd "$run_dir" && LCARS_TESTS_DIR="$scope" run_with_hard_timeout "$rem" "$gof" bash -c "$scope_cmd" ); rc=$?
       one_out="$(cat "$gof" 2>/dev/null)"
       leg_out="${leg_out}${one_out}
 "
       # Counted HERE, per invocation, because this is where the number exists:
       # the concatenated buffer below can only ever yield the first summary.
       one_exec="$(proof_executed_count "$one_out")"
+      # The adapted unittest invocation has a readable summary; keep the
+      # legacy reader for unchanged commands and their existing scope control.
+      if [ "$scope_cmd" != "$cmd" ]; then
+        one_exec="$(proof_executed_count_ext "$one_out")"
+      fi
+      if [ -f "$scope" ] && [ "$rc" -eq 0 ] && [ "$one_exec" = "unittest 0" ] \
+         && printf '%s\n' "$one_out" | grep -q '^Ran 0 tests in ' \
+         && proof_unittest_support_file "$run_dir" "$cmd" "$scope" "$rem"; then
+        PROOF_LEG_EXCLUDED="${PROOF_LEG_EXCLUDED}${PROOF_LEG_EXCLUDED:+
+}${scope#"$root"/}"
+      fi
+      if [ "$rc" -ne 0 ]; then
+        PROOF_LEG_FAILED_EXEC="$(proof_executed_count_ext "$one_out")"
+        PROOF_LEG_FAILED_OUT="$one_out"
+      fi
       if [ -z "$one_exec" ]; then ex_bad=1
       elif [ -n "$ex_runner" ] && [ "$ex_runner" != "${one_exec%% *}" ]; then ex_bad=1
       else ex_runner="${one_exec%% *}"; ex_sum=$((ex_sum + ${one_exec##* }))
@@ -13772,7 +13923,7 @@ out = sys.stdin.read()
 # skips are subtracted: EXECUTED, not COLLECTED, the same rule as every arm
 # above.
 m = re.search(r"^Ran (\d+) tests? in ", out, re.M)
-if m and re.search(r"^(OK|FAILED)\b", out, re.M):
+if m and re.search(r"^(OK|FAILED|NO TESTS RAN)\b", out, re.M):
     sk = re.search(r"^(?:OK|FAILED)\b[^\n]*?\bskipped=(\d+)", out, re.M)
     print("unittest %d" % (int(m.group(1)) - int(sk.group(1) if sk else 0))); sys.exit(0)
 
@@ -13793,6 +13944,42 @@ m = re.search(r"^[^\n]*?\b(\d+) passed,\s*(\d+) failed\b", out, re.M)
 if m:
     print("bare %d" % (int(m.group(1)) + int(m.group(2)))); sys.exit(0)
 ' 2>/dev/null
+}
+
+proof_assertion_failure() { # runner-output -> runner-reported failed tests without a count
+  printf '%s' "$1" | "${LCARS_PYTHON_BIN:-python3}" -c '
+import re, sys
+out = sys.stdin.read()
+if re.search(r"^--- FAIL: (Test|Example|Fuzz)\S*", out, re.M):
+    sys.exit(0)
+# Quiet pytest omits the banner required by the legacy count reader. Require
+# both its failed test identifier and its nonzero failure summary.
+if (re.search(r"^FAILED \S+::[^\n]+$", out, re.M)
+        and re.search(r"^[1-9]\d* failed(?:, [^\n]+)? in \d+(?:\.\d+)?s\s*$", out, re.M)):
+    sys.exit(0)
+# Dot prints no counts. Its failed-test section must contain a failed record
+# with a test callback stack, not merely a failed file-process wrapper.
+section = re.search(r"^Failed tests:\s*\n(.*)", out, re.M | re.S)
+if section:
+    blocks = re.split(r"(?=^\u2716 )", section.group(1), flags=re.M)
+    for block in blocks:
+        if (re.match(r"^\u2716 [^\n]+\n", block)
+                and re.search(r"^\s+at TestContext\.", block, re.M)):
+            sys.exit(0)
+sys.exit(1)
+'
+}
+
+proof_node_boot_failure() { # TAP file-process failures are not executed test methods
+  printf '%s' "$1" | "${LCARS_PYTHON_BIN:-python3}" -c '
+import re, sys
+out = sys.stdin.read()
+total = re.search(r"^# tests (\d+)\s*$", out, re.M)
+blocks = re.findall(r"^not ok \d+[^\n]*\n  ---\n(.*?)^  \.\.\.", out, re.M | re.S)
+boot = sum(bool(re.search(r"^  code: .ERR_TEST_FAILURE.", b, re.M)
+                and re.search(r"^  exitCode: [1-9]\d*\s*$", b, re.M)) for b in blocks)
+sys.exit(0 if total and boot > 0 and boot == int(total.group(1)) else 1)
+'
 }
 
 # S157 (trimmed): the REPAIR PATH IS WITHDRAWN when the ticket's diff touches any
@@ -13884,6 +14071,7 @@ FF_GATE_SCOPE_CONTROL_ZERO=""
 # proof_declared_accounting for the measurement and the four states it closes.
 FF_GATE_DECL_METHOD=""; FF_GATE_DECL_EACH=""; FF_GATE_DECL_UNACC=""
 FF_GATE_DECL_WHY=""
+FF_GATE_DECL_EXCLUDED=""
 _ff_reset() {
   FF_TIP_RC=null; FF_TIP_TAIL=""; FF_TIP_CMD=""
   FF_PAR_RC=null; FF_PAR_KIND=""; FF_PAR_TAIL=""; FF_PAR_CMD=""
@@ -13896,6 +14084,7 @@ _ff_reset() {
   FF_GATE_SCOPE_NARROWING=""; FF_GATE_SCOPE_NARROW_WHY=""
   FF_GATE_SCOPE_CONTROL_SECS=""; FF_GATE_TIP_EXEC_EACH=""; FF_GATE_SCOPE_CONTROL_ZERO=""
   FF_GATE_DECL_METHOD=""; FF_GATE_DECL_EACH=""; FF_GATE_DECL_UNACC=""; FF_GATE_DECL_WHY=""
+  FF_GATE_DECL_EXCLUDED=""
 }
 # The rels carrying a given source, space-separated (for the verdict wording).
 _ff_rels_with_source() { # source-token
@@ -14010,10 +14199,18 @@ FFS_EOF
     done <<FFD_EOF
 $FF_GATE_DECL_UNACC
 FFD_EOF
-    printf '  "declaredRan": { "checked": %s, "method": "%s", "each": "%s", "unaccounted": [%s], "why": "%s" },\n' \
+    local _dexcluded="" _dxsep=""
+    while IFS= read -r _done; do
+      [ -n "$_done" ] || continue
+      _dexcluded="$_dexcluded$_dxsep{ \"path\": \"$(json_escape "$_done")\", \"reason\": \"inert Python source cannot define or suppress test collection; direct unittest loading also confirmed zero tests\" }"
+      _dxsep=", "
+    done <<FFDX_EOF
+$FF_GATE_DECL_EXCLUDED
+FFDX_EOF
+    printf '  "declaredRan": { "checked": %s, "method": "%s", "each": "%s", "unaccounted": [%s], "excluded": [%s], "why": "%s" },\n' \
       "$( [ "${FF_GATE_DECL_METHOD:-}" = leg-invocations ] || [ "${FF_GATE_DECL_METHOD:-}" = ablation ] && printf true || printf false )" \
       "$(json_escape "${FF_GATE_DECL_METHOD:-}")" "$(json_escape "${FF_GATE_DECL_EACH:-}")" \
-      "$_dunacc" "$(json_escape "${FF_GATE_DECL_WHY:-}")"
+      "$_dunacc" "$_dexcluded" "$(json_escape "${FF_GATE_DECL_WHY:-}")"
     printf '  "tip": { "rc": %s, "cmd": "%s", "tail": "%s" },\n' \
       "${FF_TIP_RC:-null}" "$(json_escape "${FF_TIP_CMD:-}")" "$(json_escape "${FF_TIP_TAIL:-}")"
     printf '  "parent": { "rc": %s, "kind": "%s", "cmd": "%s", "tail": "%s" }\n' \
@@ -14127,6 +14324,7 @@ flip_flop_gate() { # ticket parent-sha worktree
   # DEFECT 2: the SUM the leg counted per invocation, not a re-read of the
   # concatenated buffer (which could only ever see the first run's summary).
   FF_TIP_EXEC="$PROOF_LEG_EXEC"
+  FF_GATE_DECL_EXCLUDED="$PROOF_LEG_EXCLUDED"
   local ff_tip_zero="$PROOF_LEG_ZERO_EXEC"
   if [ "$PROOF_LEG_RC" = 96 ] || [ "$PROOF_LEG_RC" = 97 ] || [ "$PROOF_LEG_RC" = 98 ]; then
     local tipreason="$PROOF_LEG_OUT"
@@ -14138,8 +14336,21 @@ flip_flop_gate() { # ticket parent-sha worktree
   # S193 FIX 2: `$wt` is the crate root, so the cargo arm can read Cargo.toml's
   # own `harness` declaration — a label the project wrote about itself, deciding
   # which OUTPUT GRAMMAR applies, never whether a test is genuine.
-  if proof_zero_collected "$PROOF_LEG_OUT" "$rels" "$wt"; then
-    local tipzero="the TIP leg collected ZERO tests — a run that selects nothing proves nothing (the green-on-nothing trap)"
+  if { [ -z "$FF_GATE_DECL_EXCLUDED" ] || [ -z "$FF_TIP_EXEC" ] \
+       || [ "${FF_TIP_EXEC##* }" -eq 0 ]; } \
+     && proof_zero_collected "$PROOF_LEG_OUT" "$rels" "$wt"; then
+    local tipzero="the TIP leg collected ZERO tests — the command produced no executed tests, so it proves nothing (the green-on-nothing trap)"
+    if [ "$FF_GATE_SCOPE_KIND" = files ] && [ -n "$FF_TIP_EXEC" ] \
+       && [ "${FF_TIP_EXEC##* }" -gt 0 ]; then
+      # One file's zero must remain visible even when its honest sibling ran.
+      proof_declared_accounting "$wt" "$rels" "$FF_GATE_SCOPE_KIND" "$FF_TIP_EXEC" \
+        "$PROOF_LEG_EXEC_EACH" "$PROOF_LEG_RUN_DIR" "$PROOF_LEG_RAW_CMD" \
+        "$FF_GATE_TIMEOUT" "$FF_TIP_RC" "$FF_GATE_DECL_EXCLUDED"
+      FF_GATE_DECL_METHOD="$PROOF_DECL_METHOD"; FF_GATE_DECL_EACH="$PROOF_DECL_EACH"
+      FF_GATE_DECL_UNACC="$PROOF_DECL_UNACC"; FF_GATE_DECL_WHY="$PROOF_DECL_WHY"
+      FF_GATE_DECL_EXCLUDED="$PROOF_DECL_EXCLUDED"
+      tipzero="a declared file collected ZERO tests while its sibling executed tests; the gate cannot account for every declared file, so the run is INCONCLUSIVE, never a pass"
+    fi
     # THE REFUSAL MUST BE LEGIBLE. A custom-harness crate is a legitimate, working
     # project, and telling its captain "zero tests collected" when the suite he
     # just watched pass is a mystery park. Say what LCARS actually could not do.
@@ -14149,7 +14360,8 @@ flip_flop_gate() { # ticket parent-sha worktree
       manifest-unreadable)
         tipzero="a Cargo.toml in play declares a \`harness\` key but LCARS could not establish WHICH cargo target it belongs to. A \`harness = false\` target opts out of cargo's standard test harness and its output is not libtest test results, so until the declaration can be read LCARS cannot tell whether this run's scoreboard is real — and inconclusive is never a pass. Exactly what defeated it: ${PROOF_ZERO_DETAIL:-unrecorded}" ;;
     esac
-    _ff_finish "$t" "$parent" "$ffj" inconclusive "$tipzero" "$rels"
+    _ff_finish "$t" "$parent" "$ffj" inconclusive "$tipzero
+  what the TIP leg ran: $FF_TIP_CMD" "$rels"
     return $?
   fi
   # GUARD 2 (S147 round 3): did everything the staged file PROMISED actually
@@ -14216,7 +14428,7 @@ flip_flop_gate() { # ticket parent-sha worktree
         # full-suite-shaped run, so bounding it by the NARROWED leg's gate gave
         # zero coverage in exactly the slow-suite repos this session exists for.
         FF_GATE_SCOPE_CONTROL_SECS="$(proof_control_budget "$wt" "$FF_GATE_TIMEOUT")"
-        proof_scope_control_exec "$PROOF_LEG_RUN_DIR" "$PROOF_LEG_RAW_CMD" "$FF_GATE_SCOPE_CONTROL_SECS"
+        proof_scope_control_exec "$PROOF_LEG_RUN_DIR" "$PROOF_LEG_RAW_CMD" "$FF_GATE_SCOPE_CONTROL_SECS" "${FF_TIP_EXEC%% *}"
         FF_GATE_SCOPE_CONTROL="$PROOF_SCOPE_CONTROL"
         # A files-mode leg runs ONE INVOCATION PER DECLARED FILE, so if its
         # selection collapsed, EACH invocation ran the control's discovery and
@@ -14260,7 +14472,7 @@ flip_flop_gate() { # ticket parent-sha worktree
           FF_GATE_SCOPE_NARROW_WHY="the control run COLLECTED NO TESTS AT ALL with the scope pointed at an EMPTY directory — its runner said so in its own words — while this leg executed ${FF_TIP_EXEC##* } via ${FF_TIP_EXEC%% *}${FF_GATE_TIP_EXEC_EACH:+ (per invocation: $FF_GATE_TIP_EXEC_EACH)}: emptying the scope emptied the run, which is the strongest form of this measurement (measured under a ${FF_GATE_SCOPE_CONTROL_SECS}s control budget)"
         elif [ -z "$PROOF_SCOPE_CONTROL" ]; then
           FF_GATE_SCOPE_NARROWING=unproven
-          FF_GATE_SCOPE_NARROW_WHY="the control run could not be read at all: it either exceeded its own ${FF_GATE_SCOPE_CONTROL_SECS}s budget (the repo's recorded full-suite need, or the default) or its runner printed no count this harness understands"
+          FF_GATE_SCOPE_NARROW_WHY="${PROOF_SCOPE_CONTROL_WHY:-the gate could not construct or read its control run}"
         elif [ "${PROOF_SCOPE_CONTROL%% *}" != "${FF_TIP_EXEC%% *}" ]; then
           FF_GATE_SCOPE_NARROWING=unproven
           FF_GATE_SCOPE_NARROW_WHY="the control run was read by a DIFFERENT runner grammar (${PROOF_SCOPE_CONTROL%% *}) from this leg (${FF_TIP_EXEC%% *}), so the two counts do not mean the same thing and comparing them would invent a result"
@@ -14312,7 +14524,7 @@ Nothing is wrong with the ticket's code: the repo's testCommand cannot SEE a tes
   what this leg executed: ${FF_TIP_EXEC##* } test(s) via ${FF_TIP_EXEC%% *}${FF_GATE_TIP_EXEC_EACH:+ (per invocation: $FF_GATE_TIP_EXEC_EACH)}
   the control run: ${FF_GATE_SCOPE_CONTROL:-not readable} (budget ${FF_GATE_SCOPE_CONTROL_SECS:-unset}s)
   what the TIP leg ran: $FF_TIP_CMD
-The control run re-runs this repo's OWN testCommand with \$LCARS_TESTS_DIR pointed at an EMPTY directory: if it executes the same tests as the narrowed leg, the scope selected nothing and the run was the runner's own discovery. When that control cannot be completed or read, the narrowing is unknown — not proven. Record this repo's real full-suite wall clock as \`gateTimeout\` in .git/lcars/config.json so the control has the budget it needs, or hand \"\$LCARS_TESTS_DIR\" to the runner directly (\`lcars update --fix-tests\`) so no fallback discovery is possible at all." "$rels"
+The control re-runs the repo's testCommand with an empty test scope. An incomplete or unreadable control leaves narrowing UNKNOWN; it does not show that selection failed. Inspect the control diagnostic above before changing the command or budget." "$rels"
     return $?
   fi
   if [ "$(resolve_stack)" = dotnet ]; then
@@ -14333,6 +14545,20 @@ FF_DECL
     fi
   fi
   if [ "$FF_TIP_RC" -ne 0 ]; then
+    local failed_exec="$PROOF_LEG_FAILED_EXEC"
+    local failed_out="$PROOF_LEG_FAILED_OUT"
+    if [ -z "$PROOF_LEG_RUN_DIR" ]; then
+      failed_exec="$(proof_executed_count_ext "$PROOF_LEG_OUT")"
+      failed_out="$PROOF_LEG_OUT"
+    fi
+    if { [ -z "$failed_exec" ] || [ "${failed_exec##* }" -eq 0 ] \
+         || proof_node_boot_failure "$failed_out"; } \
+       && ! proof_assertion_failure "$failed_out"; then
+      _ff_finish "$t" "$parent" "$ffj" inconclusive \
+        "the TIP command supplied no evidence of executed test methods (exit $FF_TIP_RC); a file-process boot failure is not a test method. The gate cannot attribute the non-zero exit to failing tests. The run is INCONCLUSIVE, not RED.
+  what the TIP leg ran: $FF_TIP_CMD" "$rels"
+      return $?
+    fi
     _ff_finish "$t" "$parent" "$ffj" fail \
       "the TIP leg is RED (exit $FF_TIP_RC) — the ticket's tests do not pass on the implemented tree" "$rels"
     return $?
@@ -14352,14 +14578,15 @@ FF_DECL
   # ticket's tests do not pass", which is the true cause and what the committed
   # code said, and reported "could not account for the declared files" instead.
   # Both are non-pass so nothing ships either way, but the captain lost the real
-  # reason — and a RED leg is itself positive evidence that a declared test ran
-  # and failed. So the real red speaks first; the accounting guards the PASS,
-  # which is the direction that ships. See proof_declared_accounting.
+  # reason. S321 requires executed-test or assertion-failure evidence on the
+  # failing invocation; a non-zero exit alone is not test evidence.
+  # The accounting below guards the PASS. See proof_declared_accounting.
   proof_declared_accounting "$wt" "$rels" "$FF_GATE_SCOPE_KIND" "$FF_TIP_EXEC" \
     "$FF_GATE_TIP_EXEC_EACH" "$PROOF_LEG_RUN_DIR" "$PROOF_LEG_RAW_CMD" \
-    "$(proof_control_budget "$wt" "$FF_GATE_TIMEOUT")" "$FF_TIP_RC"
+    "$(proof_control_budget "$wt" "$FF_GATE_TIMEOUT")" "$FF_TIP_RC" "$FF_GATE_DECL_EXCLUDED"
   FF_GATE_DECL_METHOD="$PROOF_DECL_METHOD"; FF_GATE_DECL_EACH="$PROOF_DECL_EACH"
   FF_GATE_DECL_UNACC="$PROOF_DECL_UNACC";   FF_GATE_DECL_WHY="$PROOF_DECL_WHY"
+  FF_GATE_DECL_EXCLUDED="$PROOF_DECL_EXCLUDED"
   if [ -n "$FF_GATE_DECL_UNACC" ]; then
     local dl_names
     dl_names="$(printf '%s' "$FF_GATE_DECL_UNACC" | grep . | tr '\n' ' ' | sed 's/ $//')"
@@ -14436,7 +14663,9 @@ NOTE: the parent scratch worktree has been PRUNED, so the directory this leg's r
   # declaration that describes what was executed. The tip leg above has already
   # refused when that manifest opts the ticket's target out, so this call can only
   # ever make the parent leg MORE cautious, never less.
-  if proof_zero_collected "$par_out" "$rels" "$wt"; then
+  if { [ -z "$PROOF_LEG_EXCLUDED" ] || [ -z "$FF_PAR_EXEC" ] \
+       || [ "${FF_PAR_EXEC##* }" -eq 0 ]; } \
+     && proof_zero_collected "$par_out" "$rels" "$wt"; then
     local parzero="the PARENT leg collected ZERO tests (e.g. go's 'no tests to run' or rspec's '0 examples, 0 failures' both exit 0) — red-on-parent is unproven, and inconclusive is never a pass"
     case "$PROOF_ZERO_KIND" in
       harness-false)
@@ -14532,6 +14761,15 @@ Nothing is necessarily wrong with the ticket's code. The parent leg's own select
   # happen. The `staged` sentence is byte-identical to pre-S157 on purpose: that
   # is the unchanged new-test path.
   if [ "$FF_PAR_RC" -eq 0 ]; then
+    local parent_exec="$FF_PAR_EXEC"
+    [ -n "$parent_exec" ] || parent_exec="$(proof_executed_count_ext "$par_out")"
+    if [ -z "$parent_exec" ] || [ "${parent_exec##* }" -eq 0 ]; then
+      _ff_finish "$t" "$parent" "$ffj" inconclusive \
+        "the PARENT command produced no executed tests that this gate could count, so its zero exit cannot establish that the ticket's tests pass there. Red-on-parent is unproven, not disproven.
+  what the TIP leg ran: $FF_TIP_CMD
+  what the PARENT leg ran: $FF_PAR_CMD" "$rels"
+      return $?
+    fi
     local greenreason
     case "$FF_PAR_MODE" in
       parent-own)

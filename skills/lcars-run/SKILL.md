@@ -710,6 +710,31 @@ around them (see vision.md → *Implement*):
   runner tails, and the per-file source provenance (`parentLeg`) land in
   `tickets/<id>/flip-flop.json`.
 
+  A non-zero TIP command is RED only when its failing invocation reports
+  executed tests or runner-reported failed-test evidence (including Go's
+  `--- FAIL: Test…`, quiet pytest's failed-test identifier plus nonzero failure
+  summary, and Node dot's failed-test record with a test callback stack).
+  Node TAP's `ERR_TEST_FAILURE` file-process wrappers alone do not prove test
+  methods ran: boot-only failures are INCONCLUSIVE for both TAP and dot.
+  Assertion text alone, including text in a passing doctest, is not failure
+  evidence. Zero or unreadable execution evidence without failed-test evidence is
+  INCONCLUSIVE, with the command recorded in the reason.
+  An unreadable GREEN parent likewise cannot justify FAIL by claiming the
+  ticket's tests passed there.
+  For file scopes, direct `python -m unittest discover -s "$LCARS_TESTS_DIR"`
+  commands receive the file's directory as the start directory and its basename
+  as the discovery pattern. Directory-scoped commands are unchanged.
+  Successful per-file unittest discoveries that collect zero cases (package
+  markers or helpers without test methods) require inert source (only docstrings,
+  `pass`, or undecorated helper functions without defaults, annotations, or type
+  parameters) and a separate successful direct file load confirming zero tests
+  before exclusion from declared-test accounting. Reasons are listed in
+  `declaredRan.excluded`. Collection hooks, special module functions, imports,
+  classes, or other executable module code cannot establish absence from a zero
+  probe; these files remain accountable. Skipped tests and import failures are
+  not exclusions; a leg with no executed tests remains INCONCLUSIVE even if every
+  declared file is a support file.
+
   **What a leg is scoped to, and the clock it runs under** (S308), both recorded
   in that file's `gate` block. The scope is the ticket's DECLARED test file; for
   several files it is their common ancestor DIRECTORY only when that directory
@@ -741,7 +766,11 @@ around them (see vision.md → *Implement*):
   The control is the FULL-SUITE-shaped run (an empty scope is what makes a
   command fall back to discovery), so it is budgeted against the repo's own
   recorded `gateTimeout` — or 120s — rather than a one-off narrow
-  `LCARS_GATE_TIMEOUT`. A narrowing the gate cannot establish is **not** a
+  `LCARS_GATE_TIMEOUT`. Unittest controls use an empty importable package under
+  the runner's working directory so `-t "$PWD"` remains valid. An unreadable
+  control records its actual exit and runner diagnostic; a timeout names the
+  gate-chosen budget, not a supposed repository defect or selection failure.
+  A narrowing the gate cannot establish is **not** a
   licence to decide: `scopeControl.narrowing` records which it was — `proven`,
   `moot` (every tracked test file in the tree is one the ticket declared, so
   discovery could only run the ticket's own tests), `not-narrowed`,
