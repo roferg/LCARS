@@ -694,6 +694,7 @@ _complete_reentry() {
   # The SAME gates the parked lane runs, in the same order, BEFORE any write —
   # a bad PRD must leave the previous prd.md exactly where it is.
   local QATTACH=()
+  [ ! -f "$MISSION_DIR/idea.md" ] || QATTACH+=("$MISSION_DIR/idea.md")
   if [ -d "$MISSION_DIR/attachments" ]; then
     shopt -s nullglob
     local qa
@@ -836,6 +837,7 @@ do_complete() {
   # staged brief was handed over. On THIS lane the brief is MISSION-RELATIVE:
   # park already copied it into attachments/, so the source path is long gone.
   local QATTACH=()
+  [ ! -f "$MISSION_DIR/idea.md" ] || QATTACH+=("$MISSION_DIR/idea.md")
   if [ -d "$MISSION_DIR/attachments" ]; then
     shopt -s nullglob
     local qa
@@ -1221,8 +1223,8 @@ require_section "Constraints"        'Constraints'
 # S175 — and the design brief's own OPEN QUESTIONS must survive this boundary.
 # Same gate as the --complete lane (_validate_prd), reading the SOURCE attachment
 # paths since nothing is staged yet. A no-op for every mission with no concept
-# doc and for one whose brief left nothing open, except duplicate headings are
-# always refused before filing.
+# doc and no source buckets in the idea. Embedded source questions are checked
+# too; duplicate destination headings are always refused before filing.
 QGATE_RC=0
 if [ "${#ATTACHMENTS[@]}" -gt 0 ]; then
   QGATE_MSG="$(lcars_prd_questions_gate "$PRD_SRC" "${ATTACHMENTS[@]}" 2>&1)" \

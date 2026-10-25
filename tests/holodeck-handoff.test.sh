@@ -64,7 +64,7 @@ undeclared = fixtures / "undeclared"
 undeclared.mkdir()
 (undeclared / "prd.md").write_text(prd(
     "## Open questions from the design session\n\n"
-    "Should the palette also open from the toolbar?\n\n"
+    "- Should the palette also open from the toolbar?\n\n"
     "- RESOLVED with the captain: " + q1 + " \u2014 Only board verbs.\n"))
 
 wrapped = fixtures / "wrapped"
@@ -263,7 +263,7 @@ resolved guidance "3. guidance does not change either resolved decision"
 
 gate old-numbered open-questions-test
 if [ "$rc" -eq 1 ] && [ ! -s "$TMPROOT/old-numbered/open-questions-test.out" ] \
-  && grep -Fq '2 entries, and NOT ONE of them declares itself' \
+  && grep -Fq '0 of 2 bullet entries declare themselves' \
     "$TMPROOT/old-numbered/open-questions-test.err"; then
   ok "CONTROL: old numbered N. Q: format is refused (rc 1, two undeclared entries)"
   cat "$TMPROOT/old-numbered/open-questions-test.err"

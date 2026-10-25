@@ -2115,6 +2115,10 @@ except OSError:
 want = "open questions from the design session"
 body, lvl = [], None
 for ln in text.replace("\r\n", "\n").split("\n"):
+    if lvl is not None and re.match(
+            r"^\*\*(?:Mission(?: title)?|Type|Goal|Acceptance Criteria|"
+            r"Out of Scope|Constraints)\s*:\*\*", ln, re.I):
+        break
     m = re.match(r"^(#{1,6})\s+(.*)$", ln)
     if m:
         name = re.sub(r"[^a-z0-9]+", " ", m.group(2).lower()).strip()
@@ -2139,6 +2143,9 @@ entries, cur = [], None
 for ln in body:
     t = ln.strip()
     if not t:
+        if cur:
+            entries.append(" ".join(cur.split()))
+        cur = None
         continue
     m = BULLET.match(t)
     if m:
@@ -2147,10 +2154,11 @@ for ln in body:
         cur = t[m.end():]
     elif cur is not None:
         cur = cur + " " + t
-    else:
-        entries.append(" ".join(t.split()))
 if cur:
     entries.append(" ".join(cur.split()))
+entry_kind = "bullet" if entries else "non-bullet"
+if not entries:
+    entries = [" ".join(ln.split()) for ln in body if ln.strip()]
 
 # ── FIX ROUND 1 / D5: THE PREFIX CONTRACT, IN THE FORMS A MODEL WRITES ────
 # `- STILL OPEN: …` parsed. `- **STILL OPEN:** …` — what a model writing
@@ -2162,6 +2170,7 @@ EMPH = re.compile(r"^[*_`]+|[*_`]+$")
 STILL = re.compile(r"(?i)^still\s+open\b[\s:\-—]*")
 RESOLVED = re.compile(r"(?i)^resolved\b")
 out, unparsed = [], []
+declared = 0
 for e in entries:
     lead = EMPH.sub("", e).lstrip()
     # `**STILL OPEN:**` leaves a trailing `**` on the marker, not the sentence,
@@ -2172,23 +2181,27 @@ for e in entries:
         rest = re.sub(r"^[\s:\-—]+", "", rest)
         if rest:
             out.append(" ".join(rest.split()))
+            declared += 1
+        else:
+            unparsed.append(e)
         continue
     if RESOLVED.match(lead):
+        declared += 1
         continue
     unparsed.append(e)
 
-# FAIL LOUD, NEVER A SILENT ZERO. If the section exists and has content but
-# nothing in it declares itself, that is a refusal — the whole subject of this
-# round is mechanisms that disengage without saying so.
-if lvl is not None and unparsed and not out:
+# Prose beside declared bullets is not another entry. A section with no bullets
+# still has to declare its content, rather than silently yielding no questions.
+# Resolved entries prove the section parsed even when nothing is left open.
+if unparsed:
     sys.stderr.write(
         "lcars: prd.md has an '## Open questions from the design session' "
-        "section with %d entr%s, and NOT ONE of them declares itself. Each must "
+        "section where %d of %d %s entries declare themselves. Each must "
         "start with `STILL OPEN:` (still unsettled) or `RESOLVED` (settled with "
         "the captain during Align) — see skills/lcars-file/SKILL.md. Without "
-        "that the Plan Stage is told nothing and every one of these becomes a "
-        "decision nobody was asked about. Could not read:\n%s\n"
-        % (len(unparsed), "y" if len(unparsed) == 1 else "ies",
+        "that, an undeclared entry cannot reach the Plan Stage as a question. "
+        "Could not read:\n%s\n"
+        % (declared, len(entries), entry_kind,
            "\n".join("  - " + u for u in unparsed)))
     sys.exit(1)
 sys.stdout.write("\n".join(out) + ("\n" if out else ""))
@@ -2227,7 +2240,7 @@ S175_PY
 # entry prd.md's open-questions section marked RESOLVED, or NOTHING.
 #
 # TOLERANT WHERE ITS SIBLING IS STRICT, on purpose. `mission_open_questions`
-# REFUSES a section whose entries declare nothing, because Plan is entitled to
+# REFUSES undeclared bullet entries, because Plan is entitled to
 # insist the brief say what is open. This reader is consumed by PLAN REVIEW,
 # which today cannot fail for any reason to do with the PRD at all — giving it a
 # brand-new way to die over a file it is not even shown would be a worse bug than
@@ -2249,6 +2262,10 @@ except OSError:
 want = "open questions from the design session"
 body, lvl = [], None
 for ln in text.replace("\r\n", "\n").split("\n"):
+    if lvl is not None and re.match(
+            r"^\*\*(?:Mission(?: title)?|Type|Goal|Acceptance Criteria|"
+            r"Out of Scope|Constraints)\s*:\*\*", ln, re.I):
+        break
     m = re.match(r"^(#{1,6})\s+(.*)$", ln)
     if m:
         name = re.sub(r"[^a-z0-9]+", " ", m.group(2).lower()).strip()
@@ -2272,6 +2289,9 @@ entries, cur = [], None
 for ln in body:
     t = ln.strip()
     if not t:
+        if cur:
+            entries.append(" ".join(cur.split()))
+        cur = None
         continue
     m = BULLET.match(t)
     if m:
@@ -2280,10 +2300,10 @@ for ln in body:
         cur = t[m.end():]
     elif cur is not None:
         cur = cur + " " + t
-    else:
-        entries.append(" ".join(t.split()))
 if cur:
     entries.append(" ".join(cur.split()))
+if not entries:
+    entries = [" ".join(ln.split()) for ln in body if ln.strip()]
 
 EMPH = re.compile(r"^[*_`]+|[*_`]+$")
 RESOLVED = re.compile(r"(?i)^resolved\b")
@@ -23194,7 +23214,7 @@ What is NOT fine is being over budget because the ticket BUNDLES two behaviors."
   # OUT LOUD. Nothing at all when the brief left none, so a pre-S175 Mission's
   # Plan prompt is byte-identical.
   local _oqb _oqrc=0; _oqb="$(plan_open_questions_block)" || _oqrc=$?
-  [ "$_oqrc" -eq 0 ] || die "prd.md's open-questions section declares nothing readable — see the message above; fix the PRD and re-run."
+  [ "$_oqrc" -eq 0 ] || die "prd.md's open-questions section has undeclared entries — see the message above; fix the PRD and re-run."
   extra="$extra$_oqb"
   # S181 — WHAT A DEPENDENCY IS, on the FIRST pass. S178 put this framing inside
   # the revision contract, which never fires on a first plan; the measured

@@ -4634,11 +4634,28 @@ HEAD = "Open questions"
 def section(text, head):
     want = re.sub(r"[^a-z0-9]+", " ", head.lower()).strip()
     out, lvl = [], None
+    fence = None
     for ln in text.replace("\r\n", "\n").split("\n"):
+        if fence is not None:
+            if re.fullmatch(r" {0,3}" + re.escape(fence[0]) +
+                            r"{" + str(len(fence)) + r",}[ \t]*", ln):
+                fence = None
+            continue
+        opening = re.match(r"^ {0,3}(`{3,}|~{3,})(.*)$", ln)
+        if opening and (opening.group(1)[0] != "`" or "`" not in opening.group(2)):
+            fence = opening.group(1)
+            continue
+        if lvl is not None and re.match(
+                r"^\*\*(?:Mission(?: title)?|Type|Goal|Acceptance Criteria|"
+                r"Out of Scope|Constraints)\s*:\*\*", ln, re.I):
+            break  # Only PRD fields end the bucket, not a concept's **Question:**.
         m = re.match(r"^(#{1,6})\s+(.*)$", ln)
         if m:
             name = re.sub(r"[^a-z0-9]+", " ", m.group(2).lower()).strip()
             if lvl is None:
+                if want == "open questions" and name.startswith(
+                        "open questions from the design session"):
+                    continue
                 if name == want or name.startswith(want + " "):
                     lvl = len(m.group(1))
                 continue
@@ -4694,10 +4711,9 @@ for p in sys.argv[1:]:
     # MEASURED on lcars-20260814-001: 2 in the first, 12 in the second. Reading
     # only the first would carry 2 of its 14 unsettled items and call it done.
     bodies = [section(text, HEAD)]
-    must = section(text, "WHAT IT MUST DO")
-    if must:
-        bodies.append(section(must, "2. Implied by the mockup"))
-        bodies.append(section(must, "Implied by the mockup"))
+    # A pasted hand-off may carry the implied bucket as a top-level heading.
+    bodies.append(section(text, "2. Implied by the mockup"))
+    bodies.append(section(text, "Implied by the mockup"))
     for body in bodies:
         for it in items(body):
             if it not in seen:
@@ -4739,7 +4755,9 @@ lcars_prd_questions_gate() {
   local prd="$1"; shift
   [ -f "$prd" ] || return 0
   local qf; qf="$(mktemp)"
-  lcars_concept_open_questions "$@" > "$qf"
+  # The idea can carry the source buckets without a separate attachment.
+  # The canonical destination section is excluded by the reader above.
+  lcars_concept_open_questions "$@" "$prd" > "$qf"
   local rc=0
   "${LCARS_PYTHON_BIN:-python3}" - "$prd" "$LCARS_PRD_QUESTIONS_HEADING" "$qf" <<'S175_PY' || rc=$?
 import os, re, sys
@@ -4763,7 +4781,7 @@ if len(occurrences) > 1:
         % (heading, "\n".join("  line %d: %s" % row for row in occurrences)))
     sys.exit(1)
 
-if os.environ.get("LCARS_PRD_QUESTIONS_UNIQUENESS_ONLY") == "1":
+if not qs and os.environ.get("LCARS_PRD_QUESTIONS_UNIQUENESS_ONLY") == "1":
     sys.exit(0)
 
 section, lvl, found = [], None, False

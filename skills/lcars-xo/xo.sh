@@ -152,7 +152,7 @@ case "$GIT_DIR" in /*) : ;; *) GIT_DIR="$PWD/$GIT_DIR" ;; esac
 LCARS_DIR="$GIT_DIR/lcars"
 CONFIG="$LCARS_DIR/config.json"
 MISSIONS_DIR="$LCARS_DIR/missions"
-[ -d "$LCARS_DIR" ] || die "this repo is not initialized for LCARS — run \`lcars init\` first."
+[ -f "$CONFIG" ] || die "this repo is not initialized for LCARS — invoke the \`lcars init\` skill first, or run \`bash $(printf '%q' "$SKILL_DIR/../lcars-init/init.sh")\` from this repo. Number One has not been engaged."
 
 # TWO CLOCKS, ON PURPOSE (fix round 1, D4).
 #

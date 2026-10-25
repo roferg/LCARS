@@ -8008,12 +8008,33 @@ class Actions(LogFacts):
         disk, so a crafted request cannot put a sentence in front of a worker.
         """
         parts = [idea]
+        # A captain-supplied destination is authoritative. Filing checks its
+        # coverage; appending a second one would make correct input unfileable.
+        has_questions, fence = False, None
+        for line in idea.splitlines():
+            marker = re.match(r"^ {0,3}(`{3,}|~{3,})(.*)$", line)
+            if marker:
+                delimiter, suffix = marker.groups()
+                if fence is None:
+                    fence = delimiter
+                elif (delimiter[0] == fence[0] and len(delimiter) >= len(fence)
+                      and not suffix.strip()):
+                    fence = None
+                continue
+            if fence is not None:
+                continue
+            heading = re.match(r"^#{1,6}\s+(.*)$", line)
+            if heading and re.sub(r"[^a-z0-9]+", " ", heading.group(1).lower()
+                                 ).strip().startswith("open questions from the design session"):
+                has_questions = True
+                break
         # S178 CURE 5 — …and, after them, the CHECKLIST over both homes. It sits
         # here rather than inside either bucket's own block for the reason the
         # buckets are split at all: it is about BOTH of them, and neither one
         # owns it. Empty (and so byte-identical to the pre-S178 idea) whenever
         # the design session left nothing unsettled.
-        for block in (cls._handoff_questions_block(concept_text, answers),
+        for block in ("" if has_questions else
+                      cls._handoff_questions_block(concept_text, answers),
                       _handoff_carry_forward_block(concept_text)):
             if block:
                 parts.append(block.strip())

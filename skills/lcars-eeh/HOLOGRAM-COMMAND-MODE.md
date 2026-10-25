@@ -519,6 +519,12 @@ is a defect in how you ran this step, not a fact about the spec.
 An empty scope is unfinished alignment: set it with `init --scope` or
 `lcars-ech record scope '["M0","M1"]'` before building or claiming completion.
 
+`lcars-ech init` configures the run, not the repository. If preflight's
+Number One step says the LCARS config is missing, invoke the `lcars init`
+skill, then run `lcars-ech preflight`. The refusal also gives the bundled
+`init.sh` command for a terminal-only recovery. The requested choice remains recorded,
+but Number One is not engaged until that retry succeeds.
+
 ---
 
 ## 2. Captain-only steps, collected up front
@@ -535,6 +541,13 @@ lcars-ech record captainOnlySteps '[
    "neededBy":"before M2 drives","done":false}
 ]'
 ```
+
+`neededBy` is checked when recorded. Omit it for an immediate step.
+`before M2 drives` (or `before M2`) is collected up front, before any drive;
+`after M2 merges` is deferred until M2's Mission records Stage `done`.
+Name a milestone in this run's scope. Other timing prose is refused with a
+copyable record command, not stored as a promise the driver cannot keep.
+`status` lists due and deferred steps; `next` only stops for due ones.
 
 **Secret values never appear in the transcript.** Always give him the
 `! pbpaste | gh secret set NAME -R <host>/<owner>/<repo> --app actions` shape —

@@ -369,6 +369,9 @@ of them. Read both. Carry every bullet from both:
    settled** — behaviour the mockup suggests that was never confirmed, each
    already written as a question.
 
+Fenced code examples do not declare source questions. A PRD containing only
+a fenced `## Open questions` documentation example needs no design hand-off.
+
 The holodeck's brief contract splits them **on purpose, one home each**, so the
 captain never reads the same thing twice — which means neither list is a superset
 of the other and reading only the first is not "most of them". **Measured** on
@@ -389,6 +392,15 @@ section, and `file.sh` refuses a PRD that drops any of them:
 Keep exactly ONE such section: filing refuses duplicate headings and names
 each occurrence's line number. Do not copy the idea's section and append a
 second one. Keep guidance outside its bullet list, under a separate heading.
+The hand-off reuses a section already present in the idea instead of appending
+another. Source question buckets pasted into the idea count even without a
+concept attachment; a top-level `Implied by the mockup` bucket counts too.
+Use bullets for question entries. Soft-wrapped continuation lines stay with
+their bullet; a blank line ends the entry. Separate explanatory prose with a
+blank line. Prose beside declared bullets is not another question, but a
+nonempty section without bullets must still declare its content, never
+silently discard it. Plan accepts an all-RESOLVED list, and a refusal reports
+how many entries declared their status.
 For a text match, carry the question VERBATIM (wrapping is fine), not as a
 paraphrased STILL OPEN line. The gate also accepts a declared RESOLVED summary
 for a question settled with the captain. A refusal gives a copyable example;

@@ -4415,7 +4415,7 @@ class HandoffPlanGateTest(HandoffBase):
         self.assertEqual(prompt.returncode, 0, prompt.stderr)
         self.assertIn(self.Q1, prompt.stdout)
 
-    def test_guidance_outside_questions_is_accepted_but_undeclared_prose_is_refused(self):
+    def test_question_guidance_is_prose_but_undeclared_bullets_are_refused(self):
         self._generated_prd(answered=True)
         with open(self.prd) as fh:
             prd = fh.read()
@@ -4437,12 +4437,12 @@ class HandoffPlanGateTest(HandoffBase):
             "## Open questions from the design session\n\n"
             "Read each question before spending a human gate.\n"))
         result = self._gate()
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("Read each question before spending a human gate.", result.stderr)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, "")
         fx.write(self.prd, prd.replace("- RESOLVED", "- UNDECLARED"))
         malformed = self._gate()
         self.assertNotEqual(malformed.returncode, 0)
-        self.assertIn("NOT ONE", malformed.stderr)
+        self.assertIn("0 of 1 bullet entries declare themselves", malformed.stderr)
 
     def _handoff_reaches_plan(self, answered):
         def command(argv, env=None):

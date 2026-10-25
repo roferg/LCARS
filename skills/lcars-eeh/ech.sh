@@ -2001,10 +2001,12 @@ PY
   fi
   [ -z "$out" ] || printf '%s\n' "$out" | sed 's/^/  | /'
   if [ "$rc" != 0 ]; then
+    local recovery="$SELF_CMD preflight   # after clearing the Number One refusal; the choice is already recorded"
+    [ -f "$CFG" ] || recovery="bash $(printf '%q' "$SKILLS_DIR/lcars-init/init.sh") && $SELF_CMD preflight"
     PF_STOPS=$((PF_STOPS + 1))
     write_pending "-" "$what" \
       "Number One was requested $choice with engine $eng, but the LCARS verb refused (exit $rc): $out" \
-      "$SELF_CMD preflight   # after clearing the Number One refusal; the choice is already recorded" \
+      "$recovery" \
       "the choice is preserved, but it is not recorded as applied."
     return 0
   fi
@@ -2174,7 +2176,8 @@ PY
   say ""
   say "Next: answer the alignment round, then record the answers with"
   say "  $SELF_CMD record liveTargets.host <host>"
-  say "  $SELF_CMD record captainOnlySteps '[{\"what\":\"…\",\"instructions\":\"…\",\"neededBy\":\"…\",\"done\":false}]'"
+  say "  $SELF_CMD record captainOnlySteps '[{\"what\":\"…\",\"instructions\":\"…\",\"done\":false}]'"
+  say "  neededBy: omit for now; use \"before M0 drives\" or \"after M0 merges\" for a milestone in scope."
   say "then follow $SKILLS_DIR/lcars-eeh/HOLOGRAM-COMMAND-MODE.md."
   say ""
   # THE SWEEP RUNS WHILE HE IS STILL HERE. `init` is the one moment a human is
@@ -2284,6 +2287,15 @@ cmd_record() {
   [ $# -ge 1 ] || die "record: <dotted.key> <value>"
   require_state
   case "$1" in
+    captainOnlySteps)
+      if [ -n "${2-}" ]; then
+        "$PY" "$SELF_DIR/captain-steps.py" "$APJSON" "$MISSIONS" check "$SELF_CMD" "$2" \
+          || return $?
+      fi
+      ;;
+    captainOnlySteps.*)
+      die "record: replace the complete array with \`$SELF_CMD record captainOnlySteps '<json-array>'\` so neededBy can be checked."
+      ;;
     localOnly|local-only|local_only|localonly)
       case "$(printf '%s' "${2-true}" | tr 'A-Z' 'a-z')" in
         true|yes|1|on|local-only|local)
@@ -2340,18 +2352,8 @@ EOF
   # token, no Pages tonight") made `next` send him straight back to it; the only
   # escapes were writing `done: true` (a lie in the ledger) or deleting the step
   # (losing that it was ever asked). `declined` is honoured here instead.
-  local cs; cs="$("$PY" - "$APJSON" <<'PY'
-import json, sys
-try:
-    d = json.load(open(sys.argv[1]))
-except Exception:
-    sys.exit(0)
-for s in d.get("captainOnlySteps") or []:
-    if not s.get("done") and not s.get("declined"):
-        print(s.get("what", "an unnamed captain-only step"))
-        break
-PY
-)"
+  local cs; cs="$("$PY" "$SELF_DIR/captain-steps.py" "$APJSON" "$MISSIONS" due "$SELF_CMD")" \
+    || die "next: could not read captain-only steps; repair autopilot.json and re-run \`$SELF_CMD next\`."
   if [ -n "$cs" ]; then
     printf 'captain-step\t-\t%s\n' "$cs"
   fi
@@ -2422,7 +2424,7 @@ cmd_next() {
   withdraw_obsolete
   local all=0
   [ "${1:-}" = "--all" ] && all=1
-  local plan; plan="$(build_plan)"
+  local plan; plan="$(build_plan)" || return $?
   if [ -z "$plan" ]; then
     say "NEXT: wait"
     say "WHY: every milestone in scope has a driver in flight."
@@ -2732,6 +2734,8 @@ print(sum(1 for s in steps if not s.get("done") and not s.get("declined")))
 PY
 )"
   say "  captain-only steps outstanding: ${cs:-0}"
+  "$PY" "$SELF_DIR/captain-steps.py" "$APJSON" "$MISSIONS" status "$SELF_CMD" \
+    || die "status: could not read captain-only steps; repair autopilot.json and re-run \`$SELF_CMD status\`."
   csd="$("$PY" - "$APJSON" <<'PY'
 import json, sys
 try:
