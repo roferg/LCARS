@@ -802,6 +802,14 @@ On a full pass the driver commits the ticket (tests + code in one commit),
 re-verifies against the committed state (post-commit gate), and prints
 `⊘ isolated — implement(<id>)`.
 
+The post-commit gate and ticket-suite retests reuse the flip-flop gate's command
+adapter: a Python `unittest discover` file scope becomes its directory plus a
+basename pattern; directory-scoped commands stay byte-identical. At post-commit,
+zero collection or an unimportable discovery start directory is a
+**could not run the tests** error, never evidence that the implementation is
+missing (rc 6). A real failing test keeps the existing missing-implementation
+verdict.
+
 **A gate rejection bounces, it does not die**: the verdict + runner tail is
 written to `tickets/<id>/gate-signal.txt` and a FRESH worker is spawned carrying
 that signal, up to `LCARS_WORKER_TRIES` (default 3) total sessions. Exhaustion

@@ -15396,7 +15396,7 @@ post_commit_gate() { # ticket
   # S87: a sub-package ticket runs vitest/jest FROM its package root (run_dir=<wt>/<pkg>)
   # for discovery/config; an empty pkg_rel runs from the worktree root.
   local pkg_rel; pkg_rel="$(ticket_target_package "$t" "$wt")"
-  local run_dir rc=0 out="" rels scope tamper=0 undecl
+  local run_dir rc=0 out="" rels scope tamper=0 undecl zero=0
   run_dir="$wt"
   if [ -n "$pkg_rel" ]; then run_dir="$wt/$pkg_rel"
   else
@@ -15437,6 +15437,10 @@ PC_RELS_EOF
         scope="$INTREE_SCOPES"
         proof_say_scope_kind "$INTREE_SCOPE_KIND" "$INTREE_SCOPE_WHY"
         out="$(intree_scoped_run "$run_dir" "$cmd" "$scope")" || rc=$?
+        if proof_zero_collected "$out" "$_pcrels" "$wt" \
+           || printf '%s\n' "$out" | grep -q '^ImportError: Start directory is not importable:'; then
+          zero=1
+        fi
       fi
     fi
   fi
@@ -15449,6 +15453,15 @@ PC_RELS_EOF
   # S102: a tampered COMMITTED test blocks with a DISTINCT code, ahead of the normal
   # env/red verdicts (the signal was already written above).
   [ "$tamper" = 1 ] && return 4
+
+  if [ "$zero" = 1 ]; then
+    local zdetail="POST-COMMIT GATE — COULD NOT RUN THE TESTS for ticket $t against the committed state (commit ${ref}): the runner collected ZERO tests or could not start discovery. Nothing was verified; this is not evidence of a missing implementation. Check the testCommand and its file/directory scope. Command run: $cmd.
+$(printf '%s\n' "$out" | tail -12)"
+    POST_COMMIT_SKIPPED_KIND="error"
+    printf '  ✗ %s\n' "$zdetail" >&2
+    [ -n "$POST_COMMIT_SIGNAL" ] && printf '%s\n' "$zdetail" >"$POST_COMMIT_SIGNAL"
+    return 6
+  fi
 
   [ "$rc" -eq 0 ] && return 0
 
@@ -15719,6 +15732,12 @@ $(cat "$pcsig")"
           "ticket $TICKET — the post-commit gate could NOT run (a clean worktree could not be cut at the committed ref); nothing was verified and no green is claimed" \
           "ticket=$TICKET" "iterations=$attempts"
         die "ticket $TICKET could not be re-verified — the post-commit gate could not cut a clean worktree at the committed ref, so the suite never ran against the committed state. Nothing was verified; refusing to record a green.$why"
+        ;;
+      6)
+        emit_event ticket_postcommit_error implement \
+          "ticket $TICKET — the post-commit gate could not run the tests (zero tests collected or discovery could not start); nothing was verified and no green is claimed" \
+          "ticket=$TICKET" "iterations=$attempts"
+        die "ticket $TICKET could not be re-verified — the post-commit gate could not run the tests. Nothing was verified; refusing to record a green.$why"
         ;;
       *)
         # S111: before declaring the work missing, check whether it landed in the
@@ -16048,12 +16067,13 @@ intree_scope_for() { # tree  rels(newline) → one scope
 
 # Run <cmd> once per SCOPE from <run_dir>, `&&`-style: stop at the first failing
 # scope and return its rc. Echoes the combined output of the invocations that
-# ran. One scope is byte-identical to the single run it replaces.
+# ran. Directory scopes keep the original command byte-identical.
 intree_scoped_run() { # run_dir cmd scopes(newline) → output; rc = first failure
-  local run_dir="$1" cmd="$2" scopes="$3" out="" one sc rc=0
+  local run_dir="$1" cmd="$2" scopes="$3" out="" one sc scope_cmd rc=0
   while IFS= read -r sc; do
     [ -n "$sc" ] || continue
-    one="$( cd "$run_dir" && LCARS_TESTS_DIR="$sc" bash -c "$cmd" 2>&1 )" || rc=$?
+    scope_cmd="$(proof_scope_command "$cmd" "$sc")"
+    one="$( cd "$run_dir" && LCARS_TESTS_DIR="$sc" bash -c "$scope_cmd" 2>&1 )" || rc=$?
     out="${out}${one}
 "
     [ "$rc" -eq 0 ] || break
