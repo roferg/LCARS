@@ -11874,8 +11874,8 @@ proof_scope_glob_char() { # abs-scope → the first glob metachar in it ("" = sa
 # =============================================================================
 # Both flip-flop legs run under a portable hard timeout so a suite that never
 # settles is rendered INCONCLUSIVE instead of hanging the ticket build. That
-# bound was added 2026-07-23 (fbe77e4) and it is CORRECT; the 120s default STAYS
-# 120s. What was wrong is where the number could come from.
+# bound was added 2026-07-23 (fbe77e4). S322 raises its default to 500s,
+# together with the probe window; timeout probes now seed a provisional budget.
 #
 # THE DEFECT (B2, measured on a real repo, 2026-10-21): it was read from the
 # ENVIRONMENT ONLY — `${LCARS_GATE_TIMEOUT:-120}`. A repo whose suite
@@ -11888,11 +11888,11 @@ proof_scope_glob_char() { # abs-scope → the first glob metachar in it ("" = sa
 # RESOLUTION ORDER, and it is resolved PER LEG, never once per process: an
 # explicit $LCARS_GATE_TIMEOUT wins (a one-off, and what the ECH injects), then
 # the repo's own `gateTimeout` in .git/lcars/config.json (what `lcars init`
-# seeds when the probe measures a suite that needs it), then the 120s default.
+# seeds when the probe finds a suite that needs it), then the 500s default.
 # Per leg is the point: a mission already in flight picks up a changed value,
 # and a respond-resumed driver reads the repo's record instead of an empty
 # environment. $LCARS_GATE_TIMEOUT_DEFAULT moves the LAST resort only (the test
-# rig uses it to prove the seeding without shipping a 120-second fixture).
+# rig uses it to prove the seeding without shipping a 500-second fixture).
 #
 # GATE_TIMEOUT_SRC is the RECORD of which of the three answered, so the leg's
 # artifact can say it and nobody has to infer it from a number.
@@ -11900,7 +11900,7 @@ proof_scope_glob_char() { # abs-scope → the first glob metachar in it ("" = sa
 # GATE_TIMEOUT_NOTE is the second half of that record (S308 fix round 1,
 # DEFECT 4): what was WRONG with the value the repo (or the environment) handed
 # over, and what was used instead. Empty when nothing needed saying.
-GATE_TIMEOUT_SECS=120; GATE_TIMEOUT_SRC=default; GATE_TIMEOUT_NOTE=""
+GATE_TIMEOUT_SECS=500; GATE_TIMEOUT_SRC=default; GATE_TIMEOUT_NOTE=""
 # THE SANE UPPER BOUND, and why it is one hour. The gate timeout exists to bound
 # a suite that never settles; past it the ticket is parked INCONCLUSIVE rather
 # than hanging the build. A finger-slip in a config file ("999999999" — 31
@@ -11912,7 +11912,7 @@ GATE_TIMEOUT_SECS=120; GATE_TIMEOUT_SRC=default; GATE_TIMEOUT_NOTE=""
 # when it does bite, it says so by name.
 GATE_TIMEOUT_MAX=3600
 GATE_TIMEOUT_SAID=""   # the last raw value spoken about, so N legs say it ONCE
-# SAY IT. A value failing safe to 120 is right; doing it in SILENCE is the exact
+# SAY IT. A value failing safe to the default is right; doing it in SILENCE is the exact
 # failure mode that burned eight worker sessions — the captain had recorded what
 # he thought was a 300s gate and every leg kept dying at 120 with no word
 # anywhere. One line, naming the offending value and what was used instead.
@@ -11941,24 +11941,42 @@ gate_cfg_file() { # [tree] → path to .git/lcars/config.json ("" = none found)
   [ -f "$g/lcars/config.json" ] && printf '%s' "$g/lcars/config.json"
   return 0
 }
+gate_timeout_config_read() { # config reader → gateTimeout scalar
+  # Decode key tokens and allow JSON whitespace on either side of the colon.
+  # Keep the legacy scalar readers/coercions, including their permissiveness
+  # on malformed documents; this adapter is not whole-config validation.
+  "${LCARS_PYTHON_BIN:-python3}" - "$1" <<'PY' | "$2" /dev/stdin gateTimeout
+import json, re, sys
+with open(sys.argv[1]) as stream:
+    text = stream.read()
+string = r'"(?:[^"\\]|\\.)*"'
+for token in re.finditer(string, text):
+    if json.loads(token.group()) != "gateTimeout":
+        continue
+    scalar = re.match(r'\s*:\s*(' + string + r'|[^,}\s]+)', text[token.end():])
+    if scalar:
+        print('{"gateTimeout": ' + scalar.group(1) + '}')
+        break
+PY
+}
 resolve_gate_timeout() { # [tree] → seconds (also sets GATE_TIMEOUT_SECS/SRC/NOTE)
-  local raw="${LCARS_GATE_TIMEOUT:-}" src=env cfg dflt="${LCARS_GATE_TIMEOUT_DEFAULT:-120}"
+  local raw="${LCARS_GATE_TIMEOUT:-}" src=env cfg dflt="${LCARS_GATE_TIMEOUT_DEFAULT:-500}"
   local knob='LCARS_GATE_TIMEOUT' from='the environment' quoted="" t how="" note=""
-  case "$dflt" in ''|*[!0-9]*) dflt=120 ;; esac
-  [ "$dflt" -gt 0 ] 2>/dev/null || dflt=120
+  case "$dflt" in ''|*[!0-9]*) dflt=500 ;; esac
+  [ "$dflt" -gt 0 ] 2>/dev/null || dflt=500
   GATE_TIMEOUT_NOTE=""
   if [ -z "$raw" ]; then
     src=config; knob='gateTimeout'; from='.git/lcars/config.json'
     cfg="$(gate_cfg_file "${1:-}")"
     if [ -n "$cfg" ]; then
-      raw="$(json_raw "$cfg" gateTimeout 2>/dev/null)"
+      raw="$(gate_timeout_config_read "$cfg" json_raw 2>/dev/null)"
       case "$raw" in null) raw="" ;; esac
       # json_raw reads BARE tokens only — its character class stops at the
       # opening quote, so a hand-edited `"gateTimeout": "30"` came back EMPTY
-      # and vanished into the 120s default without a word. Read it as a STRING
+      # and vanished into the default without a word. Read it as a STRING
       # when the bare read finds nothing, so the value can be NAMED at all.
       if [ -z "$raw" ]; then
-        raw="$(json_str "$cfg" gateTimeout 2>/dev/null)"
+        raw="$(gate_timeout_config_read "$cfg" json_str 2>/dev/null)"
         [ -n "$raw" ] && quoted=1
       fi
     fi
@@ -12077,7 +12095,7 @@ gate_timeout_clause() { # → "(…)"
   case "$GATE_TIMEOUT_SRC" in
     env)    printf '(LCARS_GATE_TIMEOUT, from the environment)' ;;
     config) printf '(gateTimeout in .git/lcars/config.json; LCARS_GATE_TIMEOUT overrides it)' ;;
-    *)      printf '(the default — record this repo'"'"'s real need as gateTimeout in .git/lcars/config.json, or set LCARS_GATE_TIMEOUT)' ;;
+    *)      printf '(the default — use lcars update --gate-timeout <seconds>, or set LCARS_GATE_TIMEOUT)' ;;
   esac
 }
 
@@ -12289,7 +12307,7 @@ proof_undeclared_test_exists() { # tree rels(newline) → 0 when one exists
 # THE RESOLUTION: budget the control against the FULL-SUITE number, never the
 # narrow leg's. The repo RECORDS what its suite needs — `gateTimeout` in
 # .git/lcars/config.json, which `lcars init` seeds from the probe's measured
-# wall clock — so that is the number, falling back to the same 120s default
+# wall clock — so that is the number, falling back to the same 500s default
 # every leg uses. The leg's own bound is a FLOOR, not a ceiling: an env
 # LCARS_GATE_TIMEOUT of 600 still raises the control to 600, because a one-off
 # override that RAISES the bound is the captain asking for more time. What it
@@ -12305,16 +12323,16 @@ proof_undeclared_test_exists() { # tree rels(newline) → 0 when one exists
 # it to the leg, and this function's job is to answer the DIFFERENT question
 # "how long does this repo's whole suite need?".
 proof_control_budget() { # tree leg-secs → seconds on stdout
-  local leg="${2:-120}" dflt="${LCARS_GATE_TIMEOUT_DEFAULT:-120}" cfg raw t
-  case "$leg"  in ''|*[!0-9]*) leg=120 ;; esac
-  case "$dflt" in ''|*[!0-9]*) dflt=120 ;; esac
-  [ "$dflt" -gt 0 ] 2>/dev/null || dflt=120
+  local leg="${2:-500}" dflt="${LCARS_GATE_TIMEOUT_DEFAULT:-500}" cfg raw t
+  case "$leg"  in ''|*[!0-9]*) leg=500 ;; esac
+  case "$dflt" in ''|*[!0-9]*) dflt=500 ;; esac
+  [ "$dflt" -gt 0 ] 2>/dev/null || dflt=500
   t="$dflt"
   cfg="$(gate_cfg_file "${1:-}")"
   if [ -n "$cfg" ]; then
-    raw="$(json_raw "$cfg" gateTimeout 2>/dev/null)"
+    raw="$(gate_timeout_config_read "$cfg" json_raw 2>/dev/null)"
     case "$raw" in null) raw="" ;; esac
-    [ -n "$raw" ] || raw="$(json_str "$cfg" gateTimeout 2>/dev/null)"
+    [ -n "$raw" ] || raw="$(gate_timeout_config_read "$cfg" json_str 2>/dev/null)"
     raw="$(printf '%s' "$raw" | tr -d '[:space:]')"
     # 10# forces decimal for the same reason resolve_gate_timeout does: a
     # leading zero read as octal is how the 010s gate died at 7997ms.
@@ -12347,8 +12365,8 @@ PROOF_SCOPE_CONTROL_ZERO=""
 PROOF_SCOPE_CONTROL_WHY=""
 proof_scope_control_exec() { # run_dir cmd [secs] [runner]
   PROOF_SCOPE_CONTROL=""; PROOF_SCOPE_CONTROL_ZERO=""; PROOF_SCOPE_CONTROL_WHY=""
-  local rd="$1" cmd="$2" secs="${3:-120}" runner="${4:-}" d of rc=0 cout
-  case "$secs" in ''|*[!0-9]*) secs=120 ;; esac
+  local rd="$1" cmd="$2" secs="${3:-500}" runner="${4:-}" d of rc=0 cout
+  case "$secs" in ''|*[!0-9]*) secs=500 ;; esac
   [ -n "$rd" ] && [ -n "$cmd" ] || return 0
   if [ "$runner" = unittest ]; then
     # An explicit unittest top-level directory requires an importable child.
@@ -12520,8 +12538,8 @@ PY
 }
 proof_file_scope_exec() { # run_dir cmd scope-abs [secs]
   PROOF_FILE_EXEC=""; PROOF_FILE_EXEC_RC=""; PROOF_FILE_COLLECTED_ZERO=""
-  local rd="$1" cmd="$2" sc="$3" secs="${4:-120}" of rc=0 cout rawcmd="$2"
-  case "$secs" in ''|*[!0-9]*) secs=120 ;; esac
+  local rd="$1" cmd="$2" sc="$3" secs="${4:-500}" of rc=0 cout rawcmd="$2"
+  case "$secs" in ''|*[!0-9]*) secs=500 ;; esac
   [ -n "$rd" ] && [ -n "$cmd" ] && [ -n "$sc" ] || return 0
   cmd="$(proof_scope_command "$cmd" "$sc")"
   of="$(mktemp "${TMPDIR:-/tmp}/lcars-declout.XXXXXX" 2>/dev/null)" || return 0
@@ -13083,7 +13101,7 @@ PDA_ANC
       # D6: SAY WHICH IT WAS. A measurement that ran out of its budget is not a
       # measurement that came back empty.
       PROOF_DECL_WHY="the measurement for $names did not FINISH — it exceeded its ${budget}s budget and was killed — so this gate holds no number for those file(s) either way. A timeout is not a zero"
-      PROOF_DECL_FIX="Nothing here says the ticket's tests did not run; it says the gate ran out of time asking. Record this repo's real full-suite wall clock as \`gateTimeout\` in .git/lcars/config.json so the measurement has the budget it needs."
+      PROOF_DECL_FIX="Nothing here says the ticket's tests did not run; it says the gate ran out of time asking. Use \`lcars update --gate-timeout <seconds>\` to give this repo's full-suite measurement the budget it needs."
     elif [ -n "$sym" ]; then
       # S318 FIX ROUND 3: SAY WHICH IT WAS. A file this measurement REFUSED to
       # touch is not a file whose removal changed nothing — the ablation
@@ -13148,7 +13166,7 @@ PDA_ANC
 # produced — per invocation. Empty when no honest per-invocation count exists
 # (an unreadable or mixed-runner leg), which is what `checked: false` is for.
 PROOF_LEG_RC=0; PROOF_LEG_OUT=""; PROOF_LEG_CMD=""
-PROOF_LEG_TIMEOUT=120; PROOF_LEG_TIMEOUT_SRC=default; PROOF_LEG_TIMEOUT_NOTE=""
+PROOF_LEG_TIMEOUT=500; PROOF_LEG_TIMEOUT_SRC=default; PROOF_LEG_TIMEOUT_NOTE=""
 PROOF_LEG_SCOPE_KIND=""; PROOF_LEG_SCOPE_WHY=""; PROOF_LEG_SCOPE_SELECTED_NOTHING=""
 PROOF_LEG_EXEC=""; PROOF_LEG_EXEC_EACH=""
 PROOF_LEG_FAILED_EXEC=""
@@ -13179,7 +13197,7 @@ proof_scoped_leg_run() { # leg-root rels(newline)
   # self-smoke used to catch) is rendered INCONCLUSIVE — sentinel 98 — instead
   # of silently hanging the ticket build. run_with_hard_timeout group-kills the
   # runner (perl setsid) so no forked child (vitest/jest pool) survives.
-  # S308: resolved PER LEG — env > the repo's recorded gateTimeout > 120.
+  # S308: resolved PER LEG — env > the repo's recorded gateTimeout > 500.
   # NOT in a command substitution — GATE_TIMEOUT_SRC is a global and a subshell
   # would discard the one fact the artifact has to state.
   resolve_gate_timeout "$root" >/dev/null

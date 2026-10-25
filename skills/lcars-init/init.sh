@@ -507,7 +507,7 @@ fi
 # anyone ran `lcars update` — taking the repo's recorded timeout with it and
 # silently restoring the 120s default the Implement gates were killing legs at.
 #
-# `null` means "use the default" (120s; run.sh resolves env > config > default).
+# `null` means "use the default" (500s; run.sh resolves env > config > default).
 # An existing value is PRESERVED by the merge — a measurement never overwrites
 # the captain's number — and the init-time probe seeds one only when it measures
 # a suite slower than the default (lcars_seed_gate_timeout).
@@ -650,7 +650,8 @@ if [ "$DRY_RUN" -eq 1 ]; then
   lcars_all_labels
   exit 0
 fi
-lcars_config_merge "$CONFIG" "$DESIRED_CONFIG"
+lcars_config_merge "$CONFIG" "$DESIRED_CONFIG" \
+  || die "could not merge .git/lcars/config.json; settings were not replaced."
 
 # The clone-id BRIDGE file has served its purpose: config.json now holds the
 # value (either it always did, or the merge just wrote the one the bridge
@@ -764,18 +765,34 @@ READINESS_LINE="$(lcars_readiness_line)"
 if [ "${LCARS_TESTREADY_STATUS:-}" = "ready" ] && [ -z "${LCARS_INIT_SKIP_PROBE:-}" ]; then
   echo "  … probing test systems ($LCARS_TESTREADY_TESTCMD)"
   run_probe "$LCARS_TESTREADY_TESTCMD"
+  if [ -z "${LCARS_TEST_CMD:-}" ] && [ "$STACK" = python ] \
+     && [ "$LCARS_TESTREADY_TESTCMD" = "$TEST_CMD" ] \
+     && [ "$TEST_CMD" = "$(_dtc_python)" ]; then
+    case " $LCARS_CONFIG_ADDED_KEYS " in
+      *" testCommand "*)
+        lcars_probe_python_alternatives "$TEST_CMD" \
+          || die "could not probe alternative Python environments."
+        if [ "$LCARS_PROBED_TEST_CMD" != "$TEST_CMD" ]; then
+          lcars_config_set_string "$CONFIG" testCommand "$LCARS_PROBED_TEST_CMD" \
+            || die "could not record the verified Python test command."
+          LCARS_TESTREADY_TESTCMD="$LCARS_PROBED_TEST_CMD"
+          echo "  ✓ testCommand set to the passing Python environment: $LCARS_TESTREADY_TESTCMD"
+        fi ;;
+    esac
+  fi
   report_probe
   case "$PROBE_OUTCOME" in
     pass) echo "  ✓ TEST SYSTEMS ONLINE — verified by a live run; missions will be proof-gated with: $LCARS_TESTREADY_TESTCMD"
           # S308: the probe just TIMED this repo's whole suite. If it is slower
           # than the proof-gate timeout, record that here rather than leave every
           # Implement leg to be killed mid-run and recorded INCONCLUSIVE.
-          lcars_seed_gate_timeout "$CONFIG" "$PROBE_SECS" ;;
+          lcars_seed_gate_timeout "$CONFIG" "$PROBE_SECS" pass \
+            || die "could not record gateTimeout in .git/lcars/config.json." ;;
     timeout)
-          echo "    The suite did not finish inside ${PROBE_TIMEOUT}s, so LCARS cannot tell whether it is"
-          echo "    SLOW or HUNG, and it will not guess. If it is simply slow, time it yourself and"
-          echo "    record that in .git/lcars/config.json as \`gateTimeout\` (seconds) — the Implement"
-          echo "    gates kill a proof leg at $(lcars_gate_timeout_default)s by default and record it INCONCLUSIVE."
+          lcars_seed_gate_timeout "$CONFIG" "$PROBE_TIMEOUT" timeout \
+            || die "could not record gateTimeout in .git/lcars/config.json."
+          echo "    The suite may be slow or hung; the new budget does not verify it."
+          echo "    Recheck with LCARS_PROBE_TIMEOUT=<seconds> lcars update --probe-tests."
           echo "    Missions are proof-gated on this command, so fix it before relying on the"
           echo "    Implement gates: \`lcars update --fix-tests\` repairs the common causes." ;;
     *)    echo "    Missions are proof-gated on this command, so fix it before relying on the"

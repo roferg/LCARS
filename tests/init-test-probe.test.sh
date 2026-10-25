@@ -288,7 +288,7 @@ check "8d. a HEALTHY node repo is still certified online" \
 #
 # $LCARS_GATE_TIMEOUT_DEFAULT moves the LAST-RESORT default only, so this proves
 # the seeding with a 4-second fake suite instead of a 120-second one. THE
-# SHIPPED DEFAULT IS STILL 120s — asserted at 9e.
+# SHIPPED DEFAULT IS 500s; settings-findings.test.sh locks the timeout path.
 cfg_gate() { "${LCARS_PYTHON_BIN:-python3}" -c 'import json,sys; print(json.load(open(sys.argv[1])).get("gateTimeout"))' "$1/.git/lcars/config.json" 2>/dev/null; }
 
 R9="$(new_repo slow)"
@@ -305,7 +305,7 @@ check "9d. the recommendation names the key AND the file it is recorded in" \
 # A FAST suite must not seed anything — the key stays null and nothing is said.
 R9b="$(new_repo pass)"
 run_init "$R9b"
-check "9e. a suite inside the 120s default seeds NOTHING (the default stays 120)" \
+check "9e. a suite inside the 500s default seeds NOTHING" \
   '[ "$(cfg_gate "$R9b")" = None ]'
 # (The key is named in the "keys seeded" line, which is correct and expected —
 # what must NOT appear is a recommendation about a suite that is not slow.)

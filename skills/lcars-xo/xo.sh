@@ -35,10 +35,9 @@
 #   config.json  "numberOne": {"enabled": true, "engine": "copilot"}   — ONE LINE
 #   state.json   "numberOne": {"status": …, "engine": …, "since": …}   — AT THE TOP
 #
-# WHY ONE LINE IN config.json. `lcars_config_merge` preserves an existing raw
-# value by capturing the tail of the line its key sits on (lcars-common.sh), so
-# a pretty-printed object would be truncated by the next `lcars update` and the
-# config left invalid. `numberOne` is in DESIRED_CONFIG for the matching reason:
+# Config writers now parse multiline values and validate atomic replacements.
+# Number One still emits compact objects for the lightweight state readers.
+# `numberOne` is in DESIRED_CONFIG because
 # a key absent from that list is DELETED by the merge — the failure S196 paid
 # for with cloneId.
 #

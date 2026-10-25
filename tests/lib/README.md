@@ -25,6 +25,7 @@ checked the claim.
 | `evaluate_prompt_guard.py` | exercised | `lcars-xo-drives`, `lcars-xo-eyes` — the load-bearing headings of the Number One evaluate prompt |
 | `home_marks_guard.py` | exercised | `lcars-xo-selfrun` — every `"HOME": "…"` in every live-check checklist is a mark the fence takes |
 | `landing_forbidden_cures.py` | exercised | `lcars-xo-landing` — the landing-rail cures a diff may not use |
+| `optional_runner.py` | exercised | `optional-runner`, `gate-execution-findings`, `settings-findings` — shared optional dependency preflight |
 | `phone-mkfixture.py` | exercised | `lcars-xo-phone` (was `tests/drives/s213/phone/mkfixture.py`) |
 | `ptyrun.py` | exercised | `harness` |
 | `stdin_guard.py` | exercised | `harness` (reached as `"$DIR/lib/stdin_guard.py"`, not by full path) |
@@ -53,6 +54,19 @@ ever reach. So **a new fixture fails the build until you add a row to
 `tests/fixtures/MANIFEST`**, exactly as a new file here does. The manifest
 declares a mode as well as a path, so an executable or a symlink planted at
 a declared path is still refused.
+
+## Optional runners: unavailable is SKIPPED, not PASS or FAIL
+
+Use `runner_available` from `lib/optional_runner.py` before an optional runner's
+fixtures or assertions. Supply the case name, executable, dependency, actionable
+remedy (including its interpreter-selection environment variable), a `results`
+list, and the importable `module` when needed. It returns `True` only when the
+runner is available. Otherwise it prints `SKIPPED` with the reason and remedy
+and appends a record with `skipped=True`, separate from passes and failures.
+Include those records in the suite's skipped count, not its failure exit status.
+Once available, run the real assertions unchanged; a product failure is not a
+reason to skip. Do not duplicate this preflight in individual suites or use
+session-scratch interpreter paths as defaults.
 
 ## `cage.py` — the one gotcha worth knowing
 

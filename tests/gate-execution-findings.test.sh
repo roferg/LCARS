@@ -15,6 +15,9 @@ import sys
 import uuid
 
 root, runner = map(Path, sys.argv[1:])
+sys.path.insert(0, str(root / "tests/lib"))
+from optional_runner import runner_available
+
 keep = os.environ.get("LCARS_S321_EVIDENCE")
 out = Path(keep) if keep else root / ".git" / ("s321-findings-" + uuid.uuid4().hex)
 out.mkdir(parents=True)
@@ -120,25 +123,6 @@ def expect(condition, evidence):
     assert condition, evidence
 
 
-def runner_available(name, executable, dependency, remedy, module=None):
-    reason = None
-    if shutil.which(executable) is None:
-        reason = f"{executable!r} is not available"
-    elif module:
-        probe = run([executable, "-c", "import " + module], check=False)
-        if probe.returncode != 0:
-            reason = " ".join((probe.stdout + probe.stderr).splitlines())
-            if not reason:
-                reason = f"import {module} exited {probe.returncode}"
-    if reason is None:
-        return True
-    message = f"missing optional dependency {dependency}: {reason}; {remedy}"
-    results.append(dict(case=name, passed=False, skipped=True, reason=message))
-    print("  SKIPPED", name, message, flush=True)
-    (out / "results.json").write_text(json.dumps(results, indent=2) + "\n")
-    return False
-
-
 try:
     for odd in ("test failing.py", "test-failing.py"):
         repo, parent = python_repo("F1-" + odd)
@@ -176,7 +160,7 @@ try:
                "test_value" not in data["tip"]["tail"], data)))
 
     name = "F3 Go assertion is RED without count"
-    if runner_available(name, "go", "Go", "install Go and add go to PATH"):
+    if runner_available(name, "go", "Go", "install Go and add go to PATH", results=results):
         repo = fixture("F3-go-red")
         write(repo, "go.mod", "module example.com/lcarsproof\n\ngo 1.20\n")
         write(repo, "value.go", "package proof\nfunc Value() int { return 0 }\n")
@@ -191,7 +175,7 @@ try:
             expect(data["verdict"] == "fail" and "TIP leg is RED" in data["reason"], data)))
 
     name = "F3 Node dot assertion is RED without count"
-    if runner_available(name, "node", "Node.js", "install Node.js and add node to PATH"):
+    if runner_available(name, "node", "Node.js", "install Node.js and add node to PATH", results=results):
         repo = fixture("F3-node-dot-red")
         parent = run(["git", "rev-parse", "HEAD"], repo).stdout.strip()
         write(repo, "tests/ticket.test.js",
@@ -207,7 +191,7 @@ try:
     pytest_python = os.environ.get("LCARS_S321_PYTEST_PYTHON", sys.executable)
     if runner_available(name, pytest_python, "pytest",
                         "supply LCARS_S321_PYTEST_PYTHON=/path/to/python "
-                        "with pytest installed", module="pytest"):
+                        "with pytest installed", module="pytest", results=results):
         repo = fixture("B-pytest-quiet-red")
         parent = run(["git", "rev-parse", "HEAD"], repo).stdout.strip()
         write(repo, "tests/test_ticket.py", "def test_fail():\n    assert 1 == 2\n")
@@ -224,7 +208,7 @@ try:
                             'e.name = "AssertionError"; throw e;'),
     ):
         label = "B Node dot " + name + " is RED"
-        if not runner_available(label, "node", "Node.js", "install Node.js and add node to PATH"):
+        if not runner_available(label, "node", "Node.js", "install Node.js and add node to PATH", results=results):
             continue
         repo = fixture("B-node-dot-" + name)
         parent = run(["git", "rev-parse", "HEAD"], repo).stdout.strip()
@@ -266,7 +250,7 @@ try:
 
     for reporter in ("dot", "tap"):
         name = "boot failure remains inconclusive (" + reporter + ")"
-        if not runner_available(name, "node", "Node.js", "install Node.js and add node to PATH"):
+        if not runner_available(name, "node", "Node.js", "install Node.js and add node to PATH", results=results):
             continue
         repo = fixture("boot-" + reporter)
         parent = run(["git", "rev-parse", "HEAD"], repo).stdout.strip()
@@ -288,6 +272,7 @@ try:
         expect(data["verdict"] == "pass", data),
         expect(data["tip"]["cmd"] == expected, data["tip"]["cmd"])))
 finally:
+    (out / "results.json").write_text(json.dumps(results, indent=2) + "\n")
     skipped = sum(r.get("skipped", False) for r in results)
     passed = sum(r["passed"] for r in results)
     print(f"{passed} passed; {len(results) - passed - skipped} failed; "

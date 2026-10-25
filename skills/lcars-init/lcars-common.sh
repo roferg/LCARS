@@ -2366,31 +2366,16 @@ lcars_config_get() {
 }
 
 # lcars_config_set_string — overwrite the JSON value of ONE top-level key with a
-# (JSON-escaped) string, preserving every other line, key order, and the file's
-# trailing-comma structure. jq-free, line-oriented (relies on the one-key-per-line
-# layout lcars_config_merge writes). Unlike lcars_config_merge this DELIBERATELY
+# (JSON-escaped) string, preserving all text outside the targeted value.
+# Unlike lcars_config_merge this DELIBERATELY
 # replaces an existing value — use it only for targeted, fingerprinted migrations.
 lcars_config_set_string() {
-  local config="$1" key="$2" value="$3"
-  [ -f "$config" ] || return 1
-  local esc; esc="$(lcars_json_escape "$value")"
-  local tmp="$config.tmp.$$"
-  local line indent comma
-  while IFS= read -r line || [ -n "$line" ]; do
-    case "$line" in
-      *"\"$key\""*:*)
-        comma=""; case "$line" in *,) comma="," ;; esac
-        indent="${line%%\"*}"
-        printf '%s"%s": "%s"%s\n' "$indent" "$key" "$esc" "$comma"
-        ;;
-      *)
-        printf '%s\n' "$line"
-        ;;
-    esac
-  done <"$config" >"$tmp"
-  mv "$tmp" "$config"
+  _lcars_config_json set-string "$1" "$2" "$3" ""
 }
 
+_lcars_config_json() {
+  "${LCARS_PYTHON_BIN:-python3}" "$(dirname "${BASH_SOURCE[0]}")/config.py" "$@"
+}
 # ===========================================================================
 # THE CLONE FINGERPRINT AND THE MISSION-ID MINTER  (S196, half A, leg 4)
 # ===========================================================================
@@ -2482,28 +2467,9 @@ _lcars_new_clone_id() {
 #   Insert a top-level string key as the FIRST key of the object, preserving
 #   every other byte of the file.
 #
-# WHY NOT lcars_config_set_or_add_string. That primitive inserts after the first
-# LINE that begins with `{`. On the multi-line config `lcars init` writes, that
-# is correct. On a ONE-LINE config — `{ "model": …, "created": … }`, the shape
-# every test fixture and every hand-written config uses — it appends a second
-# line AFTER the closing brace and the file stops being JSON. This splits on the
-# first `{` CHARACTER instead, which is right for both shapes and for `{}`.
+# The shared writer handles both one-line and pretty-printed configs.
 _lcars_config_insert_head_key() {
-  local config="$1" key="$2" esc text head rest trimmed tmp
-  [ -f "$config" ] || return 1
-  esc="$(lcars_json_escape "$3")"
-  text="$(cat "$config")" || return 1
-  case "$text" in *'{'*) : ;; *) return 1 ;; esac
-  head="${text%%\{*}"
-  rest="${text#*\{}"
-  # leading whitespace stripped, to see whether the object has any keys at all
-  trimmed="${rest#"${rest%%[![:space:]]*}"}"
-  tmp="$config.tmp.$$"
-  case "$trimmed" in
-    ''|'}'*) printf '%s{\n  "%s": "%s"%s\n'  "$head" "$key" "$esc" "$rest" >"$tmp" ;;
-    *)       printf '%s{\n  "%s": "%s",%s\n' "$head" "$key" "$esc" "$rest" >"$tmp" ;;
-  esac
-  mv "$tmp" "$config"
+  lcars_config_set_or_add_string "$@"
 }
 
 # lcars_clone_id <config-path> [--dry-run] — this clone's durable 32-hex identity.
@@ -2602,6 +2568,9 @@ lcars_mint_mission_id() {
 #
 # For each desired key: if the existing config already has it, the EXISTING raw
 # JSON value is preserved; otherwise the supplied default jsonvalue is written.
+# Values are parsed in full, serialized on one line, and validated before an
+# atomic replacement. Invalid existing settings are refused, never repaired
+# implicitly or partly replaced.
 # Keys present in the file but not in the desired list are dropped (the desired
 # list is the canonical schema) — but every current key IS in the schema, so in
 # practice nothing the captain set is lost.
@@ -2613,35 +2582,13 @@ lcars_config_merge() {
   local config="$1" desired="$2"
   LCARS_CONFIG_ADDED_KEYS=""
   LCARS_CONFIG_PRESENT_KEYS=""
-
-  local existing=""
-  [ -f "$config" ] && existing="$(cat "$config")"
-
-  local body="" key default rawval
-  while IFS='=' read -r key default; do
-    [ -n "$key" ] || continue
-    if [ -n "$existing" ] && printf '%s' "$existing" | grep -q "\"$key\"[[:space:]]*:"; then
-      # Preserve the existing raw value verbatim (string, number, or null).
-      rawval="$(printf '%s' "$existing" \
-        | sed -n "s/.*\"$key\"[[:space:]]*:[[:space:]]*\(.*\)/\1/p" | head -1)"
-      # Strip a trailing comma and surrounding whitespace from the captured tail.
-      rawval="${rawval%,}"
-      rawval="$(printf '%s' "$rawval" | sed 's/[[:space:]]*$//')"
-      LCARS_CONFIG_PRESENT_KEYS="${LCARS_CONFIG_PRESENT_KEYS:+$LCARS_CONFIG_PRESENT_KEYS }$key"
-    else
-      rawval="$default"
-      LCARS_CONFIG_ADDED_KEYS="${LCARS_CONFIG_ADDED_KEYS:+$LCARS_CONFIG_ADDED_KEYS }$key"
-    fi
-    body="${body:+$body,$'\n'}  \"$key\": $rawval"
-  done <<EOF
-$desired
-EOF
-
-  if [ "${3:-}" = "--dry-run" ]; then
-    printf '{\n%s\n}\n' "$body"
-  else
-    printf '{\n%s\n}\n' "$body" >"$config"
-  fi
+  local result
+  result="$(_lcars_config_json merge "$config" "$desired" "${3:-}")" || return 1
+  LCARS_CONFIG_ADDED_KEYS="${result%%$'\n'*}"
+  result="${result#*$'\n'}"
+  LCARS_CONFIG_PRESENT_KEYS="${result%%$'\n'*}"
+  [ "${3:-}" != "--dry-run" ] || printf '%s\n' "${result#*$'\n'}"
+  return 0
 }
 
 # ---------------------------------------------------------------------------
@@ -3270,16 +3217,11 @@ _dtc_js_npm_fallback() {
 #     same regression the dotnet comment records). An empty answer is an honest
 #     answer; inventing a runner to fill the slot is the defect, not the cure.
 #
-# DETERMINISTIC BY CHOICE — there is deliberately NO `command -v pytest` probe.
-# Detection feeds config.json, the board's verdict and every gate worktree, so
-# the same repo must seed the same runner on the captain's laptop, in a worker's
-# worktree and in CI; a probe would make the seed depend on whichever venv
-# happened to be active at init time. A DECLARED-but-uninstalled pytest stays
-# `pytest` for the same reason: the repo's declaration is the evidence, and
-# "can it launch here" is a different question, already asked once — honestly,
-# and as `broken` rather than as a rewritten runner — by the first-token check
-# in lcars_test_readiness_status. `python3 -m unittest` needs no probe either:
-# the runner ships with the interpreter.
+# Runner choice follows the repo's declarations, not PATH. Its interpreter
+# initially follows an existing repo environment: LCARS testenv, .venv, then venv.
+# unittest itself is stdlib, but the suite's imports may not be (OF2: PyYAML).
+# Record the absolute interpreter so gate worktrees reuse those dependencies.
+# Fresh init probes alternatives before retaining a failed detected candidate.
 #
 # LEDGERED (recorded, not fixed): the unittest leg looks for test files at the
 # top level and in the DIRECT children of `tests/` / `test/` only. A suite nested
@@ -3327,21 +3269,48 @@ _dtc_py_unittest_layout() {
   return 1
 }
 
+_dtc_python_environments() {
+  local common candidate
+  common="$(git -C "$TOPLEVEL" rev-parse --git-common-dir 2>/dev/null)" || common=""
+  case "$common" in ''|/*) : ;; *) common="$TOPLEVEL/$common" ;; esac
+  for candidate in "${common:+$common/lcars/testenv/bin/python}" \
+      "$TOPLEVEL/.venv/bin/python" "$TOPLEVEL/venv/bin/python"; do
+    [ -n "$candidate" ] && [ -x "$candidate" ] || continue
+    printf '%s\n' "$candidate"
+  done
+}
+
+_dtc_python_interpreter() {
+  local candidate
+  candidate="$(_dtc_python_environments | head -1)"
+  if [ -n "$candidate" ]; then
+    "${LCARS_PYTHON_BIN:-python3}" -c 'import shlex,sys; print(shlex.quote(sys.argv[1]))' "$candidate"
+    return $?
+  fi
+  printf 'python3'
+}
+
 _dtc_python() {
   # The MARKER GATE is unchanged — the same three files decide whether this arm
   # is asked at all. Only what it does once asked has changed.
   [ -f "$TOPLEVEL/pyproject.toml" ] || [ -f "$TOPLEVEL/pytest.ini" ] || [ -f "$TOPLEVEL/tox.ini" ] || return 1
+  local python
+  python="${1:-$(_dtc_python_interpreter)}"
   if _dtc_py_pytest_evidence; then
-    echo 'pytest "${LCARS_TESTS_DIR:-.}"'
+    if [ "$python" = python3 ]; then
+      echo 'pytest "${LCARS_TESTS_DIR:-.}"'
+    else
+      echo "$python -m pytest \"\${LCARS_TESTS_DIR:-.}\""
+    fi
     return 0
   fi
   local layout dir pat
   layout="$(_dtc_py_unittest_layout)" || return 1
   dir="${layout%%|*}"; pat="${layout#*|}"
   if [ -n "$pat" ]; then
-    echo "python3 -m unittest discover -s \"\${LCARS_TESTS_DIR:-$dir}\" -p \"$pat\""
+    echo "$python -m unittest discover -s \"\${LCARS_TESTS_DIR:-$dir}\" -p \"$pat\""
   else
-    echo "python3 -m unittest discover -s \"\${LCARS_TESTS_DIR:-$dir}\""
+    echo "$python -m unittest discover -s \"\${LCARS_TESTS_DIR:-$dir}\""
   fi
 }
 
@@ -3518,13 +3487,13 @@ detect_stack() {
 # — an actual bounded run — for the one-off callers that can afford it.
 
 # run_probe <cmd> — run the test command ONCE from the repo root, BOUNDED by
-# $LCARS_PROBE_TIMEOUT (default 120s; perl's alarm survives exec, so the timer
+# $LCARS_PROBE_TIMEOUT (default 500s; perl's alarm survives exec, so the timer
 # rides into the spawned bash). Sets PROBE_OUTCOME (pass|fail|zero-collected|
 # timeout), PROBE_RC, and PROBE_OUT (captured-output file). Zero-collected is
 # its OWN honest outcome, never a pass — the signature REUSES the rg_signature
 # `zerotests` + proof_zero_collected phrasings from skills/lcars-run/run.sh
 # (keep the two in step).
-PROBE_TIMEOUT="${LCARS_PROBE_TIMEOUT:-120}"
+PROBE_TIMEOUT="${LCARS_PROBE_TIMEOUT:-${LCARS_GATE_TIMEOUT_DEFAULT:-500}}"
 # S308: PROBE_SECS — the suite's measured WALL-CLOCK. This probe is the only
 # place LCARS ever times a repo's whole suite, and it used to throw the number
 # away: on the repo this was measured against it timed out and said only "fix
@@ -3533,6 +3502,25 @@ PROBE_TIMEOUT="${LCARS_PROBE_TIMEOUT:-120}"
 # 120s default, five times, with nowhere for the repo to record what it needs.
 # Measured, not estimated; recorded, not inferred.
 PROBE_SECS=0
+lcars_probe_zero_executed() { # output-file → 0 when unittest has no genuine passes
+  # unittest's "Ran" includes skips and expected failures; neither certifies.
+  # Sum completed summaries so a mixed run with a genuine pass still qualifies.
+  awk '
+    /^Ran [0-9]+ tests? in / { count = $2; pending = 1 }
+    pending && /^(OK|FAILED|NO TESTS RAN)([[:space:]]|$)/ {
+      skipped = 0
+      if (match($0, /skipped=[0-9]+/))
+        skipped = substr($0, RSTART + 8, RLENGTH - 8) + 0
+      expected = 0
+      if (match($0, /expected failures=[0-9]+/))
+        expected = substr($0, RSTART + 18, RLENGTH - 18) + 0
+      executed += count - skipped - expected
+      seen = 1; pending = 0
+    }
+    END { exit !(seen && executed == 0) }
+  ' "$1"
+}
+
 run_probe() {
   local cmd="$1" _t0 _t1
   PROBE_OUT="$(mktemp "${TMPDIR:-/tmp}/lcars-probe.XXXXXX")"
@@ -3573,13 +3561,48 @@ run_probe() {
     PROBE_OUTCOME="timeout"
   elif grep -Eq "$cantrun" "$PROBE_OUT"; then
     PROBE_OUTCOME="cannot-run"
-  elif grep -Eq "$zero" "$PROBE_OUT"; then  # runner finished but ran NOTHING
+  elif grep -Eq "$zero" "$PROBE_OUT" || lcars_probe_zero_executed "$PROBE_OUT"; then
     PROBE_OUTCOME="zero-collected"
   elif [ "$PROBE_RC" -eq 0 ]; then
     PROBE_OUTCOME="pass"
   else
     PROBE_OUTCOME="fail"
   fi
+}
+
+# Called only for a freshly seeded Python command after its first live probe.
+# A failed alternative never replaces the original command or its timing evidence.
+lcars_probe_python_alternatives() {
+  LCARS_PROBED_TEST_CMD="$1"
+  [ "$PROBE_OUTCOME" != pass ] || return 0
+  [ -n "$(_dtc_python_environments)" ] || return 0
+  local original_out="$PROBE_OUT" original_rc="$PROBE_RC"
+  local original_outcome="$PROBE_OUTCOME" original_secs="$PROBE_SECS"
+  local candidate quoted cmd seen=""
+  report_probe
+  while IFS= read -r candidate; do
+    [ -n "$candidate" ] || continue
+    case "$seen" in *"|$candidate|"*) continue ;; esac
+    seen="$seen|$candidate|"
+    quoted="$("${LCARS_PYTHON_BIN:-python3}" -c \
+      'import shlex,sys; print(shlex.quote(sys.argv[1]))' "$candidate")" || return 1
+    cmd="$(_dtc_python "$quoted")" || return 1
+    [ "$cmd" != "$1" ] || continue
+    echo "  … probing alternative Python environment ($cmd)"
+    run_probe "$cmd"
+    if [ "$PROBE_OUTCOME" = pass ]; then
+      LCARS_PROBED_TEST_CMD="$cmd"
+      rm -f "$original_out"
+      return 0
+    fi
+    report_probe
+    rm -f "$PROBE_OUT"
+  done <<PY_ENVS
+$(_dtc_python_environments)
+$(command -v python3)
+PY_ENVS
+  PROBE_OUT="$original_out"; PROBE_RC="$original_rc"
+  PROBE_OUTCOME="$original_outcome"; PROBE_SECS="$original_secs"
 }
 
 # report_probe — the ship-status readout for the last run_probe.
@@ -3591,7 +3614,7 @@ report_probe() {
       echo "  ✗ PROBE FAILED — the suite ran but reported failures (exit $PROBE_RC)."
       tail -n 5 "$PROBE_OUT" 2>/dev/null | sed 's/^/      /' ;;
     zero-collected)
-      echo "  ⚠ PROBE INCONCLUSIVE — the runner started but collected ZERO tests."
+      echo "  ⚠ PROBE INCONCLUSIVE — the runner recorded ZERO genuinely passing tests (none collected, all skipped, or only expected failures)."
       echo "    That is not a pass: the command may be scoped to the wrong place." ;;
     cannot-run)
       echo "  ⚠ PROBE COULD NOT RUN — the command never reached a test run: the"
@@ -3605,35 +3628,29 @@ report_probe() {
 # ---------------------------------------------------------------------------
 # S308: SEED THE GATE TIMEOUT THE PROBE JUST MEASURED
 # ---------------------------------------------------------------------------
-# Every Implement proof leg runs the repo's suite under a hard timeout — the
-# 120s hang protection added 2026-07-23, which STAYS 120s. A repo whose suite
-# legitimately takes longer than that had nowhere to say so, so `lcars init`
-# certified it ready and every later proof leg was killed mid-run and recorded
-# INCONCLUSIVE. The probe already knows the number. Write it down.
-#
-# WHAT IS WRITTEN: twice the measured wall-clock (headroom for a cold cache and
-# a busy machine), rounded up to the next 30s, and never below the default.
-# WHEN: only when the measured suite EXCEEDS the current default, and only when
-# the captain has not already recorded a value of his own — a measurement never
-# overwrites his number. On a PROBE TIMEOUT the suite's real length is unknown,
-# so nothing is invented: the honest recommendation is the probe's own voice.
-#
-# $LCARS_GATE_TIMEOUT_DEFAULT moves the last-resort default only. It exists so
-# the suites can prove this behaviour with a 4-second fake suite instead of
-# shipping a 120-second one, and so a machine-wide floor is possible; the
-# SHIPPED default is unchanged.
+# Passes supply measured wall-clock; timeouts supply only the exceeded bound.
+# Both get twice that evidence, rounded up to 30s (at most the gate's 1h cap).
+# A timeout never certifies the suite or promises the new budget is sufficient.
+# Existing captain settings always win. The probe and gate ship at 500s.
 lcars_gate_timeout_default() { # → the default gate timeout in seconds
-  local d="${LCARS_GATE_TIMEOUT_DEFAULT:-120}"
-  case "$d" in ''|*[!0-9]*) d=120 ;; esac
-  [ "$d" -gt 0 ] 2>/dev/null || d=120
+  local d="${LCARS_GATE_TIMEOUT_DEFAULT:-500}"
+  case "$d" in ''|*[!0-9]*) d=500 ;; esac
+  [ "$d" -gt 0 ] 2>/dev/null || d=500
   printf '%s' "$d"
 }
 # Echoes the recommendation line(s) it printed; writes the key when it applies.
-lcars_seed_gate_timeout() { # config-file measured-secs
-  local config="$1" secs="${2:-0}" dflt want existing
+lcars_seed_gate_timeout() { # config-file seconds [pass|timeout]
+  local config="$1" secs="${2:-0}" outcome="${3:-pass}" dflt want existing evidence
+  case "$outcome" in pass|timeout) : ;; *) return 0 ;; esac
+  [ "$outcome" != timeout ] || secs="$PROBE_TIMEOUT"
   case "$secs" in ''|*[!0-9]*) return 0 ;; esac
   dflt="$(lcars_gate_timeout_default)"
-  [ "$secs" -gt "$dflt" ] || return 0
+  if [ "$outcome" = pass ]; then
+    [ "$secs" -gt "$dflt" ] || return 0
+    evidence="this suite takes ${secs}s"
+  else
+    evidence="this suite exceeded ${secs}s; its full duration is unknown"
+  fi
   [ -f "$config" ] || return 0
   existing="$(lcars_config_get_raw "$config" gateTimeout)"
   case "$existing" in
@@ -3641,14 +3658,15 @@ lcars_seed_gate_timeout() { # config-file measured-secs
       want=$(( secs * 2 ))
       want=$(( ((want + 29) / 30) * 30 ))
       [ "$want" -gt "$dflt" ] || want=$(( dflt + 30 ))
-      lcars_config_set_or_add_raw "$config" gateTimeout "$want"
-      echo "  ✓ this suite takes ${secs}s, which is longer than the ${dflt}s proof-gate timeout —"
-      echo "    recorded gateTimeout=$want in .git/lcars/config.json so the Implement gates"
-      echo "    run it to completion instead of killing it. Change that number any time; an"
-      echo "    LCARS_GATE_TIMEOUT in the environment still wins over it."
+      [ "$want" -le 3600 ] || want=3600
+      lcars_config_set_or_add_raw "$config" gateTimeout "$want" || return 1
+      echo "  · $evidence —"
+      echo "    recorded gateTimeout=$want in .git/lcars/config.json as a provisional proof budget."
+      echo "    Adjust with: lcars update --gate-timeout <seconds> (1–3600)."
+      echo "    LCARS_GATE_TIMEOUT in the environment still wins; a timeout is not a passing probe."
       ;;
     *)
-      echo "  · this suite takes ${secs}s; your recorded gateTimeout=$existing"
+      echo "  · $evidence; your recorded gateTimeout=$existing"
       echo "    (.git/lcars/config.json) is left exactly as it is."
       ;;
   esac
@@ -3741,6 +3759,13 @@ lcars_test_readiness_status() {
     read -r first rest <<EOF2
 $tc
 EOF2
+    case "$tc" in
+      \'*|\"*)
+        first="$("${LCARS_PYTHON_BIN:-python3}" -c \
+          'import shlex,sys; print(next(iter(shlex.shlex(sys.argv[1], posix=True))))' "$tc")" \
+          || { LCARS_TESTREADY_STATUS="broken"; return 0; }
+        ;;
+    esac
     # Resolve from the repo root so a relative runner (node_modules/.bin/…)
     # resolves the way the gate would run it.
     if ( cd "${TOPLEVEL:-.}" 2>/dev/null && command -v "$first" >/dev/null 2>&1 ); then
@@ -4416,8 +4441,7 @@ lcars_readiness_line() {
 # lcars_config_set_or_add_string — the sanctioned-writer primitive: overwrite a
 # top-level string key IN PLACE (lcars_config_set_string), or — when the key is
 # absent from an older config — INSERT it as the first key after the opening
-# brace. Line-oriented and jq-free like its siblings; every other line is
-# preserved byte-for-byte.
+# brace. All text outside the targeted value is preserved byte-for-byte.
 # S309 fix round 1, D6 — OPTIONAL <after-key>: insert the new key's line
 # immediately AFTER that key's line instead of at the top. `lcars init` writes
 # `workerBin` straight after `model`, so `lcars update --engine` adding it at
@@ -4426,97 +4450,30 @@ lcars_readiness_line() {
 # captain reads; a sibling writer can now place a key in the same slot.
 #
 # IT FALLS BACK RATHER THAN RISK THE FILE. The <after-key> is used only when its
-# line both EXISTS and ends in a comma — inserting a comma-terminated line after
+# value both EXISTS and is followed by a comma — inserting a comma-terminated line after
 # the file's LAST key would produce invalid JSON. Anything else takes the
 # historical path (first key after the opening brace), where the inserted line's
 # own comma is always correct.
 lcars_config_set_or_add_string() {
-  local config="$1" key="$2" value="$3" after="${4:-}"
-  [ -f "$config" ] || return 1
-  if lcars_config_has_key "$config" "$key"; then
-    lcars_config_set_string "$config" "$key" "$value"
-    return $?
-  fi
-  local esc; esc="$(lcars_json_escape "$value")"
-  local tmp="$config.tmp.$$" line inserted=0
-  if [ -n "$after" ]; then
-    grep -q "\"$after\":.*,[[:space:]]*$" "$config" || after=""
-  fi
-  while IFS= read -r line || [ -n "$line" ]; do
-    printf '%s\n' "$line"
-    if [ "$inserted" -eq 0 ]; then
-      if [ -n "$after" ]; then
-        case "$line" in
-          *"\"$after\":"*)
-            printf '  "%s": "%s",\n' "$key" "$esc"
-            inserted=1
-            ;;
-        esac
-      else
-        case "$line" in
-          '{'*)
-            printf '  "%s": "%s",\n' "$key" "$esc"
-            inserted=1
-            ;;
-        esac
-      fi
-    fi
-  done <"$config" >"$tmp"
-  mv "$tmp" "$config"
+  _lcars_config_json set-string "$1" "$2" "$3" "${4:-}"
 }
 
 # lcars_config_set_or_add_raw — the same primitive for a RAW (unquoted) JSON
-# value: an object, an array, a number, true/false/null. Overwrites the key's
-# line in place when it is present, or inserts it as the first key after the
-# opening brace when it is not. Every other line is preserved byte-for-byte.
-#
-# THE VALUE MUST BE ONE LINE, and that is not a style preference. The merge in
-# `lcars_config_merge` preserves an existing raw value by capturing the tail of
-# the line the key sits on — so a pretty-printed object would be truncated at
-# its first newline and the config would be left invalid the first time the
-# captain ran `lcars update`. Callers pass e.g.
-#   {"enabled": true, "engine": "copilot"}
-# Nothing verifies that for you; the suites do.
+# value: an object, an array, a number, true/false/null. Replaces the full value,
+# including multiline objects, and validates input and read-back before replace.
 lcars_config_set_or_add_raw() {
-  local config="$1" key="$2" value="$3"
-  [ -f "$config" ] || return 1
-  local tmp="$config.tmp.$$" line indent comma inserted=0
-  if lcars_config_has_key "$config" "$key"; then
-    while IFS= read -r line || [ -n "$line" ]; do
-      case "$line" in
-        *"\"$key\""*:*)
-          comma=""; case "$line" in *,) comma="," ;; esac
-          indent="${line%%\"*}"
-          printf '%s"%s": %s%s\n' "$indent" "$key" "$value" "$comma"
-          ;;
-        *) printf '%s\n' "$line" ;;
-      esac
-    done <"$config" >"$tmp"
-    mv "$tmp" "$config"
-    return 0
-  fi
-  while IFS= read -r line || [ -n "$line" ]; do
-    printf '%s\n' "$line"
-    if [ "$inserted" -eq 0 ]; then
-      case "$line" in
-        '{'*) printf '  "%s": %s,\n' "$key" "$value"; inserted=1 ;;
-      esac
-    fi
-  done <"$config" >"$tmp"
-  mv "$tmp" "$config"
+  _lcars_config_json set-raw "$1" "$2" "$3" ""
 }
 
 # lcars_config_get_raw — the RAW text of a top-level key's value: an object on
-# one line, a number, true/false/null. Empty when absent. The string reader
+# one line, a number, true/false/null. Multiline values are compacted; malformed
+# JSON fails explicitly. Empty when absent. The string reader
 # above cannot answer for an object, and a surface that showed `numberOne` by
 # re-deriving it from somewhere else would be inferring a fact its producer
 # already recorded.
 lcars_config_get_raw() {
-  local config="$1" key="$2" v
-  [ -f "$config" ] || return 0
-  v="$(sed -n "s/.*\"$key\"[[:space:]]*:[[:space:]]*\(.*\)/\1/p" "$config" | head -1)"
-  v="${v%,}"
-  printf '%s' "$v" | sed 's/[[:space:]]*$//'
+  [ -f "$1" ] || return 0
+  _lcars_config_json get-raw "$1" "$2"
 }
 
 # === S176: THE PRD's REQUIRED FIELDS, IN EITHER SHAPE ======================

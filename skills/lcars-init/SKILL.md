@@ -62,6 +62,30 @@ creation timestamp in the preview are provisional until a real init.
 
 With no arguments, initialization runs as before.
 
+The detected test command gets one live probe, bounded to 500 seconds by
+default (`LCARS_PROBE_TIMEOUT` overrides it). Proof gates also default to 500
+seconds. A timed-out probe records a provisional larger `gateTimeout` when
+unset, stating only the exceeded bound, not a measured suite duration or a
+passing verdict. Adjust it with `lcars update --gate-timeout <seconds>`
+(1–3600), then re-probe with a suitable `LCARS_PROBE_TIMEOUT`.
+
+Python detection reuses an existing interpreter from the shared git directory's
+`lcars/testenv`, `.venv`, or `venv`, in that order, before falling back to
+`python3`/`pytest`. It records an absolute interpreter path so isolated gate
+worktrees use the same installed dependencies. On fresh init, if the detected
+Python command's live probe does not pass, init probes the other existing
+environments and PATH's `python3`, retaining the first command that actually
+passes the suite. If none passes, the original command and its probe verdict
+remain; an executable alone is not proof of capability. This does not run when
+probes are skipped, in dry-run mode, or for an existing captain command.
+A unittest suite containing only skips or expected failures is inconclusive,
+never verified, and the search continues. Only an executed-and-genuinely-passed
+test certifies: a passing run with some skipped tests or expected failures still
+qualifies when at least one test genuinely passed.
+Without an existing environment,
+a missing dependency remains a reported probe failure, never a verified suite.
+Existing customized test commands are preserved.
+
 Run the bundled script from the repo you want to initialize:
 
 ```bash

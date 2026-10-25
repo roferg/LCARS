@@ -449,9 +449,9 @@ scope_hook "$B10" LCARS_GATE_TIMEOUT=7
   || bad "10b. got TIMEOUT=$(hook_tmo) SOURCE=$(hook_src) (expected 7/env)"
 B10b="$(mkbase --files 2 --sleep 1 --tip flat2)"
 scope_hook "$B10b"
-[ "$(hook_tmo)" = 120 ] && [ "$(hook_src)" = default ] \
-  && ok "10c. and an unset gateTimeout still reports 120/default" \
-  || bad "10c. got TIMEOUT=$(hook_tmo) SOURCE=$(hook_src) (expected 120/default)"
+[ "$(hook_tmo)" = 500 ] && [ "$(hook_src)" = default ] \
+  && ok "10c. and an unset gateTimeout reports 500/default" \
+  || bad "10c. got TIMEOUT=$(hook_tmo) SOURCE=$(hook_src) (expected 500/default)"
 
 # ===========================================================================
 # 11. DEFECT 4 — AN UNUSABLE gateTimeout IS NEVER DISCARDED IN SILENCE.
@@ -468,10 +468,10 @@ B11="$(mkbase --files 2 --sleep 1 --tip flat2)"
 for badv in abc -5 0 7.5 true; do
   cfg_set_gate "$B11" "$badv"
   scope_hook "$B11"
-  if [ "$(hook_tmo)" = 120 ] && [ "$(hook_src)" = default ]; then
-    ok "11a/$badv. gateTimeout=$badv fails SAFE to 120/default"
+  if [ "$(hook_tmo)" = 500 ] && [ "$(hook_src)" = default ]; then
+    ok "11a/$badv. gateTimeout=$badv fails SAFE to 500/default"
   else
-    bad "11a/$badv. got TIMEOUT=$(hook_tmo) SOURCE=$(hook_src) (expected 120/default)"
+    bad "11a/$badv. got TIMEOUT=$(hook_tmo) SOURCE=$(hook_src) (expected 500/default)"
   fi
   case "$SOUT" in
     *gateTimeout*"$badv"*) ok "11b/$badv. and SAYS so, naming the offending value" ;;
@@ -1689,4 +1689,3 @@ fi
 echo
 printf 'gate-scope: %d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]
-

@@ -57,7 +57,11 @@ VERB_ENGINE=""
 VERB_ENGINE_GIVEN=0
 VERB_MODEL=""
 VERB_MODEL_GIVEN=0
+VERB_GATE_TIMEOUT=""
+VERB_GATE_GIVEN=0
+VERB_OTHER_GIVEN=0
 while [ $# -gt 0 ]; do
+  case "$1" in --gate-timeout|--gate-timeout=*) : ;; *) VERB_OTHER_GIVEN=1 ;; esac
   case "$1" in
     # S319 — `--test-command` READS A FLAG-SHAPED VALUE THE SAME WAY, and it is
     # the one arm S309 left out of its own rule. MEASURED at HEAD:
@@ -77,6 +81,10 @@ while [ $# -gt 0 ]; do
     --test-command=*) VERB="set"; VERB_CMD="${1#--test-command=}"; shift ;;
     --probe-tests)    VERB="probe"; shift ;;
     --fix-tests)      VERB="fix"; shift ;;
+    --gate-timeout)   VERB="gate"; VERB_GATE_GIVEN=1; shift
+                      VERB_GATE_TIMEOUT="${1:-}"; [ $# -gt 0 ] && shift ;;
+    --gate-timeout=*) VERB="gate"; VERB_GATE_GIVEN=1
+                      VERB_GATE_TIMEOUT="${1#--gate-timeout=}"; shift ;;
     # S309 fix round 1, D5 — A FLAG-SHAPED VALUE IS A MISSING VALUE.
     # `--engine --model 'zzz'` used to let `--engine` swallow `--model` as its
     # engine name and then refuse with `unknown option "zzz"` — naming the one
@@ -106,9 +114,18 @@ while [ $# -gt 0 ]; do
                       esac ;;
     --model=*)        [ "$VERB" = "engine" ] || VERB="engine"
                       VERB_MODEL="${1#--model=}"; VERB_MODEL_GIVEN=1; shift ;;
-    *) die "unknown option \"$1\" — usage: lcars update [--test-command '<cmd>' | --probe-tests | --fix-tests | --engine <engine> | --model '<model>']" ;;
+    *) die "unknown option \"$1\" — usage: lcars update [--test-command '<cmd>' | --probe-tests | --fix-tests | --gate-timeout <seconds> | --engine <engine> | --model '<model>']" ;;
   esac
 done
+if [ "$VERB_GATE_GIVEN" -eq 1 ]; then
+  case "$VERB_GATE_TIMEOUT" in
+    ''|0*|*[!0-9]*) die "--gate-timeout requires a positive integer from 1 to 3600 seconds. Nothing was written." ;;
+  esac
+  [ "${#VERB_GATE_TIMEOUT}" -le 4 ] && [ "$VERB_GATE_TIMEOUT" -le 3600 ] \
+    || die "--gate-timeout requires a positive integer from 1 to 3600 seconds. Nothing was written."
+  [ "$VERB_OTHER_GIVEN" -eq 0 ] \
+    || die "--gate-timeout must be used on its own. Nothing was written."
+fi
 
 # --- the running LCARS version (what update stamps the repo current to) ----
 # `lcars_running_version` is lcars-common.sh's (sourced above) — S207 moved the
@@ -409,6 +426,12 @@ EOF
 
 if [ -n "$VERB" ]; then
   case "$VERB" in
+    gate)
+      lcars_config_set_or_add_raw "$CONFIG" gateTimeout "$VERB_GATE_TIMEOUT" \
+        || die "could not write gateTimeout in .git/lcars/config.json."
+      echo "  ✓ gateTimeout set: ${VERB_GATE_TIMEOUT}s"
+      exit 0
+      ;;
     # =====================================================================
     # S309 — RECORD THE ENGINE, AND MOVE THE MODEL WITH IT.
     #
@@ -501,7 +524,8 @@ if [ -n "$VERB" ]; then
       report_probe
       # S308: the probe is the one place the whole suite is TIMED — record the
       # gate timeout it implies instead of discarding the measurement.
-      [ "$PROBE_OUTCOME" = "pass" ] && lcars_seed_gate_timeout "$CONFIG" "$PROBE_SECS"
+      lcars_seed_gate_timeout "$CONFIG" "$PROBE_SECS" "$PROBE_OUTCOME" \
+        || die "could not record gateTimeout in .git/lcars/config.json."
       [ "$PROBE_OUTCOME" = "pass" ] && exit 0
       die "test probe reported $PROBE_OUTCOME; test systems are not verified."
       ;;
@@ -562,8 +586,9 @@ AMB_EOF
         echo "  ▸ probing test systems…"
         run_probe "$NEWCMD"
         report_probe
+        lcars_seed_gate_timeout "$CONFIG" "$PROBE_SECS" "$PROBE_OUTCOME" \
+          || die "could not record gateTimeout in .git/lcars/config.json."
         if [ "$PROBE_OUTCOME" = "pass" ]; then
-          lcars_seed_gate_timeout "$CONFIG" "$PROBE_SECS"   # S308
           print_verdict; exit 0
         fi
         echo "  ⚠ TEST SYSTEMS SET BUT UNVERIFIED — the command is configured, but the probe reported ${PROBE_OUTCOME}; not declaring ready."
@@ -658,8 +683,9 @@ AMB_EOF
       echo "  ▸ probing test systems…"
       run_probe "$NEWCMD"
       report_probe
+      lcars_seed_gate_timeout "$CONFIG" "$PROBE_SECS" "$PROBE_OUTCOME" \
+        || die "could not record gateTimeout in .git/lcars/config.json."
       if [ "$PROBE_OUTCOME" = "pass" ]; then
-        lcars_seed_gate_timeout "$CONFIG" "$PROBE_SECS"      # S308
         print_verdict
         exit 0
       fi
@@ -749,7 +775,7 @@ CLONE_ID="$(lcars_clone_id "$CONFIG")"
 # anyone ran `lcars update` — taking the repo's recorded timeout with it and
 # silently restoring the 120s default the Implement gates were killing legs at.
 #
-# `null` means "use the default" (120s; run.sh resolves env > config > default).
+# `null` means "use the default" (500s; run.sh resolves env > config > default).
 # An existing value is PRESERVED by the merge — a measurement never overwrites
 # the captain's number — and the init-time probe seeds one only when it measures
 # a suite slower than the default (lcars_seed_gate_timeout).
@@ -795,7 +821,8 @@ comprehensionBudget=1200
 gateTimeout=$GATE_TIMEOUT_VALUE
 numberOne={\"enabled\": false}$VERSION_LINE
 created=\"$CREATED\""
-lcars_config_merge "$CONFIG" "$DESIRED_CONFIG"
+lcars_config_merge "$CONFIG" "$DESIRED_CONFIG" \
+  || die "could not merge .git/lcars/config.json; settings were not replaced."
 CONFIG_ADDED="$LCARS_CONFIG_ADDED_KEYS"
 
 # Targeted schema migrations, in order. Both run AFTER the merge so they rewrite

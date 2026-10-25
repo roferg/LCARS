@@ -39,6 +39,10 @@ testCommand writers: `--test-command '<cmd>'` (manual set), `--probe-tests`
 `--fix-tests` (the one-click repair: detected suggestion or a read-only
 discovery worker, then set + probe + verdict).
 
+A unittest run with no genuine passes (zero collected, only skips, or only
+expected failures) is inconclusive, never verified. A genuine pass alongside
+skips or expected failures still qualifies.
+
 Also carries the S309 engine verbs — `--engine <claude|copilot>` and
 `--model '<model>'` — the sanctioned writers for the two keys that say which
 engine this repo runs on and what model its workers are spawned with.
@@ -56,10 +60,21 @@ merge-preserving writer. Existing values — a customized `testCommand`, `model`
 
 `gateTimeout` (seconds) is the repo's own proof-gate timeout: how long an
 Implement proof leg may run its tests before the harness terminates it as a
-hang. `null` means the 120s default. The test PROBE seeds it when it measures a
-suite slower than that default, so a legitimately slow suite is recorded once
-instead of having every proof leg killed mid-run; `LCARS_GATE_TIMEOUT` in the
-environment still overrides it.
+hang. `null` means the 500s default. The probe window also defaults to 500s.
+A slow passing probe or a timed-out probe seeds a provisional budget (twice
+the measurement or exceeded bound, rounded up to 30s, capped at 3600s), only
+when no value is already recorded. A timeout states only that the suite
+exceeded the probe bound; it never claims a measured duration or a passing
+suite. `LCARS_GATE_TIMEOUT` in the environment still overrides the record.
+Set the record with `lcars update --gate-timeout <seconds>` (an integer from
+1 to 3600); invalid input is refused before writing. No file editing is needed.
+The proof gate also accepts valid JSON whitespace around `gateTimeout`'s
+colon (including separate key, colon, and value lines) and JSON-escaped
+spellings of that key, such as `"gate\u0054imeout"`.
+
+Settings writers parse complete JSON values, including multiline objects,
+and validate read-back before atomically replacing the file. Invalid JSON
+is an explicit failure and leaves the original settings untouched.
 
 **OUTPUT** — reports what was ADDED versus what was ALREADY PRESENT. On an
 up-to-date repo it changes nothing and prints `nothing to update`.
@@ -105,9 +120,12 @@ bash ~/.claude/skills/lcars-update/update.sh --probe-tests   # one bounded run: 
 bash ~/.claude/skills/lcars-update/update.sh --fix-tests     # one-click: suggest-or-discover → set → probe → verdict
 ```
 
-- `--probe-tests` is bounded by `LCARS_PROBE_TIMEOUT` (default 120s) and is
+- `--probe-tests` is bounded by `LCARS_PROBE_TIMEOUT` (default 500s) and is
   captain-triggered only. A run that collects ZERO tests is reported as its own
   honest outcome, never a pass.
+- `--gate-timeout 700` records a 700-second gate budget without probing or
+  changing other settings. Use it alone; missing, non-integer, zero, negative,
+  leading-zero, or above-3600 values are usage errors.
 - `--fix-tests` spawns a read-only discovery worker (the lcars-launch pattern,
   engine `$LCARS_WORKER_BIN` → config `workerBin` → claude) ONLY when detection
   has no candidate. A failed/garbage discovery leaves the config untouched; on
