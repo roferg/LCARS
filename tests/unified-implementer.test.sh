@@ -12,7 +12,7 @@
 # red-gate choreography, tests.sha256 and reconcile-tests are DELETED.
 #
 # Behaviors driven here (stubbed worker via $LCARS_WORKER_BIN — ZERO tokens; a
-# real tiny node:test suite exercises the gates' runner legs):
+# real tiny node:test and Python unittest suites exercise the gates' runner legs):
 #   1. Happy path (whole `implement` driver): ONE worker spawn (implement-tdd,
 #      never implement-test-writer), gates pass, ONE commit carries test+code,
 #      full-suite runs, stage → verify; events carry phase=tdd + gate events.
@@ -31,6 +31,8 @@
 #      worker RE-RUNS (no stale-contract reuse — LCARS_REUSE_TESTS is inert) and
 #      the gates re-prove on the new parent.
 #   7. LCARS_SELFHEAL_FEEDBACK rides the unified worker's prompt unchanged.
+#   11–14. Missing-result retry guidance, a clean first Python prompt, a
+#      stopped Python test refused, and a Node ticket that builds a real bundle.
 #
 # NOT the heavy lcars-run.test.sh. Safe to run directly.
 set -u
@@ -47,6 +49,7 @@ bad()  { FAIL=$((FAIL+1)); printf '  FAIL %s\n' "$1"; }
 # Dir-aware: a multi-file scope hands the runner the COMMON-ANCESTOR DIR, and
 # node v25 treats a bare dir arg as a module entry — glob it like a real runner.
 NODE_CMD='if [ -d "$LCARS_TESTS_DIR" ]; then node --test "$LCARS_TESTS_DIR"/*.test.js; else node --test "$LCARS_TESTS_DIR"; fi'
+PYTHON_CMD='python3 -m unittest discover -s "$LCARS_TESTS_DIR" -p "test_*.py"'
 
 # --- the scripted stub worker ------------------------------------------------
 # One behavior keyword per line in $STUB_DIR/script; call N executes line N
@@ -79,7 +82,65 @@ test('mul multiplies', () => { assert.strictEqual(mul(2, 3), 6); });
 JS
   printf 'exports.add = (a, b) => a + b;\nexports.mul = (a, b) => a * b;\n' > src/calc.js
 }
+write_python_mul() {
+  cat > tests/test_mul.py <<'PY'
+import unittest
+from calc import mul
+from support import operands
+
+class MultiplyTest(unittest.TestCase):
+    def test_multiply(self):
+        self.assertEqual(mul(*operands()), 6)
+PY
+  cat > tests/test_zero.py <<'PY'
+import unittest
+from calc import add, mul
+from support import operands
+
+class ZeroTest(unittest.TestCase):
+    def test_add_zero(self):
+        self.assertEqual(add(0, 0), 0)
+
+    def test_zero(self):
+        self.assertEqual(mul(operands()[0], 0), 0)
+PY
+  printf 'def add(a, b):\n    return a + b\n\ndef mul(a, b):\n    return a * b\n' > calc.py
+}
 case "$mode" in
+  python-talk)
+    write_python_mul
+    echo "Implemented multiplication and its tests; describing completion without filing result.json."
+    exit 0 ;;
+  python-good)
+    write_python_mul
+    result '["tests/test_mul.py"]' \
+      '[{"path": "tests/test_zero.py", "reason": "extend existing zero coverage with multiplication"}]' 1 ;;
+  python-drop)
+    write_python_mul
+    cat > tests/test_zero.py <<'PY'
+import unittest
+from calc import add, mul
+from support import operands
+
+@unittest.skip("simulate a test file that stopped running")
+class ZeroTest(unittest.TestCase):
+    def test_add_zero(self):
+        self.assertEqual(add(0, 0), 0)
+
+    def test_zero(self):
+        self.assertEqual(mul(operands()[0], 0), 0)
+PY
+    result '["tests/test_mul.py"]' \
+      '[{"path": "tests/test_zero.py", "reason": "extend existing zero coverage with multiplication"}]' 1 ;;
+  build-good)
+    write_mul
+    cat > src/calc.test.js <<'JS'
+const { test } = require('node:test');
+const assert = require('node:assert');
+const { calculate } = require('../dist/calculator.cjs');
+test('built calculator multiplies', () => { assert.strictEqual(calculate(2, 3), 6); });
+JS
+    result '["src/calc.test.js"]' '[]' 1 ;;
   good)
     write_mul
     result '["src/calc.test.js"]' '[]' 2 ;;
@@ -146,8 +207,14 @@ JS
   local base; base="$( cd "$repo" && git rev-parse --abbrev-ref HEAD )"
   mkdir -p "$repo/.git/lcars/missions/m1/tickets/t-001"
   cat > "$repo/.git/lcars/missions/m1/state.json" <<JSON
-{ "id": "m1", "type": "feature", "title": "t", "stage": "implement",
-  "branch": "lcars/m1", "base": "$base" }
+{
+  "id": "m1",
+  "type": "feature",
+  "title": "t",
+  "stage": "implement",
+  "branch": "lcars/m1",
+  "base": "$base"
+}
 JSON
   cat > "$repo/.git/lcars/missions/m1/approved-plan.json" <<'JSON'
 { "tickets": [ { "id": "t-001", "title": "add mul", "description": "add a mul export",
@@ -164,6 +231,52 @@ JSON
   ]
 }
 JSON
+  echo "$repo"
+}
+
+new_python_repo() {
+  local repo; repo="$(new_repo)"
+  rm -f "$repo/package.json" "$repo/src/calc.js" "$repo/src/other.test.js"
+  rmdir "$repo/src"
+  mkdir -p "$repo/tests"
+  printf 'def add(a, b):\n    return a + b\n' > "$repo/calc.py"
+  cat > "$repo/tests/support.py" <<'PY'
+def operands():
+    return 2, 3
+PY
+  cat > "$repo/tests/test_add.py" <<'PY'
+import unittest
+from calc import add
+
+class AddTest(unittest.TestCase):
+    def test_add(self):
+        self.assertEqual(add(2, 2), 4)
+PY
+  cat > "$repo/tests/test_zero.py" <<'PY'
+import unittest
+from calc import add
+
+class ZeroTest(unittest.TestCase):
+    def test_add_zero(self):
+        self.assertEqual(add(0, 0), 0)
+PY
+  ( cd "$repo" && git add -A && git commit -qm "Python fixture" && git branch -f lcars/m1 )
+  echo "$repo"
+}
+
+new_node_build_repo() {
+  local repo; repo="$(new_repo)"
+  printf 'dist/\n' > "$repo/.gitignore"
+  printf 'module.exports = { calculate: (a, b) => calc.mul(a, b) };\n' > "$repo/src/main.js"
+  cat > "$repo/build.js" <<'JS'
+const fs = require('node:fs');
+const calc = fs.readFileSync('src/calc.js', 'utf8');
+const main = fs.readFileSync('src/main.js', 'utf8');
+fs.mkdirSync('dist', { recursive: true });
+fs.writeFileSync('dist/calculator.cjs',
+  `"use strict";\nconst calc = (() => {\nconst exports = {};\n${calc}\nreturn exports;\n})();\n${main}`);
+JS
+  ( cd "$repo" && git add -A && git commit -qm "Node bundle fixture" && git branch -f lcars/m1 )
   echo "$repo"
 }
 
@@ -299,7 +412,7 @@ grep -q '"awaitingHuman": *true' "$st" \
   || bad "3d. pending.json missing or lacks the verdict"
 grep -q '"type":"ticket_flagged"' "$(EV "$repo")" \
   && ok "3e. ticket_flagged event emitted" || bad "3e. ticket_flagged missing"
-printf '%s' "$OUT" | grep -q 'lcars respond' \
+printf '%s' "$OUT" | grep -q 'lcars respond\|lcars-respond/respond.sh answer' \
   && ok "3f. park copy points at lcars respond" || bad "3f. no respond pointer"
 # --- resume: record the captain's answer, clear the gate, re-run ------------
 cat > "$(MD "$repo")/answers.json" <<'JSON'
@@ -510,6 +623,133 @@ grep -q 'no valid estimate.json after %s worker session' "$SCRIPT" \
 # being floored to 1) and through §8 above (a re-entered process keeps
 # counting), comment-mirror through lcars-comment T15, lcars-status through
 # W15, and board.js through web/tests/test_activity_sections.HireDerivationTest.
+
+# ==========================================================================
+# S327: observe the actual NEXT dispatch, not whether a lucky retry goes green.
+echo "== 11. a talkative Python worker that omits result gets the file-first warning =="
+repo="$(new_python_repo)"; sd="$(new_stub_dir python-talk python-good)"
+run_ticket "$repo" "$sd" LCARS_TEST_CMD="$PYTHON_CMD"
+if [ -f "$sd/prompt-2.txt" ] \
+   && grep -q '^## YOUR PREVIOUS ATTEMPT FAILED' "$sd/prompt-2.txt" \
+   && grep -q 'MUST be to call your file-creation tool' "$sd/prompt-2.txt"; then
+  ok "11a. missing-result retry receives the existing file-first escalation"
+else
+  bad "11a. missing-result retry did NOT receive the existing file-first escalation"
+fi
+if [ -f "$sd/prompt-2.txt" ] \
+   && grep -q '^## GATE FEEDBACK' "$sd/prompt-2.txt" \
+   && grep -q 'result.*missing' "$sd/prompt-2.txt"; then
+  ok "11b. retry also carries the real result-missing gate verdict"
+else
+  bad "11b. retry lacks the result-missing gate verdict"
+fi
+[ "$(cat "$sd/n")" = 2 ] \
+  && ok "11c. talking without filing consumes one proof session, not an empty-worker retry" \
+  || bad "11c. expected two worker sessions, got $(cat "$sd/n")"
+grep -q '"type":"ticket_worker_empty_output"' "$(EV "$repo")" \
+  && bad "11d. talkative worker misclassified as empty" \
+  || ok "11d. talkative worker is not classified as empty"
+[ "$RC" -eq 0 ] && grep -q '"type":"ticket_green"' "$(EV "$repo")" \
+  && ok "11e. Python multi-file retry passes the real proof and commit gates" \
+  || bad "11e. Python retry did not pass (rc=$RC: $OUT)"
+
+echo "== 12. first-time Python success receives a clean prompt =="
+repo="$(new_python_repo)"; sd="$(new_stub_dir python-good)"
+run_ticket "$repo" "$sd" LCARS_TEST_CMD="$PYTHON_CMD"
+if [ -f "$sd/prompt-1.txt" ] \
+   && ! grep -q '^## YOUR PREVIOUS ATTEMPT FAILED\|^## YOUR PREVIOUS ATTEMPT WAS REJECTED\|^## GATE FEEDBACK' "$sd/prompt-1.txt"; then
+  ok "12a. first dispatch has no failure-only warning or gate feedback"
+else
+  bad "12a. first dispatch is missing or contains stale failure guidance"
+fi
+[ "$RC" -eq 0 ] && [ "$(cat "$sd/n")" = 1 ] \
+  && grep -q '"type":"ticket_green"' "$(EV "$repo")" \
+  && ok "12b. Python flat tests plus test-free shared helper pass on the first hire" \
+  || bad "12b. Python happy path failed (rc=$RC: $OUT)"
+if tr '\n' ' ' < "$sd/prompt-1.txt" \
+   | grep -q 'NEVER revert, stash, check out or back up files to test the parent yourself'; then
+  ok "12c. worker prompt forbids destructive parent testing"
+else
+  bad "12c. worker prompt does not forbid destructive parent testing"
+fi
+if tr '\n' ' ' < "$sd/prompt-1.txt" \
+   | grep -q 'Run only the tests you declared, NEVER the whole suite'; then
+  ok "12d. worker prompt limits test runs to declared tests"
+else
+  bad "12d. worker prompt does not limit test runs to declared tests"
+fi
+if python3 - "$(TD "$repo")/flip-flop.json" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+assert d["verdict"] == "pass" and d["gate"]["scopeKind"] == "files", d
+assert d["tip"]["rc"] == 0 and d["parent"]["rc"] != 0, d
+assert d["executed"]["runner"] == "unittest" and d["executed"]["tip"] == "3", d
+assert d["declaredRan"]["unaccounted"] == [], d
+PY
+then
+  ok "12e. real Python proof ran all three declared tests with per-file scope"
+else
+  bad "12e. Python proof did not establish the expected scoped red/green"
+fi
+if [ -f "$sd/prompt-1.txt" ] \
+   && ! grep -qi 'Run the suite freely' "$sd/prompt-1.txt"; then
+  ok "12f. worker prompt does not contradict declared-test scope with free suite runs"
+else
+  bad "12f. worker prompt is missing or invites running the suite freely"
+fi
+
+echo "== 13. a stopped Python test file is still refused =="
+repo="$(new_python_repo)"; sd="$(new_stub_dir python-drop)"
+before="$( cd "$repo" && python3 -m unittest discover -s tests -p test_zero.py 2>&1 )"
+if [ "$?" -eq 0 ] && printf '%s' "$before" | grep -q '^Ran 1 test in ' \
+   && ! printf '%s' "$before" | grep -q 'skipped'; then
+  ok "13a. existing zero test really executes and passes before the worker changes it"
+else
+  bad "13a. stopped-file control did not run green before the change: $before"
+fi
+run_ticket "$repo" "$sd" LCARS_TEST_CMD="$PYTHON_CMD" LCARS_WORKER_TRIES=1
+if python3 - "$(TD "$repo")/flip-flop.json" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+assert d["verdict"] == "inconclusive", d
+assert "tests/test_zero.py" in d["declaredRan"]["unaccounted"], d
+assert d["executed"]["tip"] == "1", d
+PY
+then
+  ok "13b. real unittest count catches the declared file whose tests stopped executing"
+else
+  bad "13b. stopped Python file was not identified by the real proof gate"
+fi
+[ "$RC" -eq 0 ] && grep -q '"awaitingHuman": *true' "$(MD "$repo")/state.json" \
+  && ! grep -q '"type":"ticket_green"' "$(EV "$repo")" \
+  && ok "13c. stopped-test ticket parks instead of recording green" \
+  || bad "13c. stopped-test ticket did not park honestly (rc=$RC: $OUT)"
+
+echo "== 14. Node builds and exercises a real calculator bundle =="
+repo="$(new_node_build_repo)"; sd="$(new_stub_dir build-good)"
+run_ticket "$repo" "$sd" LCARS_TEST_CMD="node build.js && $NODE_CMD"
+[ "$RC" -eq 0 ] && [ "$(cat "$sd/n")" = 1 ] \
+  && grep -q '"type":"ticket_green"' "$(EV "$repo")" \
+  && ok "14a. building Node ticket passes proof and commit gates" \
+  || bad "14a. Node build path failed (rc=$RC: $OUT)"
+if ( cd "$repo" && node -e \
+  'require("node:assert/strict").equal(require("./dist/calculator.cjs").calculate(2, 3), 6)' ); then
+  ok "14b. generated bundle exists and computes the ticket's multiplication"
+else
+  bad "14b. generated Node bundle is missing or incorrect"
+fi
+if python3 - "$(TD "$repo")/flip-flop.json" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+assert d["verdict"] == "pass", d
+assert d["tip"]["rc"] == 0 and d["parent"]["rc"] != 0, d
+assert "node build.js" in d["tip"]["cmd"] and "node build.js" in d["parent"]["cmd"], d
+PY
+then
+  ok "14c. real build command ran on both tip and scratch parent"
+else
+  bad "14c. Node flip-flop did not rebuild both sides"
+fi
 
 echo
 printf 'unified-implementer: %d passed, %d failed\n' "$PASS" "$FAIL"

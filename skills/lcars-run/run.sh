@@ -24008,6 +24008,7 @@ $(printf '%s' "$PREFLIGHT_OUT" | tail -10)"
       _tdd_reject result missing \
 "the worker produced no result.json in its scratch output directory — the harness reads ONLY that file. Worker output tail:
 $(cat "$odir/.worker.out" "$odir/.worker.err" 2>/dev/null | tail -10)"
+      prior_empty=1
       continue
     fi
     # The gates read tickets/<id>/result.json — persist it BEFORE gating (it is
