@@ -12461,9 +12461,15 @@ $(printf '%s\n' "$cout" | tail -8)"
 #                  cannot be measured per file, and saying so costs N full-suite
 #                  runs less than proving it.
 #
+# S328: a Python file may take part without producing tests. Code called during
+# tests in a passing, positive FILE-scoped run also accounts for it.
+# Zero-test snapshots supply no credit; ancestor probes must agree with the
+# actual leg's calls and never credit their own source file.
+#
 # POSITIVE EVIDENCE ONLY. Nothing here concludes from an ABSENCE ("no failure was
 # recorded" treated as "it passed") — that is how S310's fix loop manufactured a
-# false claim. Every "accounted for" is a number ≥ 1 that a runner printed.
+# false claim. Every accounted file has a positive executed count or an observed
+# call from a passing invocation with a positive count.
 #
 # FAIL SAFE IN ONE DIRECTION ONLY: a file this cannot account for makes the leg
 # INCONCLUSIVE. Extra inconclusive is acceptable; a confident verdict on tests
@@ -12472,7 +12478,7 @@ $(printf '%s\n' "$cout" | tail -8)"
 # PROOF_FILE_EXEC_RC  the run's own rc, so a TIMEOUT is never stored as a zero
 #                     (fix round 1, D6: a timed-out ablation was reported as
 #                     "no run executed a single test out of <file>").
-PROOF_FILE_EXEC=""; PROOF_FILE_EXEC_RC=""; PROOF_FILE_COLLECTED_ZERO=""
+PROOF_FILE_EXEC=""; PROOF_FILE_EXEC_RC=""; PROOF_FILE_IMPORTED=""; PROOF_FILE_COLLECTED_ZERO=""
 proof_scope_command() { # cmd scope -> runnable cmd; directory scopes stay byte-identical
   [ -f "$2" ] || { printf '%s' "$1"; return 0; }
   "${LCARS_PYTHON_BIN:-python3}" - "$1" "$2" "${3:-discover}" "${4:-$PWD}" <<'PY'
@@ -12530,11 +12536,28 @@ try:
         tree = ast.parse(source.read())
 except (OSError, SyntaxError, UnicodeError):
     sys.exit(1)
+def literal(node):
+    if isinstance(node, ast.Constant):
+        return type(node.value) in (str, int, float, complex, bool, type(None))
+    if isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.UAdd, ast.USub)):
+        return isinstance(node.operand, ast.Constant) \
+            and type(node.operand.value) in (int, float, complex)
+    if isinstance(node, (ast.Tuple, ast.List, ast.Set)):
+        return all(literal(item) for item in node.elts)
+    if isinstance(node, ast.Dict):
+        return all(key is not None and literal(key) and literal(value)
+                   for key, value in zip(node.keys, node.values))
+    return False
+
 for node in tree.body:
     if isinstance(node, ast.Pass):
         continue
     if isinstance(node, ast.Expr) and isinstance(node.value, ast.Constant) \
             and isinstance(node.value.value, str):
+        continue
+    if isinstance(node, ast.Assign) and literal(node.value) \
+            and all(isinstance(target, ast.Name) and target.id != "load_tests"
+                    and not target.id.startswith("__") for target in node.targets):
         continue
     if isinstance(node, ast.FunctionDef):
         args = node.args
@@ -12556,18 +12579,26 @@ PY
   [ "$rc" -eq 0 ] && [ "$(proof_executed_count_ext "$out")" = "unittest 0" ] \
     && printf '%s\n' "$out" | grep -q '^Ran 0 tests in '
 }
+proof_python_command() { # cmd evidence-directory -> observed direct Python cmd, or unchanged
+  "${LCARS_PYTHON_BIN:-python3}" "$SKILL_DIR/proof-python.py" command "$1" "$2"
+}
+proof_python_imports() { # root evidence-directory rels -> declared paths whose code was called
+  printf '%s\n' "$3" | "${LCARS_PYTHON_BIN:-python3}" "$SKILL_DIR/proof-python.py" read "$1" "$2"
+}
 proof_file_scope_exec() { # run_dir cmd scope-abs [secs]
-  PROOF_FILE_EXEC=""; PROOF_FILE_EXEC_RC=""; PROOF_FILE_COLLECTED_ZERO=""
-  local rd="$1" cmd="$2" sc="$3" secs="${4:-500}" of rc=0 cout rawcmd="$2"
+  PROOF_FILE_EXEC=""; PROOF_FILE_EXEC_RC=""; PROOF_FILE_IMPORTED=""; PROOF_FILE_COLLECTED_ZERO=""
+  local rd="$1" cmd="$2" sc="$3" secs="${4:-500}" of rc=0 cout observed evidence rawcmd="$2"
   case "$secs" in ''|*[!0-9]*) secs=500 ;; esac
   [ -n "$rd" ] && [ -n "$cmd" ] && [ -n "$sc" ] || return 0
   cmd="$(proof_scope_command "$cmd" "$sc")"
   of="$(mktemp "${TMPDIR:-/tmp}/lcars-declout.XXXXXX" 2>/dev/null)" || return 0
+  evidence="$(mktemp -d "${TMPDIR:-/tmp}/lcars-imports.XXXXXX")" || { rm -f "$of"; return 0; }
+  observed="$(proof_python_command "$cmd" "$evidence")"
   # The rc is DELIBERATELY ignored except for the hard timeout: a measurement
   # run that goes RED still produced a count, and this measurement is about
   # participation, never about colour.
   ( cd "$rd" 2>/dev/null || exit 0
-    LCARS_TESTS_DIR="$sc" run_with_hard_timeout "$secs" "$of" bash -c "$cmd" ) || rc=$?
+    LCARS_TESTS_DIR="$sc" run_with_hard_timeout "$secs" "$of" bash -c "$observed" ) || rc=$?
   PROOF_FILE_EXEC_RC="$rc"
   if [ "$rc" != 124 ]; then
     cout="$(cat "$of" 2>/dev/null)"
@@ -12577,8 +12608,17 @@ proof_file_scope_exec() { # run_dir cmd scope-abs [secs]
        && proof_unittest_support_file "$rd" "$rawcmd" "$sc" "$secs"; then
       PROOF_FILE_COLLECTED_ZERO=true
     fi
+    if [ "$rc" -eq 0 ] && [ -n "$PROOF_FILE_EXEC" ] \
+       && [ "${PROOF_FILE_EXEC##* }" -gt 0 ] && [ -f "$sc" ]; then
+      # Unadapted unittest discovery cannot select a file: its calls could
+      # belong to siblings rather than this probe's intended test file.
+      if [ "${PROOF_FILE_EXEC%% *}" != unittest ] || [ "$cmd" != "$rawcmd" ]; then
+        PROOF_FILE_IMPORTED="$(proof_python_imports "${PROOF_IMPORT_ROOT:-$rd}" "$evidence" "${PROOF_IMPORT_RELS:-}" \
+          | grep -vxF "${sc#"${PROOF_IMPORT_ROOT:-$rd}"/}" || :)"
+      fi
+    fi
   fi
-  rm -f "$of"
+  rm -f "$of"; rm -rf "$evidence"
   return 0
 }
 # A declared "test file" THAT HOLDS NOTHING (fix round 1, D4). MEASURED: a
@@ -12601,7 +12641,7 @@ proof_decl_file_is_empty() { # abs-path
 #   unscoped-command   the leg ran the full suite with no narrowing — refused
 #   not-applicable     nothing to account for, or no re-runnable testCommand
 #                      exists (the native lane: LEDGERED, see below)
-# PROOF_DECL_EACH    "<rel>=<n>" per declared file, in the leg's own order
+# PROOF_DECL_EACH    "<rel>=<n|called>" per declared file, in the leg's own order
 # PROOF_DECL_UNACC   the declared files it could NOT account for, one per line
 # PROOF_DECL_WHY     one sentence a captain can act on
 # PROOF_DECL_FIX     the remediation for THIS reason (fix round 1, D5: the
@@ -12701,8 +12741,32 @@ proof_declared_accounting() { # wt rels kind leg-exec exec-each run_dir raw_cmd 
   local rundir="$6" rawcmd="$7" budget="$8" legrc="${9:-0}"
   local n legn legrunner rel idx c crunner sum=0 names
   local hold="" held="" scope="" contrib tmo="" anc="" sym=""
-  # Discovery and direct loading can both be suppressed. Exclusion requires
-  # inert source as well as a successful direct load reporting zero tests.
+  local imported="${PROOF_LEG_IMPORTED:-}" actual_imported="${PROOF_LEG_MODULES:-}"
+  local PROOF_IMPORT_RELS="$rels" PROOF_IMPORT_ROOT="$wt" used_rel
+  # Probes must confirm calls in the actual leg, never create their own credit.
+  if [ "$kind" = ancestor ] && [ "${legrc:-0}" -eq 0 ] \
+     && [ "$(proof_python_command "$rawcmd" "")" != "$rawcmd" ]; then
+    imported=""
+    while IFS= read -r rel; do
+      [ -n "$rel" ] || continue
+      case "$rel" in *.py) ;; *) continue ;; esac
+      proof_file_scope_exec "$rundir" "$rawcmd" "$wt/$rel" "$budget"
+      while IFS= read -r used_rel; do
+        [ -n "$used_rel" ] || continue
+        # A probe cannot manufacture participation absent from the actual leg.
+        if printf '%s\n' "$actual_imported" | grep -qxF "$used_rel"; then
+          imported="${imported}${imported:+
+}$used_rel"
+        fi
+      done <<PDA_USED
+$PROOF_FILE_IMPORTED
+PDA_USED
+    done <<PDA_IMPORTS
+$rels
+PDA_IMPORTS
+  fi
+  # Restored from the parent: inert source AND a direct zero-test load are
+  # independent evidence; this does not exempt classes or executable modules.
   local eligible="" eligible_each="" original_idx=0
   while IFS= read -r rel; do
     [ -n "$rel" ] || continue
@@ -12872,9 +12936,13 @@ PDA_EMPTY
             PROOF_DECL_UNACC="$PROOF_DECL_UNACC$rel
 " ;;
           *)
-            PROOF_DECL_EACH="$PROOF_DECL_EACH${PROOF_DECL_EACH:+ }$rel=$c"
-            [ "$c" -ge 1 ] 2>/dev/null || PROOF_DECL_UNACC="$PROOF_DECL_UNACC$rel
-" ;;
+            if [ "$c" -eq 0 ] && printf '%s\n' "$imported" | grep -qxF "$rel"; then
+              PROOF_DECL_EACH="$PROOF_DECL_EACH${PROOF_DECL_EACH:+ }$rel=called"
+            else
+              PROOF_DECL_EACH="$PROOF_DECL_EACH${PROOF_DECL_EACH:+ }$rel=$c"
+              [ "$c" -ge 1 ] 2>/dev/null || PROOF_DECL_UNACC="$PROOF_DECL_UNACC$rel
+"
+            fi ;;
         esac
       done <<PDA_FILES
 $rels
@@ -12962,6 +13030,10 @@ PDA_FILES
       while IFS= read -r rel; do
         [ -n "$rel" ] || continue
         idx=$((idx + 1))
+        if printf '%s\n' "$imported" | grep -qxF "$rel"; then
+          PROOF_DECL_EACH="$PROOF_DECL_EACH${PROOF_DECL_EACH:+ }$rel=called"
+          continue
+        fi
         # S318 FIX ROUND 3: A SYMLINK IS NEVER MOVED ASIDE. The copy-aside is
         # `cp -p`, which FOLLOWS a symlink and copies its TARGET's bytes; the
         # `rm` then removes the LINK; and the restore writes a REGULAR FILE
@@ -13138,9 +13210,9 @@ PDA_ANC
       PROOF_DECL_FIX="$PROOF_DECL_FIX_RENAME"
     fi
   elif [ "$PROOF_DECL_METHOD" = ablation ]; then
-    PROOF_DECL_WHY="every declared test file was measured CONTRIBUTING at least one executed test to this leg — taking it out of the leg's own scope and re-running the repo's testCommand ran fewer tests every time — and their contributions sum to $sum inside this leg's own $legn (per declared file: $PROOF_DECL_EACH)${PROOF_DECL_RECOUNT:+ — this leg's count was re-measured for the accounting as $PROOF_DECL_RECOUNT, because the gate's main grammar set could not read this runner}"
+    PROOF_DECL_WHY="every non-excluded declared file contributed executed tests or code called during tests in a passing, positive file-scoped run; test contributions sum to $sum inside this leg's own $legn (per declared file: $PROOF_DECL_EACH)${PROOF_DECL_RECOUNT:+ — this leg's count was re-measured for the accounting as $PROOF_DECL_RECOUNT, because the gate's main grammar set could not read this runner}"
   else
-    PROOF_DECL_WHY="every declared test file was measured executing at least one test under the same runner, and their counts fit inside this leg's own $legn (per declared file: $PROOF_DECL_EACH)"
+    PROOF_DECL_WHY="every non-excluded declared file executed at least one test or code called during tests in a passing invocation that executed tests (per declared file: $PROOF_DECL_EACH)"
   fi
   return 0
 }
@@ -13192,6 +13264,8 @@ PROOF_LEG_EXEC=""; PROOF_LEG_EXEC_EACH=""
 PROOF_LEG_FAILED_EXEC=""
 PROOF_LEG_FAILED_OUT=""
 PROOF_LEG_EXCLUDED=""
+PROOF_LEG_IMPORTED=""
+PROOF_LEG_MODULES=""
 # PROOF_LEG_ZERO_EXEC (S308 fix round 2, route d) — this leg's own runner said
 # it executed ZERO tests on a run that EXITED GREEN. Recorded, never decided
 # here; see the block where it is set and flip_flop_gate's zero-evidence check.
@@ -13209,6 +13283,8 @@ proof_scoped_leg_run() { # leg-root rels(newline)
   PROOF_LEG_FAILED_EXEC=""
   PROOF_LEG_FAILED_OUT=""
   PROOF_LEG_EXCLUDED=""
+  PROOF_LEG_IMPORTED=""
+  PROOF_LEG_MODULES=""
   PROOF_LEG_RUN_DIR=""; PROOF_LEG_RAW_CMD=""
   first="$(printf '%s\n' "$rels" | grep . | head -1)"
   local stack; stack="$(resolve_stack)"
@@ -13380,14 +13456,18 @@ Nothing is wrong with the ticket's code: the repo's testCommand cannot SEE a tes
     rc=0
     while IFS= read -r scope; do
       [ -n "$scope" ] || continue
-      local one_rec scope_cmd
+      local one_rec scope_cmd observed evidence observed_exec observed_imports
       scope_cmd="$(proof_scope_command "$cmd" "$scope")"
-      one_rec="cd $(proof_shq "$run_dir") && LCARS_TESTS_DIR=$(proof_shq "$scope") bash -c $(proof_shq "$scope_cmd")"
-      if [ -n "$csep" ]; then cmdrec="$cmdrec$csep( $one_rec )"; else cmdrec="$one_rec"; fi
-      csep=" && "
       used=$(( $(date +%s 2>/dev/null || echo 0) - t0 ))
       rem=$(( gsecs - used )); [ "$rem" -ge 1 ] || rem=1
-      ( cd "$run_dir" && LCARS_TESTS_DIR="$scope" run_with_hard_timeout "$rem" "$gof" bash -c "$scope_cmd" ); rc=$?
+      evidence="$(mktemp -d "${TMPDIR:-/tmp}/lcars-imports.XXXXXX")" || {
+        rc=96; leg_out="proof-gate: could not create runtime import evidence directory"; break;
+      }
+      observed="$(proof_python_command "$scope_cmd" "$evidence")"
+      one_rec="cd $(proof_shq "$run_dir") && LCARS_TESTS_DIR=$(proof_shq "$scope") bash -c $(proof_shq "$observed")"
+      if [ -n "$csep" ]; then cmdrec="$cmdrec$csep( $one_rec )"; else cmdrec="$one_rec"; fi
+      csep=" && "
+      ( cd "$run_dir" && LCARS_TESTS_DIR="$scope" run_with_hard_timeout "$rem" "$gof" bash -c "$observed" ); rc=$?
       one_out="$(cat "$gof" 2>/dev/null)"
       leg_out="${leg_out}${one_out}
 "
@@ -13399,12 +13479,23 @@ Nothing is wrong with the ticket's code: the repo's testCommand cannot SEE a tes
       if [ "$scope_cmd" != "$cmd" ]; then
         one_exec="$(proof_executed_count_ext "$one_out")"
       fi
+      observed_exec="$(proof_executed_count_ext "$one_out")"
       if [ -f "$scope" ] && [ "$rc" -eq 0 ] && [ "$one_exec" = "unittest 0" ] \
          && printf '%s\n' "$one_out" | grep -q '^Ran 0 tests in ' \
          && proof_unittest_support_file "$run_dir" "$cmd" "$scope" "$rem"; then
         PROOF_LEG_EXCLUDED="${PROOF_LEG_EXCLUDED}${PROOF_LEG_EXCLUDED:+
 }${scope#"$root"/}"
       fi
+      if [ "$rc" -eq 0 ] && [ -n "$observed_exec" ] && [ "${observed_exec##* }" -gt 0 ]; then
+        observed_imports="$(proof_python_imports "$root" "$evidence" "$rels")"
+        PROOF_LEG_MODULES="${PROOF_LEG_MODULES}${PROOF_LEG_MODULES:+
+}$observed_imports"
+        if [ -f "$scope" ]; then
+          PROOF_LEG_IMPORTED="${PROOF_LEG_IMPORTED}${PROOF_LEG_IMPORTED:+
+}$(printf '%s\n' "$observed_imports" | grep -vxF "${scope#"$root"/}" || :)"
+        fi
+      fi
+      rm -rf "$evidence"
       if [ "$rc" -ne 0 ]; then
         PROOF_LEG_FAILED_EXEC="$(proof_executed_count_ext "$one_out")"
         PROOF_LEG_FAILED_OUT="$one_out"
@@ -14220,8 +14311,8 @@ FFS_EOF
       "$(json_escape "${FF_GATE_SCOPE_NARROW_WHY:-}")" \
       "$_cbud" "$(json_escape "${FF_GATE_TIP_EXEC_EACH:-}")" \
       "$( [ -n "${FF_GATE_SCOPE_CONTROL_ZERO:-}" ] && printf true || printf false )"
-    # S318 `declaredRan`: whether every file in `testFiles` was MEASURED
-    # executing at least one test on this leg, and which ones could not be
+    # S328 `declaredRan`: whether every file in `testFiles` produced tests or
+    # had code called during tests in a positive file-scoped Python run, and which could not be
     # accounted for. ADDITIVE — every pre-existing key keeps its name, position
     # and meaning. `unaccounted` is [] on a leg that accounted for all of them,
     # and `method` says how it was established (leg-invocations costs no extra
@@ -14389,6 +14480,12 @@ flip_flop_gate() { # ticket parent-sha worktree
       FF_GATE_DECL_EXCLUDED="$PROOF_DECL_EXCLUDED"
       tipzero="a declared file collected ZERO tests while its sibling executed tests; the gate cannot account for every declared file, so the run is INCONCLUSIVE, never a pass"
     fi
+    # A zero-test file may have participated through a positive sibling's
+    # runtime calls. Only that observed evidence can discharge this refusal.
+    if [ "$FF_GATE_SCOPE_KIND" = files ] && [ "$PROOF_DECL_METHOD" = leg-invocations ] \
+       && [ -z "$PROOF_DECL_UNACC" ] && [ "$FF_TIP_RC" -eq 0 ]; then
+      tipzero=""
+    fi
     # THE REFUSAL MUST BE LEGIBLE. A custom-harness crate is a legitimate, working
     # project, and telling its captain "zero tests collected" when the suite he
     # just watched pass is a mystery park. Say what LCARS actually could not do.
@@ -14398,9 +14495,11 @@ flip_flop_gate() { # ticket parent-sha worktree
       manifest-unreadable)
         tipzero="a Cargo.toml in play declares a \`harness\` key but LCARS could not establish WHICH cargo target it belongs to. A \`harness = false\` target opts out of cargo's standard test harness and its output is not libtest test results, so until the declaration can be read LCARS cannot tell whether this run's scoreboard is real — and inconclusive is never a pass. Exactly what defeated it: ${PROOF_ZERO_DETAIL:-unrecorded}" ;;
     esac
-    _ff_finish "$t" "$parent" "$ffj" inconclusive "$tipzero
+    if [ -n "$tipzero" ]; then
+      _ff_finish "$t" "$parent" "$ffj" inconclusive "$tipzero
   what the TIP leg ran: $FF_TIP_CMD" "$rels"
-    return $?
+      return $?
+    fi
   fi
   # GUARD 2 (S147 round 3): did everything the staged file PROMISED actually
   # run? The dotnet filter is built from a source scan, and every silent green
@@ -14701,9 +14800,17 @@ NOTE: the parent scratch worktree has been PRUNED, so the directory this leg's r
   # declaration that describes what was executed. The tip leg above has already
   # refused when that manifest opts the ticket's target out, so this call can only
   # ever make the parent leg MORE cautious, never less.
+  # In files mode an earlier helper's zero summary does not describe the
+  # invocation that actually failed. Judge that invocation's own evidence;
+  # the tip accounting has already required every declared file to take part.
+  local par_zero_out="$par_out"
+  if [ "$FF_GATE_SCOPE_KIND" = files ] && [ "$FF_PAR_RC" -ne 0 ] \
+     && [ -n "$PROOF_LEG_FAILED_OUT" ]; then
+    par_zero_out="$PROOF_LEG_FAILED_OUT"
+  fi
   if { [ -z "$PROOF_LEG_EXCLUDED" ] || [ -z "$FF_PAR_EXEC" ] \
        || [ "${FF_PAR_EXEC##* }" -eq 0 ]; } \
-     && proof_zero_collected "$par_out" "$rels" "$wt"; then
+     && proof_zero_collected "$par_zero_out" "$rels" "$wt"; then
     local parzero="the PARENT leg collected ZERO tests (e.g. go's 'no tests to run' or rspec's '0 examples, 0 failures' both exit 0) — red-on-parent is unproven, and inconclusive is never a pass"
     case "$PROOF_ZERO_KIND" in
       harness-false)
@@ -15187,6 +15294,30 @@ QF_EOF
 # cmd_implement_ticket). The parent commit is the snapshot.
 
 # --- GUARDRAIL 5: the post-commit verification (BUG-017) --------------------
+proof_committed_python_run() { # tree rels -> output; same accounting as flip-flop
+  proof_scoped_leg_run "$1" "$2"
+  printf '%s\n' "$PROOF_LEG_OUT"
+  case "$PROOF_LEG_RC" in
+    96|97|98) return 6 ;;
+    5) if proof_zero_collected "$PROOF_LEG_OUT" "$2" "$1"; then return 6; fi ;;
+  esac
+  [ "$PROOF_LEG_RC" -eq 0 ] || return "$PROOF_LEG_RC"
+  proof_declared_accounting "$1" "$2" "$PROOF_LEG_SCOPE_KIND" "$PROOF_LEG_EXEC" \
+    "$PROOF_LEG_EXEC_EACH" "$PROOF_LEG_RUN_DIR" "$PROOF_LEG_RAW_CMD" \
+    "$PROOF_LEG_TIMEOUT" "$PROOF_LEG_RC" "$PROOF_LEG_EXCLUDED"
+  if [ -n "$PROOF_DECL_UNACC" ] || [ -n "$PROOF_LEG_ZERO_EXEC" ]; then
+    printf 'proof-gate: committed Python test accounting INCONCLUSIVE: %s\n' "$PROOF_DECL_WHY"
+    return 6
+  fi
+  if [ -z "$PROOF_DECL_EXCLUDED" ] && [ -z "$PROOF_LEG_IMPORTED" ] \
+     && proof_zero_collected "$PROOF_LEG_OUT" "$2" "$1"; then
+    printf 'proof-gate: committed Python run collected ZERO tests\n'
+    return 6
+  fi
+  printf 'proof-gate: committed Python accounting PASS: %s%s\n' \
+    "$PROOF_DECL_EACH" "${PROOF_DECL_EXCLUDED:+; inert exclusions: $PROOF_DECL_EXCLUDED}"
+}
+
 # The adversarial Implementer often builds in its OWN ephemeral per-ticket git
 # worktree ($LCARS_TICKET_WORKTREE) or a scratch tree, then self-reports
 # passed:true. commit_ticket assembles the ticket's scoped diff onto the mission
@@ -15436,9 +15567,14 @@ PC_RELS_EOF
         intree_scopes_for "$wt" "$_pcrels" >/dev/null
         scope="$INTREE_SCOPES"
         proof_say_scope_kind "$INTREE_SCOPE_KIND" "$INTREE_SCOPE_WHY"
-        out="$(intree_scoped_run "$run_dir" "$cmd" "$scope")" || rc=$?
-        if proof_zero_collected "$out" "$_pcrels" "$wt" \
-           || printf '%s\n' "$out" | grep -q '^ImportError: Start directory is not importable:'; then
+        if [ "$(proof_python_command "$cmd" "")" != "$cmd" ]; then
+          out="$(proof_committed_python_run "$wt" "$_pcrels")" || rc=$?
+          [ "$rc" = 6 ] && zero=1
+        else
+          out="$(intree_scoped_run "$run_dir" "$cmd" "$scope")" || rc=$?
+          if proof_zero_collected "$out" "$_pcrels" "$wt"; then zero=1; fi
+        fi
+        if printf '%s\n' "$out" | grep -q '^ImportError: Start directory is not importable:'; then
           zero=1
         fi
       fi
@@ -15590,10 +15726,15 @@ PCTIP_EOF
           fi
           intree_scopes_for "$twt" "$tpresent" >/dev/null
           tscope="$INTREE_SCOPES"
-          tout="$(intree_scoped_run "$trun_dir" "$cmd" "$tscope")" || trc=$?
+          if [ "$(proof_python_command "$cmd" "")" != "$cmd" ]; then
+            tout="$(proof_committed_python_run "$twt" "$tpresent")" || trc=$?
+          else
+            tout="$(intree_scoped_run "$trun_dir" "$cmd" "$tscope")" || trc=$?
+          fi
           # GREEN ON NOTHING: the same guard every other proof leg applies. A
           # tip run that SELECTED nothing is not evidence that anything landed.
-          if [ "$trc" -eq 0 ] && proof_zero_collected "$tout" "$tpresent" "$twt"; then
+          if [ "$trc" -eq 0 ] && [ "$(proof_python_command "$cmd" "")" = "$cmd" ] \
+             && proof_zero_collected "$tout" "$tpresent" "$twt"; then
             trc=1
             tnorecheck="the re-run at the tip collected ZERO tests — a run that selects nothing proves nothing (the green-on-nothing trap), so the tip's green is not evidence that anything landed"
           fi

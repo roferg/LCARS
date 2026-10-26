@@ -724,16 +724,27 @@ around them (see vision.md → *Implement*):
   For file scopes, direct `python -m unittest discover -s "$LCARS_TESTS_DIR"`
   commands receive the file's directory as the start directory and its basename
   as the discovery pattern. Directory-scoped commands are unchanged.
-  Successful per-file unittest discoveries that collect zero cases (package
-  markers or helpers without test methods) require inert source (only docstrings,
-  `pass`, or undecorated helper functions without defaults, annotations, or type
-  parameters) and a separate successful direct file load confirming zero tests
-  before exclusion from declared-test accounting. Reasons are listed in
-  `declaredRan.excluded`. Collection hooks, special module functions, imports,
-  classes, or other executable module code cannot establish absence from a zero
-  probe; these files remain accountable. Skipped tests and import failures are
-  not exclusions; a leg with no executed tests remains INCONCLUSIVE even if every
-  declared file is a support file.
+  Declared files must **take part**: produce executed tests, or have a function,
+  method, or class defined there called during tests in a passing, positive
+  file-scoped Python invocation. `sys.monitoring` observes direct
+  `python -m unittest` and `python -m pytest` commands, including dynamically
+  resolved calls; merely loading a module or executing its import-time body
+  earns no credit. No source import scan or
+  worker-declared helper exemption is used. A zero-test invocation supplies no
+  call credit. For ancestor-directory scopes, positive file-scoped probes
+  must agree with calls observed in the actual leg. Runtime participation appears
+  as `path=called` in `declaredRan.each`. The independent inert-source exclusion
+  is retained: inert Python source plus direct unittest loading that confirms
+  zero tests appears in `declaredRan.excluded`. Plain module-name assignments
+  of literal strings, numbers (including signed numbers), booleans, `None`,
+  and recursively literal tuples/lists/dicts/sets are also inert. Calls,
+  imports, comprehensions, classes, annotations, attribute/unpacking targets,
+  and assignments to `load_tests` or dunder names cannot use this exclusion.
+  The post-commit Python gate applies the same accounting.
+  A declared file with neither executed tests nor observed participation stays
+  INCONCLUSIVE. Wrappers, compound shell commands, isolated Python processes,
+  and other runtimes have no call observer and retain count/ablation
+  accounting; inability to observe is not permission to accept zero.
 
   **What a leg is scoped to, and the clock it runs under** (S308), both recorded
   in that file's `gate` block. The scope is the ticket's DECLARED test file; for
