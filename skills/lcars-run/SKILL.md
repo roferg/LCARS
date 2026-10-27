@@ -53,8 +53,16 @@ Each headless Stage is therefore a single driver subcommand you run and report:
 | Research | `run.sh research --mission <id>` | a question-generator worker, then **N parallel** stateless research workers (one per question) |
 | Validate | `run.sh validate --mission <id>` | one Validator worker (fed only `prd.md` + `research/*.json`) |
 | Plan | `run.sh plan --mission <id>` | one Planner worker (fed only `prd.md` + `validated-plan.md`) |
-| Plan Review | `run.sh plan-review --mission <id>` | one fresh reviewer worker (fed only `plan.json`) |
+| Plan Review | `run.sh plan-review --mission <id>` | one fresh reviewer worker (fed `plan.json` + its owned `coverage-matrix.json` when present) |
 | Implement | `run.sh implement-ticket --mission <id> --ticket <id>` | one unified TDD worker, proven post-hoc by the harness gates |
+
+Plan emits `coverage-matrix.json` alongside the ticket array: visible changes,
+cross-ticket data dependencies, state/option combinations, and outbound calls
+with pinned hosts. Each cell has one ticket owner or explicit `unowned` plus a
+reason. `plan-save --coverage-matrix <file>` mechanically checks and persists the
+matrix before review; every new Plan attempt requires it. Legacy manual saves
+without a matrix remain compatible until the Mission adopts one. The gate
+checks declarations, not completeness or truth; unresolved gaps reach Review.
 
 Live operator controls (`pause`, `resume`, and `xo on`/`xo off`, including
 repo-wide switches and linked-child pauses) record each successful `state.json`
@@ -365,8 +373,9 @@ scope question — advances to Plan, clearing the gate.
 Runs when `state.json.stage` is `plan`. **Do not decompose the plan yourself.**
 Run the driver: it spawns one cold **Planner** worker fed only `prd.md` +
 `validated-plan.md` — the *what* and the agreed *how* — which decomposes them
-into small, vertical-slice tickets and writes `plan.json`. The driver validates
-and installs it, advancing to `plan-review`.
+into small, vertical-slice tickets and writes `plan.json` plus
+`coverage-matrix.json`. The driver validates and installs both, advancing to
+`plan-review`.
 
 ```bash
 bash ~/.claude/skills/lcars-run/run.sh plan --mission <id>
@@ -433,7 +442,8 @@ the code and both are Plan Review's judgement to make.
 
 Runs when `state.json.stage` is `plan-review` and `awaitingHuman` is not `true`
 (see Dispatch). **Do not review the tickets yourself.** Run the driver: it spawns
-one **fresh reviewer** worker fed **only** `plan.json` — never `prd.md` or
+one **fresh reviewer** worker fed `plan.json` and its `coverage-matrix.json`
+when present — never `prd.md` or
 `validated-plan.md`. That independence is the whole point (vision.md → *Plan
 Review*): the session that planned the work must not also grade it, so leaking
 the spec in is structurally prevented — the driver simply doesn't put it on the
@@ -1016,6 +1026,7 @@ trust the board to show exactly where every Mission is.
     1.json, 2.json, …   ← one stateless agent's findings per file (Research)
   validated-plan.md     ← the Validator's synthesis: Synthesis + Decisions + Rationale (Validate → Plan)
   plan.json             ← the Planner's ticket list, each ticket carrying its rationale (Plan → Plan Review)
+  coverage-matrix.json  ← owned visible changes, dependencies, combinations and pinned-host calls (Plan → Plan Review)
   approved-plan.json    ← copy of plan.json once Plan Review passes (→ Schedule)
   plan-review-<n>.json  ← the reviewer's verdict for failed round n (Plan Review)
   plan-under-review.json ← S178 one-shot revision token: the plan the reviewer reviewed. Written by review_fail on a loop-back, consumed by plan-save when the revision lands.
@@ -1080,7 +1091,7 @@ below describes — fast-forwards of a clean tree, never anything else.
   each ticket inside an implementer LLM's window — the Planner worker must not
   emit horizontal, layer-only tickets or ones that blow past the limit.
 - **The Plan Review reviewer is independent by construction.** The driver puts
-  only `plan.json` on the reviewer worker's path list — never `prd.md` or
+  `plan.json` and its companion coverage matrix on the reviewer worker's path list — never `prd.md` or
   `validated-plan.md` — so the session that planned the work cannot also grade it
   (vision.md → *Plan Review*), the same way a research worker never sees the PRD.
 - **A failed verdict must name its objections.** `review-save` refuses a

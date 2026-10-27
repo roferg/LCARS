@@ -10,8 +10,9 @@ read-only access to the repository and no other context.
 
 ## Your job
 
-Decompose the validated plan into a list of small, independently-buildable
-tickets. **Every ticket must be:**
+Decompose the validated plan into small, independently-buildable tickets and an
+**owned coverage matrix**. The tickets and matrix are companion outputs.
+**Every ticket must be:**
 
 - **A vertical slice** — UI + logic + data end-to-end, not one horizontal layer
   ("add all the migrations" is wrong; "add the XP trigger for video completions,
@@ -427,9 +428,54 @@ check is COMPLETENESS and TRUTH: whether a ticket that adds a workflow declared
 it, and whether the sentence you wrote about a test is true. The reviewer checks
 both, by reading the ticket — and it is the only thing that does.
 
+## Owned coverage matrix — `coverage-matrix.json`
+
+Emit this sidecar beside `plan.json`, in the same scratch output directory.
+Enumerate the work as cells of four kinds, assigning each cell exactly one
+`owner`: a ticket id in this plan, or the literal **`"unowned"`** with a
+non-empty **`reason`**. A gap is a legal answer, not a reason to invent ownership,
+a drawing citation, or a new ticket. Record the gap where it actually is.
+
+The matrix has exactly these four arrays (use `[]` when a kind has no cells):
+
+- **`visibleChanges`**: every surface or behaviour change a user can see,
+  including CLI output, errors, empty states and transitions, whether drawn or
+  not. Each row names the `change` and its `owner`.
+- **`dependencies`**: every cross-ticket data dependency. Each row names the
+  `producer` ticket id, `consumer` ticket id, and the `artifact` produced, plus
+  an `owner` responsible for their integration (normally the consumer).
+  The consumer's ticket `dependencies` must include the producer id.
+- **`combinations`**: every combination of states/options implied by the
+  criteria, including combined states absent from a drawing. Each row names
+  the `combination` and its `owner`.
+- **`outboundCalls`**: every outbound forge/network call. Each row names the
+  `call`, a literal pinned `host` (`hostname` or `hostname:port`, not a URL,
+  variable or ambient CLI default), and its `owner`.
+
+All named cell fields are non-empty strings. Example shape (these are separate
+rows, not claims that one ticket covers every kind):
+
+```json
+{
+  "visibleChanges": [{"change": "Print the saved-request URL", "owner": "t-002"}],
+  "dependencies": [{"producer": "t-001", "consumer": "t-002", "artifact": "saved request id", "owner": "t-002"}],
+  "combinations": [{"combination": "quiet=true and save failed", "owner": "unowned", "reason": "No ticket currently specifies how these options interact."}],
+  "outboundCalls": [{"call": "POST the request", "host": "forge.example.test", "owner": "t-001"}]
+}
+```
+
+The harness mechanically rejects missing/invalid owners, dangling ticket ids,
+`unowned` without a reason, missing cell fields, dependency rows without their
+ticket edge, and unpinned host syntax **before Plan Review**. It reports all
+matrix errors together. It does not decide whether enumeration is complete,
+whether an owner really covers the cell, whether a drawing citation is true,
+or whether calls actually reach the declared host. Plan Review audits those
+claims; accepting an explicit gap does not resolve it or approve scope.
+This matrix does not replace `seams`, `entrypoints`, or visual declarations.
+
 ## Per-ticket context manifest (one file per ticket)
 
-In ADDITION to `plan.json`, emit one **context manifest** per ticket so the
+In ADDITION to `plan.json` and `coverage-matrix.json`, emit one **context manifest** per ticket so the
 Implement stage navigates the codebase instead of re-walking it cold. The
 **`manifests/` directory ALREADY EXISTS** in your scratch output directory — the
 harness created it for you, so do NOT try to create the directory; just create each
@@ -478,7 +524,7 @@ to fill it in later, because your file-creation tool may not support overwriting
 file that already exists (this applies to every manifest file too). You MUST create
 the output file(s) — with their full final content — BEFORE you end your turn. Do
 NOT end your turn by announcing what you will do; describing the task is NOT doing
-it. Your turn is NOT complete until `plan.json` exists on disk in the scratch
+it. Your turn is NOT complete until `plan.json` and `coverage-matrix.json` exist on disk in the scratch
 output directory. The harness reads ONLY the file you create, never your reply: a
 reply without the file counts as no output and FAILS the stage.
 
@@ -508,5 +554,6 @@ string):
 ]
 ```
 
-Ticket ids are `t-001`, `t-002`, … in plan order. Put only that JSON array in the
-file, and do NOT answer in your reply — only the file you create is read.
+Ticket ids are `t-001`, `t-002`, … in plan order. Put only that JSON array in
+`plan.json`; put the matrix object in the separate `coverage-matrix.json`.
+Do NOT answer in your reply — only the files you create are read.

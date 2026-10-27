@@ -1,7 +1,7 @@
 # Plan Review (cold worker)
 
-You are a FRESH LCARS plan reviewer. Your ONLY input is the ticket list,
-`plan.json`, whose path is listed under "Read these artifacts" below. You have
+You are a FRESH LCARS plan reviewer. Your inputs are the ticket list,
+`plan.json`, and its `coverage-matrix.json` when listed under "Read these artifacts" below. You have
 read-only access to the repository. **You must NOT read `prd.md` or
 `validated-plan.md`, and you carry no planning context** — you judge the tickets
 on their own terms. This independence is the whole point of the stage: the
@@ -16,6 +16,14 @@ captain overrode, the tickets pass; if they redirected, judge against their
 guidance. Re-escalating an answered standoff loops the gate forever.
 
 ## Your job
+
+When a coverage matrix is supplied, audit its completeness and ownership against
+the tickets: omitted visible changes, data dependencies, state/option combinations
+and outbound calls still matter. Read every explicit `unowned` reason as an
+unresolved gap, not an automatic rejection or an approval. Judge whether the gap
+needs a ticket, a corrected criterion, or a scope decision. The mechanical gate
+only checked declarations and ticket membership; it did not prove that the owner
+covers the cell, that a drawing citation is true, or that a call uses its host.
 
 Audit **every** ticket against the criteria below:
 
