@@ -468,6 +468,87 @@ tests live and how they import.
 A thin greenfield ticket with little existing code may have a near-empty
 "Relevant files" section — that is fine; still emit the file.
 
+## Before submitting: two checks against the actual artifacts
+
+Do these checks on your draft BEFORE writing the final `plan.json`, not one
+category at a time after the reviewer bounces it. Correct the existing ticket
+fields; do not emit a separate checklist or add tickets just to perform the
+checks. On a revision, keep the patch contract: check the affected claims and
+their consequences, not a licence to rewrite unrelated tickets.
+
+**1. Is this visual claim actually true of the drawing?** When this Mission
+carries a mockup, open the actual drawing and compare EACH visual criterion
+with the element AND state it cites, including claims that something "stays"
+or "keeps its label". An existing id proves a location, not the claim: check
+that the named control is there and that its wording, layout and visibility
+really support the criterion. A drawing of two buttons cannot establish the
+label of a third button it never shows. Split a partly supported criterion;
+keep only the supported claim in `drawnAt`, and put required visible behavior
+absent from the drawing in `notDrawn` with the actual reason. Correct or drop
+an unsupported attribution, NOT a requirement from the brief.
+Check every clause of a compound criterion, including "unchanged" appearance
+and preserved test assertions: one supported clause does not make the rest
+drawn. Existing product behavior is not evidence that the drawing shows it.
+For a grouped regression criterion, read the preserved tests' assertions before
+assigning provenance: a test at a drawn width may assert controls or row ordering
+absent from that drawing. Split or mark that whole compound claim `notDrawn`.
+Record concise comparison evidence in the existing `rationale`: by criterion
+number, name the actual element/state supporting each `drawnAt` and the absent
+control/state that required a split or `notDrawn`. This is evidence from the
+artifact, not a declaration that you checked it.
+
+Adding, restyling, hiding or removing a visible control is visual work, not
+`notVisual` or `changesScreenAppearance: false`. Recheck those declarations
+against what a person will see. Putting the claim in a test does not make
+it non-visual: "scrollWidth equals clientWidth at 428px" still claims a visible
+layout, just as "the label is absent" does. Classify the claimed behavior, not
+the test machinery used to check it. Where independent modes or states combine,
+check whether the drawing shows the combination; if not, give the required
+case an explicit owner and an honest `notDrawn` criterion consistent with the
+Mission's decided answers. Do not invent a drawn state or silently omit it.
+With no mockup, do not invent drawing provenance.
+
+**2. What else does this change move?** Read the actual code around each
+proposed edit, not just the line or symbol named by the brief. For a CSS
+selector or breakpoint change, inspect EVERY rule in the same block, the
+other elements the selector matches, and the states and widths that gain or
+lose those rules. Pair EACH visible consequence with an owning acceptance
+criterion that names the effect, its drawing provenance and how it is checked;
+a description alone is not coverage. Verify the effect against the base rules
+as well as the changed block, not a paraphrase in the validated plan: a wrapper
+becoming static does not make its absolutely positioned child static. For an
+open/hidden control, name the check with that control actually open. Include
+unchanged boundary states. "Widen a breakpoint" is not a complete scope if it
+also repositions a panel, hides a spacer or removes a label. A criterion saying
+"the declarations inside the block stay unchanged" does not cover what those
+declarations now DO at newly included widths. Walk the block-to-criterion pairs
+again before submitting: either explicitly own and test each intended effect,
+or narrow the edit to preserve the other behavior; do not silently restyle it.
+Follow a shared stylesheet or renderer into EVERY page/component that embeds
+it. For each consumer, pair the changed layout/state with its OWN criterion
+and drawing comparison. A wrapping criterion for one page does not cover the
+second page that embeds the same chrome; that page may be drawn differently.
+Shared implementation does not mean shared visual provenance or coverage.
+Record the consumer-to-criterion mapping in the existing `rationale` for each
+shared block's effects. Name the consumer and changed arrangement in its
+criterion: a no-overflow assertion is not a wrapping or visibility check.
+
+Apply the same impact check across tickets: trace the state or interface each
+one changes to its real writers and readers, reconcile `seams` and their
+round-trip proofs with those pairs, and add `dependencies` on the tickets
+whose delivered behavior it actually needs. Shared file edits alone are not
+dependencies. Recheck `establishesSharedInfrastructure` against the substrate
+actually established and its consumers, not ticket size, order, or merely
+adding tests. Record the impact in the existing description, rationale and
+declarations so the Implementer receives it, not just in your private reasoning.
+Check the ownership in both directions: can this ticket pass without needing
+to rewrite another ticket's delivered behavior or test contract? A later
+ticket must not retune a shared parameter and invalidate the earlier owner's
+tests. Keep choosing that parameter AND proving its effects on all affected
+consumers with one cohesive owner; dependent tickets consume that established
+contract. If the behavior cannot be independently owned, re-slice along that
+seam rather than hiding the coupling behind a dependency edge.
+
 ## Output — file FIRST
 
 You MAY first read your input artifacts (read tools are allowed), but you MUST
