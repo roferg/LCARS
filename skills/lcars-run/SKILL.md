@@ -383,15 +383,6 @@ required field, including the rationale, so the Stage will re-dispatch the worke
 and ultimately stop rather than advance on a half-formed plan. On success the
 driver prints `PLAN: advanced` and a `⊘ isolated` marker.
 
-Before submitting, the Planner checks two things against the actual artifacts:
-whether every visual claim is true of the drawing's cited element and state,
-and what else each proposed edit moves (including sibling CSS rules, each
-consuming screen and its states, producer/consumer seams and real dependencies).
-It corrects the ticket's existing criteria and declarations, not a separate
-checklist, and records concise comparison evidence and consumer-to-criterion
-ownership in the existing rationale. This does not replace the independent
-reviewer or increase the three-round cap.
-
 **Report:** how many tickets the plan holds (`plan.json`) and that the Mission is
 now at **Plan Review**. (On a Plan Review loop-back, this same driver re-runs; the
 fresh Planner worker reads the latest `plan-review-<round>.json` objections
