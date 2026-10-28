@@ -47,8 +47,8 @@
 #      "did not land cleanly"
 #   5. an attributed failing set that is GREEN at the current tip dispatches NO
 #      worker, and the stale attribution is recorded
-#   6. a branch behind its base REFUSES a self-heal round and names the
-#      re-anchor command, instead of warning and proceeding
+#   6. a working branch behind its base merges automatically (S336); unsafe
+#      recovery still REFUSES a round and names the blocker
 #   7. two rounds with two different failure modes escalate WITH THAT FACT
 #      stated
 #
@@ -95,9 +95,8 @@ command -v shasum >/dev/null 2>&1 || { echo "shasum is required for this suite";
 # shims; this adds the two-ticket self-heal mission on top of it.
 #
 # `main` holds ONLY the base. The tickets' work sits on `lcars/m-001`, so the
-# mission branch always carries commits OF ITS OWN — which is what makes an
-# advanced base a REFUSAL (a fast-forward would not be lossless) rather than a
-# silent pointer move, i.e. the live shape.
+# mission branch always carries commits OF ITS OWN — so advancing its base
+# requires a merge, never a pointer fast-forward, i.e. the live shape.
 # ===========================================================================
 mkrig() { # → base dir (recorded for teardown)
   local base repo m
@@ -563,14 +562,60 @@ HEAD1="$(grep 'role=implement-tdd' "$B3/dispatch.log" 2>/dev/null | head -1 | se
   || bad "3d. both rounds built on the same tip ('$HEAD1' vs '$HEAD2')"
 
 # ===========================================================================
-# 4 + 6. BASE DRIFT BLOCKS A SELF-HEAL AND NAMES THE RE-ANCHOR.
-#    6: the base is advanced BEFORE the drive (the branch starts behind).
+# 4 + 6. BASE DRIFT MERGES SAFELY OR BLOCKS WITH A RECOVERY DIAGNOSIS.
+#    6: the base is advanced BEFORE the drive; dirty trees still block.
 #    4: the base is advanced BETWEEN rounds, by the worker itself — the live
 #       shape — and "did not land cleanly" must not appear anywhere.
 # ===========================================================================
-echo "-- 6. a branch behind its base REFUSES the round and names the fix --"
+echo "-- S336. a working mission re-anchors by merge and heals --"
+BM="$(mkrig)"; mkworker "$BM"
+MISSION_TIP="$(git -C "$BM/repo" rev-parse "lcars/$MID")"
+bash "$MKFLAT" --advance-base "$BM" >/dev/null 2>&1
+drive "$BM" LCARS_SELFHEAL_CAP=3
+grep -q '"type":"selfheal_ok"' "$(ev_of "$BM")" \
+  && ok "S336a. behind + own commits automatically re-anchors and heals" \
+  || bad "S336a. behind + own commits still parks: $(headline "$DRIVE_OUT")"
+git -C "$BM/repo" merge-base --is-ancestor "$MISSION_TIP" "lcars/$MID" \
+  && ok "S336b. the original mission commit remains an ancestor" \
+  || bad "S336b. mission work was lost"
+git -C "$BM/repo" merge-base --is-ancestor main "lcars/$MID" \
+  && ok "S336c. the healed mission contains the current base" \
+  || bad "S336c. mission still lacks the base"
+[ "$(sfield "$BM" stage)" = verify ] \
+  && ok "S336d. the real Implement gate advances to Verify" \
+  || bad "S336d. mission is still parked"
+handrun "$BM" tests/t-002.test.js \
+  && ok "S336e. the repaired ticket actually passes at the branch tip" \
+  || bad "S336e. repair is not effective at the tip"
+
+echo "-- S336. a conflicting base merge parks without spending a worker --"
+BC="$(mkrig)"; mkworker "$BC"
+CONFLICT_TIP="$(git -C "$BC/repo" rev-parse "lcars/$MID")"
+printf 'base changed this file differently\n' >"$BC/repo/src/a.js"
+( cd "$BC/repo" && git add src/a.js && git commit -qm base-conflict )
+drive "$BC" LCARS_SELFHEAL_CAP=3
+[ "$(sfield "$BC" awaitingHuman)" = True ] \
+  && ok "S336f. a content conflict raises the human gate" \
+  || bad "S336f. conflict did not raise the human gate"
+[ "$(git -C "$BC/repo" rev-parse "lcars/$MID")" = "$CONFLICT_TIP" ] \
+  && ok "S336g. the conflicting merge leaves the exact original mission tip" \
+  || bad "S336g. conflict changed the mission ref"
+[ "$(led "$BC" roundsSpent)" = 0 ] && [ ! -s "$BC/dispatch.log" ] \
+  && ok "S336h. conflict spends zero rounds and zero workers" \
+  || bad "S336h. conflict spent a round or dispatched a worker"
+case "$(pq "$BC")" in
+  *CONFLICT*src/a.js*) ok "S336i. the durable human gate names the conflict and path" ;;
+  *) bad "S336i. the durable gate lost the merge conflict diagnosis" ;;
+esac
+[ "$(git -C "$BC/repo" worktree list --porcelain | grep -c '^worktree ')" = 1 ] \
+  && ok "S336j. the failed recovery leaves no worktree behind" \
+  || bad "S336j. the failed recovery leaked its worktree"
+
+echo "-- 6. a dirty tree still REFUSES recovery and names the fix --"
 B6="$(mkrig)"; mkworker "$B6"
 bash "$MKFLAT" --advance-base "$B6" >/dev/null 2>&1
+( cd "$B6/repo" && git fetch -q origin main && git merge -q --ff-only origin/main )
+printf 'captain work\n' >"$B6/repo/captain-untracked"
 drive "$B6" LCARS_SELFHEAL_CAP=3 RIG_TOGGLE=1
 EV6="$(ev_of "$B6")"
 grep -q '"type":"selfheal_refused"' "$EV6" 2>/dev/null \
@@ -584,7 +629,7 @@ grep -q '"type":"selfheal_refused"' "$EV6" 2>/dev/null \
   || bad "6c. ledger roundsSpent='$(led "$B6" roundsSpent)'"
 REF6="$(grep '"type":"selfheal_refused"' "$EV6" 2>/dev/null | head -1)"
 case "$REF6$DRIVE_OUT" in
-  *"git rebase main lcars/$MID"*) ok "6d. the refusal NAMES the re-anchor command" ;;
+  *"dirty working tree"*) ok "6d. the refusal NAMES the recovery blocker" ;;
   *) bad "6d. no re-anchor command named: $(printf '%s' "$REF6" | cut -c1-240)" ;;
 esac
 case "$DRIVE_OUT" in
@@ -637,12 +682,14 @@ if grep -q 'did not land cleanly' "$EV4" 2>/dev/null; then
 else
   ok "4a. 'did not land cleanly' appears nowhere in the timeline"
 fi
-grep -q '"type":"selfheal_refused"' "$EV4" 2>/dev/null \
-  && ok "4b. the moved base is caught at the START of the next round, as a refusal" \
-  || bad "4b. no refusal after the base moved: $(grep -o '"type":"selfheal[a-z_]*"' "$EV4" 2>/dev/null | sort -u | tr '\n' ' ')"
-[ "$(led "$B4" roundsSpent)" -le 1 ] 2>/dev/null \
-  && ok "4c. and at most the ONE honest defect round was spent ($(led "$B4" roundsSpent))" \
-  || bad "4c. roundsSpent='$(led "$B4" roundsSpent)' — the moved base cost rounds"
+if grep -q '"type":"selfheal_refused"' "$EV4" 2>/dev/null; then
+  bad "4b. base drift still refuses instead of merging"
+else
+  ok "4b. base movement between rounds no longer parks the mission"
+fi
+[ "$(led "$B4" roundsSpent)" = 3 ] \
+  && ok "4c. three genuine alternating regressions spend three defect rounds" \
+  || bad "4c. roundsSpent='$(led "$B4" roundsSpent)' — expected three genuine defects"
 
 # ===========================================================================
 # 5. A STALE ATTRIBUTION DISPATCHES NO WORKER.

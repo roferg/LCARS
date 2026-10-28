@@ -164,6 +164,17 @@ commits of its own), by a pointer move when it is not checked out and by a real
 by a checkout, reset or force. `lcars file` does none of this: at file time a
 branch cut at an older commit was cut there on purpose.
 
+**Implement self-heal recovery is different from the startup fast-forward.**
+When the full-suite gate needs a repair and the Mission has both its own commits
+and a newer base, the self-heal guard merges the base instead of rewriting those
+commits. It builds the merge in a detached recovery worktree under the replay
+mutex, checks that both original tips remain ancestors, and publishes only if
+the Mission tip has not changed. The existing ticket re-check and full-suite
+gate then judge the merged state. A dirty tree, an operation in progress, a
+Mission branch checked out elsewhere, or a failed/conflicting merge stops
+recovery for a human without spending a repair round. The startup helper's
+refusal to force-move committed work and Verify's stage restriction are unchanged.
+
 The verdict is recorded on the Mission as `state.json.baseFreshness`
 (`verdict` ∈ `current | updated | stale | unknown | child-base`, plus `reason`,
 `fix` (one runnable command or nothing), `fixNote`, `blocker`,

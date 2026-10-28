@@ -16654,7 +16654,7 @@ escalate_full_suite_regression() { # reason  ordered ticketId...
     base-drift)
       summary="$summary
 
-WHAT ACTUALLY STOPPED THE SELF-HEAL: the mission branch is ${SELFHEAL_DRIFT_BEHIND:-?} commit(s) behind its base, so a rebuild would be composed on a tip the branch has already left behind. ${SELFHEAL_ROUNDS_SPENT:-0} of $SELFHEAL_CAP self-heal round(s) were spent and no worker was dispatched. Re-anchor the branch first: ${SELFHEAL_REANCHOR_FIX:-rebase the mission branch onto its base} $(selfheal_recovery_order "re-anchor the branch with that command")" ;;
+WHAT ACTUALLY STOPPED THE SELF-HEAL: the mission branch is ${SELFHEAL_DRIFT_BEHIND:-?} commit(s) behind its base, so a rebuild would be composed on a tip the branch has already left behind. ${SELFHEAL_ROUNDS_SPENT:-0} of $SELFHEAL_CAP self-heal round(s) were spent and no worker was dispatched.${SELFHEAL_DRIFT_REASON:+ Recovery diagnosis: $SELFHEAL_DRIFT_REASON} Re-anchor the branch first: ${SELFHEAL_REANCHOR_FIX:-rebase the mission branch onto its base} $(selfheal_recovery_order "re-anchor the branch with that command")" ;;
     apply-failed)
       summary="$summary
 
@@ -17065,23 +17065,73 @@ SH_REL_EOF
   return 1
 }
 
-# BASE DRIFT BLOCKS A SELF-HEAL INSTEAD OF INFORMING IT. There is ONE
-# implementation of base freshness in this project — `ensure_base_current` +
-# `lcars_base_advance_mission_branch` in lcars-common.sh (S158/S159) — and this
-# CONSUMES it; nothing about freshness is re-decided here. The guard's own
-# doctrine is unchanged: it never writes into a dirty tree, never resets or
-# forces, and only fast-forwards a mission branch when that is provably lossless.
-#
-# What S310 changes is the CONSEQUENCE. At drive time "the branch is N commits
-# behind" is a warning you proceed past; with a self-heal about to run it is the
-# WHOLE STORY, because the rebuild will be composed on a tip the branch has
-# already left behind. So: if the guard could fast-forward the branch, that IS
-# the re-anchor and the round proceeds. If it refused (the branch carries work of
-# its own — the ordinary mid-mission state), the round is refused and the guard's
-# own one-line fix is handed on.
+# Both Implement recovery and Verify reconcile merge, never rewrite history.
+merge_base_in_worktree() { # worktree base-sha
+  ( cd "$1" && "$GIT_BIN" -c merge.autoStash=false merge --no-edit --no-overwrite-ignore "$2" )
+}
+
+# Merge off-branch, then publish only if the original tip still owns the ref.
+# The replay mutex serializes this with ticket landings and linked-bug folds.
+selfheal_merge_base() { # branch base
+  (
+    # Subshell-owned variables survive an early exit until its cleanup trap.
+    branch="$1"; base="$2"; wt=""
+    acquire_replay_lock
+    trap 'if [ -n "$wt" ]; then
+      "$GIT_BIN" worktree remove --force "$wt" >/dev/null 2>&1 ||
+        rmdir "$wt" 2>/dev/null ||
+        printf "Could not remove recovery worktree: %s\n" "$wt" >&2
+    fi; release_replay_lock' EXIT
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+    _lcars_base_inflight
+    if [ -n "$LCARS_BASE_INFLIGHT" ]; then
+      printf 'Recovery refused: %s operation-in-progress; finish it before retrying.\n' "$LCARS_BASE_INFLIGHT"
+      exit 1
+    fi
+    dirty="$("$GIT_BIN" status --porcelain 2>&1)" || { printf '%s\n' "$dirty"; exit 1; }
+    if [ -n "$dirty" ]; then
+      printf 'Recovery refused: dirty working tree; commit or stash your work before retrying.\n'
+      exit 1
+    fi
+    _lcars_base_worktree_of "$branch"
+    if [ -n "$LCARS_MB_WT" ]; then
+      printf "Recovery refused: '%s' is checked out at %s; free that checkout before retrying.\n" "$branch" "$LCARS_MB_WT"
+      exit 1
+    fi
+    tip="$("$GIT_BIN" rev-parse --verify "refs/heads/$branch")" || exit 1
+    basesha="$("$GIT_BIN" rev-parse --verify "refs/heads/$base")" || exit 1
+    wt="$(mktemp -d "$MISSION_DIR/reanchor.XXXXXX")" || exit 1
+    "$GIT_BIN" worktree add -q --detach "$wt" "$tip" || exit 1
+    if ! out="$(merge_base_in_worktree "$wt" "$basesha" 2>&1)"; then
+      printf 'Recovery merge failed; mission commits are untouched. Resolve the merge with a human before retrying:\n%s\n' "$out"
+      exit 1
+    fi
+    merged="$("$GIT_BIN" -C "$wt" rev-parse HEAD)" || exit 1
+    "$GIT_BIN" merge-base --is-ancestor "$tip" "$merged" &&
+      "$GIT_BIN" merge-base --is-ancestor "$basesha" "$merged" || {
+        printf 'Recovery refused: merge does not preserve both original tips.\n'; exit 1;
+      }
+    "$GIT_BIN" worktree remove "$wt" || exit 1
+    wt=""
+    _lcars_base_worktree_of "$branch"
+    if [ -n "$LCARS_MB_WT" ] ||
+       [ "$("$GIT_BIN" rev-parse "refs/heads/$base")" != "$basesha" ]; then
+      printf 'Recovery refused: branch checkout or base changed during the merge; retry after it settles.\n'
+      exit 1
+    fi
+    "$GIT_BIN" update-ref -m "lcars: merge $base into $branch for self-heal" \
+      "refs/heads/$branch" "$merged" "$tip" || {
+        printf 'Recovery refused: mission tip changed during the merge; no commits were replaced.\n'; exit 1;
+      }
+  )
+}
+
+# Fast-forward when lossless; otherwise merge the base into a working mission.
+# Re-testing remains in selfheal_failing_set_green / full_suite_gate below.
 # Returns 0 = REFUSE this round. Returns 1 = nothing in the way.
 selfheal_base_drift_blocks() { # branch base
-  local branch="${1:-}" base="${2:-}"
+  local branch="${1:-}" base="${2:-}" merge_reason
   SELFHEAL_REANCHOR_FIX=""; SELFHEAL_DRIFT_BEHIND=""; SELFHEAL_DRIFT_REASON=""
   [ -n "$branch" ] && [ -n "$base" ] || return 1
   [ "$branch" != "$base" ] || return 1
@@ -17090,15 +17140,31 @@ selfheal_base_drift_blocks() { # branch base
   # A logged bug's base IS its parent's mission branch: LCARS takes no position
   # on it and never moves the parent, so there is no drift to refuse.
   [ "${LCARS_BASE_VERDICT:-}" = "child-base" ] && return 1
-  # Mid-operation (rebase/merge/cherry-pick/revert/bisect): the refs are
-  # mid-move, so every measurement is of a transient. Claiming staleness that
-  # was never established is the one lie a consumer cannot detect.
-  [ "${LCARS_BASE_BLOCKER:-}" = "operation-in-progress" ] && return 1
+  # Never turn the freshness guard's mid-operation refusal into permission to
+  # rebuild. Count only the recorded branch refs, without moving either one.
+  if [ "${LCARS_BASE_BLOCKER:-}" = "operation-in-progress" ]; then
+    SELFHEAL_DRIFT_BEHIND="$(_lcars_base_count "refs/heads/$branch" "refs/heads/$base")"
+    case "$SELFHEAL_DRIFT_BEHIND" in ''|0|*[!0-9]*) return 1 ;; esac
+    SELFHEAL_DRIFT_REASON="$LCARS_BASE_REASON"
+    SELFHEAL_REANCHOR_FIX="${LCARS_BASE_FIXNOTE:-finish the operation-in-progress, then retry}"
+    return 0
+  fi
   lcars_base_advance_mission_branch "$branch" "$base" || :
   case "${LCARS_MB_BEHIND:-}" in ''|0|*[!0-9]*) return 1 ;; esac
   # The guard brought the branch up to date itself — that is the re-anchor, and
   # there is nothing left to refuse.
   [ "${LCARS_MB_MOVE:-}" = "moved" ] && return 1
+  case "${LCARS_MB_AHEAD:-}" in
+    ''|0|*[!0-9]*) : ;;
+    *)
+      if merge_reason="$(selfheal_merge_base "$branch" "$base" 2>&1)"; then
+        printf "  SELF-HEAL — merged '%s' into '%s'; re-testing the merged state.\n" "$base" "$branch"
+        return 1
+      fi
+      LCARS_MB_REASON="$merge_reason"
+      LCARS_MB_FIX="resolve the recovery blocker above, then retry; merge '$base' into '$branch' without rebasing or forcing"
+      ;;
+  esac
   SELFHEAL_DRIFT_BEHIND="$LCARS_MB_BEHIND"
   SELFHEAL_DRIFT_REASON="${LCARS_MB_REASON:-}"
   SELFHEAL_REANCHOR_FIX="${LCARS_MB_FIX:-git rebase $base $branch}"
@@ -17241,7 +17307,7 @@ self_heal_full_suite() { # reason  ordered ticketId...
       SELFHEAL_STOP_REASON="base-drift"
       SELFHEAL_TIP="$(selfheal_branch_tip "$branch")"
       emit_event selfheal_refused implement \
-        "self-heal REFUSED before attempt $attempt — the mission branch '$branch' is ${SELFHEAL_DRIFT_BEHIND} commit(s) behind '$base', so a rebuild would be composed on a tip the branch has already left behind and could not land. No worker was dispatched and no round was spent (${SELFHEAL_ROUNDS_SPENT} of $SELFHEAL_CAP). Re-anchor first: ${SELFHEAL_REANCHOR_FIX}" \
+        "self-heal REFUSED before attempt $attempt — the mission branch '$branch' is ${SELFHEAL_DRIFT_BEHIND} commit(s) behind '$base', so a rebuild would be composed on a tip the branch has already left behind and could not land. No worker was dispatched and no round was spent (${SELFHEAL_ROUNDS_SPENT} of $SELFHEAL_CAP).${SELFHEAL_DRIFT_REASON:+ Recovery diagnosis: $SELFHEAL_DRIFT_REASON} Re-anchor first: ${SELFHEAL_REANCHOR_FIX}" \
         "behindBy=${SELFHEAL_DRIFT_BEHIND}" "base=$base" "roundsSpent=$SELFHEAL_ROUNDS_SPENT" || :
       selfheal_ledger_write base-drift
       printf '  ⚠ SELF-HEAL REFUSED — %s is %s commit(s) behind %s\n' \
@@ -19218,7 +19284,7 @@ reconcile_gate() {
   }
 
   local merge_rc=0 conflicted=""
-  ( cd "$wt" && "$GIT_BIN" merge --no-edit "$base_ref" ) >/dev/null 2>&1 || merge_rc=$?
+  merge_base_in_worktree "$wt" "$base_ref" >/dev/null 2>&1 || merge_rc=$?
   if [ "$merge_rc" -ne 0 ]; then
     conflicted="$( cd "$wt" && "$GIT_BIN" diff --name-only --diff-filter=U 2>/dev/null )"
     emit_event reconcile_conflict verify "textual merge conflict in: $(printf '%s' "$conflicted" | tr '\n' ' ')"

@@ -4,6 +4,15 @@ All notable changes to LCARS are recorded here, newest first. The version
 scheme is `YYYY.M.N` (calendar year, month with no leading zero, per-month
 counter). Every PR into `main` bumps `VERSION` and adds its entry here.
 
+## Unreleased — self-heal can merge an advanced base (S336)
+
+Implement self-heal now merges a newer base into a Mission carrying its own
+commits, then continues through the existing shared re-test gates. Recovery
+preserves both tips, refuses concurrent tip replacement, and never rewrites
+published history. Dirty trees, unfinished operations, checked-out Mission
+branches and conflicting merges still stop for a human. The startup helper's
+lossless-fast-forward refusal and Verify-only reconcile command are unchanged.
+
 ## Unreleased — honest all-undrawn tickets (S335)
 
 A screen-changing ticket whose criteria are all `notDrawn` or `notVisual` no
