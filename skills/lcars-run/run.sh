@@ -3657,8 +3657,8 @@ cmd_validate_advance() {
 # decomposes the plan into a list of small, vertical-slice tickets. It writes
 # the whole list as plan.json (a JSON array) to a temp file and hands it here:
 #
-#   plan-save  --mission <id> --plan <file> [--coverage-matrix <file>]
-#         Validate the tickets and owned matrix, install both, and advance the
+#   plan-save  --mission <id> --plan <file>
+#         Validate the ticket list, install it as plan.json, and advance the
 #         Mission to Plan Review (stage + label plan → plan-review).
 #
 # plan.json is a JSON array of ticket objects in a canonical one-field-per-line
@@ -3808,10 +3808,7 @@ LCARS_AWK_CRIT_EOF
 # non-empty, three further DECLARATION checks apply; none of them reads a
 # ticket's prose to decide anything (see the design note above
 # plan_mockup_contract_block).
-# S332 adds the companion coverage matrix check AFTER the ticket validator.
-# It checks declarations, never completeness or truth. A missing sidecar is
-# allowed only on legacy/manual saves; cmd_plan explicitly requires one.
-validate_plan_json() { # file [mockup-basenames] [mockup-place-names] [final-attempt] [coverage-matrix]
+validate_plan_json() { # file [mockup-basenames] [mockup-place-names] [final-attempt]
   awk -v mock="${2:-}" -v places="${3:-}" -v rl_final="${4:-0}" "$LCARS_AWK_CRIT"'
     function fail(msg) { failed=1; printf "lcars run: %s\n", msg > "/dev/stderr"; exit 1 }
     # === S313: DOES THIS TICKET NAME ITSELF A REGRESSION LOCK? ===============
@@ -4329,96 +4326,7 @@ validate_plan_json() { # file [mockup-basenames] [mockup-place-names] [final-att
       if (sdbad != "" && !failed)
         fail("this plan links a criterion to a requirement with \"serves\" but does not STATE which way round it is. Every acceptanceCriteria entry that carries \"serves\" MUST also carry \"direction\": \"delivers\" (the criterion makes that requirement true) or \"direction\": \"removes\" (it deliberately takes that requirement away) — nothing reads your prose to decide polarity, because that guess has been wrong before. Add the missing field on:" sdbad "\n  A criterion that links to no single requirement stays a plain string and declares neither.")
     }
-  ' "$1" || return $?
-
-  # A sidecar preserves the ticket-array contract used throughout the harness.
-  # Old hand-saved plans remain legal; the Plan driver explicitly requires the
-  # sidecar on every new attempt. Never infer cells or owners from ticket prose.
-  local matrix="${5:-}"
-  if [ -z "$matrix" ] && [ -e "$(dirname "$1")/coverage-matrix.json" ]; then
-    matrix="$(dirname "$1")/coverage-matrix.json"
-  fi
-  [ -n "$matrix" ] || return 0
-  "${LCARS_PYTHON_BIN:-python3}" - "$1" "$matrix" <<'S332_PY'
-import json
-import re
-import sys
-
-def unique_fields(pairs):
-    result = {}
-    for key, value in pairs:
-        if key in result:
-            raise ValueError("duplicate field %r" % key)
-        result[key] = value
-    return result
-
-try:
-    with open(sys.argv[1]) as fh:
-        plan = json.load(fh, object_pairs_hook=unique_fields)
-    with open(sys.argv[2]) as fh:
-        matrix = json.load(fh, object_pairs_hook=unique_fields)
-except (OSError, ValueError) as exc:
-    sys.stderr.write("lcars run: coverage matrix cannot be read: %s\n" % exc)
-    sys.exit(1)
-
-errors = []
-if not isinstance(matrix, dict):
-    errors.append("coverage matrix must be an object")
-else:
-    ids = {ticket["id"] for ticket in plan}
-    fields = {
-        "visibleChanges": ("change",),
-        "dependencies": ("producer", "consumer", "artifact"),
-        "combinations": ("combination",),
-        "outboundCalls": ("call", "host"),
-    }
-    for key in sorted(matrix.keys() - fields.keys()):
-        errors.append("unknown coverage matrix category %r" % key)
-    for kind, required in fields.items():
-        rows = matrix.get(kind)
-        if not isinstance(rows, list):
-            errors.append("%s must be an array" % kind)
-            continue
-        for i, row in enumerate(rows):
-            cell = "%s[%d]" % (kind, i)
-            if not isinstance(row, dict):
-                errors.append("%s must be an object carrying an owner" % cell)
-                continue
-            for field in required:
-                value = row.get(field)
-                if not isinstance(value, str) or not value.strip():
-                    errors.append("%s needs a non-empty %s" % (cell, field))
-            if kind == "dependencies":
-                for endpoint in ("producer", "consumer"):
-                    value = row.get(endpoint)
-                    if not isinstance(value, str) or value not in ids:
-                        errors.append("%s %s must name a ticket id in this plan" % (cell, endpoint))
-                producer, consumer = row.get("producer"), row.get("consumer")
-                if isinstance(producer, str) and isinstance(consumer, str):
-                    target = next((t for t in plan if t["id"] == consumer), None)
-                    if target is not None and producer not in target.get("dependencies", []):
-                        errors.append("%s needs the dependency edge %s -> %s in the consumer's dependencies"
-                                      % (cell, producer, consumer))
-            if kind == "outboundCalls":
-                host = row.get("host")
-                if not isinstance(host, str) or not re.fullmatch(
-                    r"(?:[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?|\[[0-9A-Fa-f:]+\])(?::[0-9]+)?", host
-                ):
-                    errors.append("%s needs a literal pinned host (hostname[:port], not a URL or variable)" % cell)
-            owner = row.get("owner")
-            if not isinstance(owner, str) or not owner.strip():
-                errors.append("%s needs one owner ticket id or 'unowned' with a reason" % cell)
-            elif owner == "unowned":
-                reason = row.get("reason")
-                if not isinstance(reason, str) or not reason.strip():
-                    errors.append("%s owner 'unowned' needs a non-empty reason" % cell)
-            elif owner not in ids:
-                errors.append("%s owner %r is not a ticket id in this plan" % (cell, owner))
-
-if errors:
-    sys.stderr.write("lcars run: invalid coverage matrix:\n  " + "\n  ".join(errors) + "\n")
-    sys.exit(1)
-S332_PY
+  ' "$1"
 }
 
 
@@ -5492,26 +5400,14 @@ cmd_plan_save() {
   # note is a COPY, filling a channel that was empty.
   local _verr; _verr="$(mktemp)"
   local _vrc=0
-  local matrix="${COVERAGE_MATRIX:-}"
-  if [ -z "$matrix" ] && [ -e "$(dirname "$PLAN")/coverage-matrix.json" ]; then
-    matrix="$(dirname "$PLAN")/coverage-matrix.json"
-  fi
-  # Once a Mission uses the matrix, a hand-saved revision must not silently
-  # detach it or reuse the old rows against a different ticket set.
-  if [ -z "$matrix" ] && [ -f "$MISSION_DIR/coverage-matrix.json" ]; then
-    printf 'lcars run: this Mission requires --coverage-matrix <file> with its revised plan.\n' >"$_verr"
-    _vrc=1
-  fi
   # The 4th argument is WHICH ATTEMPT THIS IS. Only the S313 regression-lock
   # rule reads it, and only to go advisory on the last one — see the long note
   # at that rule, and the identical reason given at the S178 over-correction
   # guard below: a valid plan must never deadlock the Stage on a PREVENTIVE
   # guard. Absent (a hand-run plan-save) it is 0, i.e. not the last attempt,
   # which is the strict reading.
-  if [ "$_vrc" -eq 0 ]; then
-    validate_plan_json "$PLAN" "$(mission_mockup_names)" "$(mission_mockup_place_names)" \
-      "${FINAL_ATTEMPT:-0}" "$matrix" 2>>"$_verr" || _vrc=$?
-  fi
+  validate_plan_json "$PLAN" "$(mission_mockup_names)" "$(mission_mockup_place_names)" \
+    "${FINAL_ATTEMPT:-0}" 2>"$_verr" || _vrc=$?
   if [ "$_vrc" -eq 0 ]; then
     # S236 — the seams/entrypoints contract. Runs AFTER the shape validator so a
     # half-formed plan is never failed twice for the same thing, and so a
@@ -5669,9 +5565,6 @@ $_s178out"
   fi
 
   cp "$PLAN" "$MISSION_DIR/plan.json"
-  if [ -n "$matrix" ]; then
-    cp "$matrix" "$MISSION_DIR/coverage-matrix.json" || die "could not persist coverage-matrix.json."
-  fi
   # S178: the revision has been delivered — consume the token. Anything later
   # (another Plan Review round, a `lcars feedback` send-back and re-plan) must
   # write its own or be treated as no revision at all.
@@ -20559,7 +20452,6 @@ usage_capture() { # env-role outdir stage-key cli session-id
 # and the event stream is byte-identical to a run without it.
 WORKER_FENCE_WATCH="state.json
 plan.json
-coverage-matrix.json
 plan-under-review.json
 approved-plan.json
 waves.json
@@ -23460,8 +23352,6 @@ What is NOT fine is being over budget because the ticket BUNDLES two behaviors."
   if [ -f "$MISSION_DIR/plan-under-review.json" ]; then
     extra="$extra
 - $MISSION_DIR/plan-under-review.json   (THE PLAN UNDER REVIEW — the exact tickets the objections are against; this revision is a PATCH of it)"
-    [ -f "$MISSION_DIR/coverage-matrix.json" ] && extra="$extra
-- $MISSION_DIR/coverage-matrix.json   (the companion matrix under review — emit an updated sidecar with the revised tickets)"
   fi
   # The engineering ADRs (Align-seeded, possibly Validate-refined) — declarative
   # architectural facts this Stage may read, by PATH only. Absent on a trivial
@@ -23538,8 +23428,7 @@ What is NOT fine is being over budget because the ticket BUNDLES two behaviors."
       # valid plan must never deadlock the Stage on this guard. See cmd_plan_save.
       [ "$tries" -ge "$MAX_WORKER_TRIES" ] && final_flag="--final-attempt"
       LCARS_GH_BIN="$GH_BIN" LCARS_GIT_BIN="$GIT_BIN" bash "$SELF" plan-save \
-        --mission "$MISSION_ID" --plan "$odir/plan.json" --manifests "$odir/manifests" \
-        --coverage-matrix "$odir/coverage-matrix.json" $final_flag || rc=$?
+        --mission "$MISSION_ID" --plan "$odir/plan.json" --manifests "$odir/manifests" $final_flag || rc=$?
       if [ "$rc" -eq 0 ]; then isolated_line plan 1; rm -rf "$odir"; exit 0; fi
       # S237 — 7 means plan-save PARKED this Mission at an awaiting-human gate
       # for an anchor it cannot resolve. That is a GATE, not a Stage failure:
@@ -23563,7 +23452,7 @@ What is NOT fine is being over budget because the ticket BUNDLES two behaviors."
 }
 
 # === Stage driver: Plan Review =============================================
-# A FRESH cold worker fed plan.json + its matrix (never prd.md / validated-plan.md) →
+# A FRESH cold worker fed ONLY plan.json (never prd.md / validated-plan.md) →
 # verdict.json, persisted via review-save (pass→Schedule, fail→loop/escalate).
 cmd_plan_review() {
   locate_mission "$MISSION_ID"
@@ -23583,7 +23472,7 @@ cmd_plan_review() {
   # TARGET, not a hard cap (see validate_plan_json's design note). Default 1200.
   local budget; budget="$(json_raw "$LCARS_CFG" comprehensionBudget)"; budget="${budget:-1200}"
 
-  # Independence: tickets and their matrix, never the planning conversation.
+  # Independence is the whole point: the reviewer is handed the tickets ALONE.
   local extra="## Read these artifacts (your ONLY inputs)
 - $MISSION_DIR/plan.json
 
@@ -23594,8 +23483,6 @@ TARGET, not a hard cap: an over-budget ticket is an objection ONLY when the
 overage is driven by BUNDLING (two behaviors that should be split). When the
 overage is unavoidable existing code (a big file the ticket must read), it is
 acceptable — do not raise it."
-  [ -f "$MISSION_DIR/coverage-matrix.json" ] && extra="$extra
-- $MISSION_DIR/coverage-matrix.json   (the ticket plan's owned coverage matrix; audit completeness and explicit unowned reasons)"
   # RESUME after a round-3 escalation: the captain's recorded answer (override /
   # redirect) resolves the standoff. Feed it so the reviewer honours that
   # decision instead of re-escalating the same objections forever.
@@ -26740,7 +26627,7 @@ cmd_drive() {
 SUB="${1:-}"; [ $# -gt 0 ] && shift
 
 MISSION_ID=""; QFILE=""; RESPONSES=""; PLAN=""; VERDICT=""; TICKET=""; TESTS=""; STUBS=""; SETUP=""; RESULT=""; STEP=0
-EV_TYPE=""; EV_STAGE=""; EV_DETAIL=""; EV_DATA=(); MANIFESTS=""; COVERAGE_MATRIX=""; POSARG=""; SURFACE=""
+EV_TYPE=""; EV_STAGE=""; EV_DETAIL=""; EV_DATA=(); MANIFESTS=""; POSARG=""; SURFACE=""
 XO_MODE=""; XO_OUTDIR=""    # S202 — Number One's spawn (see spawn-number-one)
 FINAL_ATTEMPT=0   # S178: plan-save --final-attempt (guard goes advisory)
 RC_BRANCH=""; RC_SHA=""
@@ -26763,13 +26650,6 @@ while [ $# -gt 0 ]; do
     --final-attempt) FINAL_ATTEMPT=1; shift ;;
     --manifests)   MANIFESTS="${2:-}"; shift 2 ;;
     --manifests=*) MANIFESTS="${1#--manifests=}"; shift ;;
-    --coverage-matrix)
-      [ -n "${2:-}" ] || die "--coverage-matrix needs a file path."
-      COVERAGE_MATRIX="$2"; shift 2 ;;
-    --coverage-matrix=*)
-      COVERAGE_MATRIX="${1#--coverage-matrix=}"
-      [ -n "$COVERAGE_MATRIX" ] || die "--coverage-matrix needs a file path."
-      shift ;;
     --verdict)     VERDICT="${2:-}"; shift 2 ;;
     --verdict=*)   VERDICT="${1#--verdict=}"; shift ;;
     --ticket)      TICKET="${2:-}"; shift 2 ;;

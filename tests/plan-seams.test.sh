@@ -556,16 +556,8 @@ sub="$1"; role="${LCARS_WORKER_ROLE:-$3}"; outdir="$4"; prompt="$5"
 [ "$sub" = "spawn" ] || exit 0
 { printf '=== ROLE %s ===\n' "$role"; printf '%s\n' "$prompt"; } >>"$PROMPTS"
 case "$role" in
-  plan)
-    cp "$STUB_PLAN" "$outdir/plan.json"
-    if [ "${STUB_OMIT_MATRIX:-0}" != 1 ]; then
-      printf '{"visibleChanges":[],"dependencies":[],"combinations":[],"outboundCalls":[]}\n' > "$outdir/coverage-matrix.json"
-    fi
-    ;;
-  plan-review)
-    if [ -n "${STUB_TAMPER_MATRIX:-}" ]; then printf '{}\n' > "$STUB_TAMPER_MATRIX"; fi
-    printf '{ "passed": true, "issues": [] }\n' > "$outdir/verdict.json"
-    ;;
+  plan)        cp "$STUB_PLAN" "$outdir/plan.json" ;;
+  plan-review) printf '{ "passed": true, "issues": [] }\n' > "$outdir/verdict.json" ;;
 esac
 exit 0
 EOF
@@ -717,29 +709,6 @@ cp "$TMPROOT/stub-plan.json" "$R6/.git/lcars/missions/test-001/plan.json"
 run_plan_review "$R6"
 check "4p …and a github.com mission's reviewer prompt carries no host block" \
   "! grep -qi 'host checklist' '$PROMPT_FILE'"
-
-# S332: drive the new artifact through the real Plan/Review boundaries. Workers
-# remain stubs; these assertions prove plumbing, not live model enumeration.
-check "S332 Plan persists the worker's matrix alongside its tickets" \
-  "[ -f '$R/.git/lcars/missions/test-001/coverage-matrix.json' ]"
-run_plan_review "$R"
-check "S332 Review receives the persisted matrix by path" \
-  "[ '$RC' -eq 0 ] && grep -qF '$R/.git/lcars/missions/test-001/coverage-matrix.json' '$PROMPT_FILE'"
-R_MISSING="$(e2e_repo '')"
-STUB_OMIT_MATRIX=1 run_plan_stage "$R_MISSING"
-check "S332 a new Plan worker cannot omit the matrix" \
-  "[ '$RC' -ne 0 ] && printf '%s' \"\$OUT\" | grep -q 'coverage matrix cannot be read'"
-check "S332 the missing-matrix rejection reaches the retrying worker" \
-  "grep -q 'coverage matrix cannot be read' '$PROMPT_FILE'"
-check "S332 missing matrix never installs a plan or spends a reviewer round" \
-  "[ ! -f '$R_MISSING/.git/lcars/missions/test-001/plan.json' ] && [ ! -f '$R_MISSING/.git/lcars/missions/test-001/plan-review-1.json' ]"
-R_TAMPER="$(e2e_repo '' plan-review)"
-cp "$TMPROOT/stub-plan.json" "$R_TAMPER/.git/lcars/missions/test-001/plan.json"
-printf '{"visibleChanges":[],"dependencies":[],"combinations":[],"outboundCalls":[]}\n' \
-  > "$R_TAMPER/.git/lcars/missions/test-001/coverage-matrix.json"
-STUB_TAMPER_MATRIX="$R_TAMPER/.git/lcars/missions/test-001/coverage-matrix.json" run_plan_review "$R_TAMPER"
-check "S332 a read-only reviewer cannot rewrite the accepted coverage matrix" \
-  "[ '$RC' -ne 0 ] && grep -q 'worker_fence_breach.*coverage-matrix.json' '$R_TAMPER/.git/lcars/missions/test-001/events.jsonl'"
 
 # ===========================================================================
 section "C. the Verify readout RECORDS the declared tests (behavior 5)"

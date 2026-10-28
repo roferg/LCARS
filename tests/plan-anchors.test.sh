@@ -106,10 +106,7 @@ sub="$1"; role="${LCARS_WORKER_ROLE:-$3}"; outdir="$4"; prompt="$5"
 [ "$sub" = "spawn" ] || exit 0
 { printf '=== ROLE %s ===\n' "$role"; printf '%s\n' "$prompt"; } >>"$PROMPTS"
 case "$role" in
-  plan)
-    [ -n "${STUB_PLAN:-}" ] && cp "$STUB_PLAN" "$outdir/plan.json"
-    printf '{"visibleChanges":[],"dependencies":[],"combinations":[],"outboundCalls":[]}\n' > "$outdir/coverage-matrix.json"
-    ;;
+  plan)        [ -n "${STUB_PLAN:-}" ] && cp "$STUB_PLAN" "$outdir/plan.json" ;;
   plan-review) printf '{ "passed": true, "issues": [] }\n' > "$outdir/verdict.json" ;;
 esac
 exit 0

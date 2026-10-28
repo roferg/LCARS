@@ -4,18 +4,6 @@ All notable changes to LCARS are recorded here, newest first. The version
 scheme is `YYYY.M.N` (calendar year, month with no leading zero, per-month
 counter). Every PR into `main` bumps `VERSION` and adds its entry here.
 
-## Unreleased — owned Plan coverage matrix (S332)
-
-Plan now emits `coverage-matrix.json` beside its unchanged ticket array:
-visible changes, cross-ticket data dependencies, state/option combinations,
-and outbound calls with pinned hosts. Each cell names one ticket owner or
-explicitly records `unowned` with a reason. The deterministic plan validator
-rejects invalid ownership and malformed declarations before Plan Review; new
-Plan workers cannot omit the artifact. Review receives the persisted matrix,
-including unresolved gaps. Legacy manual plans remain compatible. This checks
-declarations, not enumeration completeness or semantic truth; the three-round
-review cap and existing visual-claim rules are unchanged.
-
 ## 2026.10.5 — the holograms, and a first commit worth keeping
 
 Start a new project and its first commit is clean. The greenfield foundation
