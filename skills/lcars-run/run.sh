@@ -1115,10 +1115,10 @@ than one, or an empty one — naming every offending ticket and criterion in one
 message. A plain string is still correct everywhere else: on every
 `changesScreenAppearance: false` ticket, and on every Mission with no mockup.
 
-At least one criterion on the ticket must be `drawnAt`. A ticket that says it
-changes what a screen looks like is drawn SOMEWHERE in %s, and naming it
-in the `description` does not count — the description is not what the work is
-judged against.
+A screen-changing ticket may be entirely absent from the drawing. In that case
+declare each visible criterion `notDrawn` with its reason, and each genuinely
+non-visual criterion `notVisual`: true. No `drawnAt` is required on that ticket.
+Do not fabricate a citation or add unrelated drawn criteria to satisfy the gate.
 
 ### `notDrawn` is not a loophole, and `notVisual` is not a shrug
 
@@ -1198,7 +1198,7 @@ is part of the work, and the work is judged where it is built.
     "rationale": "…"
 
 The mockups this Mission carries:
-%s' "$names" "$freedom" "$first" "$(printf '%s' "$names" | tr ' ' '\n' | sed 's/^/- /')"
+%s' "$names" "$freedom" "$(printf '%s' "$names" | tr ' ' '\n' | sed 's/^/- /')"
 
   # ROUND 3 — THE VOCABULARY, PUBLISHED. `drawnAt` must CITE a place the drawing
   # actually has, and the only fair way to demand that is to hand the planner the
@@ -3901,13 +3901,10 @@ validate_plan_json() { # file [mockup-basenames] [mockup-place-names] [final-att
     #      other criterion passes, and keeps the Verify list empty. notVisual is
     #      a claim about what a criterion IS; refusing it is the same classifier.
     #
-    # A CONSEQUENCE WORTH KNOWING, because it pushes toward (1) and (2): a ticket
-    # that genuinely changes a screen the drawing does NOT show has no legal
-    # honest move. Every criterion notDrawn is refused by the >=1-drawnAt rule,
-    # which fires first; so the planner must either fabricate a drawnAt or
-    # declare the ticket false. The schema pressures toward the two lies it
-    # cannot catch. If that shows up in practice, it is an argument for changing
-    # the >=1-drawnAt rule, not for another anchor format.
+    # S335 removes the ticket-level >=1-drawnAt rule: it deadlocked honest
+    # all-undrawn tickets and pressured the planner toward (1) and (2). Every
+    # criterion still declares exactly one of the three. notDrawn reasons reach
+    # Verify; whether notVisual is truthful remains Plan Review'"'"'s judgement.
     #
     # NOT CHECKED, by design: whether an anchor RESOLVES to the surface the
     # criterion describes. Presence, not resolution — a validator that parses the
@@ -4002,7 +3999,7 @@ validate_plan_json() { # file [mockup-basenames] [mockup-place-names] [final-att
       # --- S169: the tickets must carry the mockup ---------------------------
       # Only for a Mission that ACTUALLY carries one. The planner DECLARES;
       # we check the declaration is there, is a boolean, and — when it says this
-      # ticket changes a screen — that a criterion names the drawing.
+      # ticket changes a screen — that EVERY criterion declares its provenance.
       if (nmock > 0) {
         if (!have["changesScreenAppearance"])
           fail("ticket " tickets " (" id ") is missing \"changesScreenAppearance\" — this Mission carries a mockup (" mock "), so every ticket must declare whether it changes what a screen looks like.")
@@ -4024,7 +4021,6 @@ validate_plan_json() { # file [mockup-basenames] [mockup-place-names] [final-att
           delete ctext; delete cdecl; delete cval; delete ctype
           ncrit = lcars_crit_entries(actext, ctext, cdecl, cval, ctype)
           tbad = ""
-          ndrawn = 0
           for (ci = 1; ci <= ncrit; ci++) {
             ndecl = (cdecl[ci] == "" ? 0 : split(cdecl[ci], dnames, " "))
             why = ""
@@ -4056,15 +4052,7 @@ validate_plan_json() { # file [mockup-basenames] [mockup-place-names] [final-att
               tbad = tbad "\n    criterion " ci " — " why
               if (ctext[ci] != "") tbad = tbad "\n        \"" excerpt(ctext[ci]) "\""
             }
-            else if (dnames[1] == "drawnAt") ndrawn++
           }
-          # The S169 rule survives the schema change, restated in it: a ticket
-          # that says it changes a screen must point INTO the drawing at least
-          # once. Without this, every criterion could be notVisual/notDrawn and
-          # the whole screen declared away. Naming it in the description does not
-          # count — the description is not what the work is judged against.
-          if (tbad == "" && ndrawn == 0)
-            tbad = "\n    NO acceptance criterion references the mockup with a \"drawnAt\" anchor — this ticket says it changes what a screen looks like, so at least one of its criteria is drawn somewhere in " mockname[1] ". Naming it in the description does not count."
           if (tbad != "") s174bad = s174bad "\n  ticket " tickets " (" id "):" tbad
         }
       }
@@ -4420,11 +4408,9 @@ LCARS_ANCHOR_FAIL_SIG='do not declare where their criteria come from'
 # tells the captain the truth, while a wrong park asks him a question he cannot
 # answer.
 #
-# The ticket-level "NO acceptance criterion references the mockup with a
-# drawnAt anchor" is DELIBERATELY NOT an anchor failure: every criterion there
-# made a legal declaration, and the fault is the ticket's own claim that it
-# changes a screen. That is a re-judgement of the ticket, not a choice between
-# anchors, so it keeps the stage stop.
+# Historical ticket-level "NO acceptance criterion references the mockup"
+# failures are not anchor choices. S335 no longer emits them; keep old reject
+# notes on the non-anchor path rather than asking an unanswerable question.
 anchor_failure_tickets() {
   [ -f "${1:-}" ] || return 0
   grep -qF "$LCARS_ANCHOR_FAIL_SIG" "$1" || return 0
@@ -4434,7 +4420,7 @@ anchor_failure_tickets() {
       id=$0; sub(/^[^(]*\(/, "", id); sub(/\).*$/, "", id)
       cur=id; next
     }
-    # The ticket-level ">=1 drawnAt" rule — not an anchor choice (see above).
+    # A pre-S335 ticket-level failure — not an anchor choice (see above).
     index($0, "NO acceptance criterion references the mockup") { other=1; next }
     # A per-criterion fault line: `    criterion 1 — <why>`
     cur != "" && /^[[:space:]]*criterion[[:space:]]+[0-9]+[[:space:]]/ {

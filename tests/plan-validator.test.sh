@@ -186,6 +186,101 @@ mticket() { # decl criteria-array
 JSON
 }
 
+# S335: visible terminal output absent from the drawing has an honest answer.
+# No drawnAt is fabricated, and plumbing stays out of the captain's list.
+repo="$(new_mission "$MOCK")"; pf="$repo/undrawn.json"
+mticket 'true' '[
+      {"text": "publishing prints STOP when a secret is detected", "notDrawn": "the mockup only draws preview stdout, not publish refusals"},
+      {"text": "publishing prints a weight warning", "notDrawn": "the mockup has no publish warning output"},
+      {"text": "no upload happens after a secret is detected", "notVisual": true}
+    ]' > "$pf"
+run_plan_save "$repo" "$pf"
+{ [ "$RC" -eq 0 ] && printf '%s' "$OUT" | grep -q "advanced"; } \
+  && ok "S335. an all-undrawn visual ticket ADVANCES without a fabricated anchor" \
+  || bad "S335. an all-undrawn visual ticket ADVANCES (rc=$RC: $OUT)"
+cmp -s "$pf" "$repo/.git/lcars/missions/test-001/plan.json" \
+  && ok "S335. the accepted declarations and reasons persist byte-identically" \
+  || bad "S335. the accepted declarations and reasons persist byte-identically"
+
+# Drive Verify against that SAME saved plan, not a second hand-written copy.
+# Only completed implementation state is fixture-provided; neither the
+# declaration producer (plan-save) nor its Verify consumer is substituted.
+md="$repo/.git/lcars/missions/test-001"
+cat > "$md/state.json" <<'JSON'
+{ "id": "test-001", "type": "feature", "title": "Undrawn output", "stage": "verify" }
+JSON
+cat > "$md/waves.json" <<'JSON'
+[
+  {
+    "wave": 1,
+    "tickets": [
+      {
+        "id": "t-001",
+        "issue": null
+      }
+    ]
+  }
+]
+JSON
+mkdir -p "$md/tickets/t-001"
+printf '{ "ticketId": "t-001", "passed": true }\n' > "$md/tickets/t-001/result.json"
+V335="$(cd "$repo" && bash "$SCRIPT" verify-summary --mission test-001 2>&1)"
+V335_RC=$?
+[ "$V335_RC" -eq 0 ] \
+  && ok "S335. the saved all-undrawn plan reaches the real Verify summary" \
+  || bad "S335. the saved all-undrawn plan reaches Verify (rc=$V335_RC: $V335)"
+printf '%s' "$V335" | grep -qF 'BUILT BUT NOT IN YOUR DRAWING' \
+  && ok "S335. Verify calls out the undrawn surface for the captain" \
+  || bad "S335. Verify calls out the undrawn surface: $V335"
+for want in \
+  't-001 · publishing prints STOP when a secret is detected' \
+  'not drawn because: the mockup only draws preview stdout, not publish refusals' \
+  't-001 · publishing prints a weight warning' \
+  'not drawn because: the mockup has no publish warning output'; do
+  printf '%s' "$V335" | grep -qF "$want" \
+    && ok "S335. Verify preserves $want" \
+    || bad "S335. Verify preserves $want: $V335"
+done
+{ [ "$(printf '%s' "$V335" | grep -c '⊘ ')" -eq 2 ] \
+  && ! printf '%s' "$V335" | grep -qF 'no upload happens'; } \
+  && ok "S335. both notDrawn entries reach Verify, notVisual plumbing stays out" \
+  || bad "S335. Verify contains exactly the two visible declarations: $V335"
+
+# A second shape: a single inline visible criterion, no non-visual sibling,
+# and a drawing with no element ids. No minimum citation applies here either.
+repo="$(new_mission_blank_mockup)"; pf="$repo/undrawn-inline.json"
+mticket 'true' '[{"text": "a warning banner appears on refusal", "notDrawn": "the drawing shows no refusal state"}]' > "$pf"
+run_plan_save "$repo" "$pf"
+{ [ "$RC" -eq 0 ] && printf '%s' "$OUT" | grep -q "advanced"; } \
+  && ok "S335. an inline all-notDrawn ticket advances on an unfenced drawing" \
+  || bad "S335. an inline all-notDrawn ticket advances (rc=$RC: $OUT)"
+
+# The exemption is not an escape from any per-criterion check.
+for reason in '""' '"  "' '"\t"' 'null' 'true'; do
+  repo="$(new_mission "$MOCK")"; pf="$repo/undrawn-invalid.json"
+  mticket 'true' "[{\"text\": \"a warning appears\", \"notDrawn\": $reason}]" > "$pf"
+  run_plan_save "$repo" "$pf"
+  { [ "$RC" -ne 0 ] && printf '%s' "$OUT" | grep -q 'criterion 1' \
+    && [ ! -f "$repo/.git/lcars/missions/test-001/plan.json" ]; } \
+    && ok "S335. an all-undrawn ticket with invalid reason $reason is rejected without persistence" \
+    || bad "S335. invalid reason $reason rejected (rc=$RC: $OUT)"
+done
+repo="$(new_mission "$MOCK")"; pf="$repo/undrawn-missing.json"
+mticket 'true' '[{"text": "a warning appears", "notDrawn": "the drawing has no warning"}, {"text": "a refusal appears"}]' > "$pf"
+run_plan_save "$repo" "$pf"
+{ [ "$RC" -ne 0 ] && printf '%s' "$OUT" | grep -q 'no declaration'; } \
+  && ok "S335. an undrawn sibling does not exempt an undeclared criterion" \
+  || bad "S335. an undeclared criterion is rejected (rc=$RC: $OUT)"
+
+# KNOWN-FAIL control: the drawing has screen-builder, NOT publish-stop.
+repo="$(new_mission "$MOCK")"; pf="$repo/nonmember.json"
+mticket 'true' '[{"text": "a STOP message is drawn in the terminal", "drawnAt": "#publish-stop"}, {"text": "a weight warning appears", "notDrawn": "the drawing has no warning"}]' > "$pf"
+run_plan_save "$repo" "$pf"
+{ [ "$RC" -ne 0 ] && printf '%s' "$OUT" | grep -q 'names no place in the drawing' \
+  && [ ! -f "$repo/.git/lcars/missions/test-001/plan.json" ]; } \
+  && ok "S335 KNOWN-FAIL. a nonmember drawnAt is rejected even beside honest notDrawn" \
+  || bad "S335 KNOWN-FAIL. a nonmember drawnAt is rejected (rc=$RC: $OUT)"
+
 # --- M1: the REAL 0/44 plan, against the REAL mockup → REJECTED -------------
 # Note it is not "no mention of the file anywhere": `attachment-01.html` appears
 # once in t-001's DESCRIPTION. The check must look at acceptanceCriteria ONLY.
@@ -219,6 +314,9 @@ run_plan_save "$repo" "$FX/capstone-corrected-174.json"
 { [ "$RC" -eq 0 ] && printf '%s' "$OUT" | grep -q "advanced"; } \
   && ok "M2b. the same plan under the S174 contract ADVANCES" \
   || bad "M2b. the same plan under the S174 contract ADVANCES (rc=$RC: $OUT)"
+cmp -s "$FX/capstone-corrected-174.json" "$repo/.git/lcars/missions/test-001/plan.json" \
+  && ok "S335. an already-clean drawn plan is accepted byte-identically" \
+  || bad "S335. an already-clean drawn plan is accepted byte-identically"
 
 # --- M3: declared true, criteria that never name the mockup → REJECTED ------
 repo="$(new_mission "$MOCK")"
@@ -423,9 +521,9 @@ run_plan_save "$repo" "$pf"
   && ok "M12. escaped quotes do not hide a naming criterion" \
   || bad "M12. escaped quotes do not hide a naming criterion (rc=$RC: $OUT)"
 
-# --- M13: the DESCRIPTION naming the mockup is NOT enough ------------------
-# The exact shape of the measured defect, isolated: the plan says the file's
-# name in prose and the criteria never do.
+# --- M13: notVisual is a declaration, not a semantic validator judgement ---
+# S335: even if the description names the drawing, the validator cannot decide
+# whether this criterion is truthful. Plan Review owns this plainly-visual lie.
 repo="$(new_mission "$MOCK")"; pf="$repo/descOnly.json"
 cat > "$pf" <<'JSON'
 [
@@ -445,9 +543,9 @@ cat > "$pf" <<'JSON'
 ]
 JSON
 run_plan_save "$repo" "$pf"
-{ [ "$RC" -ne 0 ] && printf '%s' "$OUT" | grep -q "description does not count"; } \
-  && ok "M13. naming the mockup in the DESCRIPTION does not satisfy the check" \
-  || bad "M13. naming the mockup in the DESCRIPTION does not satisfy the check (rc=$RC: $OUT)"
+{ [ "$RC" -eq 0 ] && printf '%s' "$OUT" | grep -q "advanced"; } \
+  && ok "M13. an all-notVisual ticket is left to Plan Review's semantic audit" \
+  || bad "M13. an all-notVisual ticket is left to Plan Review (rc=$RC: $OUT)"
 
 # ===========================================================================
 # THE NO-MOCKUP WORLD IS UNTOUCHED. Every non-holodeck Mission in existence
@@ -504,6 +602,10 @@ printf '%s' "$B" | grep -qi 'demo' \
 printf '%s' "$B" | grep -qi 'Matches the mockup' \
   && ok "P5. the prompt rejects the vague criterion by example" \
   || bad "P5. the prompt rejects the vague criterion by example"
+{ printf '%s' "$B" | grep -qF 'No `drawnAt` is required on that ticket.' \
+  && ! printf '%s' "$B" | grep -qF 'At least one criterion on the ticket must'; } \
+  && ok "S335. the assembled Plan prompt permits honest all-undrawn tickets" \
+  || bad "S335. the assembled Plan prompt permits honest all-undrawn tickets"
 
 # no mockup ⇒ NO block at all, so a non-holodeck Plan prompt is byte-identical.
 repo="$(new_mission attachment-01.png)"
@@ -766,17 +868,17 @@ for want in screen-builder collect-list themeBtn; do
     || bad "S5d. the planner is shown the place name $want"
 done
 
-# --- S6: a screen-changing ticket must be drawn SOMEWHERE ------------------
-# The S169 rule survives the schema change, restated in it. Without it every
-# criterion could be notVisual and the whole screen declared away.
+# --- S6: the historical all-notVisual bypass is the reviewer's judgement ---
+# S335: syntactically valid declarations must not demand a fabricated drawnAt.
+# This fixture lies about visibility; B8 below pins the reviewer's duty to object.
 repo="$(new_mission "$MOCK")"
 run_plan_save "$repo" "$FX/t-012-nothing-drawn.json"
-{ [ "$RC" -ne 0 ] && printf '%s' "$OUT" | grep -q "drawnAt"; } \
-  && ok "S6. a true ticket with NO drawnAt anywhere is REJECTED" \
-  || bad "S6. a true ticket with NO drawnAt anywhere is REJECTED (rc=$RC: $OUT)"
-printf '%s' "$OUT" | grep -q "description does not count" \
-  && ok "S6. …and the description still does not count" \
-  || bad "S6. …and the description still does not count: $OUT"
+{ [ "$RC" -eq 0 ] && printf '%s' "$OUT" | grep -q "advanced"; } \
+  && ok "S6. an all-notVisual declaration passes syntax for the reviewer to audit" \
+  || bad "S6. an all-notVisual declaration passes syntax (rc=$RC: $OUT)"
+cmp -s "$FX/t-012-nothing-drawn.json" "$repo/.git/lcars/missions/test-001/plan.json" \
+  && ok "S6. the validator does not rewrite notVisual claims into invented anchors" \
+  || bad "S6. the validator does not rewrite notVisual claims into invented anchors"
 
 # --- S7: a changesScreenAppearance:FALSE ticket is untouched ---------------
 # Plain strings, no declarations, nothing. This is most of the world.

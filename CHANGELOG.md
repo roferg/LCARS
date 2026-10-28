@@ -4,6 +4,14 @@ All notable changes to LCARS are recorded here, newest first. The version
 scheme is `YYYY.M.N` (calendar year, month with no leading zero, per-month
 counter). Every PR into `main` bumps `VERSION` and adds its entry here.
 
+## Unreleased — honest all-undrawn tickets (S335)
+
+A screen-changing ticket whose criteria are all `notDrawn` or `notVisual` no
+longer needs a fabricated `drawnAt`. Every criterion still requires exactly one
+valid declaration; undrawn reasons remain mandatory and appear with their
+criterion text at Verify. Drawn anchors still require a real drawing element,
+and Plan Review still audits false non-visual claims.
+
 ## 2026.10.5 — the holograms, and a first commit worth keeping
 
 Start a new project and its first commit is clean. The greenfield foundation

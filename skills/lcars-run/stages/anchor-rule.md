@@ -11,8 +11,8 @@ Not invented here. Over the weekend of 26–29 Sep 2026 a Plan Stage burned SIX
 failed attempts across TWO missions and then stopped dead. The Plan prompt told
 the worker its `drawnAt` was "your own words; there is no list of allowed
 anchors", while `validate_plan_json` REQUIRES a real element id from the drawing
-and at least one `drawnAt` per visual ticket. The prompt said "your own words",
-the validator said "a real id": that gap was the loop.
+and, at the time, at least one `drawnAt` per visual ticket. The prompt said
+"your own words", the validator said "a real id": that gap was the loop.
 
 The cure that worked FIRST TIME, by hand, was the captain pasting the rule
 verbatim — **with the actual list of anchors** — into the PRD's Constraints.
@@ -27,6 +27,13 @@ weekend (`canvas-weekend-2026-09-26/evidence/filed-prds/`):
 against (`mission_mockup_place_names`), comma-separated. Injecting the very
 list the validator checks is the whole point — there is no second source of
 anchors anywhere in the harness, and there must never be one.
+
+S335 removes that ticket-level minimum: a genuinely all-undrawn ticket uses
+`notDrawn` with a non-empty reason for every visible criterion, and `notVisual`
+for genuinely non-visual criteria. Every criterion still declares exactly one;
+every `drawnAt` still obeys membership, every `notDrawn` reaches Verify, and Plan
+Review still audits false `notVisual` claims. The historical rule lines below
+already allow all-undrawn tickets.
 
 <!-- lcars:anchor-rule:anchored -->
 PLAN RULE: every criterion of a screen-changing ticket carries drawnAt (@ANCHORS@) or notDrawn: "<reason>"
