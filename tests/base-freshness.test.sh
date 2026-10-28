@@ -541,22 +541,13 @@ check "11. some git verbs were actually found (the extraction works)" \
 # is not "never merge" but "never merge WITHOUT --ff-only", plus the outright ban
 # on every verb that can rewrite or discard.
 #
-# S159, captain ruling 2026-07-31 — why `branch` left this list, in the same
-# terms `merge` did. The property was never "one ref-moving command"; it was
-# "every ref-moving command is one git REFUSES unless it is a fast-forward". The
-# drive-time mission-branch advance adds a second such command,
-# `git branch -f <mb> <base-sha>`, for the one case a merge cannot serve: a branch
-# that is not checked out anywhere has no working tree to fast-forward IN. That
-# call is not guarded by git — `branch -f` will happily rewind a branch — so the
-# LOSSLESSNESS is proved by the code before it runs (`rev-list --count
-# <base>..<mb>` must be exactly 0, i.e. the branch is already an ancestor of the
-# base), and that proof is asserted where a source grep cannot lie about it:
-# BEHAVIOURALLY, in tests/drive-base-recheck.test.sh behaviour 13, against a real
-# branch carrying a real commit that must still exist afterwards.
+# S338: the off-checkout pointer move must compare-and-swap the SAME tip that
+# was measured lossless. `branch -f` could discard a commit landed after the
+# measurement. Real concurrent-writer controls live in mission-branch-cas.
 #
 # So this guard keeps the half a grep CAN carry: the outright-destructive verbs
 # stay banned, and the two ref-movers may appear in no other shape than
-# `merge --ff-only` and `branch -f`.
+# `merge --ff-only` and an old-tip-pinned `update-ref`.
 for v in reset checkout switch stash clean push rebase commit; do
   check "11. the helper never invokes 'git $v'" \
     "case \" \$VERBS11 \" in *' $v '*) false ;; *) true ;; esac"
@@ -565,12 +556,12 @@ check "11. 'merge-base' is still matched exactly, never as 'merge'" \
   "case \" \$VERBS11 \" in *' merge-base '*) true ;; *) false ;; esac"
 check "11. every 'git merge' invocation is fast-forward-only (never a bare merge)" \
   "[ \"\$(grep -cE '\"[\$]g\" merge ' '$BODY11')\" = \"\$(grep -cE '\"[\$]g\" merge --ff-only ' '$BODY11')\" ]"
-check "11. every 'git branch' invocation is the forced fast-forward, never a bare one" \
-  "[ \"\$(grep -cE '\"[\$]g\" branch ' '$BODY11')\" = \"\$(grep -cE '\"[\$]g\" branch -f ' '$BODY11')\" ]"
-check "11. the ONLY ref-moving verbs are merge and branch" \
-  "[ \"\$(grep -cE '\"[\$]g\" (merge|pull|reset|rebase|update-ref|branch) ' '$BODY11')\" = \"\$(grep -cE '\"[\$]g\" (merge --ff-only|branch -f) ' '$BODY11')\" ]"
+check "11. no unchecked 'git branch' ref move remains" \
+  "! grep -qE '\"[\$]g\" branch ' '$BODY11'"
+check "11. the ONLY ref-moving verbs are ff-only merge and measured-tip CAS" \
+  "[ \"\$(grep -cE '\"[\$]g\" (merge|pull|reset|rebase|update-ref|branch) ' '$BODY11')\" = \"\$(grep -cE '\"[\$]g\" merge --ff-only |\"[\$]g\" update-ref --no-deref \"refs/heads/\\\$mb\" \"\\\$basesha\" \"\\\$tip\"' '$BODY11')\" ]"
 check "11. …and both shapes are really present (the guard is not vacuous)" \
-  "grep -q '\"[\$]g\" merge --ff-only' '$BODY11' && grep -q '\"[\$]g\" branch -f' '$BODY11'"
+  "grep -q '\"[\$]g\" merge --ff-only' '$BODY11' && grep -q '\"[\$]g\" update-ref --no-deref' '$BODY11'"
 # …and the ref-moving step is NEVER bounded: a kill is the only thing that can
 # leave a half-written tree, and there is nothing left to kill (round 2, D1).
 check "11. the fast-forward is never run through the bounded (killable) runner" \

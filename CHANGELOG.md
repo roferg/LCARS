@@ -4,6 +4,14 @@ All notable changes to LCARS are recorded here, newest first. The version
 scheme is `YYYY.M.N` (calendar year, month with no leading zero, per-month
 counter). Every PR into `main` bumps `VERSION` and adds its entry here.
 
+## Unreleased — preserve concurrent Mission commits at startup (S338)
+
+The off-checkout Mission fast-forward now compares-and-swaps the tip whose
+losslessness was measured, rather than force-moving the branch. A concurrent
+commit makes publication refuse with inspection/retry guidance, even without
+reflogs. Checkout registration is rechecked before publication. Existing
+own-commit refusals, successful output, and S336 recovery are unchanged.
+
 ## Unreleased — self-heal can merge an advanced base (S336)
 
 Implement self-heal now merges a newer base into a Mission carrying its own

@@ -1344,9 +1344,10 @@ lcars_base_branch_note() {
 # THREE LANES, AND THE LANE IS DECIDED BY WHERE THE BRANCH IS CHECKED OUT —
 # `git worktree list --porcelain`, never a guess:
 #
-#   not checked out anywhere       `git branch -f <mb> <base-sha>`. A pure pointer
-#                                  move; given ahead == 0 it is a fast-forward by
-#                                  construction, and it touches no working tree.
+#   not checked out anywhere       `git update-ref <ref> <base-sha> <old-tip>`.
+#                                  A compare-and-swap against the tip whose
+#                                  ahead count was zero; a concurrent writer
+#                                  makes it refuse, never discard that work.
 #   checked out, tree CLEAN        `git -C <worktree> merge --ff-only <base-sha>`.
 #                                  `git branch -f` FAILS outright on a checked-out
 #                                  branch ("cannot force update the branch …
@@ -1459,13 +1460,22 @@ lcars_base_advance_mission_branch() {
     return 0
   fi
 
-  # --- from here the move is LOSSLESS: `$mb` is an ancestor of `$base`. ----
+  # The measured tip is an ancestor of the base; the ref may still change.
   _lcars_base_worktree_of "$mb"
   wt="$LCARS_MB_WT"
 
   # --- lane 1: not checked out anywhere → a pure pointer fast-forward ------
   if [ -z "$wt" ]; then
-    rc=0; out="$("$g" branch -f "$mb" "$basesha" 2>&1)" || rc=$?
+    # Like self-heal publication, registration and ref updates are not atomic.
+    # Recheck registration, then CAS the measured tip (never re-read it here).
+    _lcars_base_worktree_of "$mb"
+    if [ -n "$LCARS_MB_WT" ]; then
+      _lcars_mb_refused_after_attempt \
+        "'$mb' became checked out while LCARS was preparing its branch-pointer fast-forward, so nothing was moved." \
+        "Let the checkout settle, then re-drive; LCARS will check that checkout before attempting a fast-forward."
+      return 0
+    fi
+    rc=0; out="$("$g" update-ref --no-deref "refs/heads/$mb" "$basesha" "$tip" 2>&1)" || rc=$?
     if [ "$rc" -eq 0 ]; then
       LCARS_MB_MOVE="moved"
       LCARS_MB_REASON="It carried no commits of its own and is not checked out anywhere, so its branch pointer was fast-forwarded onto '$base' — nothing was lost and no working tree was written to."
@@ -1476,8 +1486,8 @@ lcars_base_advance_mission_branch() {
       # and that setter supplies the way forward, so "no command" never means
       # "no way out" (S160 round 3, D1).
       _lcars_mb_refused_after_attempt \
-        "'$mb' is $behind commit(s) behind '$base' and carries no commits of its own, but git refused to move it: $(printf '%s' "$out" | head -1)" \
-        "git refused to move the branch pointer itself, so there is no command LCARS can offer: running the same move again only repeats the refusal. Clear whatever git objected to — its own words are in the reason above — and $mb fast-forwards on the next drive."
+        "'$mb' was measured $behind commit(s) behind '$base' with no commits of its own, but git refused to move it from the checked tip $tip: $(printf '%s' "$out" | head -1)" \
+        "The branch may have changed since the safety check. Inspect git log $mb and git's reason above, then retry the drive after concurrent work settles; LCARS will measure again, not force the pointer."
     fi
     return 0
   fi

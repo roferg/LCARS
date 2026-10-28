@@ -105,6 +105,12 @@ A drive that *begins* against a base that was genuinely behind also logs one `ba
 
 At drive time — and only there — the Harness also brings the Mission's OWN `lcars/<id>` branch onto that base. It has to: every read-only Stage is pinned to the Mission's branch and told to ignore the ambient checkout, so a base brought current while `lcars/<id>` sits on the older tip still hands every Stage the stale tree. The startup move is taken ONLY when it is lossless — the branch carries no commits of its own — and only in a shape that writes nothing it should not: a pointer fast-forward when the branch is not checked out anywhere, a genuine `--ff-only` fast-forward inside its own checkout when it is, and a refusal when that checkout is dirty or a local file would be overwritten. A branch carrying ANY commit of its own is never force-moved; the startup guard says so, loudly, and prints the rebase a human could perform. **At file time none of this happens** — a branch cut at an older commit was cut there on purpose.
 
+The off-checkout pointer fast-forward compares-and-swaps the exact tip measured
+by the losslessness check. If another writer changes it, Git refuses and LCARS
+reports the refusal with inspection/retry guidance; it never retries or forces
+the pointer. Checkout registration is rechecked immediately before publication,
+but registration and ref publication are not one atomic transaction.
+
 During Implement self-heal, a working Mission that is behind its base can instead **merge** the base into its branch, preserving published commits and linked bug fixes without rebasing. Recovery uses a detached scratch worktree and the replay mutex, checks both original tips remain ancestors, and updates the Mission ref only if its old tip is unchanged. The existing shared ticket-suite re-test and full-suite gate judge the merged state. Dirty trees, unfinished operations, checked-out Mission branches and merge conflicts stop recovery for a human; the lossless-only startup fast-forward rule is unchanged.
 
 ## .git/lcars/
