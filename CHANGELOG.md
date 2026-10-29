@@ -4,6 +4,16 @@ All notable changes to LCARS are recorded here, newest first. The version
 scheme is `YYYY.M.N` (calendar year, month with no leading zero, per-month
 counter). Every PR into `main` bumps `VERSION` and adds its entry here.
 
+## Unreleased — fixtures are declared edits, not executable tests (S340)
+
+Proof gates keep data fixtures in the declared-edits contract while excluding
+runner-confirmed non-source fixtures from test scoping and attribution, with
+visible reasons. This fixes unittest fixture deadlocks, Jest snapshot accounting,
+and Go choosing a golden's directory as its test package. Jest discovery protects
+custom executable test extensions; unknown runners remain fail-safe. Fixture-only
+changes cannot supply flip-flop proof, and executable-test accounting and the
+`not-applicable` refusal beside new tests are unchanged.
+
 ## Unreleased — preserve concurrent Mission commits at startup (S338)
 
 The off-checkout Mission fast-forward now compares-and-swaps the tip whose

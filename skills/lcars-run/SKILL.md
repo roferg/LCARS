@@ -751,6 +751,20 @@ around them (see vision.md → *Implement*):
   and recursively literal tuples/lists/dicts/sets are also inert. Calls,
   imports, comprehensions, classes, annotations, attribute/unpacking targets,
   and assignments to `load_tests` or dunder names cannot use this exclusion.
+  Data fixtures (`.html`, `.json`, `.yaml`, `.yml`, `.txt`, `.golden`, `.snap`)
+  remain test-classified and **must still be declared**. Direct unittest
+  commands and the native Go/Ruby lanes exclude those non-source files from
+  executable-test scoping and accounting, recording each path and reason in
+  `declaredRan.excluded`. Direct Jest and `npm test --` with a direct Jest
+  script first check Jest's own `--listTests --json` discovery: a data-extension
+  file configured as an executable test is never excluded. Unknown commands,
+  extensions, and unsuccessful discovery retain the existing fail-safe
+  accounting. A fixture-only diff supplies no executable proof and stays
+  INCONCLUSIVE. Reading a fixture can change a test's result without changing
+  how many tests executed; that does not make the fixture a test source.
+  Jest also ignores a parent scratch tree beneath `.git`; use an external
+  `LCARS_PROOF_WT_BASE` for those runs. Fixture exclusion does not override
+  the runner's discovery rules or turn a zero-test parent into proof.
   The post-commit Python gate applies the same accounting.
   A declared file with neither executed tests nor observed participation stays
   INCONCLUSIVE. Wrappers, compound shell commands, isolated Python processes,
