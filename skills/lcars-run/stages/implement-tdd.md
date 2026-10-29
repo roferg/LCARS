@@ -86,16 +86,6 @@ Run only the tests you declared, NEVER the whole suite.
    adapt an existing test your ticket genuinely invalidates (a contradictory
    assertion the ticket's stated change supersedes) — but you MUST declare it,
    with the reason. Never weaken a test just to go green.
-   A file that tests READ but that executes nothing itself (golden, snapshot,
-   cassette, data fixture) belongs in `testEdits` with
-   `"kind": "stored-output"` and a reason, including a newly created data file.
-   Do not put that data path in `newTests`. This explicit declaration removes
-   ONLY that path from flip-flop accounting, never from declared-edits or drift
-   checks. The gate records the exclusion and runs discovery on both legs to
-   catch unchanged collectors. If a runner names the path in a failure/error,
-   your declaration is contradicted and the ticket FAILS. Executable doctests
-   are tests, NOT stored output, whatever their filename. A data declaration
-   cannot supply red-on-parent proof or waive genuine new tests.
 3. **Quality floor**: at least one new/changed test with a real assertion,
    unless your ticket genuinely changes no testable behaviour — then declare
    `flipFlop: "not-applicable"` with a `flipFlopReason` (the reason is the
@@ -174,8 +164,7 @@ file-creation / file-writing tool) containing your result as JSON:
   "summary": "Wired data-theme end-to-end; suite green on attempt 3.",
   "newTests": ["src/theme.test.ts"],
   "testEdits": [
-    { "path": "src/app.test.ts", "reason": "the ticket renames the default theme; the old assertion is superseded" },
-    { "path": "src/__snapshots__/app.test.ts.snap", "kind": "stored-output", "reason": "recorded output for the renamed theme" }
+    { "path": "src/app.test.ts", "reason": "the ticket renames the default theme; the old assertion is superseded" }
   ],
   "flipFlop": "expected"
 }
@@ -185,8 +174,7 @@ file-creation / file-writing tool) containing your result as JSON:
 - `attempts` is your own iteration count — honest, uncapped, informational.
 - `newTests` — repo-relative paths of every test FILE you created.
 - `testEdits` — every PRE-EXISTING test file you changed or deleted, each with a
-  reason; also stored-output data files (new or existing), with
-  `kind: "stored-output"`. Omit `kind` for executable tests. Empty array when none.
+  reason. Empty array when none.
 - `flipFlop` — `"expected"` normally; `"not-applicable"` ONLY for a ticket with
   no testable behaviour change, and then `flipFlopReason` (a plain-language
   sentence) is REQUIRED.

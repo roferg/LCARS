@@ -14187,8 +14187,6 @@ FF_GATE_SCOPE_CONTROL_ZERO=""
 FF_GATE_DECL_METHOD=""; FF_GATE_DECL_EACH=""; FF_GATE_DECL_UNACC=""
 FF_GATE_DECL_WHY=""
 FF_GATE_DECL_EXCLUDED=""
-FF_STORED_PATHS=""; FF_STORED_EXCLUDED="[]"
-FF_STORED_TIP="null"; FF_STORED_PARENT="null"
 _ff_reset() {
   FF_TIP_RC=null; FF_TIP_TAIL=""; FF_TIP_CMD=""
   FF_PAR_RC=null; FF_PAR_KIND=""; FF_PAR_TAIL=""; FF_PAR_CMD=""
@@ -14202,8 +14200,6 @@ _ff_reset() {
   FF_GATE_SCOPE_CONTROL_SECS=""; FF_GATE_TIP_EXEC_EACH=""; FF_GATE_SCOPE_CONTROL_ZERO=""
   FF_GATE_DECL_METHOD=""; FF_GATE_DECL_EACH=""; FF_GATE_DECL_UNACC=""; FF_GATE_DECL_WHY=""
   FF_GATE_DECL_EXCLUDED=""
-  FF_STORED_PATHS=""; FF_STORED_EXCLUDED="[]"
-  FF_STORED_TIP="null"; FF_STORED_PARENT="null"
 }
 # The rels carrying a given source, space-separated (for the verdict wording).
 _ff_rels_with_source() { # source-token
@@ -14326,14 +14322,10 @@ FFD_EOF
     done <<FFDX_EOF
 $FF_GATE_DECL_EXCLUDED
 FFDX_EOF
-    _dexcluded="$("${LCARS_PYTHON_BIN:-python3}" -c 'import json,sys; print(json.dumps(json.loads("["+sys.argv[1]+"]")+json.loads(sys.argv[2]))[1:-1])' \
-      "$_dexcluded" "$FF_STORED_EXCLUDED")"
     printf '  "declaredRan": { "checked": %s, "method": "%s", "each": "%s", "unaccounted": [%s], "excluded": [%s], "why": "%s" },\n' \
       "$( [ "${FF_GATE_DECL_METHOD:-}" = leg-invocations ] || [ "${FF_GATE_DECL_METHOD:-}" = ablation ] && printf true || printf false )" \
       "$(json_escape "${FF_GATE_DECL_METHOD:-}")" "$(json_escape "${FF_GATE_DECL_EACH:-}")" \
       "$_dunacc" "$_dexcluded" "$(json_escape "${FF_GATE_DECL_WHY:-}")"
-    printf '  "storedOutput": { "runs": [%s] },\n' \
-      "$("${LCARS_PYTHON_BIN:-python3}" -c 'import json,sys; print(",".join(s for s in sys.argv[1:] if s != "null"))' "$FF_STORED_TIP" "$FF_STORED_PARENT")"
     printf '  "tip": { "rc": %s, "cmd": "%s", "tail": "%s" },\n' \
       "${FF_TIP_RC:-null}" "$(json_escape "${FF_TIP_CMD:-}")" "$(json_escape "${FF_TIP_TAIL:-}")"
     printf '  "parent": { "rc": %s, "kind": "%s", "cmd": "%s", "tail": "%s" }\n' \
@@ -14366,89 +14358,6 @@ _ff_finish() { # ticket parent json-file verdict reason rels → rc by verdict
   esac
 }
 
-proof_stored_output_check() { # root original-rels result leg evidence-dir [proof-output proof-rc proof-cmd]
-  local root="$1" rels="$2" result="$3" leg="$4" td="$5"
-  local first pkg rd scope cmd of rc=0 secs
-  first="$(printf '%s\n' "$rels" | grep . | head -1)"
-  pkg="$(package_of_relpath "$first" "$root")"; rd="$root${pkg:+/$pkg}"
-  scope="$(common_ancestor_dir "$rels")"
-  scope="$root${scope:+/$scope}"
-  cmd="$(resolve_test_cmd)"
-  of="$td/stored-output-$leg.txt"
-  resolve_gate_timeout "$root" >/dev/null
-  secs="$(proof_control_budget "$root" "$GATE_TIMEOUT_SECS")"
-  PROOF_STORED_CONTRADICTED=""; PROOF_STORED_RUN=null
-  if [ -z "$cmd" ]; then
-    printf 'proof-gate: stored-output contradiction check unavailable: no configured testCommand.\n' >"$of"
-    rc=96
-  else
-    ( cd "$rd" && LCARS_TESTS_DIR="$scope" run_with_hard_timeout "$secs" "$of" bash -c "$cmd" ) || rc=$?
-  fi
-  local rec="cd $(proof_shq "$rd") && LCARS_TESTS_DIR=$(proof_shq "$scope") bash -c $(proof_shq "$cmd")"
-  PROOF_STORED_RUN="$("${LCARS_PYTHON_BIN:-python3}" "$SKILL_DIR/proof-stored-output.py" check \
-    "$result" "$root" "$rd" "$(resolve_stack)" "$leg" "$rc" "$rec" "$scope" "$of")" || return 2
-  if [ "$#" -ge 8 ]; then
-    local proof_record
-    printf '%s\n' "$6" >"$td/stored-output-$leg-proof.txt"
-    proof_record="$("${LCARS_PYTHON_BIN:-python3}" "$SKILL_DIR/proof-stored-output.py" check \
-      "$result" "$root" "$rd" "$(resolve_stack)" "$leg" "$7" "$8" "" \
-      "$td/stored-output-$leg-proof.txt")" || return 2
-    PROOF_STORED_RUN="$("${LCARS_PYTHON_BIN:-python3}" -c '
-import json,sys
-d,p=map(json.loads,sys.argv[1:])
-d["proofRun"]=p
-d["contradicted"]=sorted(set(d["contradicted"]+p["contradicted"]))
-print(json.dumps(d))
-' "$PROOF_STORED_RUN" "$proof_record")" || return 2
-  fi
-  printf '%s\n' "$PROOF_STORED_RUN" >"$td/stored-output-$leg.json"
-  PROOF_STORED_CONTRADICTED="$(printf '%s' "$PROOF_STORED_RUN" | "${LCARS_PYTHON_BIN:-python3}" -c \
-    'import json,sys; print("\n".join(json.load(sys.stdin)["contradicted"]))')"
-  printf '%s' "$PROOF_STORED_RUN" | "${LCARS_PYTHON_BIN:-python3}" -c '
-import json,sys
-d=json.load(sys.stdin)
-if not d["checked"]:
-    print("proof-gate: stored-output named-failure check UNAVAILABLE: "+d["method"])
-' >&2
-  [ -z "$PROOF_STORED_CONTRADICTED" ] || return 1
-  case "$rc" in 96|124) return 2 ;; esac
-  return 0
-}
-
-proof_ticket_has_stored_output() { # ticket
-  local result; result="$(ticket_dir "$1")/result.json"
-  [ -f "$result" ] && [ -n "$("${LCARS_PYTHON_BIN:-python3}" "$SKILL_DIR/proof-stored-output.py" paths "$result")" ]
-}
-
-proof_stored_ticket_run() { # ticket tree recorded-rels
-  local t="$1" tree="$2" rels="$3" td result stored effective rc=0 checkrc=0
-  td="$(ticket_dir "$t")"; result="$td/result.json"
-  stored="$("${LCARS_PYTHON_BIN:-python3}" "$SKILL_DIR/proof-stored-output.py" paths "$result")" || return 6
-  effective="$(printf '%s\n' "$rels" | grep -vxF "$stored" || :)"
-  if [ -z "$effective" ]; then
-    printf 'proof-gate: stored-output declarations leave NO executable proof scope; nothing was verified.\n'
-    return 6
-  fi
-  if [ "$(proof_python_command "$(resolve_test_cmd)" "")" != "$(resolve_test_cmd)" ]; then
-    proof_committed_python_run "$tree" "$effective" || rc=$?
-  else
-    proof_scoped_leg_run "$tree" "$effective"
-    printf '%s\n' "$PROOF_LEG_OUT"
-    rc="$PROOF_LEG_RC"
-    case "$rc" in 96|97|98) rc=6 ;; esac
-    if [ "$rc" = 0 ] && [ -n "$PROOF_LEG_ZERO_EXEC" ]; then rc=6; fi
-    if [ "$rc" = 0 ] && proof_zero_collected "$PROOF_LEG_OUT" "$effective" "$tree"; then rc=6; fi
-  fi
-  proof_stored_output_check "$tree" "$rels" "$result" committed "$td" \
-    "$PROOF_LEG_OUT" "$PROOF_LEG_RC" "$PROOF_LEG_CMD" || checkrc=$?
-  if [ "$checkrc" = 1 ]; then
-    printf 'proof-gate: stored-output declaration for %s is contradicted by the committed run.\n' "$PROOF_STORED_CONTRADICTED"
-    return 1
-  fi
-  [ "$checkrc" != 2 ] || return 6
-  return "$rc"
-}
-
 # THE FLIP-FLOP GATE. rc 0 = pass (or declared-not-applicable skip), 1 = fail,
 # 2 = inconclusive (never a pass). Writes tickets/<id>/flip-flop.json always.
 flip_flop_gate() { # ticket parent-sha worktree
@@ -14469,18 +14378,6 @@ flip_flop_gate() { # ticket parent-sha worktree
   fi
 
   local rels; rels="$(proof_test_rels_in_diff "$parent" "$wt" existing)"
-  local all_rels="$rels"
-  if [ -f "$resf" ]; then
-    if ! FF_STORED_PATHS="$("${LCARS_PYTHON_BIN:-python3}" "$SKILL_DIR/proof-stored-output.py" paths "$resf")" \
-       || ! FF_STORED_EXCLUDED="$("${LCARS_PYTHON_BIN:-python3}" "$SKILL_DIR/proof-stored-output.py" excluded "$resf")"; then
-      _ff_finish "$t" "$parent" "$ffj" inconclusive \
-        "could not read stored-output declarations from result.json; no exclusion or proof was established" "$rels"
-      return $?
-    fi
-    if [ -n "$FF_STORED_PATHS" ]; then
-      rels="$(printf '%s\n' "$rels" | grep -vxF "$FF_STORED_PATHS" || :)"
-    fi
-  fi
   if [ -z "$(printf '%s' "$rels" | grep . || true)" ]; then
     _ff_finish "$t" "$parent" "$ffj" inconclusive \
       "no new/changed test file in the diff vs $parent — there is nothing to flip, so fail-first cannot be proven" ""
@@ -14548,21 +14445,6 @@ flip_flop_gate() { # ticket parent-sha worktree
     local tipreason="$PROOF_LEG_OUT"
     [ "$PROOF_LEG_RC" = 98 ] && tipreason="the TIP leg's $PROOF_LEG_OUT"
     _ff_finish "$t" "$parent" "$ffj" inconclusive "$tipreason" "$rels"; return $?
-  fi
-  local stored_rc=0
-  if [ -n "$FF_STORED_PATHS" ]; then
-    proof_stored_output_check "$wt" "$all_rels" "$resf" tip "$td" \
-      "$PROOF_LEG_OUT" "$PROOF_LEG_RC" "$PROOF_LEG_CMD" || stored_rc=$?
-    FF_STORED_TIP="$PROOF_STORED_RUN"
-    if [ "$stored_rc" -ne 0 ]; then
-      local stored_verdict=fail
-      local stored_reason="stored-output declaration for $PROOF_STORED_CONTRADICTED is contradicted by the TIP run"
-      [ "$stored_rc" = 2 ] && stored_verdict=inconclusive
-      [ "$stored_rc" = 2 ] && stored_reason="stored-output contradiction run could not complete; inspect storedOutput.runs"
-      _ff_finish "$t" "$parent" "$ffj" "$stored_verdict" \
-        "$stored_reason" "$rels"
-      return $?
-    fi
   fi
   # S193 FIX 1: the ticket's DECLARED test file(s) decide which cargo target the
   # zero-collect question is about — a sibling target passing is not the ticket.
@@ -14873,17 +14755,6 @@ ${PROOF_DECL_FIX:-$PROOF_DECL_FIX_RENAME}" "$rels"
   done <<FF_STAGE_EOF
 $FF_PAR_SOURCES
 FF_STAGE_EOF
-  # Data stays outside the proof scope. Discovery sees the parent's own data,
-  # staging only new data paths, just as a new test's dependencies require.
-  while IFS= read -r rel; do
-    [ -n "$rel" ] || continue
-    "$GIT_BIN" -C "$wt" cat-file -e "$parent:$rel" 2>/dev/null && continue
-    [ -f "$wt/$rel" ] || continue
-    mkdir -p "$scratch/$(dirname "$rel")"
-    cp "$wt/$rel" "$scratch/$rel"
-  done <<FF_STORED_STAGE
-$FF_STORED_PATHS
-FF_STORED_STAGE
   proof_scoped_leg_run "$scratch" "$rels"
   # `ran` is the honest fact, not "we got this far": 96/97 are the sentinels for
   # "the run could not even be CONSTRUCTED" (no testCommand, no native target, a
@@ -14895,23 +14766,8 @@ FF_STORED_STAGE
   FF_PAR_EXEC="$PROOF_LEG_EXEC"
   local ff_par_zero="$PROOF_LEG_ZERO_EXEC"
   local par_out="$PROOF_LEG_OUT"
-  stored_rc=0
-  if [ -n "$FF_STORED_PATHS" ]; then
-    proof_stored_output_check "$scratch" "$all_rels" "$resf" parent "$td" \
-      "$PROOF_LEG_OUT" "$PROOF_LEG_RC" "$PROOF_LEG_CMD" || stored_rc=$?
-    FF_STORED_PARENT="$PROOF_STORED_RUN"
-  fi
   # PRUNE FIRST — on every verdict path (behavior: pruned on success AND failure).
   proof_prune_scratch "$wt" "$scratch"
-  if [ "$stored_rc" -ne 0 ]; then
-    local stored_verdict=fail
-    local stored_reason="stored-output declaration for $PROOF_STORED_CONTRADICTED is contradicted by the PARENT run"
-    [ "$stored_rc" = 2 ] && stored_verdict=inconclusive
-    [ "$stored_rc" = 2 ] && stored_reason="stored-output contradiction run could not complete; inspect storedOutput.runs"
-    _ff_finish "$t" "$parent" "$ffj" "$stored_verdict" \
-      "$stored_reason" "$rels"
-    return $?
-  fi
 
   if [ "$FF_PAR_RC" = 96 ] || [ "$FF_PAR_RC" = 97 ] || [ "$FF_PAR_RC" = 98 ]; then
     local parreason="$par_out"
@@ -15181,8 +15037,7 @@ except Exception:
     d = {}
 edits = [e for e in (d.get("testEdits") or []) if isinstance(e, dict) and e.get("path")]
 with open(sys.argv[2], "w") as f:
-    json.dump([dict({"path": e.get("path"), "reason": e.get("reason", "")},
-                    **({"kind": e["kind"]} if "kind" in e else {})) for e in edits], f, indent=2)
+    json.dump([{"path": e.get("path"), "reason": e.get("reason", "")} for e in edits], f, indent=2)
     f.write("\n")
 ' "$1" "$2" 2>/dev/null
 }
@@ -15379,10 +15234,6 @@ def bad(e):
                 and isinstance(e.get("reason"), str) and e["reason"])
 if not isinstance(te, list) or any(bad(e) for e in te):
     print("proof-gate: result.json REJECTED — \"testEdits\" must be an array of {path, reason} objects (both non-empty strings)."); sys.exit(1)
-if any("kind" in e and e["kind"] != "stored-output" for e in te):
-    print("proof-gate: result.json REJECTED — testEdits kind, when present, must be \"stored-output\"."); sys.exit(1)
-if any(e.get("kind") == "stored-output" and not e["reason"].strip() for e in te):
-    print("proof-gate: result.json REJECTED — stored-output requires a non-blank reason."); sys.exit(1)
 ' "$f" 2>&1)" || { printf '%s\n' "$structerr" >&2; return 1; }
   return 0
 }
@@ -15702,10 +15553,7 @@ PC_RELS_EOF
         intree_scopes_for "$wt" "$_pcrels" >/dev/null
         scope="$INTREE_SCOPES"
         proof_say_scope_kind "$INTREE_SCOPE_KIND" "$INTREE_SCOPE_WHY"
-        if proof_ticket_has_stored_output "$t"; then
-          out="$(proof_stored_ticket_run "$t" "$wt" "$_pcrels")" || rc=$?
-          [ "$rc" = 6 ] && zero=1
-        elif [ "$(proof_python_command "$cmd" "")" != "$cmd" ]; then
+        if [ "$(proof_python_command "$cmd" "")" != "$cmd" ]; then
           out="$(proof_committed_python_run "$wt" "$_pcrels")" || rc=$?
           [ "$rc" = 6 ] && zero=1
         else
@@ -15864,9 +15712,7 @@ PCTIP_EOF
           fi
           intree_scopes_for "$twt" "$tpresent" >/dev/null
           tscope="$INTREE_SCOPES"
-          if proof_ticket_has_stored_output "$t"; then
-            tout="$(proof_stored_ticket_run "$t" "$twt" "$tpresent")" || trc=$?
-          elif [ "$(proof_python_command "$cmd" "")" != "$cmd" ]; then
+          if [ "$(proof_python_command "$cmd" "")" != "$cmd" ]; then
             tout="$(proof_committed_python_run "$twt" "$tpresent")" || trc=$?
           else
             tout="$(intree_scoped_run "$trun_dir" "$cmd" "$tscope")" || trc=$?
@@ -16427,11 +16273,7 @@ RT_RELS_EOF
     intree_scopes_for "$run_dir" "$_rrels" >/dev/null
     scope="$INTREE_SCOPES"
     proof_say_scope_kind "$INTREE_SCOPE_KIND" "$INTREE_SCOPE_WHY"
-    if proof_ticket_has_stored_output "$id"; then
-      out="$(proof_stored_ticket_run "$id" "$run_dir" "$_rrels")" || rc=$?
-    else
-      out="$(intree_scoped_run "$trun" "$cmd" "$scope")" || rc=$?
-    fi
+    out="$(intree_scoped_run "$trun" "$cmd" "$scope")" || rc=$?
     if [ "$rc" -ne 0 ]; then
       RETEST_FAILED="${RETEST_FAILED:+$RETEST_FAILED }$id"
       [ -n "$RETEST_CAPTURE" ] && { mkdir -p "$RETEST_CAPTURE"; printf '%s\n' "$out" >"$RETEST_CAPTURE/$id.log"; }

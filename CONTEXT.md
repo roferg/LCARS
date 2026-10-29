@@ -58,17 +58,6 @@ A ticket whose whole diff is test files, restoring a **pre-existing** test that 
 ## Declared edits (contract amendments)
 The unified worker may adapt an existing test the ticket genuinely invalidates, but must declare each edit — `{path, reason}` — in `result.json`. The harness diffs the tests against the parent commit (the commit **is** the snapshot); an **undeclared** test change blocks the ticket, naming the file. Declared edits are recorded to `tickets/<id>/test-edits.json` and surface at Verify as the **contract-amendments** readout, so the human sees which existing tests the change rewrote and why.
 
-A `testEdits` entry may explicitly carry `kind: "stored-output"` for data that
-tests read but that executes nothing itself (goldens, snapshots, cassettes,
-fixtures, including new data files). Its path and reason remain in the declared
-edits and drift checks; only flip-flop scope/accounting excludes it, with the
-reason in `declaredRan.excluded`. No filename or isolated zero-test run grants
-this declaration. A separate discovery run over the original paths' common
-ancestor observes unchanged collectors on each leg. A runner naming the
-declared path in a failure/error contradicts the declaration and fails the
-ticket. These discovery runs do not supply flip-flop proof. Parent discovery
-uses the parent's own existing data, staging only new data paths.
-
 ## gate-signal
 The durable verdict a rejected proof gate writes (`tickets/<id>/gate-signal.txt`): which gate rejected the ticket, its verdict, and the runner tail. It rides the next (fresh) worker's prompt so a bounce carries forward exactly what was wrong — the mechanism that lets a quality failure retry instead of crashing, capped at three sessions before the ticket parks awaiting a human.
 
