@@ -12638,97 +12638,6 @@ proof_decl_file_is_empty() { # abs-path
 PROOF_DECL_METHOD=""; PROOF_DECL_EACH=""; PROOF_DECL_UNACC=""; PROOF_DECL_WHY=""
 PROOF_DECL_FIX=""
 PROOF_DECL_EXCLUDED=""
-
-# Data is still test-classified for declared edits, but cannot supply executed
-# tests. Unknown commands/extensions stay in scope; zero contribution alone is
-# never evidence that a file is safe to exclude.
-proof_fixture_candidates() { # stack command rels -> conservative data candidates
-  "${LCARS_PYTHON_BIN:-python3}" - "$1" "$2" "$3" <<'PY'
-import os, shlex, sys
-stack, command, rels = sys.argv[1:]
-try:
-    args = shlex.split(command)
-except ValueError:
-    sys.exit(0)
-if stack in ("py", "python"):
-    if (len(args) < 3 or args[1:3] != ["-m", "unittest"]
-            or any(c in command for c in (";", "&", "|", ">", "<", "`", "$("))):
-        sys.exit(0)
-elif stack not in ("go", "ruby", "js"):
-    sys.exit(0)
-for rel in rels.splitlines():
-    if os.path.splitext(rel)[1] in (".html", ".json", ".yaml", ".yml", ".txt", ".golden", ".snap"):
-        print(rel)
-PY
-}
-
-proof_fixture_exclusions() { # root rels -> paths proven not to be runner test sources
-  local root="$1" rels="$2" stack cmd candidates of rc=0 pkg rel run_dir
-  stack="$(resolve_stack)"; cmd="$(resolve_test_cmd)"
-  candidates="$(proof_fixture_candidates "$stack" "$cmd" "$rels")"
-  [ -n "$candidates" ] || return 0
-  if [ "$stack" != js ]; then
-    printf '%s\n' "$candidates"
-    return 0
-  fi
-  rel="$(printf '%s\n' "$rels" | head -1)"
-  pkg="$(package_of_relpath "$rel" "$root")"
-  while IFS= read -r rel; do
-    [ -n "$rel" ] || continue
-    [ "$(package_of_relpath "$rel" "$root")" = "$pkg" ] || return 0
-  done <<PROOF_FIXTURE_PACKAGES
-$rels
-PROOF_FIXTURE_PACKAGES
-  run_dir="$root${pkg:+/$pkg}"
-  # Jest can configure ANY extension as a test source. Ask its own discovery,
-  # rather than assuming a .snap (or .json transform) cannot execute tests.
-  "${LCARS_PYTHON_BIN:-python3}" - "$cmd" "$run_dir" <<'PY' || return 0
-import json, os, shlex, sys
-cmd, root = sys.argv[1:]
-try:
-    args = shlex.split(cmd)
-    if any(c in cmd for c in (";", "&", "|", ">", "<", "`", "$(")):
-        sys.exit(1)
-    if args and os.path.basename(args[0]) in ("jest", "jest.js"):
-        sys.exit(0)
-    if args[:2] == ["npm", "test"] and "--" in args[2:]:
-        with open(os.path.join(root, "package.json")) as f:
-            script = json.load(f)["scripts"]["test"]
-        words = shlex.split(script)
-        if (words and words[0] == "jest"
-                and not any(c in script for c in (";", "&", "|", ">", "<", "`", "$("))):
-            sys.exit(0)
-except (OSError, ValueError, KeyError, TypeError):
-    pass
-sys.exit(1)
-PY
-  of="$(mktemp "${TMPDIR:-/tmp}/lcars-fixtures.XXXXXX")" || return 0
-  ( cd "$run_dir" && LCARS_TESTS_DIR="$root" \
-      run_with_hard_timeout "$(proof_control_budget "$root" 30)" "$of" \
-      bash -c "$cmd --listTests --json" ) || rc=$?
-  if [ "$rc" -eq 0 ]; then
-    "${LCARS_PYTHON_BIN:-python3}" - "$root" "$of" "$candidates" <<'PY'
-import json, pathlib, sys
-root, output, candidates = sys.argv[1:]
-text = pathlib.Path(output).read_text()
-# npm may prefix its script banner. Accept only a complete JSON array of
-# absolute paths, never a runner summary or a successful empty shell wrapper.
-for start in (i for i in range(len(text)) if text[i] == "["):
-    try:
-        paths = json.loads(text[start:])
-    except ValueError:
-        continue
-    if (isinstance(paths, list) and paths
-            and all(isinstance(p, str) and pathlib.Path(p).is_absolute() for p in paths)):
-        selected = {pathlib.Path(p).resolve() for p in paths}
-        for rel in candidates.splitlines():
-            if (pathlib.Path(root) / rel).resolve() not in selected:
-                print(rel)
-        break
-PY
-  fi
-  rm -f "$of"
-}
 # Set when the leg's own count was unreadable and the ablation lane re-measured
 # the un-ablated leg with the extended reader: "<runner> <executed>".
 PROOF_DECL_RECOUNT=""
@@ -12847,11 +12756,6 @@ PDA_IMPORTS
   local eligible="" eligible_each="" original_idx=0
   while IFS= read -r rel; do
     [ -n "$rel" ] || continue
-    # These fixtures had no invocation; unlike an inert Python source's
-    # measured zero, they occupy no slot in the leg's per-invocation counts.
-    if printf '%s\n' "${PROOF_LEG_FIXTURES:-}" | grep -qxF "$rel"; then
-      continue
-    fi
     original_idx=$((original_idx + 1))
     if [ "$kind" = ancestor ] \
        && [ "$(proof_scope_command "$rawcmd" "$wt/$rel")" != "$rawcmd" ]; then
@@ -13346,7 +13250,6 @@ PROOF_LEG_EXEC=""; PROOF_LEG_EXEC_EACH=""
 PROOF_LEG_FAILED_EXEC=""
 PROOF_LEG_FAILED_OUT=""
 PROOF_LEG_EXCLUDED=""
-PROOF_LEG_FIXTURES=""
 PROOF_LEG_IMPORTED=""
 PROOF_LEG_MODULES=""
 # PROOF_LEG_ZERO_EXEC (S308 fix round 2, route d) — this leg's own runner said
@@ -13366,27 +13269,9 @@ proof_scoped_leg_run() { # leg-root rels(newline)
   PROOF_LEG_FAILED_EXEC=""
   PROOF_LEG_FAILED_OUT=""
   PROOF_LEG_EXCLUDED=""
-  PROOF_LEG_FIXTURES=""
   PROOF_LEG_IMPORTED=""
   PROOF_LEG_MODULES=""
   PROOF_LEG_RUN_DIR=""; PROOF_LEG_RAW_CMD=""
-  PROOF_LEG_FIXTURES="$(proof_fixture_exclusions "$root" "$rels")"
-  PROOF_LEG_EXCLUDED="$PROOF_LEG_FIXTURES"
-  local runnable="" rel
-  while IFS= read -r rel; do
-    [ -n "$rel" ] || continue
-    printf '%s\n' "$PROOF_LEG_FIXTURES" | grep -qxF "$rel" && continue
-    runnable="${runnable}${runnable:+
-}$rel"
-  done <<PROOF_RUNNABLE
-$rels
-PROOF_RUNNABLE
-  rels="$runnable"
-  if [ -z "$rels" ]; then
-    PROOF_LEG_RC=96
-    PROOF_LEG_OUT="proof-gate: only non-source fixtures changed; no executable test file remains to prove red-on-parent / green-on-tip"
-    return 0
-  fi
   first="$(printf '%s\n' "$rels" | grep . | head -1)"
   local stack; stack="$(resolve_stack)"
   # S133/DEFECT-2: both flip-flop legs run under a PORTABLE hard timeout so a
@@ -14429,21 +14314,10 @@ FFS_EOF
     done <<FFD_EOF
 $FF_GATE_DECL_UNACC
 FFD_EOF
-    local _dexcluded="" _dxsep="" _dxreason
+    local _dexcluded="" _dxsep=""
     while IFS= read -r _done; do
       [ -n "$_done" ] || continue
-      case "$_done" in
-        *.py) _dxreason="inert Python source cannot define or suppress test collection; direct unittest loading also confirmed zero tests" ;;
-        *)
-          case "$(resolve_stack)" in
-            py|python) _dxreason="data fixture: direct unittest discovery loads Python source, not this data format" ;;
-            go) _dxreason="data fixture: Go compiles .go source, not this data format" ;;
-            ruby) _dxreason="data fixture: the native Ruby scope selects *_spec.rb or *_test.rb, not this data format" ;;
-            js) _dxreason="data fixture: Jest --listTests --json confirmed this path is not a collected test source" ;;
-          esac
-          _dxreason="$_dxreason; excluded from executed-test accounting, never from the declared-edits guard" ;;
-      esac
-      _dexcluded="$_dexcluded$_dxsep{ \"path\": \"$(json_escape "$_done")\", \"reason\": \"$(json_escape "$_dxreason")\" }"
+      _dexcluded="$_dexcluded$_dxsep{ \"path\": \"$(json_escape "$_done")\", \"reason\": \"inert Python source cannot define or suppress test collection; direct unittest loading also confirmed zero tests\" }"
       _dxsep=", "
     done <<FFDX_EOF
 $FF_GATE_DECL_EXCLUDED
