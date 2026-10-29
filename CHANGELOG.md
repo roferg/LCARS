@@ -4,6 +4,17 @@ All notable changes to LCARS are recorded here, newest first. The version
 scheme is `YYYY.M.N` (calendar year, month with no leading zero, per-month
 counter). Every PR into `main` bumps `VERSION` and adds its entry here.
 
+## Unreleased — declared stored output with contradiction refusal (S341)
+
+Workers can declare `kind: "stored-output"` on an existing `testEdits` entry,
+with a reason. Only explicitly declared data leaves flip-flop scope/accounting;
+the edit declaration and drift checks still apply. Scoped proof and separate
+discovery observations on both legs refuse a declaration contradicted by a
+runner's named failure/error, including unittest's executing `.txt` doctests.
+Exclusions, reasons, runner exits and detection limits are recorded. Committed
+and pre-merge rechecks honor the declaration without waiving executable proof.
+Supported text readers and their limits are documented in the run skill.
+
 ## Unreleased — preserve concurrent Mission commits at startup (S338)
 
 The off-checkout Mission fast-forward now compares-and-swaps the tip whose

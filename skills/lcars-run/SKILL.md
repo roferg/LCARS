@@ -704,6 +704,24 @@ around them (see vision.md → *Implement*):
   (adds, edits, deletions, renames) must be declared (`newTests` ∪
   `testEdits[].path`, each edit with a reason); an undeclared test edit voids
   the session. Verified declarations land in `tickets/<id>/test-edits.json`.
+  Data that executes nothing itself may be declared there with
+  `kind: "stored-output"` (including new data files). This excludes only that
+  explicitly declared path from flip-flop scope/accounting, with its reason in
+  `declaredRan.excluded`; it stays in the edit record and drift checks.
+  The gate observes both scoped proof runs and additional discovery runs over
+  the original paths' common ancestor, including unchanged collectors. If a
+  runner names the path in a failure/error on either leg, the declaration is
+  contradicted and the ticket fails. Discovery is not extra red/green credit.
+  `storedOutput.runs` records the commands, exits, coverage and observations;
+  committed-state and pre-merge rechecks honor the same declaration.
+  Named-failure readers cover standard unittest tracebacks (including doctests
+  collected by unittest), Jest text FAIL headers/stacks, sequential Go test/build
+  locations, and RSpec text backtraces/load errors. Other reporters/runners
+  (including pytest and standalone doctest), parallel
+  Go logs, ambiguous basename-only paths, and collectors outside that discovery
+  scope are **not reliably covered**. Unsupported output is reported as such,
+  never as a verified claim; this is contradiction detection, not a classifier
+  or a guarantee that every false declaration will be caught.
 - **Quality floor** — ≥1 new/changed asserting test, unless the result declares
   `flipFlop: "not-applicable"` with a reason.
 - **Flip-flop** — the ticket's tests must be **GREEN on the tip** and **RED on
