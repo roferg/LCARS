@@ -33,18 +33,13 @@ publicly, including official accounts, events, or appointed roles.
 
 ## Reporting and enforcement
 
-Report incidents privately to **CONDUCT_CONTACT_TO_BE_SET**.
+**A private reporting contact is not set yet.** Until one is, this project is
+published to be read and used rather than to invite contributions, and there is
+no monitored channel for conduct reports.
 
-> **Maintainer note, to be removed on publication.** Replace
-> `CONDUCT_CONTACT_TO_BE_SET` with a monitored private address before inviting
-> contributions. An alias you can mute or retire is kinder than a personal
-> inbox, because this file is public and will be scraped. If you are publishing
-> the code to be read and used rather than opening it to contributors yet, it is
-> also legitimate to remove this file for now and restore it when you want
-> contributions — but shipping the unset token is the one outcome that is worse
-> than either choice.
-
-Do not post sensitive incident reports in public issues instead.
+If you need to raise something, open an issue asking for a private channel —
+without the details in it — and a maintainer will open one. Do not post a
+sensitive incident report in a public issue.
 
 Describe what happened, where, and when, with relevant links or evidence where
 safe. Do not include unnecessary personal information. Maintainers should
