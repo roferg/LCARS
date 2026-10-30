@@ -1,6 +1,6 @@
 <!DOCTYPE html>
-<!-- lcars-docs-src: README.md sha256:0c1b36d448935a881bcecd035290dcb996c615743afe4393bb83c798713730b2 -->
-<!-- lcars-docs-src: vision.md sha256:102a7a82067045975af5defc305e09e6720867a8463d90e8d81d852557362966 -->
+<!-- lcars-docs-src: README.md sha256:e702be60f5fa2e4ad4b8d73deb0e0c776cc73eef7acde4f5c3a2d25b00a460d6 -->
+<!-- lcars-docs-src: vision.md sha256:d8976e9cfab2a421744d4b0bd76e30a734d4c4e82ce0d0e85813e4b453a05035 -->
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
@@ -85,25 +85,31 @@
         <figcaption>The <strong>viewscreen</strong> on a busy board: every stage column populated, cost and difficulty pills on each card, a red AWAITING YOU gate, and a Done column mixing local and forge cards.</figcaption>
       </figure>
 
-      <p>LCARS is a harness that sits on top of an AI coding CLI —
-      <strong>Claude Code</strong> or the <strong>GitHub Copilot CLI</strong> —
-      and runs a whole piece of work end to end. An idea goes in; it is sharpened
-      into a spec, researched, planned, broken into small tickets, built
-      test-first, and handed back to you as a branch and a pull request. It runs
-      unattended between those two points and interrupts you only when a real
-      decision is needed. <strong>You keep the decisions. It keeps the
-      typing.</strong></p>
+      <p>LCARS works with <strong>Claude Code</strong> or the
+      <strong>GitHub Copilot CLI</strong> and runs a whole piece of work end to
+      end. An idea goes in; it is sharpened into a spec, researched, planned,
+      broken into small tickets, built test-first, and handed back to you as a
+      branch and a pull request. It runs unattended between those two points and
+      interrupts you only when a real decision is needed. <strong>You keep the
+      decisions. It keeps the typing.</strong></p>
+
+      <p><strong>How hands-on you are is your choice.</strong> Answer every gate
+      yourself and nothing moves without you. Or hand the work to the
+      <strong>Emergency Command Hologram</strong> — a seat that stands in for
+      you, answers the gates, looks at the built product in a real browser,
+      files what it finds, and drives the whole thing while you are somewhere
+      else. You can take any step back whenever you want it.</p>
 
       <p>It installs once and works in <strong>any</strong> repo, leaving
       <strong>zero</strong> files in your working tree. The board above — the
       <strong>viewscreen</strong> — is the usual way to drive it, and everything
       on it is also a terminal command. <strong>The project does not have to
-      exist yet:</strong> point LCARS at an empty folder and it recommends a
+      exist yet.</strong> point LCARS at an empty folder and it recommends a
       stack, builds a running skeleton with a real test system, and proves one
       thin slice end to end before any feature work starts.</p>
 
       <div class="lcars-alert blue">
-        <div><strong>Read more:</strong> <a href="https://github.com/roferg/LCARS/blob/main/vision.md">vision.md</a> is
+        <div><strong>Read more</strong> — <a href="https://github.com/roferg/LCARS/blob/main/vision.md">vision.md</a> is
         the story — why this was started, how the idea changed over a year,
         what is still rough, and where it goes next ·
         <a href="https://github.com/roferg/LCARS/blob/main/CONTEXT.md">CONTEXT.md</a> is the glossary ·
@@ -196,7 +202,7 @@ flowchart LR
         <div class="lcars-panel-header">You need</div>
         <div class="lcars-panel-body">
           <ul>
-            <li><strong>One AI coding CLI</strong> — Claude Code
+            <li><strong>Claude Code or the GitHub Copilot CLI</strong> — Claude Code
             <strong>or</strong> the GitHub Copilot CLI. LCARS detects which ones
             are installed and uses one of them. Both installed is fine; you pick
             per Mission.</li>
@@ -373,7 +379,7 @@ lcars init          # one-time: per-repo state + the GitHub labels</pre>
             <li><code>lcars resolve-logs</code> — drive those bugs to <strong>one</strong> re-verify gate, not one each.</li>
             <li><code>lcars pause</code> / <code>lcars resume</code> — stop at the next safe boundary, and go again.</li>
             <li><code>lcars adopt &lt;issue&gt;</code> — take a Mission over on this machine from its issue alone.</li>
-            <li><code>lcars xo</code> — engage or stand down Number One, and read his report.</li>
+            <li><code>lcars xo</code> — engage or stand down Number One, and read its report.</li>
             <li><code>lcars-eeh</code> / <code>lcars-ech</code> — the ride-along, and handing it the loop.</li>
             <li><code>lcars update</code> / <code>lcars version</code> — absorb a <code>git pull</code>, and say where you are.</li>
           </ul>
@@ -411,14 +417,14 @@ lcars init          # one-time: per-repo state + the GitHub labels</pre>
       </figure>
 
       <h3>Number One</h3>
-      <p>A first officer who works your gates for you. He takes the stages parked
+      <p>A first officer that works your gates for you. It takes the stages parked
       for an answer and the look at Verify, grades what was built against what
       you asked for, and hands control back with a report — including a plain
-      count of what he could <strong>not</strong> check. He never writes code and
+      count of what it could <strong>not</strong> check. It never writes code and
       never merges.</p>
       <figure class="screenshot">
-        <img src="assets/number-one-report.png" alt="The First Officer's Report: everything Number One has looked at, grouped by mission, with the ones he is handing back to you beside his verdicts and the entries you can open." />
-        <figcaption>The First Officer's Report: what he looked at, what he decided, and what he is handing back to you.</figcaption>
+        <img src="assets/number-one-report.png" alt="The First Officer's Report, everything Number One has looked at, grouped by mission, with the ones it is handing back to you beside its verdicts and the entries you can open." />
+        <figcaption>The First Officer's Report — what it looked at, what it decided, and what it is handing back to you.</figcaption>
       </figure>
 
       <h3>Run the app, from the board</h3>
@@ -613,8 +619,8 @@ lcars init          # one-time: per-repo state + the GitHub labels</pre>
       <div class="lcars-alert amber">
         <div><strong>What is honestly rough today.</strong> The Copilot path
         works but has far fewer miles on it than the Claude one, so you may hit
-        edges there first. Number One grades what he can reach and tells you what
-        he could not — useful, but not a code review. Multi-person support is real
+        edges there first. Number One grades what it can reach and tells you what
+        it could not — useful, but not a code review. Multi-person support is real
         — identity, ownership, the per-person lock, taking a Mission over — but
         has only run against one GitHub account, and two people acting in the same
         instant is not handled yet. The suite is slow enough to be a gate rather

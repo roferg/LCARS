@@ -3,27 +3,33 @@
 **You describe what you want. LCARS builds it and brings you back a pull
 request.**
 
-![The LCARS viewscreen: nine stage columns across a live board of 89 cards, each carrying its issue number, engine, estimated and actual cost, reasoning and implementation difficulty; a mission mid-way through Implement showing its wave strip and ticket list, and three missions waiting at the Verify gate.](docs/assets/viewscreen-board-2026-10.png)
+![The LCARS viewscreen, nine stage columns across a live board of 89 cards, each carrying its issue number, engine, estimated and actual cost, reasoning and implementation difficulty; a mission mid-way through Implement showing its wave strip and ticket list, and three missions waiting at the Verify gate.](docs/assets/viewscreen-board-2026-10.png)
 
-LCARS is a harness that sits on top of an AI coding CLI — **Claude Code** or the
-**GitHub Copilot CLI** — and runs a whole piece of work end to end. An idea goes
-in; it is sharpened into a spec, researched, planned, cut into small tickets,
-built test-first, and handed back as a branch and a pull request. It runs
-unattended between those two points, stopping for a decision that is yours to
-make and, now and then, for a permission prompt from the CLI underneath.
-**You keep the decisions. It keeps the typing.**
+LCARS works with **Claude Code** or the **GitHub Copilot CLI** and runs a whole
+piece of work end to end. An idea goes in; it is sharpened into a spec,
+researched, planned, cut into small tickets, built test-first, and handed back
+as a branch and a pull request. It runs unattended between those two points,
+stopping for a decision that is yours to make and, now and then, for a
+permission prompt from the tool underneath. **You keep the decisions. It keeps
+the typing.**
+
+**How hands-on you are is your choice.** Answer every gate yourself and nothing
+moves without you. Or hand the work to the **Emergency Command Hologram** — a
+seat that stands in for you, answers the gates, looks at the built product in a
+real browser, files what it finds, and drives the whole thing while you are
+somewhere else. You can take any step back whenever you want it.
 
 It installs once, works in **any** repo, and leaves **zero** files in your
 working tree. The board above — the **viewscreen** — is the usual way to drive
-it, and everything on it is also a terminal command. **The project need not exist
-yet:** point LCARS at an empty folder and it recommends a stack, builds a running
-skeleton with a real test system, and proves one thin slice end to end before any
-feature work.
+it, and everything on it is also a terminal command. **The project need not
+exist yet.** Point LCARS at an empty folder and it recommends a stack, builds a
+running skeleton with a real test system, and proves one thin slice end to end
+before any feature work.
 
 ## What it does
 
 LCARS is laid out like a small factory, and its words are the factory's. A
-**Mission** is a **work order**: one human intent, admitted at one end, on its
+**Mission** is a **work order** — one human intent, admitted at one end, on its
 own branch and mirrored as a GitHub issue. The eight **Stages** are the
 stations it passes through, and the **board** is the floor — every work order
 showing at the station it is standing at. Several are on the line at once; they
@@ -52,14 +58,14 @@ flowchart LR
 | **Research** | 🤖 auto | Up to twenty open questions, each sent to its own independent agent that comes back with a recommendation and its reasons. |
 | **Validate** | 🤖 auto | The findings are synthesised into a plan. It stops for you only if a finding changes *what* gets built, not *how*. |
 | **Plan** | 🤖 auto | The plan is cut into **tickets** — the parts the line actually builds, each a vertical slice owning a single behaviour. |
-| **Plan Review** | 🤖 auto | Incoming inspection on the cut: a fresh reviewer with no memory of the planning audits every ticket for size, coupling and testability, and sends bad ones back. |
+| **Plan Review** | 🤖 auto | Incoming inspection on the cut — a fresh reviewer with no memory of the planning audits every ticket for size, coupling and testability, and sends bad ones back. |
 | **Schedule** | 🤖 auto | Tickets are ordered by their dependencies into **waves** — the batches the floor can run side by side — and each becomes a sub-issue under the Mission. |
-| **Implement** | 🤖 auto | One test-first worker per ticket, one bench each, checked afterwards by machine: its new tests must fail before its change and pass after it, any edit to an existing test must be declared with a reason, and the whole suite must stay green. |
+| **Implement** | 🤖 auto | One test-first worker per ticket, one bench each, checked afterwards by machine — its new tests must fail before its change and pass after it, any edit to an existing test must be declared with a reason, and the whole suite must stay green. |
 | **Verify** | 🧑 you | Final inspection, and the last station you staff. You read the diff, run the app, and either approve — which merges the existing open pull request — or send it back with a note. |
 
 ## Install
 
-You need **one** AI coding CLI, plus the GitHub CLI:
+You need **one** of Claude Code or the GitHub Copilot CLI, plus the GitHub CLI.
 
 - [Claude Code](https://claude.com/claude-code) **or**
   [GitHub Copilot CLI](https://github.com/features/copilot/cli) — LCARS uses
@@ -83,20 +89,20 @@ Emergency Command Hologram (ECH) you hand the loop to. If `~/.local/bin` is not
 on your `PATH`, the installer says so loudly and prints the exact line to add to
 your shell profile.
 
-The closing verdict is the exit contract: **READY exits 0; NOT READY exits 1**,
+The closing verdict is the exit contract — **READY exits 0; NOT READY exits 1**,
 so `./install.sh && next-command` never continues with unusable commands — fix
-what it reports and re-run. **PARTIAL exits 0** too: the commands work, but
+what it reports and re-run. **PARTIAL exits 0** too — the commands work, but
 something is unfinished, such as a refused Copilot registration.
 
 Then, **inside the project you want to ship work in** (not this repo):
 
 ```bash
 cd ~/path/to/your-project
-lcars init          # one-time: per-repo state + the GitHub labels
+lcars init          # one-time — per-repo state + the GitHub labels
 ```
 
 > **Two kinds of command, and where each one runs.** `lcars <verb>`
-> (`lcars init`, `lcars file`, `lcars answer`, …) are *skills*: you type them to
+> (`lcars init`, `lcars file`, `lcars answer`, …) are *skills* — you type them to
 > your AI CLI inside the repo, not into a shell — shell `lcars status` is not an
 > executable, so ask Claude Code or Copilot for it. The five hyphenated names
 > above are real programs and run in any plain terminal; `lcars-launch --help`
@@ -123,14 +129,14 @@ lcars-viewscreen --open
 ```
 
 It starts a local server (Python standard library only — no npm, no build step),
-picks a free port, and opens the board. Watching costs nothing: the board never
+picks a free port, and opens the board. Watching costs nothing — the board never
 calls a model.
 
 **2. File an idea.** Press **FILE MISSION**, describe what you want in plain
 language, and pick which CLI should do the work. Begin the alignment interview
 now, or park it in the backlog for later.
 
-![The LCARS file console: a free-form box asking what you want to build, improve or fix, an engine choice between Claude and Copilot, and the choice of beginning alignment now or filing it to the backlog.](docs/assets/file-console.png)
+![The LCARS file console — a free-form box asking what you want to build, improve or fix, an engine choice between Claude and Copilot, and the choice of beginning alignment now or filing it to the backlog.](docs/assets/file-console.png)
 
 **3. Walk away.** The Mission advances itself through Research, Validate, Plan,
 Plan Review, Schedule and Implement, the card showing the stage, the cost so far
@@ -142,24 +148,24 @@ carry on and it picks up where it left off.
 your answer, and sends a notification; reaching Verify alone does not turn a card
 red. Escalations and Verify reviews are both listed by `lcars answer`.
 
-![The lcars answer inbox in a terminal: every decision LCARS is waiting on, each written in plain English with the exact command to approve it, send it back, or answer it.](docs/assets/answer-inbox.png)
+![The lcars answer inbox in a terminal — every decision LCARS is waiting on, each written in plain English with the exact command to approve it, send it back, or answer it.](docs/assets/answer-inbox.png)
 
 **5. Approve it.** At Verify you see what you asked for beside what was built,
 the estimate beside the real cost, and the pull request when one is recorded.
 **⚡ RUN** starts the built app so you can look at it before you decide. Then
 merge the open PR, or send it back with a note; approval never opens and merges a
-PR in one step. With no PR recorded the inbox says approval is unavailable: run
+PR in one step. With no PR recorded the inbox says approval is unavailable — run
 `lcars run <mission-id>` so Verify opens one — or, for a logged-bug child, which
 has no PR of its own and ships via its parent, `lcars resolve-logs <parent>`.
 
-![The Verify gate: the acceptance criteria, what was built, the estimate beside what the run actually cost, the open pull request, a RUN control that launches the built app, and the send-back and merge buttons.](docs/assets/launch-run.png)
+![The Verify gate — the acceptance criteria, what was built, the estimate beside what the run actually cost, the open pull request, a RUN control that launches the built app, and the send-back and merge buttons.](docs/assets/launch-run.png)
 
 ## The commands
 
 In the order you meet them. `lcars-…` names are real programs; the rest are
 skills you ask your AI CLI for, inside the repo.
 
-- `lcars init` — per-repo setup: local state and the GitHub labels. Once.
+- `lcars init` — per-repo setup — local state and the GitHub labels. Once.
 - `lcars-viewscreen` — open the board (alias `lcars-serve`).
 - `lcars file` — turn a free-form idea into a Mission.
 - `lcars` / `lcars run <id>` — do the obvious next thing; `--step` advances one Stage.
@@ -169,7 +175,7 @@ skills you ask your AI CLI for, inside the repo.
 - `lcars log` / `lcars resolve-logs` — describe bugs you found, each becoming a linked bug Mission; then drive them all to **one** re-verify gate.
 - `lcars pause` / `lcars resume` — stop at the next safe boundary, and go again.
 - `lcars adopt <issue>` — take a Mission over on this machine from its issue alone.
-- `lcars xo` — engage or stand down Number One, and read his report.
+- `lcars xo` — engage or stand down Number One, and read its report.
 - `lcars-eeh` / `lcars-ech` — the ride-along, and handing it the loop.
 - `lcars update` / `lcars version` — absorb a `git pull`, and say where you are.
 
@@ -179,11 +185,11 @@ skills you ask your AI CLI for, inside the repo.
 
 Every Mission as a card in its Stage column, progress streamed live. Every button
 maps to a command, so the board and the terminal never disagree. A Mission
-belongs to a **person**, not a laptop: you can see Missions running on machines
+belongs to a **person**, not a laptop — you can see Missions running on machines
 you do not have, you cannot drive someone else's by accident, and you can
 deliberately take one over.
 
-![Two LCARS mission cards side by side on the viewscreen: one in Implement marked REMOTE — DRIVEN ELSEWHERE, one in Verify reading "copilot — chosen at adopt", both carrying their owner's avatar and handle, above an ownership filter strip.](docs/assets/ownership-board.png)
+![Two LCARS mission cards side by side on the viewscreen, one in Implement marked REMOTE — DRIVEN ELSEWHERE, one in Verify reading "copilot — chosen at adopt", both carrying their owner's avatar and handle, above an ownership filter strip.](docs/assets/ownership-board.png)
 
 ### The holodeck
 
@@ -192,16 +198,16 @@ existence instead. The holodeck renders it live as you discuss it, can learn you
 project's existing look in one read-only pass, and then hands the finished
 drawing to a Mission that builds it.
 
-![The LCARS holodeck: the programs list on the left, the design conversation in the middle, and the live-rendered mockup of a tile editor on the right.](docs/assets/holodeck.png)
+![The LCARS holodeck — the programs list on the left, the design conversation in the middle, and the live-rendered mockup of a tile editor on the right.](docs/assets/holodeck.png)
 
 ### Number One
 
-A first officer who works your gates for you. He takes the stages parked for an
+A first officer that works your gates for you. It takes the stages parked for an
 answer and the look at Verify, grades what was built against what you asked for,
-and hands control back with a report — including a plain count of what he could
-**not** check. He never writes code and never merges.
+and hands control back with a report — including a plain count of what it could
+**not** check. It never writes code and never merges.
 
-![The First Officer's Report: everything Number One has looked at, grouped by mission, with the ones he is handing back to you beside his verdicts and the entries you can open.](docs/assets/number-one-report.png)
+![The First Officer's Report — everything Number One has looked at, grouped by mission, with the ones it is handing back to you beside its verdicts and the entries you can open.](docs/assets/number-one-report.png)
 
 ### Run the app, from the board
 
@@ -216,20 +222,20 @@ included — and LCARS splits them into bug Missions linked to the parent, each
 grounded against the code that Mission wrote so the fix lands in the real thing
 rather than beside it. Fix them all for **one** re-verify gate, not one per bug.
 
-![The Mission Log dialog: a free-form "what went wrong?" box with pasted screenshots, previewing two auto-detected bug Missions, each a child of the parent with its own stage label.](docs/assets/mission-log.png)
+![The Mission Log dialog — a free-form "what went wrong?" box with pasted screenshots, previewing two auto-detected bug Missions, each a child of the parent with its own stage label.](docs/assets/mission-log.png)
 
-![The consolidated re-verify gate: one dialog saying the logged bugs were fixed and folded onto the parent's branch, with a live launch control and accept-the-fixes or send-back buttons.](docs/assets/reverify-gate.png)
+![The consolidated re-verify gate — one dialog saying the logged bugs were fixed and folded onto the parent's branch, with a live launch control and accept-the-fixes or send-back buttons.](docs/assets/reverify-gate.png)
 
 ### The ECH — handing over the loop
 
-Normally you run the floor: you write the work orders, answer what the line
+Normally you run the floor — you write the work orders, answer what the line
 asks, and take final inspection. The ECH is what lets you hand the *running* of
 it over. You give it a goal, it holds one alignment round with you to agree what
 to build, and then it works milestone after milestone — writing its own work
 orders, clearing its own gates — coming back only when it genuinely needs you.
 
 A shift nobody watched is worth only the evidence it left behind, so the ECH
-does not ask to be trusted: it *uses* what it built, files what it finds with a
+does not ask to be trusted — it *uses* what it built, files what it finds with a
 reproduction quoting the real output, re-proves each fix on deliberately
 different data, writes down every decision it made alone, and says so plainly
 when a check found nothing.
@@ -239,7 +245,7 @@ tool, a page and a CI workflow, needed its operator **once** (the opening
 alignment round), and **found two real bugs a fully green suite had passed**. A
 human still ran the final landing; it is not claimed to ship with nobody there.
 
-![The ECH's own status in a terminal: the spec it is working to, the missions in scope with their stages and gates, the parallel slots in use, and the one question it has parked for you.](docs/assets/ech-status.png)
+![The ECH's own status in a terminal — the spec it is working to, the missions in scope with their stages and gates, the parallel slots in use, and the one question it has parked for you.](docs/assets/ech-status.png)
 
 ### Knowing the cost before you spend it
 
@@ -248,15 +254,15 @@ much reasoning and how much implementation it needs, picks a model tier per Stag
 accordingly, and prices the run. The estimate sits on the card, and after the run
 the real figure sits next to it.
 
-![An estimate close up on a mission card: the cost band, the reasoning and implementation difficulty pills, and the actual spend beside the estimate.](docs/assets/estimate-close-up.png)
+![An estimate close up on a mission card — the cost band, the reasoning and implementation difficulty pills, and the actual spend beside the estimate.](docs/assets/estimate-close-up.png)
 
 ## Two engines
 
 LCARS runs on **either** CLI, and offers you only what is installed on the
-machine: every picker — filing a Mission, starting one, the holodeck, Number One
+machine — every picker — filing a Mission, starting one, the holodeck, Number One
 — greys out an engine that is not there rather than failing later.
 
-![The engine picker when engaging Number One: Copilot and Claude stacked one above the other, each marked "installed" because both are on this machine.](docs/assets/engine-picker.png)
+![The engine picker when engaging Number One — Copilot and Claude stacked one above the other, each marked "installed" because both are on this machine.](docs/assets/engine-picker.png)
 
 |  | Claude Code | GitHub Copilot CLI |
 |---|---|---|
@@ -317,12 +323,12 @@ issues by those labels gives you the same picture without the board.
 
 This is a real tool in daily use, not a finished product. The pipeline works end
 to end and has shipped a great deal of its own code. It also ships imperfect on
-purpose: the point is to keep using it, find where it falls down, and fix that
+purpose — the point is to keep using it, find where it falls down, and fix that
 rather than wait until it is polished.
 
-What is honestly rough today: the Copilot path works but has far fewer miles on
+What is honestly rough today — the Copilot path works but has far fewer miles on
 it than the Claude one, so you may hit edges there first. Number One grades what
-he can reach and tells you what he could not — useful, but not a code review.
+it can reach and tells you what it could not — useful, but not a code review.
 Multi-person support is real, but has only run against one GitHub account, and
 two people acting in the same instant is not handled yet. The suite is slow
 enough to be a gate rather than an inner loop. And **DEPLOY MAIN** has been seen
@@ -333,7 +339,7 @@ was doing still finishes, but you have to restart the board with
 ## Contributing
 
 Issues and pull requests are welcome. [`CONTRIBUTING.md`](CONTRIBUTING.md) has
-the short version: command source lives in `skills/<name>/`, every command has a
+the short version — command source lives in `skills/<name>/`, every command has a
 test in `tests/`, write the failing test first, and run `./install.sh` before you
 try your change.
 
