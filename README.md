@@ -3,7 +3,7 @@
 **You describe what you want. LCARS builds it and brings you back a pull
 request.**
 
-![The LCARS viewscreen on a busy board: every stage column populated, cost and difficulty pills on each card, a red AWAITING YOU gate, a mid-way wave strip, and a Done column mixing local and forge cards.](docs/assets/viewscreen-board.png)
+![The LCARS viewscreen: nine stage columns across a live board of 89 cards, each carrying its issue number, engine, estimated and actual cost, reasoning and implementation difficulty; a mission mid-way through Implement showing its wave strip and ticket list, and three missions waiting at the Verify gate.](docs/assets/viewscreen-board-2026-10.png)
 
 LCARS is a harness that sits on top of an AI coding CLI — **Claude Code** or the
 **GitHub Copilot CLI** — and runs a whole piece of work end to end. An idea goes
