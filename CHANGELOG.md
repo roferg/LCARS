@@ -4,16 +4,19 @@ All notable changes to LCARS are recorded here, newest first. The version
 scheme is `YYYY.M.N` (calendar year, month with no leading zero, per-month
 counter). Every PR into `main` bumps `VERSION` and adds its entry here.
 
-## Unreleased — preserve concurrent Mission commits at startup (S338)
+## 2026.10.6 — 2026-10-30
 
+The open-source round. Twenty-plus sessions of fixes found by driving real
+work hands-off, plus the vision and README rewritten for a stranger.
+
+### preserve concurrent Mission commits at startup (S338)
 The off-checkout Mission fast-forward now compares-and-swaps the tip whose
 losslessness was measured, rather than force-moving the branch. A concurrent
 commit makes publication refuse with inspection/retry guidance, even without
 reflogs. Checkout registration is rechecked before publication. Existing
 own-commit refusals, successful output, and S336 recovery are unchanged.
 
-## Unreleased — self-heal can merge an advanced base (S336)
-
+### self-heal can merge an advanced base (S336)
 Implement self-heal now merges a newer base into a Mission carrying its own
 commits, then continues through the existing shared re-test gates. Recovery
 preserves both tips, refuses concurrent tip replacement, and never rewrites
@@ -21,8 +24,7 @@ published history. Dirty trees, unfinished operations, checked-out Mission
 branches and conflicting merges still stop for a human. The startup helper's
 lossless-fast-forward refusal and Verify-only reconcile command are unchanged.
 
-## Unreleased — honest all-undrawn tickets (S335)
-
+### honest all-undrawn tickets (S335)
 A screen-changing ticket whose criteria are all `notDrawn` or `notVisual` no
 longer needs a fabricated `drawnAt`. Every criterion still requires exactly one
 valid declaration; undrawn reasons remain mandatory and appear with their
