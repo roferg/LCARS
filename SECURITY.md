@@ -3,16 +3,17 @@
 ## Report vulnerabilities privately
 
 Do not put vulnerabilities, exploit details, credentials, or sensitive logs in
-public issues or pull requests. If GitHub private vulnerability reporting is
-enabled, use **Security > Advisories > Report a vulnerability** at
-https://github.com/roferg/LCARS/security/advisories/new. This creates a private
-report for repository maintainers, not a public issue.
+public issues or pull requests.
 
-If that option is unavailable, the alternative private channel is
-**[PLACEHOLDER: OWNER MUST SET A PRIVATE SECURITY REPORTING CONTACT]**.
-This placeholder is not a working contact. Until the owner configures a private
-route, do not publish sensitive details as a workaround. This policy does not
-enable GitHub reporting or change any repository setting.
+Use **Security > Advisories > Report a vulnerability** at
+https://github.com/roferg/LCARS/security/advisories/new. This creates a private
+report visible only to the maintainers, not a public issue. It is the route to
+use, and it needs no email address from you.
+
+If that page is unavailable to you, open a public issue that says only that you
+have a security report and asks for a private channel — no details, no
+reproduction, no logs. A maintainer will open one. **Do not publish the finding
+itself as a workaround.**
 
 Include the LCARS version or commit, host AI CLI and version, operating system,
 affected skill or component, impact, and minimal reproduction steps. Use a

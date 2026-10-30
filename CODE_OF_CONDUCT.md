@@ -33,11 +33,18 @@ publicly, including official accounts, events, or appointed roles.
 
 ## Reporting and enforcement
 
-Report incidents privately to
-**[PLACEHOLDER: OWNER MUST SET A PRIVATE CONDUCT CONTACT]**.
-The owner must replace this placeholder with a monitored private reporting
-channel before inviting community participation. It is not currently a working
-contact; do not post sensitive incident reports in public issues instead.
+Report incidents privately to **CONDUCT_CONTACT_TO_BE_SET**.
+
+> **Maintainer note, to be removed on publication.** Replace
+> `CONDUCT_CONTACT_TO_BE_SET` with a monitored private address before inviting
+> contributions. An alias you can mute or retire is kinder than a personal
+> inbox, because this file is public and will be scraped. If you are publishing
+> the code to be read and used rather than opening it to contributors yet, it is
+> also legitimate to remove this file for now and restore it when you want
+> contributions — but shipping the unset token is the one outcome that is worse
+> than either choice.
+
+Do not post sensitive incident reports in public issues instead.
 
 Describe what happened, where, and when, with relevant links or evidence where
 safe. Do not include unnecessary personal information. Maintainers should

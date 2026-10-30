@@ -8,7 +8,12 @@ on:
 jobs:
   fast-suites:
     name: fast-suites
-    runs-on: ubuntu-latest
+    # Pinned deliberately. `ubuntu-latest` is a moving label — GitHub began
+    # migrating it to Ubuntu 26 from 19 Oct 2026 — and this gate's whole value
+    # is that it does not surprise anyone. 24.04 is the image every green run
+    # to date was proven on, including 2026-10-30. Move it deliberately, with a
+    # run that proves the new image, never by letting the label drift.
+    runs-on: ubuntu-24.04
     # The kept list took ~72s locally; the slowest single suite took 50s.
     # 10 minutes gives a cold runner ample head-room and remains a HARD stop.
     timeout-minutes: 10
