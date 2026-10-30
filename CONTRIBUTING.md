@@ -4,7 +4,7 @@ Issues and pull requests are welcome. **CONTRIBUTING.md is the contract for huma
 [CLAUDE.md](CLAUDE.md) is the contract for AI agents building this project.**
 They describe the same build workflow for different audiences. Start here if
 you are a person; read the agent contract before using an agent to contribute.
-Read [vision.md](vision.md) for intended behaviour and [CONTEXT.md](CONTEXT.md)
+Read [vision.md](vision.md) for why LCARS is the way it is, and [CONTEXT.md](CONTEXT.md)
 for the domain language before substantial work.
 
 Participation follows our [Code of Conduct](CODE_OF_CONDUCT.md). Use the bug or

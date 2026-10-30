@@ -32,6 +32,7 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO_ROOT" || exit 1
 
 README_MAX_LINES=357
+VISION_MAX_LINES=380
 
 PASS=0; FAIL=0
 ok()  { PASS=$((PASS+1)); printf '  ok   %s\n' "$1"; }
@@ -117,6 +118,157 @@ bad_ids() {
     printf '%s' "$i" | grep -qE '^[a-z0-9][a-z0-9_-]*$' || out="$out $i"
   done < <(html_ids "$f")
   printf '%s' "$out"
+}
+
+# docs_guard <mode> <file...> — the three prose guards (sections 10, 11, 12),
+# in one inline python3 so there is nothing to declare in tests/lib/MANIFEST
+# and nothing to keep in sync. Prints findings; exits non-zero on any.
+#   dup     <a.md> <b.md>  — a >=3-sentence paragraph of one shares a 12-word
+#                            window with the other
+#   captain <f.md>         — "captain" used twice without a "the person" gloss
+#                            in the paragraph of its FIRST use
+#   cited   <f.md>         — a count or dollar figure with no CHANGELOG version
+#                            and no link in the same paragraph / list item
+docs_guard() {
+  python3 - "$@" <<'PYGUARD'
+import re, sys
+
+SHINGLE = 12
+
+def blocks(path):
+    """Paragraph-sized units: blank-line blocks, with list items split out."""
+    txt = open(path, encoding='utf-8').read()
+    txt = re.sub(r'```.*?```', '', txt, flags=re.S)        # fenced code
+    txt = re.sub(r'<!--.*?-->', '', txt, flags=re.S)       # html comments
+    out = []
+    for para in re.split(r'\n\s*\n', txt):
+        para = para.strip('\n')
+        if not para.strip():
+            continue
+        if re.match(r'^\s*[-*]\s', para):                  # a list: one unit per item
+            cur = []
+            for line in para.split('\n'):
+                if re.match(r'^\s*[-*]\s', line) and cur:
+                    out.append('\n'.join(cur)); cur = []
+                cur.append(line)
+            if cur:
+                out.append('\n'.join(cur))
+        else:
+            out.append(para)
+    return [b.strip() for b in out if b.strip()]
+
+def prose(path):
+    """Blocks that are running prose — no headings, tables or bare images."""
+    keep = []
+    for b in blocks(path):
+        if b.startswith('#') or b.startswith('|') or b.startswith('!['):
+            continue
+        keep.append(b)
+    return keep
+
+def norm(p):
+    p = re.sub(r'\[([^\]]*)\]\([^)]*\)', r'\1', p)         # link text only
+    p = re.sub(r'[*_`>]', '', p)
+    p = re.sub(r'\s+', ' ', p).strip().lower()
+    return re.sub(r'[^a-z0-9 ]', '', p)
+
+def nsent(p):
+    return len(re.findall(r'[.!?](?:\s|$)', p))
+
+def shingles(words, n=SHINGLE):
+    return {' '.join(words[i:i + n]) for i in range(0, max(0, len(words) - n + 1))}
+
+def all_shingles(path):
+    s = set()
+    for p in prose(path):
+        s |= shingles(norm(p).split())
+    return s
+
+def cmd_dup(a, b):
+    hits = []
+    for src, other in ((a, all_shingles(b)), (b, all_shingles(a))):
+        for p in prose(src):
+            if nsent(p) < 3:
+                continue
+            shared = shingles(norm(p).split()) & other
+            if shared:
+                hits.append('%s shares %d twelve-word window(s) with the other file: "%s…"'
+                            % (src, len(shared), ' '.join(p.split())[:90]))
+    for h in hits:
+        print(h)
+    return 1 if hits else 0
+
+GLOSS = re.compile(r'\bthe person\b', re.I)
+
+def cmd_captain(f):
+    units = prose(f)
+    uses = [u for u in units if re.search(r'\bcaptain\b', u, re.I)]
+    total = sum(len(re.findall(r'\bcaptain\b', u, re.I)) for u in units)
+    if total < 2:
+        return 0
+    first = uses[0]
+    if GLOSS.search(first):
+        return 0
+    print('"captain" is used %d times but its first use is never defined — '
+          'gloss it once as "the person …": "%s…"'
+          % (total, ' '.join(first.split())[:90]))
+    return 1
+
+# Numeric forms that are NOT result claims and so need no citation.
+ALLOWED = [
+    r'\b20\d\d-\d\d-\d\d\b',                         # ISO date
+    r'\b20\d\d\.\d+\.\d+\b',                         # a version string itself
+    r'\b\d+\s?h\s?\d+\s?m\b',                        # 2h06m
+    r'\b\d+\s?(?:h|hrs?|hours?|min|mins?|minutes?|s|secs?|seconds?|days?|weeks?|months?|years?)\b',
+    r'\b(?:19|20)\d\d\b',                            # a bare year
+]
+CITE = re.compile(r'\b20\d\d\.\d+\.\d+\b|\]\(')
+
+# Sentence boundary: . ! or ? followed by whitespace or end-of-unit. The
+# lookahead is what keeps `2026.7.20` and `$4.86` in one piece — their dots are
+# followed by a digit, never by a space.
+SENT_SPLIT = re.compile(r'(?<=[.!?])(?=\s)')
+
+# A magnitude claim SPELLED OUT in words — "roughly six times", "between four
+# and ten times", "a threefold drop". A digits-only sweep cannot see these, and
+# the uncited figure that actually shipped ("low by something between four and
+# ten times") was exactly this shape. Deliberately narrow: only the
+# <number-word> + times/fold/× form, never a bare "three rounds" or "one at a
+# time", because those are ordinary narrative counts and flagging them floods.
+NUMWORD = (r'(?:one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|'
+           r'fifteen|twenty|thirty|forty|fifty|hundred|dozen)')
+WORDMAG = re.compile(r'\b%s[\s-]*(?:times|fold|×)\b' % NUMWORD, re.I)
+
+def sentences(p):
+    """A paragraph as sentences, with a leading list bullet / heading marker
+    stripped so a one-sentence bullet is still one unit."""
+    p = re.sub(r'^\s*[-*]\s+', '', p)
+    return [s.strip() for s in SENT_SPLIT.split(p) if s.strip()]
+
+def cmd_cited(f):
+    # Per SENTENCE, not per paragraph. The paragraph-wide version passed a
+    # paragraph that cited one figure and left a second one beside it
+    # uncited — the citation at the end of sentence two covered the number in
+    # sentence one for free. A citation only vouches for its own sentence.
+    hits = []
+    for p in prose(f):
+        for s in sentences(p):
+            if CITE.search(s):
+                continue
+            masked = s
+            for pat in ALLOWED:
+                masked = re.sub(pat, ' ', masked, flags=re.I)
+            if re.search(r'\$\s?\d', masked) or re.search(r'\d', masked) \
+               or WORDMAG.search(masked):
+                hits.append('uncited number in: "%s"' % ' '.join(s.split())[:110])
+    for h in hits:
+        print(h)
+    return 1 if hits else 0
+
+mode = sys.argv[1]
+rc = {'dup': cmd_dup, 'captain': cmd_captain, 'cited': cmd_cited}[mode](*sys.argv[2:])
+sys.exit(rc)
+PYGUARD
 }
 
 # ── 1. relative links in README.md / vision.md resolve to TRACKED files ─────
@@ -287,6 +439,51 @@ done < <(sed -n 's/^install_launcher[[:space:]]*"\([^"]*\)".*/\1/p' install.sh |
   && ok "README.md names every on-PATH launcher install.sh installs" \
   || bad "README.md never mentions launchers install.sh puts on PATH —$missing_launchers"
 
+# ── 9. vision.md is a STORY, and stays short enough to read in one sitting ─
+#    vision.md was 718 lines of second reference manual: it restated all eight
+#    Stages, the command list, the install steps, three worked examples and the
+#    board description, all of which the README and the SKILL.md files already
+#    own. A reader who wants reference has somewhere to go; a reader who wants
+#    the story had nowhere. The ceiling is what keeps it from drifting back.
+lines="$(wc -l <vision.md | tr -d ' ')"
+[ "$lines" -le "$VISION_MAX_LINES" ] \
+  && ok "vision.md is $lines lines (ceiling $VISION_MAX_LINES)" \
+  || bad "vision.md is $lines lines — over the $VISION_MAX_LINES-line ceiling; it is the story, not a second reference manual"
+
+# ── 10. README.md and vision.md do not say the same paragraph twice ────────
+#    Three subsections of the old vision.md were README prose verbatim. Two
+#    documents that repeat each other are one document maintained twice, and
+#    the copy that goes stale is always the one nobody is reading. The check
+#    is a 12-word shingle overlap, not an exact match, because the duplication
+#    that actually happened was a paste with three words changed.
+dup_out="$(docs_guard dup README.md vision.md 2>&1)"; dup_rc=$?
+[ "$dup_rc" -eq 0 ] \
+  && ok "README.md and vision.md share no paragraph (12-word shingle overlap)" \
+  || bad "README.md and vision.md duplicate prose — $(printf '%s' "$dup_out" | tr '\n' '|')"
+
+# ── 11. "the captain" is defined before its second use ─────────────────────
+#    The word appeared 16+ times in the old vision.md and was never once
+#    explained. It is LCARS's name for the person whose decisions the factory
+#    serves; a stranger reads it as Star Trek set dressing and skips it. Define
+#    it on first use with a plain "the person …" gloss, then use it freely.
+cap_out="$(docs_guard captain vision.md 2>&1)"; cap_rc=$?
+[ "$cap_rc" -eq 0 ] \
+  && ok "vision.md defines \"the captain\" on first use" \
+  || bad "vision.md: $(printf '%s' "$cap_out" | tr '\n' '|')"
+
+# ── 12. every count and every dollar figure in vision.md is CITED ──────────
+#    The story is only worth telling if its numbers are checkable. Every count
+#    ("2/2 tickets", "0 → 5") and every dollar figure must be followed, in the
+#    same paragraph or list item, by a CHANGELOG version (`2026.10.2`) or a
+#    markdown link to where the number is recorded.
+#    ALLOWED without a citation, because they are not claims about results:
+#    ISO dates (2026-10-11), bare years (2026), clock durations (2h06m, 4
+#    hours, 35 minutes), and a version string standing on its own.
+cite_out="$(docs_guard cited vision.md 2>&1)"; cite_rc=$?
+[ "$cite_rc" -eq 0 ] \
+  && ok "vision.md: every count / dollar figure cites a CHANGELOG version or a link" \
+  || bad "vision.md: uncited numbers — $(printf '%s' "$cite_out" | tr '\n' '|')"
+
 # ── 8. POSITIVE CONTROLS — prove the checks can actually go red ────────────
 TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
 printf 'see [the ledger](bugs.md)\n' >"$TMP/broken.md"
@@ -314,11 +511,97 @@ case "$ctl_bad" in *Autopilot*) ok "control: the id check rejects an id with cap
   *) bad "control: an id with capitals was NOT rejected" ;; esac
 case "$ctl_bad" in *day-zero*) bad "control: the id check rejected a legitimate hyphenated id" ;;
   *) ok "control: the id check accepts the convention it is enforcing (day-zero)" ;; esac
+# 9–12 controls — each prose guard must be able to go red, and must stay green
+# on the shape it is meant to allow. Same docs_guard the real pages run.
+SHARED="One sentence that is quite long and deliberately repeated word for word in both of these files. A second sentence. A third sentence."
+printf '# A\n\n%s\n' "$SHARED" >"$TMP/a.md"
+printf '# B\n\n%s\n' "$SHARED" >"$TMP/b.md"
+docs_guard dup "$TMP/a.md" "$TMP/b.md" >/dev/null 2>&1 \
+  && bad "control: the duplicate-paragraph guard did NOT detect an identical paragraph" \
+  || ok "control: the duplicate-paragraph guard detects an identical paragraph"
+printf '# A\n\nAlpha beta gamma delta epsilon. Zeta eta theta. Iota kappa lambda.\n' >"$TMP/c.md"
+printf '# B\n\nEntirely different words here about something else. Second one. Third one.\n' >"$TMP/d.md"
+docs_guard dup "$TMP/c.md" "$TMP/d.md" >/dev/null 2>&1 \
+  && ok "control: the duplicate-paragraph guard leaves two unrelated files alone" \
+  || bad "control: the duplicate-paragraph guard false-flagged two unrelated files"
+
+printf 'The captain decides.\n\nLater the captain decides again.\n' >"$TMP/nocap.md"
+docs_guard captain "$TMP/nocap.md" >/dev/null 2>&1 \
+  && bad "control: the captain guard did NOT detect an undefined second use" \
+  || ok "control: the captain guard detects \"captain\" used twice undefined"
+printf 'The captain — the person whose decisions this serves — decides.\n\nLater the captain decides again.\n' >"$TMP/okcap.md"
+docs_guard captain "$TMP/okcap.md" >/dev/null 2>&1 \
+  && ok "control: the captain guard accepts a first use that is glossed" \
+  || bad "control: the captain guard rejected a properly glossed first use"
+
+printf 'It found 5 bugs and filed 3 of them.\n' >"$TMP/uncited.md"
+docs_guard cited "$TMP/uncited.md" >/dev/null 2>&1 \
+  && bad "control: the citation guard did NOT detect an uncited count" \
+  || ok "control: the citation guard detects an uncited count"
+printf 'It found 5 bugs and filed 3 of them (2026.10.2).\n\nOn 2026-10-11 it ran for 2h06m.\n' >"$TMP/cited.md"
+docs_guard cited "$TMP/cited.md" >/dev/null 2>&1 \
+  && ok "control: the citation guard accepts a cited count, a date and a duration" \
+  || bad "control: the citation guard rejected a cited count / a bare date / a duration"
+
+# 12b. MIXED PARAGRAPH — one cited figure and one uncited figure, together.
+#      This is the shape that got through: the guard reasoned per PARAGRAPH, so
+#      the version string vouching for sentence one also vouched for the bare
+#      number in sentence two. A citation only covers its own sentence.
+printf 'The estimator undercalled by roughly six times (2026.7.20). Today it is out by 4 to 10 times.\n' >"$TMP/mixed.md"
+mixed_out="$(docs_guard cited "$TMP/mixed.md" 2>&1)"; mixed_rc=$?
+{ [ "$mixed_rc" -ne 0 ] && printf '%s' "$mixed_out" | grep -q '4 to 10'; } \
+  && ok "control: the citation guard detects an uncited figure beside a cited one" \
+  || bad "control: an uncited figure sharing a paragraph with a cited one was NOT detected (rc=$mixed_rc: $mixed_out)"
+{ [ "$mixed_rc" -ne 0 ] && ! printf '%s' "$mixed_out" | grep -q 'roughly six times (2026.7.20).$'; } \
+  && ok "control: it does not also flag the sentence that carries the citation" \
+  || bad "control: the citation guard flagged the properly cited sentence too ($mixed_out)"
+
+# 12d. THE SHAPE THAT ACTUALLY SHIPPED — a magnitude written in words. The
+#      sentence that got through said the estimator was low "by something
+#      between four and ten times" with no citation; it carries no digit at
+#      all, so no digits-only sweep could ever have seen it.
+printf 'It under-reads spend by something between four and ten times.\n' >"$TMP/wordmag.md"
+docs_guard cited "$TMP/wordmag.md" >/dev/null 2>&1 \
+  && bad "control: the citation guard did NOT detect an uncited magnitude written in words" \
+  || ok "control: the citation guard detects an uncited magnitude written in words"
+printf 'It under-read spend by roughly six times (2026.7.20).\n' >"$TMP/wordmagok.md"
+docs_guard cited "$TMP/wordmagok.md" >/dev/null 2>&1 \
+  && ok "control: a word magnitude WITH a citation is left alone" \
+  || bad "control: the citation guard rejected a properly cited word magnitude"
+printf 'It was removed after three rounds, and one worker at a time ran on four benches.\n' >"$TMP/narr.md"
+docs_guard cited "$TMP/narr.md" >/dev/null 2>&1 \
+  && ok "control: ordinary narrative counts in words are NOT flagged (no flood)" \
+  || bad "control: the word sweep flooded on ordinary narrative counts"
+
+# 12c. A version string / a dollar figure must NOT be split into two sentences
+#      by its own full stops, or every one of them reads as uncited.
+printf 'It cost $4.86 against $150.07 actual, recorded in 2026.7.20 and unchanged since.\n' >"$TMP/dots.md"
+docs_guard cited "$TMP/dots.md" >/dev/null 2>&1 \
+  && ok "control: dots inside \$4.86 and 2026.7.20 do not split the sentence" \
+  || bad "control: the sentence splitter broke on a decimal point or a version string"
+
 n="$(grep -cEi 'session [0-9]|\.dev/|grill' "$TMP/leaky.md")"
 [ "$n" -ge 1 ] \
   && ok "control: the vocabulary patterns do match internal prose" \
   || bad "control: the vocabulary patterns matched nothing in a deliberately leaky file"
 
 echo
+if python3 - <<'PY'
+import json, pathlib, re
+doc = pathlib.Path("skills/lcars-eeh/HOLOGRAM-COMMAND-MODE.md").read_text()
+section = doc.split("## 4. ", 1)[1].split("## 4a.", 1)[0]
+examples = re.findall(
+    r"curl[^\n]+/api/holodeck/(start|open|duplicate)\s*\\\n"
+    r"\s*-H[^\n]*?(?:\\\n\s*)?-d '([^']+)'", section)
+assert sorted(name for name, _ in examples) == ["duplicate", "open", "start"], examples
+for name, payload in examples:
+    assert json.loads(payload).get("engine") == "copilot", (name, payload)
+PY
+then
+  ok "S314: all three holodeck session curl examples explicitly select copilot"
+else
+  bad "S314: all three holodeck session curl examples explicitly select copilot"
+fi
+
 printf 'docs-links: %d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

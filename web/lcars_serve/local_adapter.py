@@ -2023,7 +2023,20 @@ class LocalAdapter(object):
         # the card already is (stage from the label, S191 — never moved). The
         # fact is the drive's RECORDED `error` event; absent (not null) for every
         # healthy mission, and hidden while a new run is live.
-        failure = None if running else _stage_failure(events)
+        failure = None if running else _stage_failure(events, state)
+        # S312 fix round 1 — AND THE SECOND WITNESS, consulted ONLY for a mission
+        # that would otherwise be reported failed. S312's record used to be
+        # cleared when the next attempt STARTED, which is what hid it when a
+        # drive was killed mid-stage; it is now cleared when a stage SUCCEEDS, so
+        # the stale record is on disk for as long as a retry runs. `running`
+        # (driver.lock) covers every `drive`, but `acquire_driver_lock` is called
+        # from cmd_drive alone — a bare `lcars run <stage>` works a mission with
+        # no lock, and before this round the stage_start clear is what kept that
+        # path from reading as failed. So the live worker-adapter is read too,
+        # exactly as the ECH's `stalled` reads it. Lazy, so a healthy board pays
+        # nothing: no candidate failure, no process table.
+        if failure is not None and _worker_adapter_running(d):
+            failure = None
         if failure is not None:
             card["failure"] = failure
         # S114: additive — only present `liveness` while a live worker's sidecar
@@ -2251,7 +2264,33 @@ def _inflight_stage(events):
 # history, never a surfaced failure. Returns
 # {stage, sentence, log} or None. Reads the event TYPE and fields only — never
 # the sentence's words. Crash-proof: a malformed row is skipped.
-def _stage_failure(events):
+def _stage_failure(events, state=None):
+    # S312 — MISSION STATE FIRST. The mission that sat dead for 4h49m had its
+    # failure in the event log and `"stage": "implement"` in state.json, and
+    # every reader that asks mission state "how is this mission?" saw healthy
+    # work. S312 writes the fact where those readers look — failedStage /
+    # failedAt / failedReason, beside `awaitingHuman`, which is its precedent —
+    # and this prefers that record, falling back to the event log for every
+    # mission filed before it. Same `failure` shape out either way, so the front
+    # end is unchanged: {stage, sentence, log}.
+    #
+    # NO DRIFT BETWEEN THE TWO. The supersede rule is identical because it is
+    # the same rule: run.sh's emit_event clears the state.json record on
+    # stage_start / stage_done / gate, which is exactly what the loop below
+    # does to the event-log one.
+    if isinstance(state, dict):
+        fstage = state.get("failedStage")
+        if isinstance(fstage, str) and fstage.strip():
+            reason = state.get("failedReason")
+            flog = state.get("failedLog")
+            return {
+                "stage": board.normalise_stage(fstage),
+                "sentence": reason if isinstance(reason, str) else "",
+                # `log` keeps the event lane's contract exactly: a real path, or
+                # None. A record written by a run that produced no failure log
+                # has no failedLog key at all.
+                "log": flog if isinstance(flog, str) and flog.strip() else None,
+            }
     failure = None
     for ev in (events or []):
         if not isinstance(ev, dict):
@@ -3198,6 +3237,40 @@ def _liveness(mission_dir, running, now):
         "quietSeconds": quiet_seconds,
     }
     return out
+
+
+def _worker_adapter_running(mission_dir):
+    """Is a `worker-adapter` process working out of THIS mission's dir right now?
+
+    run.sh spawns every cold worker as
+    `bash worker-adapter.sh spawn <cli> <role> <outdir> <prompt>`, and <outdir> is
+    always under .git/lcars/missions/<id>/, so the mission is identified by the
+    adapter's OWN ARGV rather than guessed. Mirrors mission_worker_adapter_live in
+    skills/lcars-eeh/ech.sh — one question, one shape of answer, so `stalled`,
+    `lcars status` and this card cannot disagree about whether work is in flight.
+
+    THE DIRECTION IS DELIBERATE. This probe can only ever BUY SILENCE: a wrong
+    `True` delays a failure report until the worker exits, a wrong `False` costs
+    nothing at all. It can never invent a failure. That asymmetry is why
+    inferring from the process table is acceptable here while the `drive` record
+    stays the thing that is RECORDED.
+
+    Crash-proof: no `ps`, no permission, no match -> False (never a raise, and
+    never silence bought by an error).
+    """
+    mid = os.path.basename(os.path.normpath(mission_dir or ""))
+    if not mid:
+        return False
+    try:
+        out = subprocess.run(["ps", "-eo", "pid=,command="],
+                             capture_output=True, text=True, timeout=10).stdout or ""
+    except Exception:
+        return False
+    token = "missions/%s/" % mid
+    for line in out.splitlines():
+        if "worker-adapter" in line and token in line:
+            return True
+    return False
 
 
 def _driver_running(mission_dir):

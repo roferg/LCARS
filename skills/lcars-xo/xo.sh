@@ -35,10 +35,9 @@
 #   config.json  "numberOne": {"enabled": true, "engine": "copilot"}   — ONE LINE
 #   state.json   "numberOne": {"status": …, "engine": …, "since": …}   — AT THE TOP
 #
-# WHY ONE LINE IN config.json. `lcars_config_merge` preserves an existing raw
-# value by capturing the tail of the line its key sits on (lcars-common.sh), so
-# a pretty-printed object would be truncated by the next `lcars update` and the
-# config left invalid. `numberOne` is in DESIRED_CONFIG for the matching reason:
+# Config writers now parse multiline values and validate atomic replacements.
+# Number One still emits compact objects for the lightweight state readers.
+# `numberOne` is in DESIRED_CONFIG because
 # a key absent from that list is DELETED by the merge — the failure S196 paid
 # for with cloneId.
 #
@@ -61,6 +60,73 @@ SELF="${BASH_SOURCE[0]}"
 SKILL_DIR="$(cd "$(dirname "$SELF")" && pwd)"
 
 die() { printf 'lcars xo: %s\n' "$1" >&2; exit 1; }
+
+# ===========================================================================
+# A FLAG WITH NO VALUE IS A REFUSAL, NEVER AN INFINITE LOOP (S319, ledgered D13)
+# ===========================================================================
+# Every option arm in this file used to take its value with `${2:-}` and then
+# step over it with a two-place shift whose failure was swallowed by `|| true`,
+# and with the flag LAST on the line that is a HANG. bash's `shift 2` FAILS when
+# fewer than two arguments remain — it leaves "$@" exactly as it found it — and
+# `|| true` swallows the failure, so the enclosing `while [ $# -gt 0 ]` re-reads
+# the same flag forever. MEASURED 2026-10-23: `lcars xo on --engine "$E"` with
+# $E unset pegged a core, printed NOTHING AT ALL, and never returned. 4 of 4
+# verbs tried behaved identically; there were EIGHTEEN such arms.
+#
+# A hang is the most expensive failure an unattended run can have, because a
+# blocked run and a healthy quiet one look identical from outside — and this one
+# was one unset variable away in a command the captain types by hand.
+#
+# `xo_argval` is the cure, and three choices in it are deliberate:
+#
+#  1. IT IS NOT A COMMAND SUBSTITUTION. `die` has to exit the SHELL, not a
+#     sub-shell whose status every one of eighteen call sites would have to
+#     remember to check. So it publishes the value in $XO_ARGVAL instead.
+#  2. IT IS HANDED "${@:2:1}", WHICH EXPANDS TO NOTHING when the flag is last.
+#     That is how it tells "no value at all" from "an empty value" — `${2:-}`
+#     cannot, because it reports both as the empty string. And because it has
+#     already refused by the time control returns, the plain `shift 2` after it
+#     can never be the failing one.
+#  3. AN EMPTY, BLANK OR FLAG-SHAPED VALUE IS THE SAME MISTAKE AS A MISSING ONE.
+#     `xo on --engine ""` used to exit 0, engage on the PREVIOUSLY recorded
+#     engine, and say nothing about the engine it had been asked for — the exact
+#     class S309 cured in `update.sh` (its D1): something did not happen and
+#     nothing said so. And `xo on --engine --sweep` refused with "'--sweep' is
+#     not an engine", naming the one token that was NOT the mistake; the flag
+#     the captain's empty variable emptied is `--engine`, so that is the one
+#     named now.
+XO_ARGVAL=""
+xo_argval() { # <flag> [value] — sets XO_ARGVAL, or refuses naming <flag>
+  local flag="$1"
+  [ "$#" -ge 2 ] \
+    || die "$flag was given no value — nothing followed it. Write \`$flag <value>\`; if the value came from a variable, that variable is empty. Nothing was changed."
+  case "$2" in
+    -*) die "$flag was given no value — '$2' is another option, not a value. Write \`$flag <value>\`; if the value came from a variable, that variable is empty. Nothing was changed." ;;
+  esac
+  case "$2" in
+    *[![:space:]]*) : ;;
+    *) die "$flag was given an empty value. Write \`$flag <value>\`; if the value came from a variable, that variable is empty. Nothing was changed." ;;
+  esac
+  XO_ARGVAL="$2"
+}
+
+# THE `=` FORM HAS THE SAME HOLE, minus the hang. `--engine=` carries its value
+# with the flag, so it can never spin — but `lcars xo on --engine=$E` with $E
+# unset is an EMPTY value, and at HEAD that exited 0, engaged on the
+# PREVIOUSLY RECORDED engine, and said nothing about the engine it had been
+# asked for. Same silent drop, same refusal.
+#
+# A FLAG-SHAPED VALUE IS LEFT ALONE HERE, deliberately: carrying a value that
+# begins with `-` is the whole reason the `=` form exists, so `--because=-ish`
+# is a value, not a mistake. Only blankness is refused.
+xo_argval_inline() { # <flag> <value lifted from --flag=value>
+  local flag="$1"
+  case "$2" in
+    *[![:space:]]*) : ;;
+    *) die "$flag= was given an empty value. Write \`$flag=<value>\`; if the value came from a variable, that variable is empty. Nothing was changed." ;;
+  esac
+  XO_ARGVAL="$2"
+}
 
 # The shared library: the engine detector (S195) and the config primitives. A
 # MISSING library is fatal here and deliberately so — unlike the light lock,
@@ -86,7 +152,7 @@ case "$GIT_DIR" in /*) : ;; *) GIT_DIR="$PWD/$GIT_DIR" ;; esac
 LCARS_DIR="$GIT_DIR/lcars"
 CONFIG="$LCARS_DIR/config.json"
 MISSIONS_DIR="$LCARS_DIR/missions"
-[ -d "$LCARS_DIR" ] || die "this repo is not initialized for LCARS — run \`lcars init\` first."
+[ -f "$CONFIG" ] || die "this repo is not initialized for LCARS — invoke the \`lcars init\` skill first, or run \`bash $(printf '%q' "$SKILL_DIR/../lcars-init/init.sh")\` from this repo. Number One has not been engaged."
 
 # TWO CLOCKS, ON PURPOSE (fix round 1, D4).
 #
@@ -1469,12 +1535,67 @@ engine_at_row() {
   return 1
 }
 
-pick_engine() {
-  local tty=0 avail def ans e mark n row
+pick_engine() { # [for-sweep 0|1] — the engine, or a non-zero refusal
+  local for_sweep="${1:-0}" tty=0 avail def ans e mark n row recorded LOST HERE
   { [ -t 0 ] || [ "${LCARS_ASSUME_TTY:-}" = "1" ]; } && tty=1
   avail="$(lcars_available_engines)"
   if [ "$tty" -eq 0 ]; then
-    die "no terminal to ask at, and no \`--engine\` given — Number One is not engaged. Re-run as \`lcars xo on --engine <engine>\`$( [ -n "$avail" ] && printf ' (installed here: %s)' "$(printf '%s' "$avail" | tr '\n' ' ' | sed 's/ *$//')")."
+    # ── S309: READ THE RECORD BEFORE REFUSING ────────────────────────────
+    # MEASURED on the 21–22 Oct 2026 hands-off run: this refused on an
+    # unattended `lcars xo on --sweep` even though config.json ALREADY held
+    # `numberOne {enabled: true, engine: copilot}` from an earlier
+    # `lcars xo on --engine copilot`. The fact was recorded and this function
+    # re-asked for it. Nothing was reviewed, and a seat that did not read the
+    # text believed the review had happened — a code review silently skipped
+    # before a merge.
+    #
+    # IT IS `cfg_engine`, THE RECORD, AND DELIBERATELY NOT
+    # `lcars_xo_default_engine`. That helper falls back to the first INSTALLED
+    # engine of the preference order, so it would answer on EVERY machine and
+    # this branch could never refuse at all — which would replace a loud
+    # refusal with an unattended engine nobody chose. A pin that is not
+    # installed is skipped here for the same reason every other picker skips
+    # one: engaging an engine that cannot run is not engaging anything.
+    recorded="$(cfg_engine)"
+    if [ -n "$recorded" ] && lcars_engine_available "$recorded"; then
+      printf '%s' "$recorded"; return 0
+    fi
+    # ── AND THE REFUSAL SAYS WHAT DID NOT HAPPEN ─────────────────────────
+    # The old sentence named the setting ("Number One is not engaged"), which
+    # reads as a config detail. On the sweep path what was actually lost is a
+    # REVIEW, so the message says that in those words — the whole finding is
+    # that a skipped review was indistinguishable from a completed one.
+    #
+    # ── AND IT DOES NOT DENY A RECORD IT JUST READ (fix round 1, D3) ──────
+    # MEASURED on the shipped fix: with `numberOne {"enabled": true, "engine":
+    # "copilot"}` on disk and copilot absent from PATH, this refused with "no
+    # engine is recorded for Number One" while the file plainly held the engine.
+    # Every critical property was right — non-zero, config untouched, nothing
+    # swept, the words NO REVIEW HAPPENED — but the DIAGNOSIS sent the reader
+    # round in circles: he then runs `lcars xo on --engine copilot`, which dies
+    # with the correct message. "No record" and "recorded, but not installed
+    # here" are different facts, so they get different sentences.
+    LOST=" — NO REVIEW HAPPENED$( [ "$for_sweep" = 1 ] && printf ', the sweep did not run and no mission was reviewed'; )."
+    HERE="$( [ -n "$avail" ] && printf ' (installed here: %s)' "$(printf '%s' "$avail" | tr '\n' ' ' | sed 's/ *$//')")"
+    #
+    # ── AND A GARBAGE RECORD IS NOT A MISSING INSTALL (fix round 2, D16) ──
+    # MEASURED on the shipped fix: `numberOne {"engine": "gpt5"}` — a name
+    # LCARS does not drive at all — took the "not installed here" sentence
+    # below and produced `(looked for '')`, because there IS no binary to look
+    # for, plus "install gpt5", which points at something that does not exist.
+    # The actual fault was never said. So the NAME is checked before the
+    # availability branch is chosen: "not an engine" and "an engine that is not
+    # here" are different facts and get different sentences, exactly as
+    # "no record" and "a record" already do. The words come from
+    # `lcars update --engine`, which has carried the right sentence all along.
+    if [ -n "$recorded" ]; then
+      case " $LCARS_ENGINES " in
+        *" $recorded "*) : ;;
+        *) die "'$recorded' is recorded for Number One but is not an engine LCARS drives — it knows $(printf '%s' "$LCARS_ENGINES" | sed 's/ / and /'), and there is no terminal to ask at$LOST Record an engine LCARS drives with \`lcars xo on --engine <engine>\`, or pass \`--engine <engine>\` on this command$HERE." ;;
+      esac
+      die "'$recorded' is recorded for Number One but is not on this machine (looked for '$(lcars_engine_bin "$recorded")'), and there is no terminal to ask at$LOST The record stands — install $recorded, or pass \`--engine <engine>\` on this command$HERE."
+    fi
+    die "no engine is recorded for Number One and there is no terminal to ask at$LOST Record an engine with \`lcars xo on --engine <engine>\`, or pass \`--engine <engine>\` on this command$HERE."
   fi
   # THE DEFAULT IS NOT DECIDED HERE. `lcars_xo_default_engine` (lcars-common.sh)
   # is the one place it is decided, and the daemon spawns the same function to
@@ -1548,10 +1669,10 @@ cmd_on() {
   local engine="" model="" target="" sweep=""
   while [ $# -gt 0 ]; do
     case "$1" in
-      --engine)   engine="${2:-}"; shift 2 || true ;;
-      --engine=*) engine="${1#--engine=}"; shift ;;
-      --model)    model="${2:-}";  shift 2 || true ;;
-      --model=*)  model="${1#--model=}"; shift ;;
+      --engine)   xo_argval "$1" "${@:2:1}"; engine="$XO_ARGVAL"; shift 2 ;;
+      --engine=*) xo_argval_inline --engine "${1#--engine=}"; engine="$XO_ARGVAL"; shift ;;
+      --model)    xo_argval "$1" "${@:2:1}"; model="$XO_ARGVAL";  shift 2 ;;
+      --model=*)  xo_argval_inline --model "${1#--model=}"; model="$XO_ARGVAL"; shift ;;
       # SPENDING, ASKED FOR OR DECLINED (S240 fix round 4, D1). Since S241
       # `--sweep` is the OPT-IN that starts the catch-up, and `--no-sweep` is
       # the default said out loud. Both still work, in both directions.
@@ -1624,7 +1745,9 @@ cmd_on() {
     return 0
   fi
 
-  [ -n "$engine" ] || engine="$(pick_engine)" || exit $?
+  # S309 — the picker is told whether a SWEEP was asked for, so its refusal can
+  # name what did not happen (a review) rather than only what is not set.
+  [ -n "$engine" ] || engine="$(pick_engine "$sweep")" || exit $?
   lcars_engine_available "$engine" \
     || die "'$engine' is not an engine on this machine — nothing was engaged."
   [ -n "$model" ] || model="$(cfg_model)"
@@ -2535,8 +2658,8 @@ cmd_answer() {
   local target="" id dir st pending stage etype
   while [ $# -gt 0 ]; do
     case "$1" in
-      --mission)   target="${2:-}"; shift 2 || true ;;
-      --mission=*) target="${1#--mission=}"; shift ;;
+      --mission)   xo_argval "$1" "${@:2:1}"; target="$XO_ARGVAL"; shift 2 ;;
+      --mission=*) xo_argval_inline --mission "${1#--mission=}"; target="$XO_ARGVAL"; shift ;;
       -*)          die "unknown option: $1" ;;
       *)           target="$1"; shift ;;
     esac
@@ -4901,16 +5024,16 @@ cmd_evaluate() {
   local target="" again=0 because=""
   while [ $# -gt 0 ]; do
     case "$1" in
-      --mission)   target="${2:-}"; shift 2 || true ;;
-      --mission=*) target="${1#--mission=}"; shift ;;
+      --mission)   xo_argval "$1" "${@:2:1}"; target="$XO_ARGVAL"; shift 2 ;;
+      --mission=*) xo_argval_inline --mission "${1#--mission=}"; target="$XO_ARGVAL"; shift ;;
       # S239 — THE RE-LOOK. Feedback #5: "with no logs filed, there is no way to
       # re-score". A mission scored LOW only because no testCommand was recorded
       # (miss #1) could never be looked at again once the blocker was cleared,
       # because `cmd_recheck` needs FILED LOGS and `cmd_evaluate` is idempotent
       # on evaluatedAt. That is the catch-22 this flag ends. It needs NO logs.
       --again)     again=1; shift ;;
-      --because)   because="${2:-}"; shift 2 || true ;;
-      --because=*) because="${1#--because=}"; shift ;;
+      --because)   xo_argval "$1" "${@:2:1}"; because="$XO_ARGVAL"; shift 2 ;;
+      --because=*) xo_argval_inline --because "${1#--because=}"; because="$XO_ARGVAL"; shift ;;
       -*)          die "unknown option: $1" ;;
       *)           target="$1"; shift ;;
     esac
@@ -6309,8 +6432,8 @@ cmd_file_logs() {
   local target=""
   while [ $# -gt 0 ]; do
     case "$1" in
-      --mission)   target="${2:-}"; shift 2 || true ;;
-      --mission=*) target="${1#--mission=}"; shift ;;
+      --mission)   xo_argval "$1" "${@:2:1}"; target="$XO_ARGVAL"; shift 2 ;;
+      --mission=*) xo_argval_inline --mission "${1#--mission=}"; target="$XO_ARGVAL"; shift ;;
       -*)          die "unknown option: $1" ;;
       *)           target="$1"; shift ;;
     esac
@@ -6390,8 +6513,8 @@ cmd_recheck() {
   local target=""
   while [ $# -gt 0 ]; do
     case "$1" in
-      --mission)   target="${2:-}"; shift 2 || true ;;
-      --mission=*) target="${1#--mission=}"; shift ;;
+      --mission)   xo_argval "$1" "${@:2:1}"; target="$XO_ARGVAL"; shift 2 ;;
+      --mission=*) xo_argval_inline --mission "${1#--mission=}"; target="$XO_ARGVAL"; shift ;;
       -*)          die "unknown option: $1" ;;
       *)           target="$1"; shift ;;
     esac
@@ -6913,11 +7036,11 @@ cmd_report() {
       # out. Marking one thing dealt with is not the same act as saying "I
       # have read the whole report", so it is not the same flag.
       # S223 fix round 1 (D5): REPEATABLE — ✓ Seen all N names its N keys.
-      --seen-entry)   [ -n "${2:-}" ] && seen_entries+=("$2"); shift 2 || true ;;
-      --seen-entry=*) seen_entries+=("${1#--seen-entry=}"); shift ;;
+      --seen-entry)   xo_argval "$1" "${@:2:1}"; seen_entries+=("$XO_ARGVAL"); shift 2 ;;
+      --seen-entry=*) xo_argval_inline --seen-entry "${1#--seen-entry=}"; seen_entries+=("$XO_ARGVAL"); shift ;;
       # S223: ✓ Seen all N — every entry of ONE mission still in the news.
-      --seen-mission)   seen_mission="${2:-}"; shift 2 || true ;;
-      --seen-mission=*) seen_mission="${1#--seen-mission=}"; shift ;;
+      --seen-mission)   xo_argval "$1" "${@:2:1}"; seen_mission="$XO_ARGVAL"; shift 2 ;;
+      --seen-mission=*) xo_argval_inline --seen-mission "${1#--seen-mission=}"; seen_mission="$XO_ARGVAL"; shift ;;
       -*)     die "unknown option: $1" ;;
       *)      target="$1"; shift ;;
     esac
@@ -6962,8 +7085,8 @@ case "${1:-status}" in
     _sm=""; _sw="$PWD"
     while [ $# -gt 0 ]; do
       case "$1" in
-        --mission) _sm="${2:-}"; shift 2 || true ;;
-        --in) _sw="${2:-}"; shift 2 || true ;;
+        --mission) xo_argval "$1" "${@:2:1}"; _sm="$XO_ARGVAL"; shift 2 ;;
+        --in) xo_argval "$1" "${@:2:1}"; _sw="$XO_ARGVAL"; shift 2 ;;
         *) shift ;;
       esac
     done
@@ -6981,9 +7104,9 @@ case "${1:-status}" in
     _um=""; _ushots=""; _uout=""
     while [ $# -gt 0 ]; do
       case "$1" in
-        --mission) _um="${2:-}"; shift 2 || true ;;
-        --shots)   _ushots="${2:-}"; shift 2 || true ;;
-        --out)     _uout="${2:-}"; shift 2 || true ;;
+        --mission) xo_argval "$1" "${@:2:1}"; _um="$XO_ARGVAL"; shift 2 ;;
+        --shots)   xo_argval "$1" "${@:2:1}"; _ushots="$XO_ARGVAL"; shift 2 ;;
+        --out)     xo_argval "$1" "${@:2:1}"; _uout="$XO_ARGVAL"; shift 2 ;;
         *) shift ;;
       esac
     done
@@ -7010,8 +7133,8 @@ case "${1:-status}" in
     _cm=""; _ch=0
     while [ $# -gt 0 ]; do
       case "$1" in
-        --mission) _cm="${2:-}"; shift 2 || true ;;
-        --hold)    _ch="${2:-0}"; shift 2 || true ;;
+        --mission) xo_argval "$1" "${@:2:1}"; _cm="$XO_ARGVAL"; shift 2 ;;
+        --hold)    xo_argval "$1" "${@:2:1}"; _ch="$XO_ARGVAL"; shift 2 ;;
         *) shift ;;
       esac
     done
@@ -7030,8 +7153,8 @@ case "${1:-status}" in
     _dpf=""; _dlog="/dev/null"
     while [ $# -gt 0 ]; do
       case "$1" in
-        --pidfile) _dpf="${2:-}"; shift 2 || true ;;
-        --log)     _dlog="${2:-/dev/null}"; shift 2 || true ;;
+        --pidfile) xo_argval "$1" "${@:2:1}"; _dpf="$XO_ARGVAL"; shift 2 ;;
+        --log)     xo_argval "$1" "${@:2:1}"; _dlog="$XO_ARGVAL"; shift 2 ;;
         --)        shift; break ;;
         *)         break ;;
       esac

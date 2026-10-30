@@ -756,7 +756,9 @@ if [ "${LCARS_XO_CHANNEL_LIVE:-0}" = "1" ] && [ -n "$REAL_COPILOT" ]; then
   # so the live control sends exactly that.
   LIVE_MODEL="$(LCARS_WORKER_BIN=copilot bash "$RUNSH" resolve-stage-model numberOne 2>/dev/null \
                  | sed -n 's/.*model=//p' | tail -1)"
-  [ -n "$LIVE_MODEL" ] && [ "$LIVE_MODEL" != "-" ] || LIVE_MODEL=claude-opus-4.8
+  # 2026-10-16: the retired claude-opus-4.8 would make this live control fail
+  # for the wrong reason, so the last-resort fallback names the live opus id.
+  [ -n "$LIVE_MODEL" ] && [ "$LIVE_MODEL" != "-" ] || LIVE_MODEL=claude-opus-5.5
   LOUT="$TMPROOT/live.out"
   ( cd "$LIVE" && "$REAL_COPILOT" -p "Use your search tool to find which file in this directory contains the words 'mix-ratio line'. Then reply with exactly this, and nothing between the two marker lines but JSON:
 ${BEGIN_V}

@@ -18,34 +18,259 @@ checks, writing bug PRDs and the merge call. Everything sequenceable is
 > hits an LCARS bug it works around it with another verb and ledgers it, or it
 > stops and asks. Fixing LCARS is `lcars eeh` § 2, under `ORCHESTRATION.md`.
 
-## Unattended Copilot setup: trust the working directory before launch
+## Unattended Copilot setup: no blanket trust is required
 
-For an unattended Copilot EEH or ECH run, set **`COPILOT_ALLOW_ALL=true`
-in the launching environment, with exactly the string `true`**:
+**An unattended EEH or ECH run does not require `COPILOT_ALLOW_ALL=true`, and
+nothing here asks you — or the run — to arrange blanket trust.** Preflight
+reports whatever the environment happens to carry and proceeds either way. If
+your environment already carries the variable it is honoured; if it does not,
+start the run anyway.
+
+**Measured 2026-10-16:** a seat running the real pipeline stripped the variable
+from every child call it made (`env -u COPILOT_ALLOW_ALL`, 21 times) and the
+build still completed and merged. Blanket trust is not load-bearing for the
+work. Requiring it, by contrast, broke three seat models before they began: one
+refused on policy rather than rely on it, and another was blocked by its own
+safety classifier for being instructed to self-grant that authority and to
+launch a fully-trusted agent. A prerequisite that stops the engines meant to
+satisfy it is the fault, not the fix.
+
+**What the variable actually does, for the record.** `--allow-all-tools`
+auto-approves tools; it does not trust the working directory.
+`COPILOT_ALLOW_ALL=true` additionally trusts that directory, and only that exact
+string does — `1`, `yes`, `on` and `y` auto-approve tools like the flag.
+**Trust is executable configuration, not just permission to read files:**
+trusting a directory also loads its skills, plugins, MCP servers and hooks,
+**including hooks that run shell commands.** That is a decision for the person
+who owns the environment to make, in a repository whose provenance they control,
+before any run starts — never something a run grants itself, and never
+appropriate in a repository of unknown provenance.
+
+**Measured 2026-10-13, and still true:** with `--allow-all-tools` set and the
+directory untrusted, one EEH round was refused on every command, including
+read-only commands, with
+`Permission denied because no interactive user response was available.` Four
+rounds had worked before the fifth failed without warning, and from outside a
+blocked run and a healthy idle run look identical. So if commands start coming
+back refused, that is the shape of it — stop and say so rather than retrying;
+it is not something the run can fix from the inside.
+
+**What to launch the seat with, then.** The capability `COPILOT_ALLOW_ALL=true`
+would hand over in one switch, named directory by named directory instead, and
+arriving from outside **before the seat starts** — so the run is never asked to
+grant itself anything:
 
 ```bash
-export COPILOT_ALLOW_ALL=true
-# Launch Copilot from the repository whose provenance you control.
+# `lcars launch` deploys to a SIBLING of the repo, so that one directory has to
+# be named too. It may not exist at launch time — a grant for a directory that
+# does not exist is not a grant — so create it first, exactly as the Holodeck
+# sidecar's own grant does.
+LAUNCH_ROOT="$(dirname "$(git rev-parse --show-toplevel)")/.lcars-launch"
+mkdir -p "$LAUNCH_ROOT"
+# `install.sh` puts the `lcars-ech` / `lcars-eeh` launchers on PATH in its bin
+# destination, and the seat runs them constantly — so name that directory too.
+# Resolved from install.sh's own variable, never a hardcoded /Users/<name>.
+LAUNCHER_DIR="${LCARS_BIN_DEST:-$HOME/.local/bin}"
+# § 6.1 requires driving a REAL headless browser, and this grant named none —
+# so the seat asked for one, was refused, and then WORKED DOWN A LIST, asking
+# again for the next name (measured 2026-10-19: Google Chrome refused, then
+# Chromium). Resolve exactly ONE, BY A CHECK rather than a hardcoded path — a
+# stranger's machine may not have the browser this one has — and grant the
+# directory it was found in. Google Chrome first; the first match wins and no
+# second browser is ever tried. The two `command -v` probes deliberately do NOT
+# discard to `/dev/null` — a discard inside a `$(...)` is the stall § 6's rule
+# forbids, and this file does not model what it forbids. `command -v` is silent
+# when it finds nothing, so there is nothing to discard.
+CHROME_BIN=""
+for c in "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" \
+         "/Applications/Chromium.app/Contents/MacOS/Chromium" \
+         "$(command -v google-chrome)" \
+         "$(command -v chromium)"; do
+  [ -n "$c" ] && [ -x "$c" ] && { CHROME_BIN="$c"; break; }
+done
+BROWSER_DIR="${CHROME_BIN%/*}"
+# Nothing found: § 6.1 cannot drive a browser on this machine. Say so, and fall
+# back to a directory that is granted below anyway, so the launch line stays
+# valid instead of failing on an empty --add-dir.
+[ -n "$CHROME_BIN" ] || { echo "WARNING: no Chrome-family browser found; § 6.1 cannot drive one" >&2; BROWSER_DIR=/tmp; }
+# `/dev` — the device directory, and `/dev/null` in particular, which
+# essentially every shell redirect touches. It was NOT granted, so a seat that
+# composed its own discard to `/dev/null` inside a `$(...)` froze on
+# `Allow path access` for the path `/dev/null)` — closing parenthesis included,
+# because the permission layer's path extractor took the `)` as part of the
+# path — and the run was over, twenty minutes and a whole PR in (measured
+# 2026-10-19). It is granted on exactly the reasoning the toolchain entries
+# above already rely on: root-owned and system-managed, nothing a seat can
+# meaningfully change.
+# TRADE-OFF, deliberate, and the reason the cure has TWO halves: if the
+# extractor compares the malformed string `/dev/null)` against this grant, a
+# `/dev` grant may not match it, so this half alone may not hold. The other
+# half is the prompt rule in § 6's doctrine — never discard output to
+# `/dev/null` in a command you compose yourself; redirect it to a file under
+# `.git/lcars/tmp/` instead — which avoids the construct entirely and does not
+# depend on the extractor being right. Two changes, so the next run can tell
+# the two explanations apart.
+# copilot — the working directory is NOT trusted by the flag, so name the repo
+copilot --model <model> --allow-all-tools \
+        --add-dir <product-repo> \
+        --add-dir <holodeck-sidecar> \
+        --add-dir "$LAUNCH_ROOT" \
+        --add-dir "$LAUNCHER_DIR" \
+        --add-dir "$BROWSER_DIR" \
+        --add-dir /tmp \
+        --add-dir /usr/bin \
+        --add-dir /bin \
+        --add-dir /usr/sbin \
+        --add-dir /dev
+# claude — its cwd IS the repo already, so only the others need naming
+claude --add-dir <holodeck-sidecar> \
+       --add-dir "$LAUNCH_ROOT" \
+       --add-dir "$LAUNCHER_DIR" \
+       --add-dir "$BROWSER_DIR" \
+       --add-dir /tmp \
+       --add-dir /usr/bin \
+       --add-dir /bin \
+       --add-dir /usr/sbin \
+       --add-dir /dev
 ```
 
-`--allow-all-tools` only auto-approves tools; it does **not** trust the working
-directory. `COPILOT_ALLOW_ALL=true` additionally trusts that directory. Other
-truthy spellings (`1`, `yes`, `on`, `y`) only auto-approve tools, like the flag,
-and are not enough for an unattended run.
+Grant whichever directory your seat's `mktemp` and `>` targets really land in —
+`/tmp` on macOS and Linux, `$TMPDIR` where the platform puts it elsewhere.
 
-**Trust is executable configuration, not just permission to read files.**
-Trusting a directory also loads its skills, plugins, MCP servers and hooks,
-**including hooks that run shell commands**. This is acceptable in a repository
-whose provenance you control. It is **not acceptable in a repository of unknown
-provenance**; do not use this blanket trust there.
+**And drive the browser the block resolved, by name.** `$CHROME_BIN` is
+**Google Chrome** wherever it exists, and that is the one § 6.1's live check
+uses — not "a Chrome-family browser", not whichever one comes to mind. The
+stall this closes was not the refusal itself: it was the seat being refused one
+browser and then WORKING DOWN A LIST, raising a fresh dialog for the next name.
+One browser is resolved, once, before the seat starts; the seat asks for no
+other.
 
-**Measured 2026-10-13:** with `--allow-all-tools` already set, an EEH round was
-refused on every command, including read-only commands, with
-`Permission denied because no interactive user response was available.` Four
-rounds had worked before the fifth failed without warning. From outside, a
-blocked run and a healthy idle run look identical; nothing inside the blocked
-run can detect or recover from it. Set the exact environment value **before
-launch**, rather than relying on a flag or on earlier rounds having worked.
+**Why the temp directory is in there**, when § 6.1 tells the seat to keep every
+throwaway HOME, scratch file and redirect target inside the repo under
+`.git/lcars/tmp/` and never `/tmp`: because § 6.1 is an *instruction*, and an
+instruction is model-bound. Measured 2026-10-18, back to back,
+**same code, same hour**: a seat on `claude-opus-5.5` took **one** permission
+stall (the unavoidable folder-trust prompt at startup); a seat on `gpt-6.1-sol`
+— Copilot's **default**, and what a stranger gets — took **six**. Every one of
+the six was the seat writing its own scratch to `/tmp` (`/tmp/lcars-suite-r2.txt`,
+`/tmp/lcars-cli-r2.txt`, both real files on disk, both outside the grant), and
+every one froze the run on a dialog nobody was awake to answer. § 6.1 existed on
+that run: the strong model obeyed it, the default model did not. That gap will
+exist for every rule we write by instruction. A launch-time grant does not have
+it.
+
+**The trade, named rather than sold.** `/tmp` is world-writable, so this is
+genuinely wider than granting the repo alone, and it is not free. It is also
+**one more named directory** — nothing like `--allow-all-paths`, and nothing
+like `COPILOT_ALLOW_ALL`, which trusts a directory and therefore loads its
+skills, hooks and MCP servers too. Decide it for your own environment; drop it
+and expect a weaker seat to stall on its own scratch instead.
+
+**Why the system toolchain is in there.** Measured 2026-10-18: a live seat on
+`gpt-6-luna` stalled asking permission to use `/usr/bin/time` — a standard
+system binary — because the grant named the repo, the sidecar, the LCARS source
+and `/tmp`, but not the directories ordinary system commands live in. That is an
+unattended run frozen on a dialog nobody is awake to answer, over `time`. The
+reasons this is a narrow grant, each one checked on the host it was written on:
+
+- `/usr/bin`, `/bin` and `/usr/sbin` are `root:wheel`, mode `drwxr-xr-x`, and
+  **not writable** by the user a seat runs as; `[ -w /usr/bin ]` is false.
+- **System Integrity Protection is enabled** (`csrutil status`), which forbids
+  writes there even to root. Two independent levels, so **for writes the grant
+  is close to a no-op.**
+- It **adds no capability.** The seat already executes all 932 of `/usr/bin`'s
+  tools through the shell; granting the directory removes a *prompt*, not a
+  barrier.
+- The danger named above is that trust "also loads its skills, plugins, MCP
+  servers and hooks, **including hooks that run shell commands**" — executable
+  configuration. A directory of root-owned system binaries carries none of that
+  to load.
+- It is a **launch flag**: scoped to that run, persists nothing, and leaves no
+  trusted-directory record behind.
+
+**The line this does NOT cross: `$HOME` stays ungranted, deliberately.** The
+system toolchain and the home directory are **different kinds of grant** and
+must not be weighed the same way. `$HOME` is **user-writable**; it holds
+**credentials**, keys and every other project on the machine; and it *does*
+carry loadable configuration (`~/.claude/`, `~/.copilot/`, their hooks and MCP
+servers) — so every argument above fails for it, one by one. If you take one
+thing from this passage, take that distinction.
+
+**§ 6.1 stays either way — belt and braces.** In-repo scratch is still the
+better hygiene: it keeps the product tree clean and leaves the evidence beside
+the mission. The grant is only the backstop for the run where a model ignores
+the rule.
+
+**Why the launch checkout's directory is in there.** Measured live,
+2026-10-18: a seat on `gpt-6-luna` stalled **five times in twenty-one minutes**,
+and **four of the five were this one cause** — the seat was blocked **reading its
+own deployed code**, the dialog naming
+`.lcars-launch/<repo>/<mission>/jot/cli.py`, `store.py` and `README.md`.
+`lcars launch` puts the deploy checkout **beside** the repo, at
+`<repo-parent>/.lcars-launch/<repo-name>/`, and that sibling was not in the grant
+above. Every one of those stalls froze an unattended run.
+
+**Grant the one named directory — `<repo-parent>/.lcars-launch` — and nothing
+else.** It is **one named directory, not the parent**: naming the parent would
+hand the seat **every sibling repository on the machine**, by far the widest
+thing in that list and the one grant nobody could check the way `/usr/bin` was
+checked. Naming `.lcars-launch` exposes **zero** sibling repositories. And the
+checkout **stays outside the repo**, which is what `lcars launch` designed for:
+a second copy of the repo *inside* it gets swept up by the parent's own test
+globs and watchers, and `.git/info/exclude` does not stop a glob — so moving the
+checkout in-repo would trade a permission stall for a dirty **product tree**
+(nothing gitignores `.lcars-launch` at a repo root, so a bulk `git add` could
+commit it). Keep the files where they are and name the directory. No change to
+`lcars launch`, and `$LCARS_LAUNCH_ROOT` stays unset.
+
+**It may not exist yet, so create it before you grant it** — `mkdir -p` in the
+block above. The directory appears on the first `lcars launch`, which is *after*
+the seat starts, and a grant for a directory that does not exist is not a grant.
+This is the same step the Holodeck sidecar's grant already takes.
+
+**This is the third instance of one pattern.** LCARS deliberately places things
+*beside* the repo to keep the product tree clean — the Holodeck sidecar, the
+seat's scratch (§ 6.1 above, and the `/tmp` grant that backs it), and now the
+launch checkout — and a scoped grant does not reach any of them. All three are
+cured the same way: name that one directory, create it first, change nothing
+about where the files go. When a seat stalls on a path it created itself, check
+that list first.
+
+**Why the launcher directory is in there.** `install.sh` puts the `lcars-ech`
+and `lcars-eeh` launchers on PATH in its bin destination — `$LCARS_BIN_DEST`,
+default `~/.local/bin` — and a seat drives a whole round through them. Measured
+across **eight** runs that cost exactly **one stall**, and that one was a seat
+*listing* the directory (`~/.local/bin/lcars*`, a glob) to see what was
+installed — a browse, not blocked work. *Invoking* the launchers through PATH
+never prompted at all, 27–103 invocations a seat. So it was deliberately left
+out of the grant.
+
+**2026-10-19 reversed that.** On a clean `gpt-6-luna` seat the "Allow path
+access" dialog named **the launcher file itself** — `~/.local/bin/lcars-ech`,
+no glob, the command the seat runs — and it **froze the run** until somebody
+answered. A grant that saves a *browse* is optional; one that unblocks the
+command a seat reaches for every few minutes is not.
+
+**It is the directory `install.sh` itself writes to**, so a reader who installed
+LCARS the normal way already has it, and nothing new has to be created in order
+to grant it. If your launchers live somewhere else, grant that directory
+instead — `command -v lcars-ech` says which one it is.
+
+**The honest trade, and it is weaker than the toolchain's.** Do not borrow the
+`/usr/bin` argument above: every limb of it fails here. This directory **is
+user-writable** by the seat; there is no `root:wheel` ownership and no System
+Integrity Protection over it, and anything written there lands on `$PATH`. What
+is true instead is smaller, and worth stating plainly rather than dressing up:
+it is the reader's **own** directory, holding software they installed
+**deliberately**, and it is a **launch flag** — scoped to that run, it
+**persists nothing** and leaves no trusted-directory record. That is the whole
+case for it. It is still **one named directory**, never `--allow-all-paths` and
+never `COPILOT_ALLOW_ALL`.
+
+**`$HOME` is still refused**, and granting a directory *inside* it changes
+nothing about that. `~/.local/bin` holds launchers; `$HOME` holds credentials,
+keys, every other project on the machine, and the loadable configuration under
+`~/.claude/` and `~/.copilot/`. One named child is **not its parent**.
 
 ## Unattended Copilot commands: start at the repository root and write downward
 
@@ -183,9 +408,10 @@ captain can answer in a word:
 3. **Where it deploys**, and what "live" means for this product. Record it —
    there is a key for it: `lcars-ech record deploy '{"where":"…","liveMeans":"…"}'`.
 4. **What to do if LCARS itself breaks** — the default is *stop and report*.
-5. **The pre-authorisations** (§ 9): may you do a manual merge if `approve` hits
-   a known LCARS bug and the merged suite is green? May live checks write to the
-   product repo? Both default to **no**.
+5. **The pre-authorisations** (§ 7): may `land` give the specific
+   `--reapprove` sign-off after LCARS reconciles green? Record an actual grant
+   with `lcars-ech grant reapprove`; never infer one from general encouragement.
+   May live checks write to the product repo? Both default to **no**.
 
 Then write it all down and start:
 
@@ -199,7 +425,7 @@ lcars-ech heartbeat install
 
 `init` finishes by running `lcars-ech preflight`, and that is on purpose:
 it is the one moment a human is reliably in the room. **Do not walk away before
-that round has printed `proceeding`.** It settles five things the run cannot
+that round has printed `proceeding`.** It settles six things the run cannot
 settle for itself later:
 
 | # | what it settles | with nobody there |
@@ -208,16 +434,25 @@ settle for itself later:
 | 2 | the test command the push gate runs | PROCEEDS: `next` already names the `foundation` step for a repo with no suite |
 | 3 | somewhere to push — and whether that remote **answers**, probed with a bounded `git ls-remote` | STOPS |
 | 4 | the forge login a pull request needs (`gh auth status`) | STOPS |
-| 5 | the engine's unattended permission — `COPILOT_ALLOW_ALL=true`, on a copilot run | STOPS |
+| 5 | the engine's unattended permission — whatever `COPILOT_ALLOW_ALL` the environment carries, on a copilot run | PROCEEDS: reported, never required (see the setup section above) |
+| 6 | Number One: RECOMMENDED **ON**, using the run's engine | PROCEEDS on the recommended default, ON; runs `xo on --engine <run-engine> --sweep` once and records the choice |
 
-1 and 2 carry a RECOMMENDED default, so `yes` answers the block. Re-run
+1, 2 and 6 carry a RECOMMENDED default, so `yes` answers the block. Re-run
 `lcars-ech preflight` any time; a prerequisite already recorded is not
 asked about again.
 
+Number One is asked for **once, at preflight**, never later at a merge gate.
+No tty means proceed on ON without waiting for input; an explicit OFF is
+preserved too. The decision and its engine live in `autopilot.json.numberOne`;
+the real `xo` verb applies it. A refused verb is reported, not called success.
+This is a run choice, **not** a change to `lcars init`: its
+`numberOne.enabled` default stays **false**.
+
 3 is a **reachability** check, not a name check: a deleted repo, a typo'd host
 and revoked auth all leave `origin` in the config and die at the pull-request
-gate at 03:00. 5 is the fact this file's own opening section is about, and it is
-checked here because three of the four dead nights were that one variable.
+gate at 03:00. 5 is **reported, not required**: it used to STOP, which cost
+three seat models before they began, and S303 measured that the work ships
+without the variable anyway. Preflight names the value it found and moves on.
 
 **A deadline is not a refusal.** If the probe runs out its bound (`rc 124`) the
 stop says the remote *may simply be slow* and blames nothing: a cold VPN
@@ -284,6 +519,12 @@ is a defect in how you ran this step, not a fact about the spec.
 An empty scope is unfinished alignment: set it with `init --scope` or
 `lcars-ech record scope '["M0","M1"]'` before building or claiming completion.
 
+`lcars-ech init` configures the run, not the repository. If preflight's
+Number One step says the LCARS config is missing, invoke the `lcars init`
+skill, then run `lcars-ech preflight`. The refusal also gives the bundled
+`init.sh` command for a terminal-only recovery. The requested choice remains recorded,
+but Number One is not engaged until that retry succeeds.
+
 ---
 
 ## 2. Captain-only steps, collected up front
@@ -300,6 +541,13 @@ lcars-ech record captainOnlySteps '[
    "neededBy":"before M2 drives","done":false}
 ]'
 ```
+
+`neededBy` is checked when recorded. Omit it for an immediate step.
+`before M2 drives` (or `before M2`) is collected up front, before any drive;
+`after M2 merges` is deferred until M2's Mission records Stage `done`.
+Name a milestone in this run's scope. Other timing prose is refused with a
+copyable record command, not stored as a promise the driver cannot keep.
+`status` lists due and deferred steps; `next` only stops for due ones.
 
 **Secret values never appear in the transcript.** Always give him the
 `! pbpaste | gh secret set NAME -R <host>/<owner>/<repo> --app actions` shape —
@@ -367,6 +615,16 @@ owning its own line as a heading (`## Goal`). (A complex mission filed with
 `--adr` needs each ADR to carry **Context**, **Decision**, **Alternatives
 considered** and **Consequences** too.)
 
+**The mission title is a plain sentence — never a markdown heading, and never
+the field label.** Write the outcome the way you would say it: `Add a jot CLI
+that publishes a shareable web page`. The `##`, the `**`, and the words
+"Mission title" belong to the PRD's LABEL and never travel into the VALUE.
+Measured 2026-10-19: one seat filed a mission whose title was literally the
+string `## Mission title` — on disk and, because filing opens an issue, as the
+public GitHub issue title everybody can see. Six of seven seats got this right;
+it is a one-in-seven leak with a public consequence, which is why it is written
+down here.
+
 For each unfiled milestone, `next` prints mutually exclusive branches: judge
 **its own spec/brief**. If it **has screens**, take `holodeck` before filing;
 otherwise go straight to `file`. This is model judgement, not a recorded flag.
@@ -378,6 +636,155 @@ questions, `derive`, then hand it to a Mission through Align and record its id.
 sidecar. A hand-authored `mockup.html` attached at CLI filing is an
 **attachment-only** path: it never passes through the surface, so the Holodeck
 stays empty. **State which path you took.**
+
+**Hand the design over with `promote` — the hand-off is what gives the Mission
+its own copy of the design.** `POST /api/holodeck/<sessionId>/promote` (step 5
+below) drafts the brief; filing the mission AS that hand-off — the same
+`sessionId` threaded into the filing call, `POST /api/mission` with
+`{"idea": "<the brief>", "holodeck": "<sessionId>"}` — **copies** the room's
+`mockup.html` and `concept.md` into the Mission's own `attachments/` dir and
+lists them in its `prd.md`, which is the GitHub issue body. The Mission OWNS
+the design: delete the sidecar and the build still has its drawing. The record
+rides along for free — the `Sent to Align:` line, the room marked handed over
+and read-only, the link the viewscreen draws back to the Program.
+
+Writing the brief yourself is **not equivalent**, however faithful it reads,
+because it copies nothing. The Mission is left BORROWING a file that lives
+outside the product tree, by absolute path: end the room, move or clean the
+sidecar, or hand that path to a worker that cannot read it, and the build
+silently loses its design with every stage still green. The record goes missing
+too, which makes a real hand-off indistinguishable from no hand-off at all.
+
+**Measured: three seats in a row read the first wording of this rule and
+hand-wrote the brief anyway** — two built the right thing with no record, one
+abandoned its design and never filed at all — because the only cost it named
+was bookkeeping. The cost is the copy. A fourth seat, the same model behind a
+different CLI, called `promote` twice: this is a choice, not a limit.
+
+**HOW TO CALL IT: the Holodeck is HTTP on the viewscreen daemon.**
+`holodeck_start` / `holodeck_say` / `holodeck_end` are **not shell verbs** —
+they are routes on the board's own daemon, and this is the one thing this file
+used to leave out. Measured: the strongest seat reverse-engineered them on its
+own; the weaker seats never found them and never reached the Holodeck at all.
+Start the daemon **headless** (no `--open`, so nothing steals the captain's
+screen), then POST to it:
+
+```bash
+# 1. the daemon, headless, in the background. It prints the URL it bound.
+#    `LCARS_VIEWSCREEN_ALLOW_AI=1` IS REQUIRED HERE AND IT IS NOT A PERMISSIONS
+#    HACK: the viewscreen has a headless gate of its own that refuses to start
+#    inside an AI session, because from in here it cannot reach the macOS
+#    desktop and DEPLOY MAIN / `lcars launch` would be dead buttons. The
+#    Holodeck needs neither of those, so the gate's own documented bypass is
+#    how automation says so. WITHOUT the variable the line below EXITS, BINDS
+#    NOTHING, and logs "LCARS viewscreen — NOT started".
+LCARS_VIEWSCREEN_ALLOW_AI=1 lcars-viewscreen --port 8765 >/tmp/lcars-viewscreen.log 2>&1 &
+
+# 2. POST /api/holodeck/start — open a named Program. `mode` is `grounding`
+#    (recommended: the opening pass reads the project's own language) or
+#    `design`. THE REPLY CARRIES `sessionId` — record it, every later call
+#    needs it — but it is NESTED: every holodeck POST answers
+#    {"ok": true, "state": {"sessionId": ..., ...}}, so read `.state.sessionId`
+#    and not a top-level key. `repo` is the ABSOLUTE path of the product repo.
+curl -s -X POST http://127.0.0.1:8765/api/holodeck/start \
+  -H 'Content-Type: application/json' \
+  -d '{"repo":"/abs/path/to/product-repo","program":"M0 screens","mode":"grounding","engine":"copilot"}'
+
+# 3. POST /api/holodeck/<sessionId>/say — ONE authoring turn. `intent` is
+#    "build" or "ask"; omitted it means "build".
+curl -s -X POST http://127.0.0.1:8765/api/holodeck/<sessionId>/say \
+  -H 'Content-Type: application/json' \
+  -d '{"text":"<what to build or change>","intent":"build"}'
+
+# 4. POST /api/holodeck/<sessionId>/derive — the change list, which is the gate
+#    before the hand-off. IT IS ASYNCHRONOUS. It returns AT ONCE with
+#    {"derive": {"state": "running"}} and the pass behind it takes MINUTES
+#    (measured at 154–220s; the daemon allows it up to 420s). Do NOT put
+#    /promote on the next line — that was this file's own mistake.
+curl -s -X POST http://127.0.0.1:8765/api/holodeck/<sessionId>/derive \
+  -H 'Content-Type: application/json' -d '{}'
+
+# 4a. WAIT FOR IT, ON A BOUND. The same `derive` block rides on the GET below:
+#     {"state": "running"} while the pass is in flight, then
+#     {"state": "done", "ok": true, "changes": [...]} when it lands — or
+#     {"state": "done", "ok": false, "why": ...}, which means the pass DID NOT
+#     ANSWER and not "the mockup changes nothing". A seat that waits for ever
+#     is indistinguishable from a dead one, so this loop gives up and says so.
+#
+#     READ THE REPLY DEFENSIVELY. Two answers on this GET are NOT "still
+#     working" and the parser must not fall over them: the daemon can die
+#     mid-wait (curl prints NOTHING and a naive json.load then prints a Python
+#     traceback every 5s for the whole 7.5 minutes — measured, ~90 of them),
+#     and an ENDED session answers HTTP 404 {"error": "no such holodeck
+#     program: ..."}, which parses fine but carries no derive block. Both mean
+#     NOTHING IS COMING, so this loop calls them `no-answer`, stops at once,
+#     and says which it was. A seat that can tell a dead daemon from a slow
+#     one does not have to guess. The `except` is what keeps the traceback out,
+#     NOT a discard: this substitution deliberately carries no `/dev/null`
+#     redirect, because one inside a `$(...)` is read as the path `/dev/null)`
+#     and stalls an unattended seat (§ 6's rule; measured 2026-10-19). Do not
+#     add one back.
+for i in $(seq 1 90); do
+  st="$(curl -s http://127.0.0.1:8765/api/holodeck/<sessionId> \
+        | python3 -c 'import json, sys
+try:
+    reply = json.load(sys.stdin)   # nothing, or not JSON, lands in the except
+except Exception:
+    print("no-answer"); raise SystemExit
+print((reply.get("derive") or {}).get("state", "")
+      or ("no-answer" if reply.get("error") else "running"))')"
+  [ "$st" = "done" ] && break
+  [ "$st" = "no-answer" ] && break
+  sleep 5
+done
+case "$st" in
+  done) : ;;   # the `changes` list is on that same GET. Go to step 5.
+  no-answer)
+    echo "the holodeck daemon STOPPED ANSWERING (it died, or this session was ended — after /end that GET 404s for ever). This is NOT 'still working': nothing is coming, so do not keep polling. Read /tmp/lcars-viewscreen.log, restart the daemon, and get back in by ROOM name (step 7)." ;;
+  *)
+    echo "derive gave up after 90 tries of 5s (~7.5 min); state=$st. The daemon is alive and still working — it just outran the bound. Promote anyway — a brief with no derived section is still a brief he can send — or re-run derive with force true." ;;
+esac
+
+# 5. POST /api/holodeck/<sessionId>/promote — SEND TO ALIGN. `scope` is the
+#    BUILD SCOPE, never the milestone label: {"scope":"M0"} is REFUSED with
+#    HTTP 400 "unknown build scope". There are exactly two legal values:
+#      "look+behaviour" — build it for real: backend, state, persistence, the
+#                         lot. The mockup says how it LOOKS; the brief says
+#                         what it must DO. This is also the default if `scope`
+#                         is omitted.
+#      "look-only"      — a reskin: match the mockup visually and make NO
+#                         functional change. Same data, same actions.
+#    The reply carries the whole Align brief.
+curl -s -X POST http://127.0.0.1:8765/api/holodeck/<sessionId>/promote \
+  -H 'Content-Type: application/json' -d '{"scope":"look+behaviour"}'
+
+# 6. POST /api/holodeck/<sessionId>/end — closes the worker. The room and the
+#    Program survive in the sidecar.
+curl -s -X POST http://127.0.0.1:8765/api/holodeck/<sessionId>/end \
+  -H 'Content-Type: application/json' -d '{}'
+
+# 7. GETTING BACK IN AFTER `end`. `end` IS FINAL FOR THAT sessionId: from then
+#    on GET /api/holodeck/<sessionId> answers HTTP 404, for ever. What survives
+#    is the ROOM — mockup.html, concept.md, transcript.md — and the Program
+#    list still shows it, with "sessionId": null and its `room` name. Starting
+#    the same Program name again can be refused with "switch to it in the
+#    program list", which is a GUI a headless seat does not have. THIS is the
+#    headless road back in: POST /api/holodeck/open with the ROOM name (not a
+#    session id). It WARM-RESTARTS the program — a FRESH sessionId, the whole
+#    transcript replayed in as context, the mockup exactly as it was left.
+curl -s -X POST http://127.0.0.1:8765/api/holodeck/open \
+  -H 'Content-Type: application/json' -d '{"room":"m0-screens","engine":"copilot"}'
+
+curl -s -X POST http://127.0.0.1:8765/api/holodeck/duplicate \
+  -H 'Content-Type: application/json' -d '{"room":"m0-screens","program":"M1 screens","engine":"copilot"}'
+
+# READS are GETs. /api/holodeck is the Program list — every program in this
+# repo's sidecar, live or on disk, each with its `room`. /api/holodeck/<sessionId>
+# is one LIVE Program plus its transcript, and it is live ONLY while that
+# program is open: after `end` it is 404 and the list route is the only place
+# that program can still be read. No holodeck WRITE is reachable over GET, by
+# design.
+```
 
 File through the real verb, with a real PRD on disk:
 
@@ -504,6 +911,14 @@ the *other* slot (§ 8) — not for watching.
 
 ## 6. The Verify gate — Number One, then the live check
 
+**Verify is not completion.** An accurate summary saying the work is unfinished
+is not permission to stop. Run `lcars-ech live-check <mission-id> --type <types>`
+now, record the target and known-fail control verdicts, run
+`lcars-ech policy --mission <mission-id> --live-check pass|bugs`, and take its
+one action. If it permits landing, run `lcars-ech land <mission-id>`; otherwise
+follow the send-back loop. Then run `lcars-ech next` again. Continue until the
+scope is done or a recorded captain-only condition actually blocks the work.
+
 For test commands and evidence capture, follow
 [the repository-root/downward rule](#unattended-copilot-commands-start-at-the-repository-root-and-write-downward)
 above; do not redirect upward from the live-check worktree.
@@ -517,6 +932,34 @@ to look at, nothing seeded, stubs that made the seam untestable.
 
 ### 6.1 Set it up with one command, then do the looking
 
+1. **A green check carries a control.** ANY CHECK WHICH CAN RETURN GREEN
+   WITHOUT HAVING OBSERVED THE THING must carry a control case known to fail.
+   Apply the same detector to both, and report BOTH verdicts and observations
+   with distinct evidence. For a web check render/open the target AND a signed-out
+   login wall beside it: a produced screenshot is not a checked product page.
+   A detector that calls the login wall green cannot support a green target.
+   `live-check` prints a target/control pair for every checklist item and writes
+   `.git/lcars/missions/<id>/live-check/checks.json`. Each control's `input`
+   names a concrete known-fail artifact; render the supplied login-wall HTML
+   beside the target for web checks, or use a product-specific failing input.
+   Fill every row's `detector`,
+   `target` and `control`: each needs a `verdict` (`pass` or `fail`), nonempty
+   `evidence` file path and `observation`; the control also names its
+   `knownFailure`. `live-check done --verdict pass` is REFUSED unless every
+   target passes AND every known-fail control fails. Never call an unobserved
+   item passed; record bugs or say **not checked**.
+
+2. **Enumerate, don't sample.** A claim about a MISSION needs every ticket,
+   not the two on screen. Enumerate the mission's complete ticket list, name
+   each verdict and its evidence, and count anything unobserved as **not checked**.
+   The paired checklist is a floor, not permission to omit ticket acceptance
+   criteria; add their target/control cases to your evidence too.
+
+3. **Read the board.** Use the harness-maintained mission and ticket states
+   shown by the board's own API; never invent a completion metric beside one
+   the harness already maintains. Read the board response, not a sampled
+   screenshot or a clean log, before claiming completion.
+
 ```bash
 lcars-ech live-check <mission-id> --type cli,web,workflow
 ```
@@ -528,23 +971,98 @@ evidence dir at `.git/lcars/missions/<id>/live-check/`, and prints the
 checklist(s) for the product types the milestone touches.
 
 **The script owns the setup, the evidence paths and the record. The looking is
-yours.** The checklists live at `skills/lcars-run/live-check/{cli,web,workflow}.md`
-— that shared home, and not under the EEH, because the rebuilt Number One
-reads the same files. Every item is an action plus the evidence to capture plus
-what counts as a defect, and carries a fenced `run:`/`workflow:`/`read:`
-template beside the prose so a fenced worker with no shell can lift it.
+yours.** It also stages the checklists **into this repository**, at
+`.git/lcars/live-check/{cli,web,workflow}.md`, refreshed from the installed
+LCARS on every run, and that staged copy is the one it names and the only one
+you read. **Re-read the item you are on, from that file, as you do it** — the
+cli list alone is 313 lines and the point of a file is that the item cannot
+quietly fall out of your context. Never reach into LCARS's own installed
+directory for it: you are trusted inside the repository you are building in,
+and a read outside it stops an unattended run dead on a permission prompt
+nothing in the run can answer (measured, 2026-10-17). The shared source home
+lives under `lcars-run`, not under the EEH, because the rebuilt Number One
+reads the same files — you just never have to go there. Every item is an action
+plus the evidence to capture plus what counts as a defect, and carries a fenced
+`run:`/`workflow:`/`read:` template beside the prose so a fenced worker with no
+shell can lift it.
+
+**Everything you make yourself goes inside the repository, under
+`.git/lcars/tmp/`.** `live-check` already puts the worktree and the throwaway
+HOME it hands you there. The checklists then ask you for things it cannot make
+for you — a *second* throwaway HOME, an ad-hoc input file, somewhere to
+redirect output — and they never say WHERE, because they cannot know your repo.
+You do. You are trusted only inside the repository you are building in, and a
+**write** outside it raises `Allow path access` and stops an unattended run
+dead on a dialog nothing in the run can answer (measured, 2026-10-18: a seat
+stalled twice, on `/tmp/home2-XXXX` and on `/tmp/good.json`). So never `/tmp`,
+never a bare `mktemp -d` with no template, never a `>` target outside the repo.
+
+**Never discard output to `/dev/null`** in a command you compose yourself —
+redirect it to a file under `.git/lcars/tmp/` instead. A discard to `/dev/null`
+written inside a subshell or a `$(...)` reaches the permission layer as the
+path `/dev/null)`, trailing parenthesis and all, because its path extractor
+takes the `)` as part of the path. That string matches no grant that could ever
+be written, so no `--add-dir` can satisfy the dialog it raises, and it stopped
+an unattended run dead twenty minutes in — after a mission, four closed tickets
+and an open PR (measured 2026-10-19). A real file — `2>.git/lcars/tmp/<what>.log`
+— raises nothing, and has the side benefit that the output still exists if
+something needs diagnosing. The launch grant now names `/dev` as well, but that
+is belt and braces: if the extractor compares the malformed `/dev/null)`
+against it, a `/dev` grant may not match, so this rule is the half that does
+not depend on it. This file obeys the rule too — no recipe in it discards to
+`/dev/null`, so there is nothing here to copy.
+
+The **second actor** (cli checklist item 4, whose `<throwaway-home-2>` has no
+location in the checklist) is the one measured to bite. Give it one, from the
+repository root:
+
+```bash
+mkdir -p .git/lcars/tmp
+H2="$(mktemp -d "$PWD/.git/lcars/tmp/lcars-ap-home2-XXXXXX")"
+HOME="$H2" <cli> <the-main-verb> <the-same-value-actor-A-used>
+```
+
+Scratch inputs go the same way — `.git/lcars/tmp/good.json`, never
+`/tmp/good.json` — and so does every log you redirect, the Holodeck daemon's
+included: start it with `>.git/lcars/tmp/lcars-viewscreen.log` in place of the
+`/tmp` path § 5 shows, and read it back from there.
+
+The **invalid path** is the other one measured to bite. cli checklist item 2
+("Give it bad input, and no input") tells you to feed the product *a path that
+does not exist*, and that path has no location in the checklist either. Give it
+one INSIDE an already-approved folder, from the repository root:
+
+```bash
+<cli> <the-verb-that-takes-a-path> .git/lcars/tmp/not-a-real-path
+```
+
+A path that does not exist **outside** the repository is outside every grant
+**by definition**, so no `--add-dir` can ever cover it — it is not a grant that
+is missing, it is a request that **can never be granted**, which makes an
+out-of-tree bad path a guaranteed stall (measured 2026-10-19: a seat stopped on
+exactly this, on `/missing`). An invalid path inside an approved folder
+exercises the **same error handling** and raises nothing.
 
 Pick **every** type the milestone touches. A CLI that writes a page published by
 a workflow is all three. The items that found the bugs, by name:
 
-- run `--help` and bad input; a subcommand missing from `--help` is a defect
+- run `--help`, and bad input **whose invalid path sits inside an
+  already-approved folder** — `.git/lcars/tmp/not-a-real-path`, never
+  `/missing`. A path that does not exist is outside every grant BY DEFINITION,
+  so no `--add-dir` can ever cover it and an out-of-tree bad path is a
+  GUARANTEED permission stall (measured 2026-10-19, a seat stopped on exactly
+  that). An invalid path inside an approved folder exercises the same
+  error-handling and raises nothing. A subcommand missing from `--help` is a defect
 - **two actors**, two HOMEs
 - **make the identities that usually coincide differ** — owner ≠ login, draft
   name ≠ title
 - **follow one record end to end**, through every real half (no hand-written
   fixture between a producer and its consumer)
 - **check the host of every outbound call**, with a non-default host configured
-- real headless Chrome, and the **400 px iframe** recipe for phone width
+- real headless Chrome — specifically **Google Chrome**, the one the launch
+  grant resolved into `$CHROME_BIN`. Drive that one and no other: a browser
+  outside the grant raises `Allow path access`, and asking for the next name on
+  a list raises it again. Plus the **400 px iframe** recipe for phone width
   (headless will not lay out below 500 px)
 - **read the deployed artifact**, not "deploy succeeded"
 - **re-verify after every fix round with different data**
@@ -591,7 +1109,19 @@ prints the whole table.
 | low, for a **product** reason | pass | **send-back** |
 | low, for **infrastructure** reasons only | pass | **override** — fix the cause, verify that one point live, record the override |
 
-**THE MERGE IS THE EEH'S CALL.** Number One *recommends*; the EEH decides.
+**THE MERGE IS THE HOLOGRAM'S CALL.** Number One *recommends*; the hologram
+running the mission decides within LCARS's gates and the captain's recorded
+authority. **The hologram's own live check is REQUIRED before every merge.**
+**Number One's recommendation is not a substitute for having looked.**
+Read the actual live evidence, record pass or bugs, and take the table's action;
+a grant never turns bugs into pass.
+
+**A grant acts, and is ledgered.** A matching recorded grant runs the exact
+LCARS-sanctioned command without a second question, as § 7 specifies.
+**An ungranted refusal raises one pre-staged question and stops that milestone.**
+Neither Number One's advice nor the hologram's judgement can bypass a refusal
+on its merits or a permission classifier.
+
 It scored every CLI or integration milestone `low` for reasons it could not
 reach, which is why a `bugs` live check sends back even a `high`, and why a
 `low` that is purely about infrastructure is an override rather than a stop. It
@@ -613,7 +1143,13 @@ lcars-ech exec lcars-respond/respond.sh answer --mission <mission> --answer "<th
 lcars-ech land <mission>
 ```
 
-The bug PRD template is `bug-prd.md`, beside this file. AC #1 is mandatorily
+The bug PRD template is `.git/lcars/bug-prd.md`, **inside the repository you
+are building in** — `live-check` and `file-bug` both refresh it there from the
+installed LCARS on every run, and `live-check`'s last line prints the path.
+**Read it there, and read it while you write the PRD.** It is in-repo on
+purpose: a seat is trusted only inside the product repository, and on 2026-10-17
+a seat handed a path into LCARS's own tree froze on a permission dialog mid-run.
+AC #1 is mandatorily
 `Observed live: <the exact output>` with the real identifiers, and a bug at a
 producer/consumer seam needs a **round-trip** criterion using both real halves
 with no hand-written fixture between them. `file-bug` refuses a PRD without
@@ -678,22 +1214,58 @@ every folded child (LCARS does not release them on fold), remove any stale
 reconciles `main` into the branch, re-tests it green and then waits for the
 captain's `--reapprove` — exit 0, nothing merged, the Mission still at `verify`.
 So `land` re-reads the Mission's own `state.json` and claims it landed only when
-the stage is really `done`. Otherwise it runs **no** hygiene, writes **no**
-`merged` ledger line, raises the pre-staged question naming the exact
-`--reapprove` command, and exits **10**. Reapprove is the captain's sign-off:
-the mode never gives it.
+the stage is really `done`.
+
+**A grant acts, and is ledgered.** At `verify` with
+`reconcileStatus=awaiting-reapprove`, a matching recorded `reapprove` grant
+lets `land` run **only** `approve.sh --mission <id> --reapprove`, without
+re-asking. The hologram must have recorded its own live-check pass with an
+existing evidence path first. The attempt writes a `decisions.jsonl` line
+with its grant id, mission, exact command and argv, output, exit code,
+command-output evidence path and live-evidence path. It continues to hygiene
+only if LCARS actually records `done`.
+
+**An ungranted refusal raises one pre-staged question and stops that milestone.**
+Without a matching grant, the existing behaviour stays: **no** hygiene,
+**no** `merged` ledger line, the four-field question naming `--reapprove`,
+and exit **10**. Reapprove is still the captain's sign-off; a recorded grant
+is how he authorises the hologram to give that specific sign-off for him.
+
+### Record the authority, not a promise to ask faster
+
+Only record a grant the captain actually gave. Never mint one for yourself,
+infer one from Number One's recommendation, or confuse a grant with engine
+tool permissions.
+
+```bash
+lcars-ech grant reapprove --mission <mission-id> --once
+lcars-ech land <mission-id>
+```
+
+`reapprove` is the named action, **not prose or an arbitrary shell command**.
+`autopilot.json.grants` records its id, action, scope, mission, duration, who
+granted it (`captain`, or `LCARS_ECH_GRANTED_BY`), `grantedAt` and the run's
+`startedAt`. Every new seat reads that record after a restart or compaction.
+`--mission <id>` limits it to that Mission; without it, the scope is this run.
+`--once` (the default) permits **one attempt**, claimed durably before execution
+so a crash cannot reuse it. `--run` permits reuse for this run, still within
+any named mission scope. No grant carries into another run. A failed attempt
+is ledgered too; it stops rather than trying another route.
 
 **You never merge by hand.** Not with a better justification, not "just this
 once", not by another route when the permission classifier blocks the first one.
+**A grant never authorises a hand-rolled `gh pr merge`.**
+**A grant never authorises a second route around a permission-classifier refusal.**
+**A grant never authorises a merge LCARS refused on its merits.**
 When LCARS refuses a merge, `land` exits **10** and writes ONE pre-staged
 question to `autopilot.json.pending` with four fields — what is blocked, why it
 is safe, the one command that would run, and the rollback. Surface that
 question and **stop that milestone**. Other milestones carry on.
 
-If the captain pre-authorised the manual merge in § 1
-(`preauthorised.manualMergeWhenApproveHitsKnownBug`), the question still gets
-raised — you pre-stage it with the suite already run on the merged state so his
-"OK" costs seconds. His OK is what runs it, not the pre-authorisation alone.
+The legacy `preauthorised.manualMergeWhenApproveHitsKnownBug` boolean is
+**not a scoped grant** and cannot authorise a command. Record the exact named
+authority above instead. A grant authorises the LCARS sign-off, not a manual
+merge around LCARS.
 
 Pushing is also not yours to hand-roll:
 
@@ -708,10 +1280,54 @@ of this gate once matched the word `FAILED` as success and pushed a red `main`.
 
 ## 8. Waiting, two missions at a time, and the crontab heartbeat
 
+**The guard must not share a kill-space with what it guards.** Kill only by
+recorded pid (or the isolated process group created for that pid), never by
+broad process-name or command-line pattern. Use `lcars-ech watch stop` for the
+guard; do not sweep waiters and accidentally kill the independent heartbeat.
+
 **Two missions at a time is the ceiling**, and only when their write sets do not
 overlap. Two was measured safe on a 10-core Mac; three drove load average to 170
 and killed workers. `lcars-ech next` enforces it and tells you to wait;
 `lcars-ech status` shows the slots in use.
+
+### A WAIT HAS A LIMIT, A RE-CHECK, AND AN ACTION ON EXPIRY
+
+**This step killed four seat models out of four**, across three model families.
+They were told to wait, and this section did not say for how long, how to
+re-check, or what to do if the wait never ended — so they sat there until they
+were killed. **A seat that waits for ever is indistinguishable from a dead
+one.** Never wait without all three of these.
+
+1. **The limit is 30 minutes** (`LCARS_ECH_WAIT_LIMIT`, in seconds).
+   `lcars-ech next` prints it under every `NEXT: wait`, records when the wait
+   began (`waitingSince`) and tells you how far into it you are. The start is a
+   **record**, not something you work out of your own transcript.
+
+2. **Re-check by asking `lcars-ech next` again.** Never poll a log, and never
+   wrap an LCARS verb in a timeout — § 5's rule stands, and the drive in flight
+   already has a waiter blocked on its PROCESS. With nothing else to do, block
+   on those same recorded processes:
+
+   ```bash
+   lcars-ech await               # 0 the moment a slot frees
+   lcars-ech await --limit 600   # …and it CANNOT outlive its bound
+   ```
+
+   `await` exits **124** when the bound passes and names the command to run
+   then. It watches processes, not a clock-wrapped verb, and it never sits for
+   ever.
+
+3. **When the limit passes, STOP WAITING** and run:
+
+   ```bash
+   lcars-ech stalled     # a driver that ended with nobody picking it up
+   ```
+
+   It decides from the **recorded pid**, not from a log. Act on what it names,
+   then `lcars-ech record drivers.<id>.pickedUpAt <ts>`. If it names **nothing**
+   while the slots stay full, that is an **LCARS bug with no verb-level
+   workaround** — § 9's fourth category. Raise it with `lcars-ech ask` and carry
+   on with the other milestone. Do not sit on it until morning.
 
 **The heartbeat is `crontab`.** One line, minute 17:
 
@@ -722,6 +1338,30 @@ lcars-ech heartbeat install    # … remove / status
 It calls `lcars-ech stalled`, which reports a mission whose driver ended with
 nobody picking it up — decided from the **recorded pid**, not by grepping a log.
 Act on it, then `lcars-ech record drivers.<id>.pickedUpAt <ts>`.
+
+**If `heartbeat install` refuses, fall back to the timerless watcher.** The crontab WRITE is
+bounded (`LCARS_ECH_CRONTAB_TIMEOUT`, 10s): a seat reported it "produced no
+output and remained running until terminated", and on macOS the table lands in
+`/var/at/tabs`, which needs Full Disk Access for the writing process — without
+it the permission request blocks with nobody there to answer. `install` now
+says exactly that and exits **11** instead of hanging, after starting
+`lcars-ech watch start`. An immediate crontab refusal also reports its error,
+starts the same fallback, and exits **11**. **The heartbeat is OPTIONAL**, not the guard:
+confirm `lcars-ech watch status` says running and read `.git/lcars/autopilot/watch.log`
+for wake events. Do not stop the run over it and do not raise it with the captain.
+
+**The timerless watcher is a different thing from `await --limit`.**
+Run `lcars-ech watch` in the seat's background tool to receive its output, or
+`lcars-ech watch start` to record its pid and write wake events to
+`.git/lcars/autopilot/watch.log`. It has no deadline, never needs re-arming, and continues
+after a slot frees. It wakes on failed-and-idle missions even when both slots
+are occupied; act on the named mission through LCARS, never write beneath a
+live worker. It exits **10** only when a recorded question genuinely needs a
+human. `await --limit` remains the bounded wait INSIDE the seat's loop; the
+watcher outlives that loop. At wrap-up use `lcars-ech watch stop`, which kills
+only its recorded pid and confirms termination before reporting success, leaving
+the heartbeat and drivers alone. If termination cannot be confirmed, it reports
+the failure and retains the recorded pid.
 
 Why a crontab line and not the host harness's own cron tool: LCARS ships to
 people who are not inside Claude Code, so a harness-only tool cannot be this
@@ -859,7 +1499,8 @@ loop:
     drive      → lcars-ech drive <id>        (backgrounded; waiter on the process)
     verify-gate→ xo report + your live check    → policy → land or the send-back loop
     land       → lcars-ech land <id>         (approve + hygiene; exit 10 = ask)
-    wait       → two at a time is the ceiling
+    wait       → two at a time is the ceiling. 30-MIN LIMIT, then `stalled`.
+                 `lcars-ech await` blocks on the PROCESS and exits 124 at the bound.
   lcars-ech status                        # the one screen, any time
 done:
   lcars-ech heartbeat remove; wrap up (§ 10)

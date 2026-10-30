@@ -1344,9 +1344,10 @@ lcars_base_branch_note() {
 # THREE LANES, AND THE LANE IS DECIDED BY WHERE THE BRANCH IS CHECKED OUT —
 # `git worktree list --porcelain`, never a guess:
 #
-#   not checked out anywhere       `git branch -f <mb> <base-sha>`. A pure pointer
-#                                  move; given ahead == 0 it is a fast-forward by
-#                                  construction, and it touches no working tree.
+#   not checked out anywhere       `git update-ref <ref> <base-sha> <old-tip>`.
+#                                  A compare-and-swap against the tip whose
+#                                  ahead count was zero; a concurrent writer
+#                                  makes it refuse, never discard that work.
 #   checked out, tree CLEAN        `git -C <worktree> merge --ff-only <base-sha>`.
 #                                  `git branch -f` FAILS outright on a checked-out
 #                                  branch ("cannot force update the branch …
@@ -1459,13 +1460,22 @@ lcars_base_advance_mission_branch() {
     return 0
   fi
 
-  # --- from here the move is LOSSLESS: `$mb` is an ancestor of `$base`. ----
+  # The measured tip is an ancestor of the base; the ref may still change.
   _lcars_base_worktree_of "$mb"
   wt="$LCARS_MB_WT"
 
   # --- lane 1: not checked out anywhere → a pure pointer fast-forward ------
   if [ -z "$wt" ]; then
-    rc=0; out="$("$g" branch -f "$mb" "$basesha" 2>&1)" || rc=$?
+    # Like self-heal publication, registration and ref updates are not atomic.
+    # Recheck registration, then CAS the measured tip (never re-read it here).
+    _lcars_base_worktree_of "$mb"
+    if [ -n "$LCARS_MB_WT" ]; then
+      _lcars_mb_refused_after_attempt \
+        "'$mb' became checked out while LCARS was preparing its branch-pointer fast-forward, so nothing was moved." \
+        "Let the checkout settle, then re-drive; LCARS will check that checkout before attempting a fast-forward."
+      return 0
+    fi
+    rc=0; out="$("$g" update-ref --no-deref "refs/heads/$mb" "$basesha" "$tip" 2>&1)" || rc=$?
     if [ "$rc" -eq 0 ]; then
       LCARS_MB_MOVE="moved"
       LCARS_MB_REASON="It carried no commits of its own and is not checked out anywhere, so its branch pointer was fast-forwarded onto '$base' — nothing was lost and no working tree was written to."
@@ -1476,8 +1486,8 @@ lcars_base_advance_mission_branch() {
       # and that setter supplies the way forward, so "no command" never means
       # "no way out" (S160 round 3, D1).
       _lcars_mb_refused_after_attempt \
-        "'$mb' is $behind commit(s) behind '$base' and carries no commits of its own, but git refused to move it: $(printf '%s' "$out" | head -1)" \
-        "git refused to move the branch pointer itself, so there is no command LCARS can offer: running the same move again only repeats the refusal. Clear whatever git objected to — its own words are in the reason above — and $mb fast-forwards on the next drive."
+        "'$mb' was measured $behind commit(s) behind '$base' with no commits of its own, but git refused to move it from the checked tip $tip: $(printf '%s' "$out" | head -1)" \
+        "The branch may have changed since the safety check. Inspect git log $mb and git's reason above, then retry the drive after concurrent work settles; LCARS will measure again, not force the pointer."
     fi
     return 0
   fi
@@ -2262,6 +2272,89 @@ lcars_xo_default_engine() { # [config]
   return 0
 }
 
+# ===========================================================================
+# S309 — THE ENGINE THIS RUN RECORDED, read rather than re-guessed.
+#
+# THE DEFECT, MEASURED on the 21–22 Oct 2026 hands-off run: the run was started
+# `lcars-ech init --engine copilot`, which WROTE `engine: copilot` into
+# `.git/lcars/autopilot.json` — and `lcars init` then seeded
+# `"model": "claude-sonnet"` anyway, because the seed was a constant that never
+# looked at any engine at all. The two live missions were safe only because
+# their own state.json happened to pin `workerBin: copilot`; a mission filed
+# without an explicit engine would have run on Claude and billed a captain who
+# had asked for Copilot-only. A cost surprise, not an inconsistency.
+#
+# This is the pre-flight *infer-vs-record* rule applied to configuration: the
+# producer (`lcars-ech init`) already wrote the fact down, so the consumer reads
+# the record instead of re-deriving it from what happens to be installed.
+#
+# A RECORD FOR AN ENGINE THAT IS NOT INSTALLED IS SKIPPED, never obeyed — the
+# same rule `lcars_default_engine` and `lcars_xo_default_engine` already apply
+# to a pin. Empty when there is no record, so a caller can tell "recorded" from
+# "detected" and say which it used.
+# ===========================================================================
+lcars_recorded_run_engine() { # <lcars-dir> → the recorded engine, or empty
+  local dir="${1:-}" ap e=""
+  [ -n "$dir" ] || return 0
+  ap="$dir/autopilot.json"
+  [ -f "$ap" ] || return 0
+  # autopilot.json is a NESTED record, but `engine` is a top-level scalar on its
+  # own line (ech.sh writes it with json.dump), so the flat reader answers it.
+  e="$(lcars_config_get "$ap" engine)"
+  [ -n "$e" ] || return 0
+  lcars_engine_available "$e" || return 0
+  printf '%s' "$e"
+}
+
+# ===========================================================================
+# S309 fix round 1, D2 — THE RECORD AS IT IS WRITTEN, before the availability
+# filter. `lcars_recorded_run_engine` above answers "which recorded engine can
+# we actually use", so it answers EMPTY for a record naming an engine that is
+# not installed — which is correct, and is exactly why a caller cannot tell
+# "nothing was recorded" from "a record was read and skipped".
+#
+# The readout needs that difference. Init was measured saying "nothing records
+# which engine this repo runs on" with `{"engine":"copilot"}` sitting on disk:
+# the record had been read, discarded as unavailable, and then denied. Skipping
+# an unavailable pin is right; denying it is not. This reader exists ONLY so the
+# sentence can be true — it is never used to choose an engine.
+# ===========================================================================
+lcars_recorded_run_engine_raw() { # <lcars-dir> → the engine as recorded, or empty
+  local dir="${1:-}" ap
+  [ -n "$dir" ] || return 0
+  ap="$dir/autopilot.json"
+  [ -f "$ap" ] || return 0
+  lcars_config_get "$ap" engine
+}
+
+# ===========================================================================
+# S309 — THE MODEL AN ENGINE ACTUALLY RUNS. The ONE place `lcars init` and
+# `lcars update` answer "what goes in config.json's `model` for engine X".
+#
+#   claude  → `claude-sonnet`   the historical seed, unchanged, so every repo
+#                               set up on Claude comes out byte-identical.
+#   copilot → `claude-opus-5.5` what a copilot worker is REALLY spawned with.
+#
+# WHY copilot IS OPUS. That is run.sh's standing policy, not a new choice here:
+# `alias_for_tier` (skills/lcars-run/run.sh) pins BOTH copilot tiers to
+# `claude-opus-5.5`, and `web/lcars_serve/board.py` and `actions.py` each carry
+# the same answer for their own surface. THE POLICY'S ONE HOME IS STILL
+# `alias_for_tier` — this function is the SEED, the value a fresh config starts
+# with, and it is deliberately not a second copy of the tier ladder (no
+# estimator, no per-stage tiers, no `modelAliases` read). If the copilot model
+# id moves again, the four places that name it move together; the grep is
+# `claude-opus-5.5`.
+#
+# An unknown or empty engine answers the historical default rather than nothing:
+# a config with no `model` key at all breaks every reader downstream.
+# ===========================================================================
+lcars_default_model_for_engine() { # <engine> → the model string for a fresh config
+  case "${1:-}" in
+    copilot) printf 'claude-opus-5.5' ;;
+    *)       printf 'claude-sonnet' ;;
+  esac
+}
+
 # lcars_config_has_key — 0 if the config file has a top-level "key": present.
 lcars_config_has_key() {
   local config="$1" key="$2"
@@ -2283,31 +2376,16 @@ lcars_config_get() {
 }
 
 # lcars_config_set_string — overwrite the JSON value of ONE top-level key with a
-# (JSON-escaped) string, preserving every other line, key order, and the file's
-# trailing-comma structure. jq-free, line-oriented (relies on the one-key-per-line
-# layout lcars_config_merge writes). Unlike lcars_config_merge this DELIBERATELY
+# (JSON-escaped) string, preserving all text outside the targeted value.
+# Unlike lcars_config_merge this DELIBERATELY
 # replaces an existing value — use it only for targeted, fingerprinted migrations.
 lcars_config_set_string() {
-  local config="$1" key="$2" value="$3"
-  [ -f "$config" ] || return 1
-  local esc; esc="$(lcars_json_escape "$value")"
-  local tmp="$config.tmp.$$"
-  local line indent comma
-  while IFS= read -r line || [ -n "$line" ]; do
-    case "$line" in
-      *"\"$key\""*:*)
-        comma=""; case "$line" in *,) comma="," ;; esac
-        indent="${line%%\"*}"
-        printf '%s"%s": "%s"%s\n' "$indent" "$key" "$esc" "$comma"
-        ;;
-      *)
-        printf '%s\n' "$line"
-        ;;
-    esac
-  done <"$config" >"$tmp"
-  mv "$tmp" "$config"
+  _lcars_config_json set-string "$1" "$2" "$3" ""
 }
 
+_lcars_config_json() {
+  "${LCARS_PYTHON_BIN:-python3}" "$(dirname "${BASH_SOURCE[0]}")/config.py" "$@"
+}
 # ===========================================================================
 # THE CLONE FINGERPRINT AND THE MISSION-ID MINTER  (S196, half A, leg 4)
 # ===========================================================================
@@ -2399,28 +2477,9 @@ _lcars_new_clone_id() {
 #   Insert a top-level string key as the FIRST key of the object, preserving
 #   every other byte of the file.
 #
-# WHY NOT lcars_config_set_or_add_string. That primitive inserts after the first
-# LINE that begins with `{`. On the multi-line config `lcars init` writes, that
-# is correct. On a ONE-LINE config — `{ "model": …, "created": … }`, the shape
-# every test fixture and every hand-written config uses — it appends a second
-# line AFTER the closing brace and the file stops being JSON. This splits on the
-# first `{` CHARACTER instead, which is right for both shapes and for `{}`.
+# The shared writer handles both one-line and pretty-printed configs.
 _lcars_config_insert_head_key() {
-  local config="$1" key="$2" esc text head rest trimmed tmp
-  [ -f "$config" ] || return 1
-  esc="$(lcars_json_escape "$3")"
-  text="$(cat "$config")" || return 1
-  case "$text" in *'{'*) : ;; *) return 1 ;; esac
-  head="${text%%\{*}"
-  rest="${text#*\{}"
-  # leading whitespace stripped, to see whether the object has any keys at all
-  trimmed="${rest#"${rest%%[![:space:]]*}"}"
-  tmp="$config.tmp.$$"
-  case "$trimmed" in
-    ''|'}'*) printf '%s{\n  "%s": "%s"%s\n'  "$head" "$key" "$esc" "$rest" >"$tmp" ;;
-    *)       printf '%s{\n  "%s": "%s",%s\n' "$head" "$key" "$esc" "$rest" >"$tmp" ;;
-  esac
-  mv "$tmp" "$config"
+  lcars_config_set_or_add_string "$@"
 }
 
 # lcars_clone_id <config-path> [--dry-run] — this clone's durable 32-hex identity.
@@ -2519,6 +2578,9 @@ lcars_mint_mission_id() {
 #
 # For each desired key: if the existing config already has it, the EXISTING raw
 # JSON value is preserved; otherwise the supplied default jsonvalue is written.
+# Values are parsed in full, serialized on one line, and validated before an
+# atomic replacement. Invalid existing settings are refused, never repaired
+# implicitly or partly replaced.
 # Keys present in the file but not in the desired list are dropped (the desired
 # list is the canonical schema) — but every current key IS in the schema, so in
 # practice nothing the captain set is lost.
@@ -2530,35 +2592,13 @@ lcars_config_merge() {
   local config="$1" desired="$2"
   LCARS_CONFIG_ADDED_KEYS=""
   LCARS_CONFIG_PRESENT_KEYS=""
-
-  local existing=""
-  [ -f "$config" ] && existing="$(cat "$config")"
-
-  local body="" key default rawval
-  while IFS='=' read -r key default; do
-    [ -n "$key" ] || continue
-    if [ -n "$existing" ] && printf '%s' "$existing" | grep -q "\"$key\"[[:space:]]*:"; then
-      # Preserve the existing raw value verbatim (string, number, or null).
-      rawval="$(printf '%s' "$existing" \
-        | sed -n "s/.*\"$key\"[[:space:]]*:[[:space:]]*\(.*\)/\1/p" | head -1)"
-      # Strip a trailing comma and surrounding whitespace from the captured tail.
-      rawval="${rawval%,}"
-      rawval="$(printf '%s' "$rawval" | sed 's/[[:space:]]*$//')"
-      LCARS_CONFIG_PRESENT_KEYS="${LCARS_CONFIG_PRESENT_KEYS:+$LCARS_CONFIG_PRESENT_KEYS }$key"
-    else
-      rawval="$default"
-      LCARS_CONFIG_ADDED_KEYS="${LCARS_CONFIG_ADDED_KEYS:+$LCARS_CONFIG_ADDED_KEYS }$key"
-    fi
-    body="${body:+$body,$'\n'}  \"$key\": $rawval"
-  done <<EOF
-$desired
-EOF
-
-  if [ "${3:-}" = "--dry-run" ]; then
-    printf '{\n%s\n}\n' "$body"
-  else
-    printf '{\n%s\n}\n' "$body" >"$config"
-  fi
+  local result
+  result="$(_lcars_config_json merge "$config" "$desired" "${3:-}")" || return 1
+  LCARS_CONFIG_ADDED_KEYS="${result%%$'\n'*}"
+  result="${result#*$'\n'}"
+  LCARS_CONFIG_PRESENT_KEYS="${result%%$'\n'*}"
+  [ "${3:-}" != "--dry-run" ] || printf '%s\n' "${result#*$'\n'}"
+  return 0
 }
 
 # ---------------------------------------------------------------------------
@@ -3187,16 +3227,11 @@ _dtc_js_npm_fallback() {
 #     same regression the dotnet comment records). An empty answer is an honest
 #     answer; inventing a runner to fill the slot is the defect, not the cure.
 #
-# DETERMINISTIC BY CHOICE — there is deliberately NO `command -v pytest` probe.
-# Detection feeds config.json, the board's verdict and every gate worktree, so
-# the same repo must seed the same runner on the captain's laptop, in a worker's
-# worktree and in CI; a probe would make the seed depend on whichever venv
-# happened to be active at init time. A DECLARED-but-uninstalled pytest stays
-# `pytest` for the same reason: the repo's declaration is the evidence, and
-# "can it launch here" is a different question, already asked once — honestly,
-# and as `broken` rather than as a rewritten runner — by the first-token check
-# in lcars_test_readiness_status. `python3 -m unittest` needs no probe either:
-# the runner ships with the interpreter.
+# Runner choice follows the repo's declarations, not PATH. Its interpreter
+# initially follows an existing repo environment: LCARS testenv, .venv, then venv.
+# unittest itself is stdlib, but the suite's imports may not be (OF2: PyYAML).
+# Record the absolute interpreter so gate worktrees reuse those dependencies.
+# Fresh init probes alternatives before retaining a failed detected candidate.
 #
 # LEDGERED (recorded, not fixed): the unittest leg looks for test files at the
 # top level and in the DIRECT children of `tests/` / `test/` only. A suite nested
@@ -3244,21 +3279,48 @@ _dtc_py_unittest_layout() {
   return 1
 }
 
+_dtc_python_environments() {
+  local common candidate
+  common="$(git -C "$TOPLEVEL" rev-parse --git-common-dir 2>/dev/null)" || common=""
+  case "$common" in ''|/*) : ;; *) common="$TOPLEVEL/$common" ;; esac
+  for candidate in "${common:+$common/lcars/testenv/bin/python}" \
+      "$TOPLEVEL/.venv/bin/python" "$TOPLEVEL/venv/bin/python"; do
+    [ -n "$candidate" ] && [ -x "$candidate" ] || continue
+    printf '%s\n' "$candidate"
+  done
+}
+
+_dtc_python_interpreter() {
+  local candidate
+  candidate="$(_dtc_python_environments | head -1)"
+  if [ -n "$candidate" ]; then
+    "${LCARS_PYTHON_BIN:-python3}" -c 'import shlex,sys; print(shlex.quote(sys.argv[1]))' "$candidate"
+    return $?
+  fi
+  printf 'python3'
+}
+
 _dtc_python() {
   # The MARKER GATE is unchanged — the same three files decide whether this arm
   # is asked at all. Only what it does once asked has changed.
   [ -f "$TOPLEVEL/pyproject.toml" ] || [ -f "$TOPLEVEL/pytest.ini" ] || [ -f "$TOPLEVEL/tox.ini" ] || return 1
+  local python
+  python="${1:-$(_dtc_python_interpreter)}"
   if _dtc_py_pytest_evidence; then
-    echo 'pytest "${LCARS_TESTS_DIR:-.}"'
+    if [ "$python" = python3 ]; then
+      echo 'pytest "${LCARS_TESTS_DIR:-.}"'
+    else
+      echo "$python -m pytest \"\${LCARS_TESTS_DIR:-.}\""
+    fi
     return 0
   fi
   local layout dir pat
   layout="$(_dtc_py_unittest_layout)" || return 1
   dir="${layout%%|*}"; pat="${layout#*|}"
   if [ -n "$pat" ]; then
-    echo "python3 -m unittest discover -s \"\${LCARS_TESTS_DIR:-$dir}\" -p \"$pat\""
+    echo "$python -m unittest discover -s \"\${LCARS_TESTS_DIR:-$dir}\" -p \"$pat\""
   else
-    echo "python3 -m unittest discover -s \"\${LCARS_TESTS_DIR:-$dir}\""
+    echo "$python -m unittest discover -s \"\${LCARS_TESTS_DIR:-$dir}\""
   fi
 }
 
@@ -3435,19 +3497,49 @@ detect_stack() {
 # — an actual bounded run — for the one-off callers that can afford it.
 
 # run_probe <cmd> — run the test command ONCE from the repo root, BOUNDED by
-# $LCARS_PROBE_TIMEOUT (default 120s; perl's alarm survives exec, so the timer
+# $LCARS_PROBE_TIMEOUT (default 500s; perl's alarm survives exec, so the timer
 # rides into the spawned bash). Sets PROBE_OUTCOME (pass|fail|zero-collected|
 # timeout), PROBE_RC, and PROBE_OUT (captured-output file). Zero-collected is
 # its OWN honest outcome, never a pass — the signature REUSES the rg_signature
 # `zerotests` + proof_zero_collected phrasings from skills/lcars-run/run.sh
 # (keep the two in step).
-PROBE_TIMEOUT="${LCARS_PROBE_TIMEOUT:-120}"
+PROBE_TIMEOUT="${LCARS_PROBE_TIMEOUT:-${LCARS_GATE_TIMEOUT_DEFAULT:-500}}"
+# S308: PROBE_SECS — the suite's measured WALL-CLOCK. This probe is the only
+# place LCARS ever times a repo's whole suite, and it used to throw the number
+# away: on the repo this was measured against it timed out and said only "fix
+# it before relying on the
+# Implement gates", while those gates went on to kill every proof leg at the
+# 120s default, five times, with nowhere for the repo to record what it needs.
+# Measured, not estimated; recorded, not inferred.
+PROBE_SECS=0
+lcars_probe_zero_executed() { # output-file → 0 when unittest has no genuine passes
+  # unittest's "Ran" includes skips and expected failures; neither certifies.
+  # Sum completed summaries so a mixed run with a genuine pass still qualifies.
+  awk '
+    /^Ran [0-9]+ tests? in / { count = $2; pending = 1 }
+    pending && /^(OK|FAILED|NO TESTS RAN)([[:space:]]|$)/ {
+      skipped = 0
+      if (match($0, /skipped=[0-9]+/))
+        skipped = substr($0, RSTART + 8, RLENGTH - 8) + 0
+      expected = 0
+      if (match($0, /expected failures=[0-9]+/))
+        expected = substr($0, RSTART + 18, RLENGTH - 18) + 0
+      executed += count - skipped - expected
+      seen = 1; pending = 0
+    }
+    END { exit !(seen && executed == 0) }
+  ' "$1"
+}
+
 run_probe() {
-  local cmd="$1"
+  local cmd="$1" _t0 _t1
   PROBE_OUT="$(mktemp "${TMPDIR:-/tmp}/lcars-probe.XXXXXX")"
+  _t0="$(date +%s 2>/dev/null || echo 0)"
   ( cd "$TOPLEVEL" && perl -e 'alarm shift; exec @ARGV or exit 127' \
       "$PROBE_TIMEOUT" bash -c "$cmd" ) >"$PROBE_OUT" 2>&1
   PROBE_RC=$?
+  _t1="$(date +%s 2>/dev/null || echo 0)"
+  PROBE_SECS=$((_t1 - _t0)); [ "$PROBE_SECS" -ge 0 ] || PROBE_SECS=0
   # S147: THREE VSTest phrasings, all exiting 0 (observed, SDK 10.0.107) — a
   # filter that matches nothing, a test project with no test methods, and a run
   # whose every discovered case was SKIPPED (`[Fact(Skip=…)]`), which prints
@@ -3479,7 +3571,7 @@ run_probe() {
     PROBE_OUTCOME="timeout"
   elif grep -Eq "$cantrun" "$PROBE_OUT"; then
     PROBE_OUTCOME="cannot-run"
-  elif grep -Eq "$zero" "$PROBE_OUT"; then  # runner finished but ran NOTHING
+  elif grep -Eq "$zero" "$PROBE_OUT" || lcars_probe_zero_executed "$PROBE_OUT"; then
     PROBE_OUTCOME="zero-collected"
   elif [ "$PROBE_RC" -eq 0 ]; then
     PROBE_OUTCOME="pass"
@@ -3488,16 +3580,51 @@ run_probe() {
   fi
 }
 
+# Called only for a freshly seeded Python command after its first live probe.
+# A failed alternative never replaces the original command or its timing evidence.
+lcars_probe_python_alternatives() {
+  LCARS_PROBED_TEST_CMD="$1"
+  [ "$PROBE_OUTCOME" != pass ] || return 0
+  [ -n "$(_dtc_python_environments)" ] || return 0
+  local original_out="$PROBE_OUT" original_rc="$PROBE_RC"
+  local original_outcome="$PROBE_OUTCOME" original_secs="$PROBE_SECS"
+  local candidate quoted cmd seen=""
+  report_probe
+  while IFS= read -r candidate; do
+    [ -n "$candidate" ] || continue
+    case "$seen" in *"|$candidate|"*) continue ;; esac
+    seen="$seen|$candidate|"
+    quoted="$("${LCARS_PYTHON_BIN:-python3}" -c \
+      'import shlex,sys; print(shlex.quote(sys.argv[1]))' "$candidate")" || return 1
+    cmd="$(_dtc_python "$quoted")" || return 1
+    [ "$cmd" != "$1" ] || continue
+    echo "  … probing alternative Python environment ($cmd)"
+    run_probe "$cmd"
+    if [ "$PROBE_OUTCOME" = pass ]; then
+      LCARS_PROBED_TEST_CMD="$cmd"
+      rm -f "$original_out"
+      return 0
+    fi
+    report_probe
+    rm -f "$PROBE_OUT"
+  done <<PY_ENVS
+$(_dtc_python_environments)
+$(command -v python3)
+PY_ENVS
+  PROBE_OUT="$original_out"; PROBE_RC="$original_rc"
+  PROBE_OUTCOME="$original_outcome"; PROBE_SECS="$original_secs"
+}
+
 # report_probe — the ship-status readout for the last run_probe.
 report_probe() {
   case "$PROBE_OUTCOME" in
     pass)
-      echo "  ✓ PROBE COMPLETE — test systems responding: the suite ran and passed." ;;
+      echo "  ✓ PROBE COMPLETE — test systems responding: the suite ran and passed in ${PROBE_SECS}s." ;;
     fail)
       echo "  ✗ PROBE FAILED — the suite ran but reported failures (exit $PROBE_RC)."
       tail -n 5 "$PROBE_OUT" 2>/dev/null | sed 's/^/      /' ;;
     zero-collected)
-      echo "  ⚠ PROBE INCONCLUSIVE — the runner started but collected ZERO tests."
+      echo "  ⚠ PROBE INCONCLUSIVE — the runner recorded ZERO genuinely passing tests (none collected, all skipped, or only expected failures)."
       echo "    That is not a pass: the command may be scoped to the wrong place." ;;
     cannot-run)
       echo "  ⚠ PROBE COULD NOT RUN — the command never reached a test run: the"
@@ -3506,6 +3633,54 @@ report_probe() {
     timeout)
       echo "  ⚠ PROBE TIMED OUT — no verdict within ${PROBE_TIMEOUT}s; the suite never settled." ;;
   esac
+}
+
+# ---------------------------------------------------------------------------
+# S308: SEED THE GATE TIMEOUT THE PROBE JUST MEASURED
+# ---------------------------------------------------------------------------
+# Passes supply measured wall-clock; timeouts supply only the exceeded bound.
+# Both get twice that evidence, rounded up to 30s (at most the gate's 1h cap).
+# A timeout never certifies the suite or promises the new budget is sufficient.
+# Existing captain settings always win. The probe and gate ship at 500s.
+lcars_gate_timeout_default() { # → the default gate timeout in seconds
+  local d="${LCARS_GATE_TIMEOUT_DEFAULT:-500}"
+  case "$d" in ''|*[!0-9]*) d=500 ;; esac
+  [ "$d" -gt 0 ] 2>/dev/null || d=500
+  printf '%s' "$d"
+}
+# Echoes the recommendation line(s) it printed; writes the key when it applies.
+lcars_seed_gate_timeout() { # config-file seconds [pass|timeout]
+  local config="$1" secs="${2:-0}" outcome="${3:-pass}" dflt want existing evidence
+  case "$outcome" in pass|timeout) : ;; *) return 0 ;; esac
+  [ "$outcome" != timeout ] || secs="$PROBE_TIMEOUT"
+  case "$secs" in ''|*[!0-9]*) return 0 ;; esac
+  dflt="$(lcars_gate_timeout_default)"
+  if [ "$outcome" = pass ]; then
+    [ "$secs" -gt "$dflt" ] || return 0
+    evidence="this suite takes ${secs}s"
+  else
+    evidence="this suite exceeded ${secs}s; its full duration is unknown"
+  fi
+  [ -f "$config" ] || return 0
+  existing="$(lcars_config_get_raw "$config" gateTimeout)"
+  case "$existing" in
+    ''|null)
+      want=$(( secs * 2 ))
+      want=$(( ((want + 29) / 30) * 30 ))
+      [ "$want" -gt "$dflt" ] || want=$(( dflt + 30 ))
+      [ "$want" -le 3600 ] || want=3600
+      lcars_config_set_or_add_raw "$config" gateTimeout "$want" || return 1
+      echo "  · $evidence —"
+      echo "    recorded gateTimeout=$want in .git/lcars/config.json as a provisional proof budget."
+      echo "    Adjust with: lcars update --gate-timeout <seconds> (1–3600)."
+      echo "    LCARS_GATE_TIMEOUT in the environment still wins; a timeout is not a passing probe."
+      ;;
+    *)
+      echo "  · $evidence; your recorded gateTimeout=$existing"
+      echo "    (.git/lcars/config.json) is left exactly as it is."
+      ;;
+  esac
+  return 0
 }
 
 # ---------------------------------------------------------------------------
@@ -3594,6 +3769,13 @@ lcars_test_readiness_status() {
     read -r first rest <<EOF2
 $tc
 EOF2
+    case "$tc" in
+      \'*|\"*)
+        first="$("${LCARS_PYTHON_BIN:-python3}" -c \
+          'import shlex,sys; print(next(iter(shlex.shlex(sys.argv[1], posix=True))))' "$tc")" \
+          || { LCARS_TESTREADY_STATUS="broken"; return 0; }
+        ;;
+    esac
     # Resolve from the repo root so a relative runner (node_modules/.bin/…)
     # resolves the way the gate would run it.
     if ( cd "${TOPLEVEL:-.}" 2>/dev/null && command -v "$first" >/dev/null 2>&1 ); then
@@ -4269,83 +4451,39 @@ lcars_readiness_line() {
 # lcars_config_set_or_add_string — the sanctioned-writer primitive: overwrite a
 # top-level string key IN PLACE (lcars_config_set_string), or — when the key is
 # absent from an older config — INSERT it as the first key after the opening
-# brace. Line-oriented and jq-free like its siblings; every other line is
-# preserved byte-for-byte.
+# brace. All text outside the targeted value is preserved byte-for-byte.
+# S309 fix round 1, D6 — OPTIONAL <after-key>: insert the new key's line
+# immediately AFTER that key's line instead of at the top. `lcars init` writes
+# `workerBin` straight after `model`, so `lcars update --engine` adding it at
+# the top meant the first init/update afterwards REORDERED one key (identical
+# values, one shot, then stable). Harmless, and still a diff in a file the
+# captain reads; a sibling writer can now place a key in the same slot.
+#
+# IT FALLS BACK RATHER THAN RISK THE FILE. The <after-key> is used only when its
+# value both EXISTS and is followed by a comma — inserting a comma-terminated line after
+# the file's LAST key would produce invalid JSON. Anything else takes the
+# historical path (first key after the opening brace), where the inserted line's
+# own comma is always correct.
 lcars_config_set_or_add_string() {
-  local config="$1" key="$2" value="$3"
-  [ -f "$config" ] || return 1
-  if lcars_config_has_key "$config" "$key"; then
-    lcars_config_set_string "$config" "$key" "$value"
-    return $?
-  fi
-  local esc; esc="$(lcars_json_escape "$value")"
-  local tmp="$config.tmp.$$" line inserted=0
-  while IFS= read -r line || [ -n "$line" ]; do
-    printf '%s\n' "$line"
-    if [ "$inserted" -eq 0 ]; then
-      case "$line" in
-        '{'*)
-          printf '  "%s": "%s",\n' "$key" "$esc"
-          inserted=1
-          ;;
-      esac
-    fi
-  done <"$config" >"$tmp"
-  mv "$tmp" "$config"
+  _lcars_config_json set-string "$1" "$2" "$3" "${4:-}"
 }
 
 # lcars_config_set_or_add_raw — the same primitive for a RAW (unquoted) JSON
-# value: an object, an array, a number, true/false/null. Overwrites the key's
-# line in place when it is present, or inserts it as the first key after the
-# opening brace when it is not. Every other line is preserved byte-for-byte.
-#
-# THE VALUE MUST BE ONE LINE, and that is not a style preference. The merge in
-# `lcars_config_merge` preserves an existing raw value by capturing the tail of
-# the line the key sits on — so a pretty-printed object would be truncated at
-# its first newline and the config would be left invalid the first time the
-# captain ran `lcars update`. Callers pass e.g.
-#   {"enabled": true, "engine": "copilot"}
-# Nothing verifies that for you; the suites do.
+# value: an object, an array, a number, true/false/null. Replaces the full value,
+# including multiline objects, and validates input and read-back before replace.
 lcars_config_set_or_add_raw() {
-  local config="$1" key="$2" value="$3"
-  [ -f "$config" ] || return 1
-  local tmp="$config.tmp.$$" line indent comma inserted=0
-  if lcars_config_has_key "$config" "$key"; then
-    while IFS= read -r line || [ -n "$line" ]; do
-      case "$line" in
-        *"\"$key\""*:*)
-          comma=""; case "$line" in *,) comma="," ;; esac
-          indent="${line%%\"*}"
-          printf '%s"%s": %s%s\n' "$indent" "$key" "$value" "$comma"
-          ;;
-        *) printf '%s\n' "$line" ;;
-      esac
-    done <"$config" >"$tmp"
-    mv "$tmp" "$config"
-    return 0
-  fi
-  while IFS= read -r line || [ -n "$line" ]; do
-    printf '%s\n' "$line"
-    if [ "$inserted" -eq 0 ]; then
-      case "$line" in
-        '{'*) printf '  "%s": %s,\n' "$key" "$value"; inserted=1 ;;
-      esac
-    fi
-  done <"$config" >"$tmp"
-  mv "$tmp" "$config"
+  _lcars_config_json set-raw "$1" "$2" "$3" ""
 }
 
 # lcars_config_get_raw — the RAW text of a top-level key's value: an object on
-# one line, a number, true/false/null. Empty when absent. The string reader
+# one line, a number, true/false/null. Multiline values are compacted; malformed
+# JSON fails explicitly. Empty when absent. The string reader
 # above cannot answer for an object, and a surface that showed `numberOne` by
 # re-deriving it from somewhere else would be inferring a fact its producer
 # already recorded.
 lcars_config_get_raw() {
-  local config="$1" key="$2" v
-  [ -f "$config" ] || return 0
-  v="$(sed -n "s/.*\"$key\"[[:space:]]*:[[:space:]]*\(.*\)/\1/p" "$config" | head -1)"
-  v="${v%,}"
-  printf '%s' "$v" | sed 's/[[:space:]]*$//'
+  [ -f "$1" ] || return 0
+  _lcars_config_json get-raw "$1" "$2"
 }
 
 # === S176: THE PRD's REQUIRED FIELDS, IN EITHER SHAPE ======================
@@ -4506,11 +4644,28 @@ HEAD = "Open questions"
 def section(text, head):
     want = re.sub(r"[^a-z0-9]+", " ", head.lower()).strip()
     out, lvl = [], None
+    fence = None
     for ln in text.replace("\r\n", "\n").split("\n"):
+        if fence is not None:
+            if re.fullmatch(r" {0,3}" + re.escape(fence[0]) +
+                            r"{" + str(len(fence)) + r",}[ \t]*", ln):
+                fence = None
+            continue
+        opening = re.match(r"^ {0,3}(`{3,}|~{3,})(.*)$", ln)
+        if opening and (opening.group(1)[0] != "`" or "`" not in opening.group(2)):
+            fence = opening.group(1)
+            continue
+        if lvl is not None and re.match(
+                r"^\*\*(?:Mission(?: title)?|Type|Goal|Acceptance Criteria|"
+                r"Out of Scope|Constraints)\s*:\*\*", ln, re.I):
+            break  # Only PRD fields end the bucket, not a concept's **Question:**.
         m = re.match(r"^(#{1,6})\s+(.*)$", ln)
         if m:
             name = re.sub(r"[^a-z0-9]+", " ", m.group(2).lower()).strip()
             if lvl is None:
+                if want == "open questions" and name.startswith(
+                        "open questions from the design session"):
+                    continue
                 if name == want or name.startswith(want + " "):
                     lvl = len(m.group(1))
                 continue
@@ -4566,10 +4721,9 @@ for p in sys.argv[1:]:
     # MEASURED on lcars-20260814-001: 2 in the first, 12 in the second. Reading
     # only the first would carry 2 of its 14 unsettled items and call it done.
     bodies = [section(text, HEAD)]
-    must = section(text, "WHAT IT MUST DO")
-    if must:
-        bodies.append(section(must, "2. Implied by the mockup"))
-        bodies.append(section(must, "Implied by the mockup"))
+    # A pasted hand-off may carry the implied bucket as a top-level heading.
+    bodies.append(section(text, "2. Implied by the mockup"))
+    bodies.append(section(text, "Implied by the mockup"))
     for body in bodies:
         for it in items(body):
             if it not in seen:
@@ -4611,16 +4765,34 @@ lcars_prd_questions_gate() {
   local prd="$1"; shift
   [ -f "$prd" ] || return 0
   local qf; qf="$(mktemp)"
-  lcars_concept_open_questions "$@" > "$qf"
+  # The idea can carry the source buckets without a separate attachment.
+  # The canonical destination section is excluded by the reader above.
+  lcars_concept_open_questions "$@" "$prd" > "$qf"
   local rc=0
   "${LCARS_PYTHON_BIN:-python3}" - "$prd" "$LCARS_PRD_QUESTIONS_HEADING" "$qf" <<'S175_PY' || rc=$?
-import re, sys
+import os, re, sys
 prd_path, heading, qfile = sys.argv[1], sys.argv[2], sys.argv[3]
 with open(qfile) as fh:
     qs = [ln.strip() for ln in fh if ln.strip()]
 with open(prd_path) as fh:
     prd = fh.read()
 want = re.sub(r"[^a-z0-9]+", " ", heading.lower()).strip()
+
+occurrences = []
+for number, ln in enumerate(prd.replace("\r\n", "\n").split("\n"), 1):
+    m = re.match(r"^(#{1,6})\s+(.*)$", ln)
+    if m and re.sub(r"[^a-z0-9]+", " ", m.group(2).lower()).strip().startswith(want):
+        occurrences.append((number, ln))
+if len(occurrences) > 1:
+    sys.stderr.write(
+        "PRD has duplicate '%s' headings. Keep ONE section containing every "
+        "question, not a copied idea section plus an appended hand-off section. "
+        "Occurrences:\n%s\n"
+        % (heading, "\n".join("  line %d: %s" % row for row in occurrences)))
+    sys.exit(1)
+
+if not qs and os.environ.get("LCARS_PRD_QUESTIONS_UNIQUENESS_ONLY") == "1":
+    sys.exit(0)
 
 section, lvl, found = [], None, False
 for ln in prd.replace("\r\n", "\n").split("\n"):
@@ -4707,8 +4879,14 @@ if len(missing) > spare:
         "or resolved with the captain and recorded as resolved. It may NOT "
         "quietly become an assertion, and quoting it elsewhere in the PRD does "
         "not count: the section is what the captain and the Plan Stage read. "
-        "Missing:\n%s\n"
+        "The question text must appear VERBATIM for a text match (line wrapping "
+        "is fine); a paraphrase of a STILL OPEN question does not match. A "
+        "declared RESOLVED entry may instead account for a settled question. "
+        "For example, copy this correct line:\n  - STILL OPEN: %s\n"
+        "Or retain that question text after `RESOLVED with the captain:` and "
+        "append ` — DECIDED: <the captain's answer>`.\nMissing:\n%s\n"
         % (len(unaccounted), len(qs), heading,
+           unaccounted[0],
            "\n".join("  - " + q for q in unaccounted)))
     sys.exit(1)
 S175_PY

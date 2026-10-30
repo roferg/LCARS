@@ -262,6 +262,170 @@ repo8="$(new_repo)"; sweep_rig "$repo8"
 check "5d. --sweep runs the sweep explicitly" \
   "grep -q 'swept $MISSION' '$repo8/swept.log'"
 
+# ===========================================================================
+# 6. S309 — THE RECORDED ENGINE IS READ, AND A REVIEW THAT DID NOT RUN
+#    NEVER LOOKS LIKE ONE THAT DID.
+# ===========================================================================
+# MEASURED on the 21–22 Oct 2026 hands-off run: `lcars xo on --sweep`, from an
+# unattended shell with no terminal, refused with "no terminal to ask at, and no
+# `--engine` given" — EVEN THOUGH config.json already recorded
+# `numberOne {enabled: true, engine: copilot}` from an earlier
+# `lcars xo on --engine copilot`. `pick_engine` never looked at the record.
+# The sweep did not run, nothing was reviewed, and a seat that did not read the
+# text took the review as done. That is a code review silently skipped before a
+# merge.
+#
+# NO TTY IS FORCED, not hoped for: every drive below redirects stdin from
+# /dev/null so `[ -t 0 ]` is false whatever the suite was launched from, and
+# $LCARS_ASSUME_TTY is explicitly empty so the other half of the same test
+# cannot be satisfied by an inherited terminal.
+n1_config() { # <repo> <numberOne raw object>
+  {
+    printf '{\n'
+    printf '  "cloneId": "c10ec10ec10ec10ec10ec10ec10ec10e",\n'
+    printf '  "projectName": "repo",\n'
+    printf '  "contextFile": null,\n'
+    printf '  "testCommand": "true",\n'
+    printf '  "numberOne": %s,\n' "$2"
+    printf '  "created": "2026-10-02T00:00:00Z"\n'
+    printf '}\n'
+  } >"$1/.git/lcars/config.json"
+  python3 -c 'import json,sys; json.load(open(sys.argv[1]))' \
+    "$1/.git/lcars/config.json" || { echo "FIXTURE CONFIG IS NOT VALID JSON"; exit 1; }
+}
+
+# 6a. THE RECORD IS READ — a sweep with no tty and no --engine runs on the
+#     engine config already holds.
+repo9="$(new_repo)"; sweep_rig "$repo9"
+n1_config "$repo9" '{"enabled": true, "engine": "copilot"}'
+rc9=0
+( cd "$repo9" && LCARS_ASSUME_TTY= LCARS_XO_SWEEP_BIN="$repo9/sweepbin" \
+    bash "$XO" on --sweep </dev/null >"$repo9/on.out" 2>&1 ) || rc9=$?
+check "6a. no tty, no --engine, a RECORDED engine ⇒ it does not refuse" \
+  "[ '$rc9' -eq 0 ]"
+check "6a. …and the sweep actually RAN" \
+  "grep -q 'swept $MISSION' '$repo9/swept.log'"
+check "6a. …on the engine the record names" \
+  "grep -q 'NUMBER ONE: ON · copilot' '$repo9/on.out'"
+check "6a. …and the record is still copilot afterwards" \
+  "grep -q '\"engine\": *\"copilot\"' '$repo9/.git/lcars/config.json'"
+check "6a. nothing was billed — no shim invocation carried a --model" \
+  "[ \"\$(awk -F'\t' '\$2==\"yes\"{n++} END{print n+0}' '$SHIM_LOG')\" -eq 0 ]"
+
+# 6b. NO RECORD ⇒ IT EXITS NON-ZERO AND SAYS THE REVIEW DID NOT HAPPEN.
+#     rc 0 on a skipped review is the whole finding: a caller that checks the
+#     exit code must be able to tell "reviewed" from "not reviewed".
+repo10="$(new_repo)"; sweep_rig "$repo10"
+n1_config "$repo10" '{"enabled": true}'
+rc10=0
+( cd "$repo10" && LCARS_ASSUME_TTY= LCARS_XO_SWEEP_BIN="$repo10/sweepbin" \
+    bash "$XO" on --sweep </dev/null >"$repo10/on.out" 2>&1 ) || rc10=$?
+check "6b. no tty, no --engine and NO record ⇒ EXITS NON-ZERO" \
+  "[ '$rc10' -ne 0 ]"
+check "6b. …and says plainly that no review happened" \
+  "grep -qi 'no review happened' '$repo10/on.out'"
+check "6b. …and nothing was swept" "[ ! -s '$repo10/swept.log' ]"
+check "6b. …and it still names the verb that records an engine" \
+  "grep -qF -- '--engine' '$repo10/on.out'"
+
+# 6c. A RECORD FOR AN ENGINE THAT IS NOT INSTALLED IS SKIPPED, not obeyed —
+#     the same rule every other picker applies to a pin. It must fall through to
+#     the refusal rather than engage an engine that cannot run.
+repo11="$(new_repo)"; sweep_rig "$repo11"
+n1_config "$repo11" '{"enabled": true, "engine": "copilot"}'
+rc11=0
+( cd "$repo11" && LCARS_ASSUME_TTY= LCARS_COPILOT_BIN="$repo11/no-copilot-here" \
+    LCARS_XO_SWEEP_BIN="$repo11/sweepbin" \
+    bash "$XO" on --sweep </dev/null >"$repo11/on.out" 2>&1 ) || rc11=$?
+check "6c. a recorded engine that is not installed cannot engage anything" \
+  "[ '$rc11' -ne 0 ] && [ ! -s '$repo11/swept.log' ]"
+check "6c. …and it still says no review happened" \
+  "grep -qi 'no review happened' '$repo11/on.out'"
+
+# 6c (fix round 1, D3) — AND IT MUST NOT DENY THE RECORD IT JUST READ.
+# MEASURED on the shipped fix: with `numberOne {"enabled": true, "engine":
+# "copilot"}` on disk and copilot absent from PATH, the refusal said "no engine
+# is recorded for Number One" — while the file plainly held `"engine":
+# "copilot"`. The critical properties were all correct (rc 1, config untouched,
+# nothing swept, the words NO REVIEW HAPPENED) but the DIAGNOSIS sent the reader
+# round in circles: they then run `lcars xo on --engine copilot`, which dies
+# with the correct message. "No record" and "recorded but not installed here"
+# are different facts and get different sentences.
+check "6c (D3). a record that exists is NEVER reported as no record" \
+  "! grep -qi 'no engine is recorded' '$repo11/on.out'"
+check "6c (D3). it says the recorded engine is NOT INSTALLED HERE" \
+  "grep -qF \"'copilot' is recorded for Number One\" '$repo11/on.out' \
+     && grep -qF 'is not on this machine' '$repo11/on.out'"
+check "6c (D3). …and still names the flag that gets a review done now" \
+  "grep -qF -- '--engine' '$repo11/on.out'"
+check "6c (D3). …and the record on disk is left exactly as it was" \
+  "grep -q '\"engine\": *\"copilot\"' '$repo11/.git/lcars/config.json'"
+# …while the genuine NO-RECORD case keeps its own, correct sentence.
+check "6b (D3). with no record at all it still says NO ENGINE IS RECORDED" \
+  "grep -qi 'no engine is recorded for Number One' '$repo10/on.out'"
+
+# 6c (fix round 2, D16) — A GARBAGE RECORD IS NOT A MISSING INSTALL.
+# MEASURED on the fix-round-1 shipment: with `numberOne {"enabled": true,
+# "engine": "gpt5"}` on disk — a name LCARS does not drive at all — the refusal
+# reused the D3 sentence above:
+#
+#   'gpt5' is recorded for Number One but is not on this machine (looked for '')
+#   … The record stands — install gpt5, or pass `--engine <engine>` …
+#
+# `(looked for '')` is empty because there is no binary to look for, "install
+# gpt5" points at something that does not exist, and the actual fault — gpt5 is
+# not an engine LCARS drives — is never said. `lcars update --engine gpt5`
+# already had the right sentence; this path now carries it. Everything that was
+# already right stays: non-zero, nothing swept, the words NO REVIEW HAPPENED.
+repo11b="$(new_repo)"; sweep_rig "$repo11b"
+n1_config "$repo11b" '{"enabled": true, "engine": "gpt5"}'
+rc11b=0
+( cd "$repo11b" && LCARS_ASSUME_TTY= LCARS_XO_SWEEP_BIN="$repo11b/sweepbin" \
+    bash "$XO" on --sweep </dev/null >"$repo11b/on.out" 2>&1 ) || rc11b=$?
+check "6c (D16). a record LCARS cannot drive engages nothing" \
+  "[ '$rc11b' -ne 0 ] && [ ! -s '$repo11b/swept.log' ]"
+check "6c (D16). …and it still says no review happened" \
+  "grep -qi 'no review happened' '$repo11b/on.out'"
+# The engine name still comes from the record (so "a record exists" is never
+# denied) and the DIAGNOSIS is `lcars update --engine`'s sentence.
+check "6c (D16). it says the record is not an engine LCARS DRIVES" \
+  "grep -qF \"'gpt5' is recorded for Number One\" '$repo11b/on.out' \
+     && grep -qF 'is not an engine LCARS drives' '$repo11b/on.out' \
+     && grep -qF 'it knows claude and copilot' '$repo11b/on.out'"
+check "6c (D16). …it never reports looking for a binary that cannot exist" \
+  "! grep -qF \"looked for ''\" '$repo11b/on.out'"
+check "6c (D16). …and never says to install a thing that is not real" \
+  "! grep -qi 'install gpt5' '$repo11b/on.out'"
+check "6c (D16). …it is NOT diagnosed as a missing install" \
+  "! grep -qF 'is not on this machine' '$repo11b/on.out'"
+check "6c (D16). …nor denied the way a no-record repo is" \
+  "! grep -qi 'no engine is recorded' '$repo11b/on.out'"
+check "6c (D16). …and still names the flag that gets a review done now" \
+  "grep -qF -- '--engine' '$repo11b/on.out'"
+check "6c (D16). …and the record on disk is left exactly as it was" \
+  "grep -q '\"engine\": *\"gpt5\"' '$repo11b/.git/lcars/config.json'"
+# The RECOGNISED-but-absent record keeps its own, correct sentence.
+check "6c (D16). a RECOGNISED engine that is absent still reads as not installed" \
+  "grep -qF 'is not on this machine' '$repo11/on.out' \
+     && ! grep -qF \"looked for ''\" '$repo11/on.out'"
+
+# 6d. An EXPLICIT --engine still outranks the record (the captain is present),
+#     and the plain no-sweep path with a record still just switches on.
+repo12="$(new_repo)"; sweep_rig "$repo12"
+n1_config "$repo12" '{"enabled": true, "engine": "copilot"}'
+rc12=0
+( cd "$repo12" && LCARS_ASSUME_TTY= LCARS_XO_SWEEP_BIN="$repo12/sweepbin" \
+    bash "$XO" on --engine claude --sweep </dev/null >"$repo12/on.out" 2>&1 ) || rc12=$?
+check "6d. an explicit --engine still wins over the record" \
+  "[ '$rc12' -eq 0 ] && grep -q 'NUMBER ONE: ON · claude' '$repo12/on.out'"
+repo13="$(new_repo)"; sweep_rig "$repo13"
+n1_config "$repo13" '{"enabled": true, "engine": "copilot"}'
+rc13=0
+( cd "$repo13" && LCARS_ASSUME_TTY= LCARS_XO_SWEEP_BIN="$repo13/sweepbin" \
+    bash "$XO" on </dev/null >"$repo13/on.out" 2>&1 ) || rc13=$?
+check "6d. the default (no --sweep) reads the record too, and starts nothing" \
+  "[ '$rc13' -eq 0 ] && [ ! -s '$repo13/swept.log' ] && grep -q 'lcars xo on --sweep' '$repo13/on.out'"
+
 echo
 printf 'Number One concurrency: %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

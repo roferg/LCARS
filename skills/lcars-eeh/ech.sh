@@ -31,9 +31,12 @@
 #                     [--deadline <iso>] [--force]
 #   ech.sh status
 #   ech.sh next [--all]
+#   ech.sh await [--limit <secs>]
+#   ech.sh watch [start|stop|status]
 #   ech.sh drive <mission>
 #   ech.sh stalled
 #   ech.sh land <mission>
+#   ech.sh grant reapprove [--mission <id>] [--once|--run]
 #   ech.sh push-gated
 #   ech.sh worktree <mission> | worktree --branch <branch>
 #   ech.sh live-check <mission> --type cli|web|workflow[,…]
@@ -67,6 +70,7 @@
 #   LCARS_LOG_SCRIPT LCARS_FILE_SCRIPT LCARS_RESOLVE_LOGS_SCRIPT
 #   LCARS_ESTABLISH_VISION_BIN                         (sibling skills)
 #   LCARS_NOTIFY          the walk-away ping           (lcars-run/notify.sh)
+#   LCARS_ECH_GRANTED_BY  grant attribution             (default captain)
 #   LCARS_SELF_CMD        the name this driver calls itself in its own output
 #                         (default: derived from $0, else `lcars-ech`)
 #
@@ -78,7 +82,7 @@
 # rather than a clock.
 set -uo pipefail
 
-SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 SELF="$SELF_DIR/$(basename "${BASH_SOURCE[0]}")"
 SKILLS_DIR="$(cd "$SELF_DIR/.." && pwd)"
 
@@ -153,6 +157,12 @@ usage() {
                        prerequisite nobody can default — nowhere to push
   status               one screen: scope, stages, gates, slots, EVERY open question, next action
   next [--all]         the ONE next mechanical step, and the HOLOGRAM-COMMAND-MODE.md heading for it
+  await [--limit <s>]  block until a parallel slot frees, watching the RECORDED driver
+                       PROCESSES. Returns 0 on a free slot, 124 when the bound passes
+                       (default 30 min) with the one command to run then. A wait has
+                       a way out: it can never sit for ever.
+  watch [start|stop|status]
+                       timerless guard; wake on actionable changes, exit 10 for a human
   playbook             the action -> heading table the contract test locks
   record <k.k> <v>     write one key (JSON value if it parses; empty value deletes)
   answered <id> "<a>"  close ONE open question (ids come from `status`); never deletes it
@@ -160,6 +170,9 @@ usage() {
                        raise a question YOURSELF (a product call, a scope change, a
                        standing-rule conflict). It lands in .questions with a real id and
                        pings him once. NEVER hand-edit .pending — it is a derived mirror.
+  grant reapprove [--mission <id>] [--once|--run]
+                       record the captain's exact sign-off authority, not a shell command.
+                       Default: one attempt. --run permits reuse in this run only.
 
   drive <mission>      run.sh drive --mission, backgrounded, waiter on the PROCESS
   stalled              what the crontab heartbeat calls; decides from recorded pids
@@ -556,6 +569,96 @@ slots_in_use() {
 }
 
 # ==========================================================================
+# S312 — IS THIS MISSION'S OWN WORK IN FLIGHT? (a SECOND question, deliberately)
+# ==========================================================================
+# `driver_live` above answers "is the drive THE ECH STARTED still running", and
+# that is the right question for every one of its six call sites: the slot
+# count, `next`, `status`'s driver column, `drive`'s single-instance refusal and
+# `land`'s pre-check all reason about the ECH's OWN driver, and widening it
+# would change what each of those five means. It is left exactly as it was.
+#
+# `stalled` asks a DIFFERENT question, and that is the defect. It asked
+# `driver_live` and then said "nobody is working on this", which is a
+# non-sequitur: a mission advanced by `lcars respond … answer` starts its own
+# driver outside the ECH's ledger and writes the MISSION's own drive lock, so
+# the pid the ECH recorded is a dead intermediate while a live validator works
+# the mission. The report then read "abandoned", and its suggested cure — clear
+# the lock and re-drive — would write mission state UNDER A RUNNING WORKER. That
+# is the worker fence, and a false stall is the one thing that endangers it.
+#
+# So: THREE measurements, and ANY of them being live is enough to stay silent.
+# All three are probes of real processes (`kill -0`, and the process table),
+# never a reading of log prose, and the conservative direction is silence: when
+# in doubt about a live worker, say nothing, because the cost of a missed stall
+# is a report an hour later and the cost of a false one is a fence breach.
+
+# mission_drive_lock_live <mission> — the owner of the MISSION's own drive lock
+# (run.sh's $MISSION_DIR/driver.lock, a dir with a pid file), probed. This is
+# the SAME record `lcars status` and the board's `_driver_running` read, so the
+# three surfaces cannot disagree about whether a drive is in flight.
+# A missing, garbage or STALE pid is NOT live — a crashed driver's leftover lock
+# must never buy silence, or the fix re-creates the invisibility it cures.
+mission_drive_lock_live() {
+  local pid; pid="$(cat "$MISSIONS/$1/driver.lock/pid" 2>/dev/null)" || return 1
+  case "$pid" in ''|*[!0-9]*) return 1 ;; esac
+  kill -0 "$pid" 2>/dev/null
+}
+
+# mission_worker_adapter_live <mission> — is a `worker-adapter` process working
+# out of THIS mission's directory right now? run.sh spawns every cold worker as
+# `bash worker-adapter.sh spawn <cli> <role> <outdir> <prompt>`, and <outdir> is
+# always under .git/lcars/missions/<id>/, so the mission is identified by the
+# adapter's own argv rather than guessed.
+#
+# THE SNAPSHOT IS TAKEN FIRST, ON PURPOSE. Matching with a `grep worker-adapter`
+# in the pipeline would make the matcher's own command line a match for itself —
+# a check that is permanently "live" for every mission and therefore
+# permanently silent. `ps` is captured into a variable whose own argv says
+# nothing about adapters, and the matching happens inside this already-running
+# shell, so there is nothing for it to find but real workers.
+mission_worker_adapter_live() {
+  local m="$1" snap line
+  snap="$(ps -eo pid=,command= 2>/dev/null)" || return 1
+  while IFS= read -r line; do
+    case "$line" in *worker-adapter*) ;; *) continue ;; esac
+    case "$line" in *"missions/$m/"*) return 0 ;; esac
+  done <<MWAL_EOF
+$snap
+MWAL_EOF
+  return 1
+}
+
+# mission_work_live <mission> — the three measurements, in cheapest-first order.
+mission_work_live() {
+  driver_live "$1" && return 0
+  mission_drive_lock_live "$1" && return 0
+  mission_worker_adapter_live "$1"
+}
+
+# mission_ids — every mission with a state.json, whether or not the ECH's own
+# drivers ledger has ever heard of it. `stalled`'s failed-and-idle lane needs
+# this: the 4h49m mission's driver exited NORMALLY, so there was nothing in the
+# ledger to iterate over.
+mission_ids() {
+  local d
+  [ -d "$MISSIONS" ] || return 0
+  for d in "$MISSIONS"/*; do
+    [ -f "$d/state.json" ] || continue
+    printf '%s\n' "$(basename "$d")"
+  done
+}
+
+# mission_failed <mission> — the S312 `failed` fact out of the mission's own
+# state.json: "<stage>\t<at>\t<reason>", or nothing. A DISTINCT fact from the
+# stage, so this never answers "what stage is it at" — only "did its last
+# attempt fail, and what did it say".
+mission_failed() {
+  local st; st="$(mstate "$1" failedStage)"
+  [ -n "$st" ] || return 1
+  printf '%s\t%s\t%s\n' "$st" "$(mstate "$1" failedAt)" "$(mstate "$1" failedReason)"
+}
+
+# ==========================================================================
 # THE PLAYBOOK TABLE — the contract between this script and HOLOGRAM-COMMAND-MODE.md.
 # `next` emits one of these actions and cites its heading; the suite asserts
 # every heading exists VERBATIM in the installed HOLOGRAM-COMMAND-MODE.md. Rename a heading
@@ -691,6 +794,38 @@ PF_SETTLED_ID=""
 # none), so `pf_bounded` below is the bound.
 PROBE_TIMEOUT="${LCARS_ECH_PROBE_TIMEOUT:-15}"
 
+# THE BOUND ON THE CRONTAB WRITE (S305). A seat reported this verbatim through
+# the sanctioned feedback channel: "heartbeat install produced no output and
+# remained running until terminated; heartbeat status confirms not installed."
+# Two more seats hit it in an earlier session.
+#
+# MEASURED on the captain's own box, not guessed. `crontab -l` answers in 0.0s;
+# the WRITE never returns at all, and it never returns for `crontab -` AND for
+# `crontab <file>` alike. That rules out BOTH documented hang mechanisms: it is
+# not a bare read on inherited stdin (the file form reads no stdin and hangs
+# identically) and it is not the version check's `git fetch` (a `bash -x` trace
+# shows no git call on this path, and `heartbeat status` runs the same script
+# preamble in 0.0s). What is left is the write itself: on macOS the table lands
+# in /var/at/tabs, which needs Full Disk Access for the writing process, and the
+# permission request blocks with nobody there to answer it.
+#
+# So the write is BOUNDED and SAYS SO. It must either work or come back with
+# something actionable: unattended, a verb that never returns is the whole night.
+CRONTAB_TIMEOUT="${LCARS_ECH_CRONTAB_TIMEOUT:-10}"
+
+# THE BOUND ON A WAIT (S305). THE BIGGEST MEASURED DEFECT IN THIS MODE: § 8
+# told the seat to wait and never said for how long, how to re-check, or what to
+# do when the wait did not end. Four of four seat models, across three model
+# families, stopped dead there. A seat that waits for ever is indistinguishable
+# from a dead one.
+#
+# IT DOES NOT CONTRADICT § 5 ("the waiter watches the PROCESS, never a clock").
+# The DRIVE's waiter is untouched and still blocks on its child; nothing here
+# polls a log and nothing wraps an LCARS verb in a timeout. What is bounded is
+# the SEAT's own idleness, and it is measured against a RECORDED start
+# (`waitingSince`) rather than reconstructed from a transcript.
+WAIT_LIMIT="${LCARS_ECH_WAIT_LIMIT:-1800}"
+
 # THE SENTINEL for question 2's default. It is a PHRASE, never a command, and it
 # is never written to `testCommand`: `push-gated` eval's that string, and a
 # guessed suite is strictly worse than none (it either refuses every push or
@@ -720,6 +855,12 @@ PF_Q_UNREACHABLE='the push remote does not answer: git cannot reach `origin`, so
 # support.
 PF_Q_SLOW_REMOTE='the push remote did not answer inside the probe deadline: it may simply be slow rather than wrong, and only you can tell which.'
 PF_Q_FORGE_LOGIN='the forge CLI is not logged in, so no pull request can be opened however well the run builds.'
+# WITHDRAWAL-ONLY SINCE S303, AND FROZEN. Nothing raises this question any more
+# — blanket trust stopped being a prerequisite (see `pf_q_engine_permission`) —
+# but the build that DID require it wrote this exact text into real
+# autopilot.json files, and `ap_withdraw` matches on the text. So the key stays
+# BYTE-IDENTICAL to what the old build wrote: change a character and a captain
+# mid-run keeps a dead stop in his inbox for ever, with no way to retire it.
 PF_Q_ALLOW_ALL='the engine has no unattended permission: COPILOT_ALLOW_ALL is not exactly `true`, so an unattended copilot run is refused on every command.'
 PF_Q_NO_LAUNCH_DIR='there is nowhere to make the launch copies: no writable directory could be found for the throwaway worktrees every live check runs from.'
 
@@ -760,23 +901,44 @@ PF_Q_NO_LAUNCH_DIR='there is nowhere to make the launch copies: no writable dire
 # shell that REAPS the job, so the job is reaped inside a subshell whose stderr
 # is discarded. The commands themselves were already fully redirected, so
 # nothing legible is lost.
+#
+# TWO OPTIONAL SEAMS, EACH DEFAULTING TO EXACTLY TODAY'S BEHAVIOUR (S305).
+# $PF_BOUNDED_STDIN is where the caged command reads from (default /dev/null,
+# i.e. closed, which is what every network probe wants) and $PF_BOUNDED_OUT is
+# where its stdout+stderr go (default /dev/null). The crontab WRITE needs both:
+# it is fed a table on stdin and its refusal message is the one a human acts
+# on. A SECOND bounded runner for it would have been a clone of this one, and
+# the two would have drifted on exactly the process-group kill semantics that
+# cost S300 three rounds to get right — so the seams live here instead.
 pf_bounded() {
   local secs="$1"; shift
   local mark; mark="$(mktemp "${TMPDIR:-/tmp}/lcars-pf-bound.XXXXXX")"
   rm -f "$mark"
+  local _in="${PF_BOUNDED_STDIN:-/dev/null}"
+  local _out="${PF_BOUNDED_OUT:-/dev/null}"
   local rc=0
   (
     set -m
-    "$@" >/dev/null 2>&1 </dev/null &
+    # TWO BRANCHES, AND THE DEFAULT ONE IS BYTE-IDENTICAL TO THE OLD LINE.
+    # `tests/lcars-ech.test.sh` asserts, textually, that every `… &` spawn in
+    # this file closes stdin with a literal `</dev/null` (the S208 guard — a
+    # background job that inherits a terminal's stdin is one of the two
+    # mechanisms that hangs a suite). Collapsing both cases into one
+    # `<"$_in"` line is CORRECT at runtime but makes that guard uncountable,
+    # and a guard you cannot count is a guard you have quietly removed. So the
+    # unseamed path keeps the literal and the seamed path is its own line.
+    if [ "$_in" = /dev/null ]; then
+      "$@" >"$_out" 2>&1 </dev/null &
+    else
+      "$@" >"$_out" 2>&1 <"$_in" &
+    fi
     local p=$!
     # THE WHOLE GROUP: `git ls-remote` execs a transport helper (and over ssh an
     # `ssh` of its own), and killing only the parent leaves it holding the
     # socket open until the TCP stack gives up — minutes later, at `ppid 1`.
-    # `kill -9 -$p` is the group; the two narrower kills stay as belt and braces
-    # for anything that left the group on its own.
+    # Only the recorded group and pid are ours to kill; never select by name.
     ( sleep "$secs"; : >"$mark"
       kill -9 -"$p" >/dev/null 2>&1
-      pkill -9 -P "$p" >/dev/null 2>&1
       kill -9 "$p" >/dev/null 2>&1 ) </dev/null >/dev/null 2>&1 &
     local w=$!
     local crc=0
@@ -969,6 +1131,165 @@ pf_withdraw_say() {
   say "   closed on the record — you do not have to answer a question that is no"
   say "   longer true to unstick your own run."
   return 0
+}
+
+# ==========================================================================
+# withdraw_obsolete — THE STALE-STOP SWEEP THAT `preflight` AND `next` SHARE
+# ==========================================================================
+# PROVEN DIRECTLY (S305). A repo set up by an OLDER build carries a stop the
+# NEW build has cured. `preflight` printed `WITHDRAWN [q1]` correctly; `next`
+# routed to `answer-pending` anyway — and `next` is the FIRST verb the
+# playbook's loop tells a seat to run. So an existing repo that takes an update
+# and is then driven normally meets a stop that no longer applies, with nothing
+# in `next`'s output hinting that another verb would clear it.
+#
+# ONE FUNCTION, TWO CALLERS, ON PURPOSE. Cloning the withdrawals into `next` is
+# the drift that produced this defect in the first place, so the withdrawals
+# that need NO terminal, NO network and NO prompt — every one of them a read of
+# this repo's own record — live here, and both verbs call it.
+#
+# WHAT IS DELIBERATELY NOT HERE: the withdrawals that need a PROBE (origin
+# answers again; `$GH_BIN auth status` reports a login). `next` is the loop's
+# cheap verb and must not reach the network to answer "what do I do now". Those
+# stay inside the preflight checks that own the probe.
+withdraw_obsolete() {
+  [ -f "$APJSON" ] || return 0
+  # 1. BLANKET TRUST STOPPED BEING A PREREQUISITE (S303), so EVERY copy of that
+  #    question on disk is dead — whatever the engine is and whatever the
+  #    environment says. Nothing raises it any more; this is its only reader.
+  pf_withdraw_say "$PF_Q_ALLOW_ALL" \
+    "withdrawn: blanket trust is not a prerequisite, so this question can no longer hold up the run."
+  # 2. A RUN RECORDED AS LOCAL-ONLY cannot be blocked on a remote or on a login.
+  if pf_local_only_recorded; then
+    pf_withdraw_say "$PF_Q_NOPUSH" \
+      "withdrawn: the run is recorded as local-only ($PF_LOCAL_ONLY_WHY), so there is nothing to push."
+    pf_withdraw_say "$PF_Q_UNREACHABLE" \
+      "withdrawn: the run is recorded as local-only, so the remote is not used."
+    pf_withdraw_say "$PF_Q_SLOW_REMOTE" \
+      "withdrawn: the run is recorded as local-only, so the remote is not used."
+    pf_withdraw_say "$PF_Q_FORGE_LOGIN" \
+      "withdrawn: the run is local-only, so no pull request is opened and no login is needed."
+  fi
+  # 3. A RECORDED, WRITABLE launchDir satisfies the launch-copies question.
+  local ld; ld="$(ap_j launchDir)"
+  if [ -n "$ld" ] && pf_dir_usable "$ld"; then
+    pf_withdraw_say "$PF_Q_NO_LAUNCH_DIR" \
+      "withdrawn: launchDir is recorded as $ld and is writable."
+  fi
+  return 0
+}
+
+# ==========================================================================
+# PROBE-DEPENDENT QUESTIONS — the ones only `preflight` can settle (S305 R1)
+# ==========================================================================
+# THE OTHER HALF OF `withdraw_obsolete`, and it exists because of what that
+# function DELIBERATELY LEAVES OUT. The withdrawals that need a network probe
+# stay inside `preflight`, on purpose: `next` is the loop's hot verb and must
+# not reach the network to answer "what do I do now", and these very verbs have
+# a measured silent-hang problem. That design is NOT reversed here.
+#
+# What was wrong is that the CONSEQUENCE was invisible. MEASURED IN TWO REPOS:
+# a repo init'd before its remote was added — the likeliest order of events —
+# records "there is nowhere to push", and after a WORKING origin is added
+# (`git ls-remote origin` answers) `next` STILL prints `NEXT: answer-pending`
+# on it, because only `preflight` runs the probe that retires it. `preflight`
+# in the same repo in the same state prints `WITHDRAWN [q1]` and the next
+# `next` advances to real work.
+#
+# `next`'s output did say "re-run preflight", so a seat that reads carefully
+# escapes. FOUR OF FOUR live models stalled by treating a wait as a halt, so a
+# park that MIGHT be dead has to say so in words that cannot be read as "stop
+# and wait for the captain". That is all this adds: no probe, no new state, no
+# change to which questions park.
+PF_PROBE_DEPENDENT_QS="$PF_Q_NOPUSH
+$PF_Q_UNREACHABLE
+$PF_Q_SLOW_REMOTE
+$PF_Q_FORGE_LOGIN"
+
+# probe_dependent_open_ids → the ids of the OPEN questions whose cause only a
+# preflight probe can re-check. Empty when there are none, which is what keeps
+# a genuinely open question reading as genuinely open.
+probe_dependent_open_ids() {
+  local qid qmission qwhat hit=""
+  while IFS="$(printf '\t')" read -r qid qmission qwhat; do
+    [ -n "${qid:-}" ] || continue
+    case "$PF_PROBE_DEPENDENT_QS" in
+      *"$qwhat"*) hit="$hit $qid" ;;
+    esac
+  done <<EOF
+$(open_questions)
+EOF
+  printf '%s' "${hit# }"
+}
+
+# say_probe_dependent_warning — printed under a `NEXT: answer-pending` whose
+# question only a probe can settle. Loud on purpose: this is the output the
+# whole loop reads first.
+say_probe_dependent_warning() {
+  local ids="$1"
+  say "THIS MAY ALREADY BE DEAD [$ids]: that question's cause is one only a PROBE can"
+  say "  re-check (does the remote answer, is the forge CLI logged in), and \`$SELF_CMD next\`"
+  say "  deliberately never touches the network — so it cannot tell you whether the cause"
+  say "  was fixed after the question was recorded. A repo set up before its remote was"
+  say "  added lands here every time."
+  say "RUN THIS FIRST: \`$SELF_CMD preflight\`. It runs the probe and either prints"
+  say "  \`WITHDRAWN [$ids]\` and frees the run, or re-states the stop as still true."
+  say "THIS IS NOT A HALT. Run that preflight and then \`$SELF_CMD next\` again"
+  say "  before you treat this as a stop. Do not stop here, and do not raise it with the"
+  say "  captain: only a question still open AFTER that preflight is his to answer."
+}
+
+# ==========================================================================
+# THE WAY OUT OF A WAIT (S305) — a limit, a re-check, and an expiry action
+# ==========================================================================
+# wait_started → the recorded start of the CURRENT wait, writing it on first
+# sight. Shared by `next` and `await` so the two cannot disagree about when
+# this wait began, and so neither has to infer it from its own output.
+wait_started() {
+  local since; since="$(ap_j waitingSince)"
+  case "${since:-}" in
+    ''|*[!0-9]*) since="$(now)"; ap_set waitingSince "$since" ;;
+  esac
+  printf '%s' "$since"
+}
+
+# wait_clear — this is no longer a wait, so the recorded start goes. Without
+# this a wait an hour ago would make the NEXT wait read as already expired.
+wait_clear() {
+  [ -n "$(ap_j waitingSince)" ] || return 0
+  ap_set waitingSince ""
+}
+
+# wait_say_way_out — the three things § 8 never said: the LIMIT, the RE-CHECK,
+# and WHAT TO DO WHEN THE LIMIT PASSES. Printed under every `NEXT: wait`.
+wait_say_way_out() {
+  local since elapsed mins emins
+  since="$(wait_started)"
+  elapsed=$(( $(now) - since ))
+  [ "$elapsed" -ge 0 ] || elapsed=0
+  mins=$(( WAIT_LIMIT / 60 ))
+  emins=$(( elapsed / 60 ))
+  say "LIMIT: ${mins} min, and you are ${emins} min into it (recorded as waitingSince, not"
+  say "  worked out of your own transcript)."
+  say "RE-CHECK: run \`$SELF_CMD next\` again when the drive in flight ends. Never poll a"
+  say "  log and never wrap an LCARS verb in a timeout (§ 5) — that drive already has a"
+  say "  waiter blocked on its PROCESS. With nothing else to do, \`$SELF_CMD await\`"
+  say "  blocks on those same recorded processes and CANNOT outlive the limit."
+  if [ "$elapsed" -lt "$WAIT_LIMIT" ]; then
+    say "IF THE LIMIT PASSES: stop waiting and run \`$SELF_CMD stalled\` — it reports a"
+    say "  driver that ended with nobody picking it up, decided from the RECORDED pid."
+    say "  Act on what it names, then \`$SELF_CMD record drivers.<id>.pickedUpAt <ts>\`."
+    say "  If it names NOTHING while the slots stay full, that is an LCARS bug with no"
+    say "  verb-level workaround (§ 9's fourth category): raise it with \`$SELF_CMD ask\`"
+    say "  and carry on with the other work. Never sit on a wait past its limit."
+  else
+    say "IF THE LIMIT PASSES: THE LIMIT HAS PASSED — ${emins} min of a ${mins} min wait."
+    say "  Do NOT wait again. Run \`$SELF_CMD stalled\` NOW and act on what it names,"
+    say "  then \`$SELF_CMD record drivers.<id>.pickedUpAt <ts>\`."
+    say "  If it names nothing while the slots stay full, that is an LCARS bug with no"
+    say "  verb-level workaround (§ 9's fourth category): raise it with \`$SELF_CMD ask\`"
+    say "  and carry on with the other work."
+  fi
 }
 
 # pf_settled <what>
@@ -1573,30 +1894,42 @@ pf_q_forge_login() {
   return 0
 }
 
-# --- question 5: the engine's unattended permission ------------------------
-# THE BIGGEST GAP OF THE FOUR DEAD NIGHTS, and the subject of this playbook's
-# OPENING SECTION: with COPILOT_ALLOW_ALL unset, a measured EEH round was
-# refused on every command — including read-only ones — with "Permission denied
-# because no interactive user response was available", after four rounds had
-# worked. From outside, that blocked run and a healthy idle one are identical,
-# and nothing inside it can detect or recover from it. Three of the four nights
-# are this one fact, and the preflight that exists to prevent them did not
-# mention it.
+# --- question 5 (REPORTED, NEVER A STOP): the engine's unattended permission -
+# IT USED TO STOP HERE, and for four nights that looked right: with
+# COPILOT_ALLOW_ALL unset, a measured EEH round was refused on every command —
+# including read-only ones — with "Permission denied because no interactive user
+# response was available", after four rounds had worked. From outside, that
+# blocked run and a healthy idle one are identical. So this question demanded the
+# exact string `true` before anything started.
 #
-# STOPS DELIBERATELY, and never prompts. There is nothing to default to and
-# nothing he can type HERE that would help: the variable must be exported in the
-# shell that LAUNCHES the run — this process's parent — and a child cannot set
-# its parent's environment. So the honest move is to stop at second zero with
-# the one command that fixes it. `answered <id> "…"` is his override, and it is
-# consumed on the next run.
+# S303 MEASURED THE REQUIREMENT AWAY, which is why it is no longer one. A seat
+# running the real pipeline stripped the variable from every child call it made
+# (`env -u COPILOT_ALLOW_ALL`, 21 times) and the build still completed and
+# merged: blanket trust is NOT load-bearing for the work. And demanding it had a
+# measured cost of its own — it broke three seat models before they began. A GPT
+# seat refused on policy rather than rely on it; a Claude Sonnet seat was blocked
+# by its own safety classifier for being told to self-grant that authority
+# ("Instruction Poisoning") and to launch a fully-trusted agent ("Create Unsafe
+# Agents"). A prerequisite that stops the engines that would satisfy it is not a
+# prerequisite, it is the fault.
 #
-# ENGINE-AWARE: a copilot fact. A claude run is unaffected and says so.
-# EXACTLY `true`: this playbook's own setup section is explicit that `1`, `yes`,
-# `on` and `y` auto-approve TOOLS without trusting the working directory, so a
-# truthy-but-wrong spelling is a FAILING value and is named as one. That is the
-# hardest version of this to debug at 03:00 and the cheapest to catch here.
+# SO THIS NOW REPORTS AND PROCEEDS. It still NAMES the variable and the value it
+# found, because an instrument that silently drops a fact is worse than one that
+# states it — including the `1`/`yes`/`on`/`y` distinction, which is still TRUE
+# of copilot and still the hardest thing to debug at 03:00. What it no longer
+# does is REFUSE TO START over it, or print a command telling anybody to grant
+# trust to anything. It never prompted and still does not.
+#
+# AND IT WITHDRAWS THE OLD QUESTION ON EVERY PATH. A captain who ran the
+# requiring build has that stop sitting OPEN in his inbox; curing the
+# requirement has to retire it, or he is answering a question that is no longer
+# true in order to unstick his own run. `PF_Q_ALLOW_ALL` therefore SURVIVES as a
+# withdrawal-only ledger key and its text must stay byte-identical to what the
+# old build wrote, or `ap_withdraw` cannot find the question it has to close.
+#
+# ENGINE-AWARE, as before: a copilot fact. A claude run says so.
 pf_q_engine_permission() {
-  local eng val how
+  local eng val
   eng="$(ap_j engine)"
   [ -n "$eng" ] || eng="$(jfile "$CFG" engine)"
   if [ "$eng" != "copilot" ]; then
@@ -1607,41 +1940,79 @@ pf_q_engine_permission() {
     return 0
   fi
   val="${COPILOT_ALLOW_ALL-}"
-  if [ "$val" = "true" ]; then
-    say ""
-    say "5. The engine's unattended permission: COPILOT_ALLOW_ALL=true is exported — not asking."
-    pf_withdraw_say "$PF_Q_ALLOW_ALL" "withdrawn by preflight: COPILOT_ALLOW_ALL=true is exported in this environment."
-    return 0
-  fi
   say ""
-  if [ -n "$val" ]; then
-    say "5. The engine's unattended permission: COPILOT_ALLOW_ALL is set to \"$val\", which"
-    say "   is NOT the string \`true\`. Other truthy spellings (1, yes, on, y) only"
-    say "   auto-approve tools; they do not TRUST the working directory, so an"
-    say "   unattended copilot run is still refused on every command."
+  if [ "$val" = "true" ]; then
+    say "5. The engine's unattended permission: COPILOT_ALLOW_ALL=true is already in"
+    say "   this environment, and is honoured. NOT a prerequisite either way — the"
+    say "   run does not need it and does not ask for it."
+  elif [ -n "$val" ]; then
+    say "5. The engine's unattended permission: COPILOT_ALLOW_ALL is set to \"$val\"."
+    say "   NOT a prerequisite — the run proceeds either way. For the record, only the"
+    say "   exact string \`true\` trusts the working directory; other spellings (1, yes,"
+    say "   on, y) auto-approve tools only. Neither is required here."
   else
-    say "5. The engine's unattended permission: COPILOT_ALLOW_ALL is not set, so an"
-    say "   unattended copilot run is refused on every command — including read-only"
-    say "   ones — with \"Permission denied because no interactive user response was"
-    say "   available\". Nothing inside a blocked run can detect or recover from it."
+    say "5. The engine's unattended permission: COPILOT_ALLOW_ALL is not set."
+    say "   NOT a prerequisite — the run proceeds either way, and nothing here asks"
+    say "   you, or the run itself, to grant blanket trust to anything."
   fi
-  if pf_settled "$PF_Q_ALLOW_ALL"; then
-    say "   SETTLED BY YOU [$PF_SETTLED_ID] — \"$PF_SETTLED\". Proceeding on your answer;"
-    say "   nothing is re-asked and no new question is raised."
+  pf_withdraw_say "$PF_Q_ALLOW_ALL" "withdrawn by preflight: blanket trust is not a prerequisite, so this question can no longer hold up the run."
+  return 0
+}
+
+pf_q_number_one() {
+  local choice eng out rc decision
+  local what="the preflight Number One choice could not be applied."
+  choice="$(ap_j numberOne.choice)"
+  if [ -n "$choice" ] && [ -n "$(ap_j numberOne.appliedAt)" ]; then
+    say ""
+    say "6. Number One: already recorded $choice (engine $(ap_j numberOne.engine)) — not asking."
     return 0
   fi
-  say "   STOPPING deliberately. This is what killed three of the four nights, and a"
-  say "   child process cannot export a variable into the shell that launched it."
-  if [ -n "$val" ]; then
-    how="set to \"$val\" rather than the string true"
+  eng="$(ap_j engine)"
+  if [ -z "$choice" ]; then
+    say ""
+    say "6. Number One: RECOMMENDED: ON, using the run's engine ($eng)."
+    choice="on"
+    if pf_prompt "6. Enable Number One for this run? ON is recommended; its engine is $eng." "ON"; then
+      case "$PF_VALUE" in
+        ON|on|On|true|1) choice="on" ;;
+        OFF|off|Off|no|NO|n|N|false|0) choice="off" ;;
+        *) say "   '$PF_VALUE' is not ON or OFF — taking the stated recommendation, ON." ;;
+      esac
+    else
+      say "   Nobody is there: PROCEEDS on the recommended default, ON."
+    fi
+    decision="$("$PY" - "$choice" "$eng" "$(now)" <<'PY'
+import json, sys
+choice, engine, ts = sys.argv[1:]
+print(json.dumps({"choice": choice, "enabled": choice == "on",
+                  "engine": engine, "settledAt": int(ts)}))
+PY
+)" || die "preflight: could not assemble the Number One decision."
+    ap_set numberOne "$decision" || die "preflight: could not record the Number One decision."
   else
-    how="not set at all"
+    eng="$(ap_j numberOne.engine)"
+    say "6. Number One: applying the recorded choice $choice ($eng); not asking again."
   fi
-  pf_stop "$PF_Q_ALLOW_ALL" \
-    "the engine is copilot and COPILOT_ALLOW_ALL is $how. An unattended copilot run is then refused on every command, with no interactive user to approve it and no way for the run to recover." \
-    "export COPILOT_ALLOW_ALL=true   # in the shell you launch from, then: $SELF_CMD preflight" \
-    "nothing has run, so there is nothing to undo; unset the variable to reverse it."
-  return 0
+  if [ "$choice" = "on" ]; then
+    out="$(cd "$CWD" && bash "$XO_SCRIPT" on --engine "$eng" --sweep 2>&1)"; rc=$?
+  else
+    out="$(cd "$CWD" && bash "$XO_SCRIPT" off 2>&1)"; rc=$?
+  fi
+  [ -z "$out" ] || printf '%s\n' "$out" | sed 's/^/  | /'
+  if [ "$rc" != 0 ]; then
+    local recovery="$SELF_CMD preflight   # after clearing the Number One refusal; the choice is already recorded"
+    [ -f "$CFG" ] || recovery="bash $(printf '%q' "$SKILLS_DIR/lcars-init/init.sh") && $SELF_CMD preflight"
+    PF_STOPS=$((PF_STOPS + 1))
+    write_pending "-" "$what" \
+      "Number One was requested $choice with engine $eng, but the LCARS verb refused (exit $rc): $out" \
+      "$recovery" \
+      "the choice is preserved, but it is not recorded as applied."
+    return 0
+  fi
+  ap_set numberOne.appliedAt "$(now)" || die "preflight: could not record Number One's application."
+  pf_withdraw_say "$what" "the recorded Number One choice was applied by its LCARS verb."
+  say "   Number One $choice applied with the run's engine $eng."
 }
 
 # cmd_preflight — the one round. Exits 10 when something stopped it, which is
@@ -1678,11 +2049,17 @@ cmd_preflight() {
     say "  WOULD have asked and the value it proceeds on, or stops on."
   fi
 
+  # THE SHARED STALE-STOP SWEEP, run BEFORE anything is asked: a question the
+  # new build has cured must never be counted, printed or answered. `next` runs
+  # the very same function, which is the whole point of it being one function.
+  withdraw_obsolete
+
   pf_q_launch_dir
   pf_q_test_command
   pf_q_somewhere_to_push
   pf_q_forge_login
   pf_q_engine_permission
+  pf_q_number_one
 
   trap - TTIN TTOU 2>/dev/null || true
   say ""
@@ -1799,7 +2176,8 @@ PY
   say ""
   say "Next: answer the alignment round, then record the answers with"
   say "  $SELF_CMD record liveTargets.host <host>"
-  say "  $SELF_CMD record captainOnlySteps '[{\"what\":\"…\",\"instructions\":\"…\",\"neededBy\":\"…\",\"done\":false}]'"
+  say "  $SELF_CMD record captainOnlySteps '[{\"what\":\"…\",\"instructions\":\"…\",\"done\":false}]'"
+  say "  neededBy: omit for now; use \"before M0 drives\" or \"after M0 merges\" for a milestone in scope."
   say "then follow $SKILLS_DIR/lcars-eeh/HOLOGRAM-COMMAND-MODE.md."
   say ""
   # THE SWEEP RUNS WHILE HE IS STILL HERE. `init` is the one moment a human is
@@ -1808,6 +2186,90 @@ PY
   # point naming the next step of a run that cannot finish.
   cmd_preflight || return $?
   cmd_next
+}
+
+# ==========================================================================
+# grant — a named authority, scoped and durable across seats
+# ==========================================================================
+cmd_grant() {
+  require_state
+  local action="${1:-}" mission="" duration="once" duration_set=0
+  [ $# -gt 0 ] && shift
+  [ "$action" = "reapprove" ] || die "grant: action '$action' is forbidden; only the named action reapprove is grantable."
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --mission)
+        [ $# -ge 2 ] && [ -n "$2" ] && [ "${2#--}" = "$2" ] || die "grant: --mission needs an id."
+        [ -z "$mission" ] || die "grant: name only one mission."
+        mission="$2"; shift 2 ;;
+      --once|--run)
+        [ "$duration_set" = 0 ] || die "grant: choose --once OR --run."
+        duration="${1#--}"; duration_set=1; shift ;;
+      *) die "grant: unknown argument '$1'." ;;
+    esac
+  done
+  [ -z "$mission" ] || mexists "$mission" || die "grant: no mission $mission in $MISSIONS."
+  ap_lock
+  "$PY" - "$APJSON" "$action" "$mission" "$duration" "${LCARS_ECH_GRANTED_BY:-captain}" "$(now)" <<'PY'
+import json, os, sys, uuid
+f, action, mission, duration, who, ts = sys.argv[1:]
+d = json.load(open(f))
+grant = {
+    "id": uuid.uuid4().hex, "action": action,
+    "scope": "mission" if mission else "run", "mission": mission or None,
+    "duration": duration, "who": who, "grantedAt": int(ts),
+    "runStartedAt": d["startedAt"],
+}
+d.setdefault("grants", []).append(grant)
+tmp = f + ".tmp.%d" % os.getpid()
+with open(tmp, "w") as fh:
+    json.dump(d, fh, indent=2)
+    fh.write("\n")
+os.replace(tmp, f)
+print("recorded grant %s: %s (%s, %s)" % (
+    grant["id"], action, mission or "this run", duration))
+PY
+  local rc=$?
+  ap_unlock
+  [ "$rc" = 0 ] || die "grant: could not record the authority."
+}
+
+# Claim before executing: a crashed seat must not spend a one-shot grant twice.
+grant_claim_reapprove() {
+  ap_lock
+  "$PY" - "$APJSON" "$1" "$(now)" <<'PY'
+import json, os, sys
+f, mission, ts = sys.argv[1:]
+d = json.load(open(f))
+for g in d.get("grants", []):
+    if (g.get("action") != "reapprove" or not g.get("who")
+            or not isinstance(g.get("grantedAt"), int)
+            or g.get("runStartedAt") != d.get("startedAt")
+            or g.get("duration") not in ("once", "run")
+            or (g.get("duration") == "once" and g.get("usedAt"))):
+        continue
+    if g.get("scope") == "mission":
+        if g.get("mission") != mission:
+            continue
+    elif g.get("scope") != "run" or g.get("mission") is not None:
+        continue
+    check = d.get("liveChecks", {}).get(mission, {})
+    if check.get("verdict") != "pass" or not os.path.exists(check.get("evidence") or ""):
+        sys.exit(12)
+    g["usedAt"] = int(ts)
+    g["usedFor"] = mission
+    g["uses"] = g.get("uses", 0) + 1
+    tmp = f + ".tmp.%d" % os.getpid()
+    with open(tmp, "w") as fh:
+        json.dump(d, fh, indent=2)
+        fh.write("\n")
+    os.replace(tmp, f)
+    print(g["id"])
+    break
+PY
+  local rc=$?
+  ap_unlock
+  return "$rc"
 }
 
 # ==========================================================================
@@ -1825,6 +2287,15 @@ cmd_record() {
   [ $# -ge 1 ] || die "record: <dotted.key> <value>"
   require_state
   case "$1" in
+    captainOnlySteps)
+      if [ -n "${2-}" ]; then
+        "$PY" "$SELF_DIR/captain-steps.py" "$APJSON" "$MISSIONS" check "$SELF_CMD" "$2" \
+          || return $?
+      fi
+      ;;
+    captainOnlySteps.*)
+      die "record: replace the complete array with \`$SELF_CMD record captainOnlySteps '<json-array>'\` so neededBy can be checked."
+      ;;
     localOnly|local-only|local_only|localonly)
       case "$(printf '%s' "${2-true}" | tr 'A-Z' 'a-z')" in
         true|yes|1|on|local-only|local)
@@ -1881,18 +2352,8 @@ EOF
   # token, no Pages tonight") made `next` send him straight back to it; the only
   # escapes were writing `done: true` (a lie in the ledger) or deleting the step
   # (losing that it was ever asked). `declined` is honoured here instead.
-  local cs; cs="$("$PY" - "$APJSON" <<'PY'
-import json, sys
-try:
-    d = json.load(open(sys.argv[1]))
-except Exception:
-    sys.exit(0)
-for s in d.get("captainOnlySteps") or []:
-    if not s.get("done") and not s.get("declined"):
-        print(s.get("what", "an unnamed captain-only step"))
-        break
-PY
-)"
+  local cs; cs="$("$PY" "$SELF_DIR/captain-steps.py" "$APJSON" "$MISSIONS" due "$SELF_CMD")" \
+    || die "next: could not read captain-only steps; repair autopilot.json and re-run \`$SELF_CMD next\`."
   if [ -n "$cs" ]; then
     printf 'captain-step\t-\t%s\n' "$cs"
   fi
@@ -1958,13 +2419,17 @@ PY
 
 cmd_next() {
   require_state
+  # A STOP THE NEW BUILD HAS CURED MUST NOT PARK THE LOOP'S FIRST VERB (S305).
+  # The same function `preflight` runs — see `withdraw_obsolete`.
+  withdraw_obsolete
   local all=0
   [ "${1:-}" = "--all" ] && all=1
-  local plan; plan="$(build_plan)"
+  local plan; plan="$(build_plan)" || return $?
   if [ -z "$plan" ]; then
     say "NEXT: wait"
     say "WHY: every milestone in scope has a driver in flight."
     say "PLAYBOOK: $(playbook_heading wait)"
+    wait_say_way_out
     return 0
   fi
   local action arg why
@@ -1984,6 +2449,14 @@ EOF
   fi
   say "WHY: $why"
   say "PLAYBOOK: $(playbook_heading "$action")"
+  if [ "$action" = "verify-gate" ]; then
+    say "RUN NOW: $SELF_CMD live-check $arg --type <types>   # every product type touched"
+    say "THEN: record both verdicts (target and known-fail control), run"
+    say "  \`$SELF_CMD policy --mission $arg --live-check pass|bugs\`, and take its action."
+    say "  If it permits landing: \`$SELF_CMD land $arg\`; otherwise follow the send-back."
+    say "CONTINUE: \`$SELF_CMD next\` after that action. Verify is not completion;"
+    say "  an accurate unfinished summary is not permission to stop."
+  fi
   # A question for the captain is the top line, but it is HIS step, not the
   # mode's: the work on every other milestone is still runnable and is named
   # here, so one open question cannot park the run.
@@ -1992,6 +2465,11 @@ EOF
     IFS="$(printf '\t')" read -r r_action r_arg r_why <<EOF
 $(printf '%s\n' "$plan" | grep -v '^answer-pending' | head -1)
 EOF
+    # A PARK WHOSE CAUSE ONLY A PROBE CAN RE-CHECK IS NOT A HALT (S305 R1).
+    # Said BEFORE the "nothing else is offered" line below, because that line
+    # is the one a seat reads as the stop. See `say_probe_dependent_warning`.
+    local pdq; pdq="$(probe_dependent_open_ids)"
+    [ -n "$pdq" ] && say_probe_dependent_warning "$pdq"
     # EXCEPT a RUN-WIDE PREREQUISITE, which parks everything (S300 fix1).
     # `--mission -` is how a question says it belongs to no milestone, and every
     # preflight stop is exactly that: nowhere to push, no login, no engine
@@ -2014,6 +2492,14 @@ EOF
       say "  ($r_why — a question on one milestone does not park the others.)"
     fi
   fi
+  # A WAIT IS NOT A DEAD END (S305). Every `NEXT: wait` carries its limit, its
+  # re-check and its expiry action; anything else clears the recorded start so a
+  # later wait is timed from ITS own beginning.
+  if [ "$action" = "wait" ]; then
+    wait_say_way_out
+  else
+    wait_clear
+  fi
   if [ "$all" = 1 ]; then
     say ""
     say "PLAN (in order):"
@@ -2030,6 +2516,150 @@ EOF
 $(printf '%s\n' "$plan")
 EOF
   fi
+}
+
+# ==========================================================================
+# await — THE BOUNDED WAY OUT OF A WAIT (S305)
+# ==========================================================================
+# It watches the recorded driver PROCESSES — § 5's rule, and the same evidence
+# `stalled` decides from — never a log and never a clock wrapped round an LCARS
+# verb. It returns the moment a slot frees, and it CANNOT outlive its bound:
+# past it the seat is handed the one command to run, not another wait.
+#
+# 124 IS DELIBERATE, AND IT IS NOT A RUN FAILURE. It is `timeout(1)`'s own
+# convention for "outran the deadline", which is the one thing this verb ever
+# observes; the message says plainly that the run has not failed and names the
+# next command, because a bare non-zero is how a seat talks itself into a stop.
+cmd_await() {
+  require_state
+  local limit="$WAIT_LIMIT" since elapsed used
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --limit)   limit="${2:-}"; shift 2 ;;
+      --limit=*) limit="${1#--limit=}"; shift ;;
+      *) die "await: unknown argument $1" ;;
+    esac
+  done
+  case "$limit" in ''|*[!0-9]*) die "await: --limit takes whole seconds" ;; esac
+  since="$(now)"
+  while :; do
+    used="$(slots_in_use)"
+    if [ "$used" -lt "$MAX_SLOTS" ]; then
+      wait_clear
+      say "await: a slot is free ($used/$MAX_SLOTS in use) after $(( $(now) - since ))s — run \`$SELF_CMD next\`."
+      return 0
+    fi
+    elapsed=$(( $(now) - since ))
+    [ "$elapsed" -lt "$limit" ] || break
+    sleep 5
+  done
+  say "await: ${limit}s passed and all $MAX_SLOTS slots are still held. THE WAIT IS OVER."
+  say "  This is NOT a failure of the run, and it is not a question for the captain yet."
+  say "  Run \`$SELF_CMD stalled\` now: it reports a driver that ended with nobody picking"
+  say "  it up, decided from the RECORDED pid rather than from a log. Act on what it"
+  say "  names, then \`$SELF_CMD record drivers.<id>.pickedUpAt <ts>\`."
+  say "  If it names nothing while the slots stay held, that is an LCARS bug with no"
+  say "  verb-level workaround (§ 9's fourth category): raise it with \`$SELF_CMD ask\`"
+  say "  and carry on with the other work."
+  return 124
+}
+
+# Unlike await, this guard outlives the seat's bounded wait. A free slot wakes
+# the seat through output, never retires the guard. Only a human gate retires it.
+watch_pid_live() {
+  local pid="$1" command
+  case "$pid" in ''|*[!0-9]*) return 1 ;; esac
+  kill -0 "$pid" 2>/dev/null || return 1
+  command="$(ps -p "$pid" -o command= 2>/dev/null)"
+  case "$command" in *"bash $SELF watch") return 0 ;; esac
+  return 1
+}
+
+cmd_watch() {
+  require_state
+  local pid attempts state
+  pid="$(ap_j watch.pid)"
+  case "${1:-}" in
+    start)
+      [ $# -eq 1 ] || die "watch start: no arguments or limit"
+      if watch_pid_live "$pid"; then
+        say "watch: already running (pid $pid), timerless."
+        return 0
+      fi
+      mkdir -p "$APDIR"
+      LCARS_ECH_CWD="$CWD" bash "$SELF" watch </dev/null >>"$APDIR/watch.log" 2>&1 &
+      pid=$!
+      ap_set watch.pid "$pid"
+      ap_set watch.startedAt "$(now)"
+      say "watch: started timerless guard (pid $pid); output: $APDIR/watch.log"
+      return 0 ;;
+    stop)
+      [ $# -eq 1 ] || die "watch stop: no arguments"
+      if watch_pid_live "$pid"; then
+        kill "$pid" || die "watch: could not stop recorded pid $pid"
+        attempts=0
+        while kill -0 "$pid" 2>/dev/null; do
+          state="$(ps -p "$pid" -o stat= 2>/dev/null)"
+          case "$state" in *Z*) break ;; esac
+          [ "$attempts" -lt 50 ] || die "watch: could not confirm termination of recorded pid $pid"
+          sleep 0.1
+          attempts=$((attempts + 1))
+        done
+      elif [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+        die "watch: recorded pid $pid is alive but its identity does not match; refusing to stop it"
+      fi
+      ap_set watch.pid ""
+      say "watch: stopped recorded guard pid ${pid:-none}."
+      return 0 ;;
+    status)
+      [ $# -eq 1 ] || die "watch status: no arguments"
+      if watch_pid_live "$pid"; then
+        say "watch: running (pid $pid), timerless; output: $APDIR/watch.log"
+      else
+        say "watch: not running."
+      fi
+      return 0 ;;
+  esac
+  [ $# -eq 0 ] || die "watch: no limit; use watch without arguments"
+  local previous="" event plan sleeper="" m failure failures
+  local interval="${LCARS_ECH_WATCH_INTERVAL:-5}"
+  case "$interval" in ''|*[!0-9.]*|.*|*.*.*) die "watch: invalid poll interval" ;; esac
+  trap '[ -z "$sleeper" ] || { kill "$sleeper" 2>/dev/null || true; wait "$sleeper" 2>/dev/null || true; }; exit 0' TERM INT HUP
+  say "watch: timerless guard active (pid $$); no re-arming required."
+  while :; do
+    if [ -n "$(open_questions)" ]; then
+      say "HUMAN NEEDED: $(open_questions)"
+      cmd_next --all
+      return 10
+    fi
+    event=""
+    failures=""
+    for m in $(mission_ids); do
+      [ "$(mstate "$m" stage)" = done ] && continue
+      mission_work_live "$m" && continue
+      failure="$(mission_failed "$m")"
+      if [ -n "$failure" ] || [ "$(mstate "$m" stage)" = failed ]; then
+        failures="${failures}failed mission $m: $failure
+"
+      fi
+    done
+    [ -z "$failures" ] || event="$failures"
+    if [ "$(slots_in_use)" -lt "$MAX_SLOTS" ]; then
+      plan="$(build_plan)"
+      event="${event}slot available
+$plan"
+    fi
+    if [ -n "$event" ] && [ "$event" != "$previous" ]; then
+      say "WAKE: $event"
+      [ -z "$failures" ] || cmd_stalled
+      cmd_next --all
+    fi
+    previous="$event"
+    sleep "$interval" </dev/null &
+    sleeper=$!
+    wait "$sleeper" || true
+    sleeper=""
+  done
 }
 
 # ==========================================================================
@@ -2058,6 +2688,18 @@ cmd_status() {
     local gate="-"
     [ "$(mstate "$id" awaitingHuman)" = "true" ] && gate="awaiting-human"
     [ "$stage" = "verify" ] && gate="verify"
+    # S312 — AND SAY SO WHEN THE LAST ATTEMPT FAILED. This screen read
+    # `stage=implement gate=- driver=-` for the mission that sat dead for 4h49m,
+    # which is byte-identical to a mission between stages. The gate cell now
+    # carries the failed stage, and it is ADDITIVE to whatever else is true
+    # (a timeout is failed AND awaiting-human — two facts, not one).
+    local fstage; fstage="$(mstate "$id" failedStage)"
+    if [ -n "$fstage" ] && ! mission_work_live "$id"; then
+      case "$gate" in
+        -) gate="FAILED:$fstage" ;;
+        *) gate="$gate+FAILED" ;;
+      esac
+    fi
     [ "$verified" = "true" ] && gate="$gate (live-verified)"
     printf '    %-5s %-26s stage=%-12s gate=%-14s driver=%s\n' "$ms" "$id" "$stage" "$gate" "$drv"
   done
@@ -2092,6 +2734,8 @@ print(sum(1 for s in steps if not s.get("done") and not s.get("declined")))
 PY
 )"
   say "  captain-only steps outstanding: ${cs:-0}"
+  "$PY" "$SELF_DIR/captain-steps.py" "$APJSON" "$MISSIONS" status "$SELF_CMD" \
+    || die "status: could not read captain-only steps; repair autopilot.json and re-run \`$SELF_CMD status\`."
   csd="$("$PY" - "$APJSON" <<'PY'
 import json, sys
 try:
@@ -2206,24 +2850,128 @@ cmd_waiter() {
 # is a measurement; a driver log is prose that a human also writes into, and a
 # marker-grep heuristic over it has mis-read a live pipeline as finished before.
 # It always exits 0: a heartbeat that fails is a heartbeat the captain deletes.
+# ==========================================================================
+# stalled — the one question the heartbeat asks: who is nobody advancing?
+# ==========================================================================
+# S312 FIX ROUND 1 — ONE LANE, THREE WITNESSES. It used to be TWO LANES, and they
+# were MUTUALLY EXCLUSIVE with the GENERIC one winning: lane 1 walked the drivers
+# ledger and printed `STALLED:`, then lane 2 skipped every mission lane 1 had
+# already `seen`. `drive` ALWAYS writes a driver record, so an ECH-DRIVEN failed
+# mission — which is what the 4h49m incident was — was always claimed by lane 1
+# and NEVER reached lane 2's informative message. A fresh tester measured it on a
+# real drive: state.json carried failedStage, failedAt and failedReason the whole
+# time and the operator was told `STALLED: … (stage=align, exit=1) — its driver
+# ended and nobody picked it up.` Deleting the drivers key produced the right
+# line; re-adding it suppressed it again; exitCode 0 behaved the same. So the
+# feature fired only on missions the ECH had never driven.
+#
+# Reordering the two loops would have fixed that one case and left the same trap
+# armed for the next witness, so there is now ONE pass over the UNION of both
+# records. Each mission is judged by every witness it has and reported ONCE, with
+# the best one — and the others are appended rather than dropped, because the
+# choice of headline must not lose a measurement.
+#
+# AND EVERY LINE CARRIES THE CURE THAT SILENCES **IT**. The old footer printed one
+# cure for every line alike; the tester ran it against a FAILED AND IDLE line and
+# the line printed again unchanged, because that cure belongs to the STALLED lane.
+# A refusal that names a cure which does not work is the defect S311 spent a whole
+# session fixing one file over.
+#
+# NOTHING NEEDS AN ACKNOWLEDGEMENT TO GO QUIET, deliberately: a mission that is
+# still failed and still idle an hour later is still a mission nobody is
+# advancing, and a human promising to look is not a mission being advanced.
 cmd_stalled() {
   require_state
-  local m pid exited picked stage n=0
-  for m in $(ap_keys drivers); do
-    if driver_live "$m"; then continue; fi
-    exited="$(ap_j "drivers.$m.exitedAt")"
-    [ -n "$exited" ] || continue
-    picked="$(ap_j "drivers.$m.pickedUpAt")"
-    if [ -n "$picked" ] && [ "$picked" -ge "$exited" ] 2>/dev/null; then continue; fi
+  local m n=0 stage f fstage fat fwhy exited picked lockpid unclaimed
+  local headline extra cure cands tab
+  tab="$(printf '\t')"
+  # EVERY MISSION THIS REPO KNOWS, from BOTH records, in one pass. The ECH's own
+  # drivers ledger can hold a mission whose state.json has gone, and `mission_ids`
+  # holds every mission the ledger never heard of (the 4h49m one included), so
+  # the candidate set is the union — and `sort -u` is what makes it a set, which
+  # is what makes "reported once" true by construction rather than by a
+  # bookkeeping variable the next edit can forget to update.
+  cands="$(printf '%s\n%s\n' "$(ap_keys drivers)" "$(mission_ids)" | sort -u)"
+  for m in $cands; do
+    [ -n "$m" ] || continue
+    # THE WORKER FENCE COMES FIRST, for every witness alike. `driver_live` alone
+    # answered the wrong question here (see mission_work_live above): a mission
+    # advanced outside the ECH's ledger has a dead recorded pid and a LIVE
+    # worker, and reporting that one invites a write under a running worker.
+    if mission_work_live "$m"; then continue; fi
     stage="$(mstate "$m" stage)"
     [ "$stage" = "done" ] && continue
+
+    # --- WITNESS 1 (the best): the mission's OWN record of a failed attempt.
+    # run.sh's drive_mark_stage_failed writes it; it survives a killed attempt
+    # because it is cleared by a stage that SUCCEEDS, not by one that starts.
+    f=""
+    f="$(mission_failed "$m")" || f=""
+
+    # --- WITNESS 2: the ECH's driver ledger — a drive that ended, unclaimed.
+    unclaimed=""
+    exited="$(ap_j "drivers.$m.exitedAt")"
+    if [ -n "$exited" ]; then
+      picked="$(ap_j "drivers.$m.pickedUpAt")"
+      if [ -n "$picked" ] && [ "$picked" -ge "$exited" ] 2>/dev/null; then
+        :
+      else
+        unclaimed=1
+      fi
+    fi
+
+    # --- WITNESS 3: a drive lock whose owner is DEAD. mission_work_live already
+    # said no live owner, so the lock dir simply being here means the attempt
+    # that took it never ran its release trap: a kill -9, a crash, a closed lid.
+    # A mission with a stale lock and nothing else to show is still a mission
+    # nobody is advancing, so it is reported in its own right.
+    lockpid=""
+    if [ -d "$MISSIONS/$m/driver.lock" ]; then
+      lockpid="$(cat "$MISSIONS/$m/driver.lock/pid" 2>/dev/null)" || lockpid=""
+      [ -n "$lockpid" ] || lockpid="unrecorded"
+    fi
+
+    # --- ONE MISSION, ONE HEADLINE: the best witness it has, and the cure that
+    # actually silences THAT line.
+    headline=""; extra=""; cure=""
+    if [ -n "$f" ]; then
+      IFS="$tab" read -r fstage fat fwhy <<SF_EOF
+$f
+SF_EOF
+      headline="$(printf 'FAILED AND IDLE: %s — its %s stage FAILED at %s and nothing has run since: %s' \
+        "$m" "${fstage:-a stage}" "${fat:-an unrecorded time}" "${fwhy:-no reason was recorded}")"
+      cure="  → what clears it: \`$SELF_CMD drive $m\`. The record is cleared by a stage that SUCCEEDS — not by starting one, so an interrupted retry leaves this line standing.
+  → \`$SELF_CMD record drivers.$m.pickedUpAt\` does NOT silence this line; that cure belongs to a STALLED one."
+    elif [ -n "$unclaimed" ]; then
+      headline="$(printf 'STALLED: %s (stage=%s, exit=%s) — its driver ended and nobody picked it up.' \
+        "$m" "${stage:-unknown}" "$(ap_j "drivers.$m.exitCode")")"
+      cure="  → what clears it: \`$SELF_CMD record drivers.$m.pickedUpAt $(now)\` once you have picked it up; \`$SELF_CMD next\` names the step."
+    elif [ -n "$lockpid" ]; then
+      headline="$(printf 'STALLED: %s (stage=%s) — its drive lock is held by pid %s, which is DEAD: an attempt was interrupted and nothing is advancing it.' \
+        "$m" "${stage:-unknown}" "$lockpid")"
+      cure="  → what clears it: \`$SELF_CMD drive $m\` — a new drive reclaims a lock whose owner is dead, so nothing has to be removed by hand."
+    else
+      continue
+    fi
+    # …and the witness the headline did not carry, so nothing measured is lost to
+    # the choice of headline. Only when the headline came from witness 1 or 2 —
+    # witness 3's own line already says this.
+    if [ -n "$lockpid" ] && [ -n "$f$unclaimed" ]; then
+      extra="  ⚠ its drive lock is still held by pid $lockpid, which is DEAD — that attempt was interrupted rather than finished."
+    fi
     n=$((n + 1))
-    printf 'STALLED: %s (stage=%s, exit=%s) — its driver ended and nobody picked it up.\n' \
-      "$m" "${stage:-unknown}" "$(ap_j "drivers.$m.exitCode")"
+    printf '%s\n' "$headline"
+    [ -n "$extra" ] && printf '%s\n' "$extra"
+    printf '%s\n' "$cure"
   done
   if [ "$n" -gt 0 ]; then
-    printf '%s stalled mission(s). Run `%s next` for the step, then `%s record drivers.<id>.pickedUpAt %s`.\n' \
-      "$n" "$SELF_CMD" "$SELF_CMD" "$(now)"
+    # NO ONE-SIZE CURE DOWN HERE. This footer used to prescribe
+    # `record drivers.<id>.pickedUpAt <ts>` for every reported mission alike, and
+    # a tester ran it against a FAILED AND IDLE line and watched the line print
+    # again unchanged: that command silences the STALLED lane only. Each line
+    # above now carries its own cure, so this says how many and gets out of the way.
+    printf '%s mission(s) need attention — each line above names what clears it. Run `%s next` for the step.\n' \
+      "$n" "$SELF_CMD"
   fi
   return 0
 }
@@ -2560,13 +3308,61 @@ cmd_land() {
   # (a land that reports success is invisible to the drive-failure cap), and it
   # FALSIFIES the record of what shipped. The mission's OWN state.json is the
   # evidence, so read it back: landed only when the stage is really `done`.
-  # The mode never passes --reapprove itself. That sign-off is the captain's by
-  # design, so this is a real stop-and-ask and the question carries his command.
   local st; st="$(mstate "$m" stage)"
+  local signoff_what="approve exited 0 but did NOT merge $m — it is still at stage '${st:-unknown}', not done."
+  local live_what="the hologram's own live check for $m is not recorded as pass with existing evidence."
+  local grant="" claim_rc=0
+  if [ "$st" = "verify" ] && [ "$(mstate "$m" reconcileStatus)" = "awaiting-reapprove" ]; then
+    grant="$(grant_claim_reapprove "$m")"; claim_rc=$?
+    if [ "$claim_rc" = 12 ]; then
+      write_pending "$m" "$live_what" \
+        "The grant is recorded, but Number One's recommendation cannot substitute for the hologram's own live check." \
+        "$SELF_CMD live-check $m --type <types>   # look, record pass, then: $SELF_CMD land $m" \
+        "nothing was merged and the grant was not consumed."
+      exit 10
+    fi
+    [ "$claim_rc" = 0 ] || die "land: could not claim the recorded grant; no sign-off attempted."
+  fi
+  if [ -n "$grant" ]; then
+    local evidence live_evidence entry
+    mkdir -p "$APDIR" || die "land: could not create the grant evidence directory."
+    evidence="$(mktemp "$APDIR/granted-action.XXXXXX")" || die "land: could not create the command evidence."
+    live_evidence="$(ap_j "liveChecks.$m.evidence")"
+    say "grant $grant acts: approve --mission $m --reapprove (no second question)."
+    out="$(cd "$CWD" && bash "$APPROVE_SCRIPT" --mission "$m" --reapprove 2>&1)"; rc=$?
+    printf '%s\n' "$out" >"$evidence" || die "land: command ran but its evidence could not be written."
+    printf '%s\n' "$out" | sed 's/^/  | /'
+    entry="$("$PY" - "$grant" "$m" "$APPROVE_SCRIPT" "$out" "$rc" "$evidence" "$live_evidence" <<'PY'
+import json, shlex, sys
+grant, mission, script, output, rc, evidence, live = sys.argv[1:]
+argv = ["bash", script, "--mission", mission, "--reapprove"]
+print(json.dumps({
+    "kind": "granted-action", "grant": grant, "action": "reapprove",
+    "mission": mission, "argv": argv,
+    "command": " ".join(shlex.quote(a) for a in argv),
+    "output": output, "exitCode": int(rc), "evidence": evidence,
+    "liveEvidence": live,
+}))
+PY
+)" || die "land: command ran but its decision could not be assembled."
+    ledger_append decisions "$entry" || die "land: command ran but its decision could not be ledgered."
+    st="$(mstate "$m" stage)"
+    if [ "$rc" != 0 ] || [ "$st" != "done" ]; then
+      write_pending "$m" \
+        "LCARS refused the granted reapprove for $m (exit $rc, stage '${st:-unknown}'): $out" \
+        "A grant is not a second route around a permission-classifier refusal or a merge LCARS refused on its merits." \
+        "bash $APPROVE_SCRIPT --mission $m   # clear the refusal's cause first; no automatic retry" \
+        "no merge is claimed; the attempt and its output are recorded at $evidence."
+      exit 10
+    fi
+    ap_withdraw "$signoff_what" "fulfilled by recorded grant $grant; command and evidence are in decisions.jsonl." >/dev/null
+    ap_withdraw "$live_what" "the hologram's own live check is now recorded with evidence." >/dev/null
+  fi
   if [ "$st" != "done" ]; then
+    say "refusal: ungranted-reapprove — no recorded authority for this sign-off."
     write_pending "$m" \
-      "approve exited 0 but did NOT merge $m — it is still at stage '${st:-unknown}', not done." \
-      "LCARS reconciled main into the branch and re-tested it green, then stopped for your reapprove; reapprove is YOUR sign-off, so the mode will not give it and will not claim a merge that did not happen." \
+      "$signoff_what" \
+      "LCARS stopped without merging. Reapprove is your sign-off; without a matching recorded grant the mode will not give it or claim a merge that did not happen." \
       "bash $APPROVE_SCRIPT --mission $m --reapprove   # then: $SELF_CMD land $m" \
       "nothing was merged and no post-merge hygiene ran, so there is nothing to undo."
     exit 10
@@ -2746,6 +3542,58 @@ hb_without_ours() {
   printf '%s\n' "$cur" | grep -vF -- "$HB_MARK $CWD" || true
 }
 
+# hb_hung_say <what> — the actionable message a hung crontab write earns.
+# A verb that returns nothing and never exits is the single worst thing in an
+# unattended run: from outside, it and a dead machine are the same. So the
+# bound fires, the kill happens, and this gets SAID.
+hb_hung_say() {
+  say "heartbeat: $1 did NOT complete — \`$CRONTAB_BIN\` was still running after"
+  say "  ${CRONTAB_TIMEOUT}s, so it was killed and NOTHING was written. (\`$CRONTAB_BIN -l\`"
+  say "  answers instantly on this box; it is the WRITE that blocks.)"
+  say "  MOST LIKELY CAUSE, and it is fixable: on macOS the table lands in"
+  say "  /var/at/tabs, and the process doing the writing needs FULL DISK ACCESS."
+  say "  Without it the permission request blocks with nobody there to answer it,"
+  say "  which is exactly \"no output, still running\"."
+  say "  THE HEARTBEAT IS OPTIONAL — nothing else in this mode needs it. You lose"
+  say "  only the automatic stalled-driver check. DO NOT STOP THE RUN over it, and"
+  say "  do not raise it with the captain."
+  say "  Either:  grant Full Disk Access to your terminal (System Settings ->"
+  say "           Privacy & Security -> Full Disk Access), then re-run"
+  say "           \`$SELF_CMD heartbeat install\`"
+  say "  Instead: install falls back to \`$SELF_CMD watch start\`, the timerless guard."
+  say "           It watches failed missions as well as free slots; no re-arming."
+  say "  (nothing was written, so there is nothing to undo.)"
+}
+
+# hb_write <what> <file-holding-the-new-table> — the ONE door every crontab
+# WRITE goes through, bounded by $CRONTAB_TIMEOUT.
+#   0    crontab took the table
+#   124  it never came back inside the bound (hb_hung_say has already spoken)
+#   *    crontab refused it — its own message is printed, because that message
+#        is the one a human acts on and `pf_bounded` would otherwise eat it.
+#
+# IT WRITES THE TABLE TO A FILE FIRST and feeds that file in as the bounded
+# command's stdin. The old shape was `{ … } | "$CRONTAB_BIN" -`, which no
+# bounded runner can wrap: a pipeline is not a command. The table is identical
+# either way — `crontab -` still reads it on stdin.
+hb_write() {
+  local what="$1" tbl="$2" err rc
+  err="$(mktemp "${TMPDIR:-/tmp}/lcars-ech-cron.XXXXXX")"
+  PF_BOUNDED_STDIN="$tbl" PF_BOUNDED_OUT="$err" \
+    pf_bounded "$CRONTAB_TIMEOUT" "$CRONTAB_BIN" -
+  rc=$?
+  if [ "$rc" = 124 ]; then
+    rm -f "$err"
+    hb_hung_say "$what"
+    return 124
+  fi
+  if [ "$rc" != 0 ] && [ -s "$err" ]; then
+    sed 's/^/  /' "$err" >&2
+  fi
+  rm -f "$err"
+  return "$rc"
+}
+
 cmd_heartbeat() {
   local sub="${1:-status}"
   case "$sub" in
@@ -2753,8 +3601,23 @@ cmd_heartbeat() {
       require_state
       mkdir -p "$APDIR"
       local keep; keep="$(hb_without_ours)"
-      { [ -n "$keep" ] && printf '%s\n' "$keep"; hb_line; } | "$CRONTAB_BIN" - \
-        || die "heartbeat: crontab refused the new table"
+      local tbl wrc
+      tbl="$(mktemp "${TMPDIR:-/tmp}/lcars-ech-tbl.XXXXXX")"
+      { if [ -n "$keep" ]; then printf '%s\n' "$keep"; fi; hb_line; } >"$tbl"
+      hb_write install "$tbl"; wrc=$?
+      rm -f "$tbl"
+      if [ "$wrc" != 0 ]; then
+        if [ "$wrc" != 124 ]; then
+          say "heartbeat: crontab refused the new table (exit $wrc)."
+          say "  DO NOT STOP THE RUN over it, and do not raise it with the captain."
+        fi
+        cmd_watch start || die "heartbeat: timerless fallback could not start" 11
+        say "FALLBACK: timerless watcher active; inspect \`$SELF_CMD watch status\`."
+        # 11 is this driver's "a mechanical pre-check refused" code: NOT 10,
+        # which is reserved for a question recorded for the captain, and not 0,
+        # which would claim an install that did not happen.
+        exit 11
+      fi
       say "heartbeat installed (one crontab line, minute 17):"
       hb_line | sed 's/^/  /'
       say "  it calls \`$SELF_CMD stalled\` and acts only when a pipeline ended with nobody picking it up."
@@ -2770,8 +3633,15 @@ cmd_heartbeat() {
       # below is unchanged: it still refuses to CLAIM a removal that did not
       # happen.
       local rest; rest="$(hb_without_ours)"
-      { if [ -n "$rest" ]; then printf '%s\n' "$rest"; fi; } | "$CRONTAB_BIN" - \
-        || die "heartbeat: crontab refused the new table"
+      local rtbl rwrc
+      rtbl="$(mktemp "${TMPDIR:-/tmp}/lcars-ech-tbl.XXXXXX")"
+      { if [ -n "$rest" ]; then printf '%s\n' "$rest"; fi; } >"$rtbl"
+      hb_write remove "$rtbl"; rwrc=$?
+      rm -f "$rtbl"
+      if [ "$rwrc" = 124 ]; then
+        exit 11
+      fi
+      [ "$rwrc" = 0 ] || die "heartbeat: crontab refused the new table"
       if hb_current | grep -qF -- "$HB_MARK $CWD"; then
         die "heartbeat: the line is still present after remove — refusing to claim it is gone."
       fi
@@ -2811,6 +3681,87 @@ cmd_heartbeat() {
 # the fenced worker lifts each item's `run:`/`workflow:`/`read:` template.
 LIVE_CHECK_DIR="${LCARS_LIVE_CHECK_DIR:-$SKILLS_DIR/lcars-run/live-check}"
 LIVE_CHECK_TYPES="cli web workflow"
+
+# ...BUT THE SEAT IS NEVER POINTED AT THAT SOURCE. Measured live 2026-10-17
+# 18:18: a copilot seat driving an unattended mission reached the Verify gate,
+# ran `grep '^### ' …/skills/lcars-run/live-check/cli.md` — a path THIS SCRIPT
+# had just handed it — and froze on
+#
+#   "This action may read or write the following path outside the paths
+#    currently allowed for this session."
+#
+# The seat was not browsing. It is trusted inside the PRODUCT REPOSITORY it is
+# building in, and LCARS's installed source tree is a different directory, so
+# every checklist read is an out-of-world read. Unattended, that is the whole
+# night, and nothing inside the blocked run can detect or recover from it.
+#
+# SO THE CHECKLIST IS STAGED INTO THE REPO AND THE SEAT IS POINTED AT THE COPY.
+# Not inlined into a prompt: cli.md is 313 lines and its entire value is that
+# the seat RE-READS the item at the moment it performs it, so the item cannot be
+# forgotten as the seat's context grows. Pasted text loses exactly that; a file
+# on disk keeps it. `.git/` is never tracked, so the product's working tree
+# stays clean — the same reason every other piece of mission state lives there.
+LIVE_CHECK_LOCAL="$LCARS_DIR/live-check"
+
+# live_check_stage <type…> — refresh $LIVE_CHECK_LOCAL from $LIVE_CHECK_DIR.
+#
+# COPIED EVERY TIME, NEVER TRUSTED-IF-PRESENT. The alternative (copy only when
+# missing) means a repo staged by an older LCARS silently shadows the newer
+# checklist for ever, and the one thing a checklist must never be is quietly out
+# of date — the items ARE the proof surface. A `cp` of four small files costs
+# nothing, so there is no honest reason to cache it.
+#
+# THE SOURCE IS READ-ONLY HERE. This copies out of $LIVE_CHECK_DIR and never
+# writes back into it: Number One and lcars-run read those same files, and a
+# round that edited the shared checklist in place would change what the other
+# reader proves.
+live_check_stage() {
+  mkdir -p "$LIVE_CHECK_LOCAL" || die "live-check: could not make $LIVE_CHECK_LOCAL"
+  local t
+  # README.md goes with them: it is the "two readers, one file" note that
+  # explains what the items are for, and a staged dir that cannot answer that
+  # question sends the seat back to the source tree to find out.
+  for t in "$@" README; do
+    [ -f "$LIVE_CHECK_DIR/$t.md" ] || continue
+    cp -f "$LIVE_CHECK_DIR/$t.md" "$LIVE_CHECK_LOCAL/$t.md" \
+      || die "live-check: could not stage $t.md into $LIVE_CHECK_LOCAL"
+  done
+}
+
+# ==========================================================================
+# THE BUG PRD TEMPLATE — THE SAME PROBLEM, ONE LINE FURTHER ON (S304)
+# ==========================================================================
+# `live-check`'s last line handed the seat
+#
+#   (template: <abs>/skills/lcars-eeh/bug-prd.md)
+#
+# and `file-bug`'s two refusals named the same path. That is a read into LCARS's
+# installed source tree, so it raises the identical permission dialog the
+# checklists did — and it raises it at the single worst moment available: the
+# seat has FOUND a bug and is reaching for the template to file it. The
+# captain's stopping rule for a measurement needs one filed bug carried through
+# to merged, so a seat that freezes here cannot satisfy it at all.
+#
+# Same cure, same reasoning as live_check_stage: stage into the repo, hand out
+# the staged path. The template is 131 lines and its value is that it is READ
+# while the PRD is being written, so it is a file on disk and not pasted prose.
+BUG_PRD_SRC="$SKILLS_DIR/lcars-eeh/bug-prd.md"
+BUG_PRD_LOCAL="$LCARS_DIR/bug-prd.md"
+
+# bug_prd_stage — refresh $BUG_PRD_LOCAL from $BUG_PRD_SRC.
+#
+# COPIED EVERY TIME, NEVER TRUSTED-IF-PRESENT, for live_check_stage's reason: a
+# repo staged by an older LCARS would shadow the newer template for ever, and a
+# silently out-of-date bug template is a bug that comes back re-filed. The
+# source is read-only here — `lcars-eeh docs bug-prd` and Number One read that
+# same file, and a round that rewrote it in place would change what they teach.
+# It DIES rather than name a path it failed to create.
+bug_prd_stage() {
+  [ -f "$BUG_PRD_SRC" ] || die "bug-prd: no template at $BUG_PRD_SRC — is LCARS installed?"
+  mkdir -p "$LCARS_DIR" || die "bug-prd: could not make $LCARS_DIR"
+  cp -f "$BUG_PRD_SRC" "$BUG_PRD_LOCAL" \
+    || die "bug-prd: could not stage bug-prd.md into $BUG_PRD_LOCAL"
+}
 
 # label_for <mission-id> → the milestone label in scope that names it, or "".
 label_for() {
@@ -2897,6 +3848,12 @@ cmd_live_check() {
   br="$(mstate "$m" branch)"
 
   local tlist; tlist="$(printf '%s' "$types" | tr ',' ' ')"
+  # STAGE BEFORE ANYTHING IS PRINTED, so every path this command names is one
+  # the seat can read. See live_check_stage.
+  live_check_stage $tlist
+  # The bug template goes with them: the LAST line this command prints points at
+  # it, and a seat that cannot read it cannot file what it just found.
+  bug_prd_stage
   say "LIVE CHECK — $m"
   say "  types:    $tlist"
   wt_say "$wt" "$home" "$br"
@@ -2911,14 +3868,64 @@ cmd_live_check() {
   ap_set "liveChecks.$m.evidence" "$evdir"
   ap_set "liveChecks.$m.worktree" "$wt"
   ap_set "liveChecks.$m.home"     "$home"
+  ap_set "liveChecks.$m.verdict" ""
+  ap_set "liveChecks.$m.checks" ""
+  ap_set "liveChecks.$m.at" ""
+  local label; label="$(label_for "$m" || true)"
+  [ -z "$label" ] || ap_set "missions.$label.liveCheck" ""
+  local targets
+  targets="$("$PY" - "$LIVE_CHECK_LOCAL" "$evdir/checks.json" $tlist <<'PY'
+import json, pathlib, re, sys
+base, dest, *types = sys.argv[1:]
+controls = {
+    "cli": "missing product output or deliberately wrong data",
+    "web": "a signed-out login wall, not the product page",
+    "workflow": "a failed run with no published artifact",
+}
+rows = []
+inputs = {
+    "cli": ("control-cli.txt", "ERROR: no product output; deliberately wrong data\n"),
+    "web": ("control-web.html", "<!doctype html><title>Sign in</title><h1>Sign in</h1>"
+            "<p>Authentication required. The product content is absent.</p>\n"),
+    "workflow": ("control-workflow.json", '{"conclusion":"failure","artifacts":[]}\n'),
+}
+for kind in types:
+    name, content = inputs[kind]
+    control_input = pathlib.Path(dest).parent / name
+    control_input.write_text(content)
+    for number, title in re.findall(r"^### (\d+)\. (.+)$",
+                                    (pathlib.Path(base) / (kind + ".md")).read_text(), re.M):
+        rows.append({"id": kind + ":" + number, "check": title,
+                     "detector": "", "target": {"verdict": None, "evidence": "", "observation": ""},
+                     "control": {"knownFailure": controls[kind], "input": str(control_input), "verdict": None,
+                                 "evidence": "", "observation": ""}})
+pathlib.Path(dest).write_text(json.dumps(rows, indent=2) + "\n")
+print(json.dumps([r["id"] for r in rows]))
+PY
+)" || die "live-check: could not prepare target/control pairs"
+  ap_set "liveChecks.$m.targets" "$targets"
+  say "PAIRED EVIDENCE: $evdir/checks.json"
+  say "  Fill EVERY row: same detector on target and known-fail control, distinct evidence"
+  say "  and observations. Render/open BOTH for visual checks; a login wall is not the product."
+  "$PY" - "$evdir/checks.json" <<'PY'
+import json, sys
+for row in json.load(open(sys.argv[1])):
+    print("TARGET %s: %s" % (row["id"], row["check"]))
+    print("KNOWN-FAIL CONTROL %s: %s (%s); apply the SAME check, expect fail." %
+          (row["id"], row["control"]["knownFailure"], row["control"]["input"]))
+PY
 
+  say "CHECKLISTS: $LIVE_CHECK_LOCAL"
+  say "  inside this repository, refreshed from the installed LCARS on every run."
+  say "  re-read the item you are on — that is what the file is for; do not work from memory."
+  say ""
   for t in $tlist; do
-    say "===== CHECKLIST: $t ($LIVE_CHECK_DIR/$t.md) ====="
-    cat "$LIVE_CHECK_DIR/$t.md"
+    say "===== CHECKLIST: $t ($LIVE_CHECK_LOCAL/$t.md) ====="
+    cat "$LIVE_CHECK_LOCAL/$t.md"
     say ""
   done
-  say "WHEN DONE:  $SELF live-check done $m --verdict pass|bugs"
-  say "A BUG:      $SELF file-bug --parent $m --prd <bug-prd.md>   (template: $SKILLS_DIR/lcars-eeh/bug-prd.md)"
+  say "WHEN DONE:  $SELF live-check done $m --verdict pass|bugs   # reads checks.json"
+  say "A BUG:      $SELF file-bug --parent $m --prd <bug-prd.md>   (template: $BUG_PRD_LOCAL)"
 }
 
 cmd_live_check_done() {
@@ -2944,20 +3951,80 @@ cmd_live_check_done() {
   esac
   local evdir; evdir="$(ap_j "liveChecks.$m.evidence")"
   [ -n "$evdir" ] || evdir="$MISSIONS/$m/live-check"
+  local checks
+  checks="$("$PY" - "$APJSON" "$m" "$evdir/checks.json" "$verdict" <<'PY'
+import json, pathlib, sys
+ap, mission, manifest, verdict = sys.argv[1:]
+def refuse(why):
+    sys.stderr.write("live-check done: REFUSED: %s\n" % why)
+    raise SystemExit(1)
+expected = json.load(open(ap)).get("liveChecks", {}).get(mission, {}).get("targets", [])
+path = pathlib.Path(manifest)
+try:
+    rows = json.loads(path.read_text()) if path.exists() else []
+except (OSError, ValueError) as e:
+    refuse("cannot read paired evidence: %s" % e)
+if not isinstance(rows, list) or any(not isinstance(r, dict) for r in rows):
+    refuse("checks.json must be a list of target/control pairs")
+if verdict == "pass":
+    ids = [r.get("id") for r in rows]
+    if (not expected or any(not isinstance(i, str) for i in ids)
+            or len(ids) != len(expected) or set(ids) != set(expected)):
+        refuse("enumerate every prepared target, exactly once; no sampling or missing controls")
+for row in rows:
+    for role in ("target", "control"):
+        if role in row and not isinstance(row[role], dict):
+            refuse("%s: %s must be a verdict/evidence/observation object" % (row.get("id"), role))
+    if verdict != "pass" and (row.get("target") or {}).get("verdict") != "pass":
+        continue
+    if not isinstance(row.get("detector"), str) or not row["detector"].strip():
+        refuse("%s: name the same detector used on BOTH cases" % row.get("id"))
+    for role, wanted in (("target", "pass"), ("control", "fail")):
+        result = row.get(role)
+        if not isinstance(result, dict) or result.get("verdict") != wanted:
+            refuse("%s: target must pass AND known-fail control must fail" % row.get("id"))
+        if not isinstance(result.get("observation"), str) or not result["observation"].strip():
+            refuse("%s: %s needs an observation, not just a produced screenshot" % (row.get("id"), role))
+        if not isinstance(result.get("evidence"), str) or not result["evidence"]:
+            refuse("%s: %s needs an evidence file path" % (row.get("id"), role))
+        evidence = pathlib.Path(result["evidence"])
+        if not evidence.is_absolute():
+            evidence = path.parent / evidence
+        if not evidence.is_file() or evidence.stat().st_size == 0:
+            refuse("%s: %s needs nonempty evidence" % (row.get("id"), role))
+        result["evidence"] = str(evidence.resolve())
+    if not isinstance(row["control"].get("knownFailure"), str) or not row["control"]["knownFailure"].strip():
+        refuse("%s: name why the control is known to fail" % row.get("id"))
+    if row["target"]["evidence"] == row["control"]["evidence"]:
+        refuse("%s: the target cannot be its own control" % row.get("id"))
+print(json.dumps(rows))
+PY
+)" || return 1
+  ap_set "liveChecks.$m.checks" "$checks"
   ap_set "liveChecks.$m.verdict" "$verdict"
   ap_set "liveChecks.$m.at"      "$(now)"
   ap_set "liveChecks.$m.evidence" "$evdir"
   [ -n "$note" ] && ap_set "liveChecks.$m.note" "$note"
   local label; label="$(label_for "$m" || true)"
   [ -n "$label" ] && ap_set "missions.$label.liveCheck" "$verdict"
-  ledger_append decisions "$("$PY" - "$m" "$verdict" "$evdir" "$note" <<'PY'
+  ledger_append decisions "$("$PY" - "$m" "$verdict" "$evdir" "$note" "$checks" <<'PY'
 import json, sys
 print(json.dumps({"kind": "live-check", "mission": sys.argv[1],
                   "verdict": sys.argv[2], "evidence": sys.argv[3],
-                  "note": sys.argv[4]}))
+                  "note": sys.argv[4], "checks": json.loads(sys.argv[5])}))
 PY
 )" || die "live-check done: the ledger refused the entry"
   say "live check for $m recorded: $verdict"
+  "$PY" - "$checks" <<'PY'
+import json, sys
+rows = json.loads(sys.argv[1])
+if not rows:
+    print("  target=not checked control=not checked; no green claim")
+for row in rows:
+    print("  %s: target=%s control=%s" %
+          (row.get("id", "?"), (row.get("target") or {}).get("verdict") or "not checked",
+           (row.get("control") or {}).get("verdict") or "not checked"))
+PY
   say "  evidence: $evdir"
   [ -n "$label" ] && say "  milestone $label updated"
   if [ "$verdict" = bugs ]; then
@@ -3353,8 +4420,12 @@ cmd_file_bug() {
     esac
   done
   require_state
+  # BOTH REFUSALS BELOW NAME THE TEMPLATE, so it is staged before either can
+  # fire: a refusal that freezes is worse than a success that freezes — the seat
+  # is already mid-filing and has nowhere else to go.
+  bug_prd_stage
   [ -n "$parent" ] || die "file-bug: --parent <mission> is required — a logged bug is always a CHILD of the mission it was found in, and grounding needs the parent's code."
-  [ "$n" -gt 0 ] || die "file-bug: --prd <file> is required (once per bug). The template is $SKILLS_DIR/lcars-eeh/bug-prd.md."
+  [ "$n" -gt 0 ] || die "file-bug: --prd <file> is required (once per bug). The template is $BUG_PRD_LOCAL."
   mexists "$parent" || die "file-bug: no parent mission $parent in $MISSIONS"
   [ -x "$LOG_SCRIPT" ] || [ -f "$LOG_SCRIPT" ] || die "file-bug: no lcars log at $LOG_SCRIPT"
 
@@ -3367,7 +4438,7 @@ cmd_file_bug() {
     if ! msg="$(bug_prd_problems "$p")"; then
       printf 'lcars ech: file-bug: %s is not an evidence-first bug PRD.\n' "$p" >&2
       printf '%s\n' "$msg" >&2
-      printf 'Nothing was filed. The template is %s/lcars-eeh/bug-prd.md.\n' "$SKILLS_DIR" >&2
+      printf 'Nothing was filed. The template is %s.\n' "$BUG_PRD_LOCAL" >&2
       exit 1
     fi
     i=$((i + 1))
@@ -3643,8 +4714,8 @@ policy_table() {
   say ""
   say "  The live check decides: Number One scored every CLI or integration milestone"
   say "  low for reasons it could not reach, so a \`bugs\` live check sends back a high."
-  say "  THE MERGE IS THE EEH'S CALL — this is the recommendation, and every"
-  say "  override lands in autopilot-overrides.jsonl with the evidence path."
+  say "  THE MERGE IS THE HOLOGRAM'S CALL — this is the recommendation, and every"
+  say "  override is recorded in the overrides ledger with its evidence path."
 }
 
 # ==========================================================================
@@ -3918,8 +4989,11 @@ case "$SUB" in
   preflight)   cmd_preflight "$@" ;;
   status)      cmd_status "$@" ;;
   next)        cmd_next "$@" ;;
+  await)       cmd_await "$@" ;;
+  watch)       cmd_watch "$@" ;;
   playbook)    cmd_playbook "$@" ;;
   record)      cmd_record "$@" ;;
+  grant)       cmd_grant "$@" ;;
   answered)    cmd_answered "$@" ;;
   ask)         cmd_ask "$@" ;;
   drive)       cmd_drive "$@" ;;

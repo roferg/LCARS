@@ -214,6 +214,19 @@ RESPOND_SCRIPT="${LCARS_RESPOND_SCRIPT:-$SKILL_DIR/../lcars-respond/respond.sh}"
 respond_hint() { printf 'bash %s answer --mission %s --answer "<your answer>"' \
                    "$RESPOND_SCRIPT" "$MISSION_ID"; }
 drive_hint()   { printf 'bash %s drive --mission %s' "$SELF" "$MISSION_ID"; }
+# S311 — THE SANCTIONED RE-OPEN, AS A COMMAND SOMEBODY CAN ACTUALLY RUN.
+# Every undeclared-drift refusal used to end on "Restore the test or re-open the
+# ticket." There is no `lcars reopen`, so that sentence named a verb that does
+# not exist: an unattended seat could only restore the test — which REVERTS a
+# correct adaptation — or stop. One real mission sat BLOCKED for 4h49m on
+# exactly that sentence. `implement-ticket` IS the sanctioned re-open, it already
+# exists, and it was simply named nowhere in the refusal.
+# This changes NOTHING about what any gate refuses. It changes what the refusal
+# tells you to do about it.
+reopen_hint() { # ticketId → a literal, copy-pasteable command
+  printf 'bash %s implement-ticket --mission %s --ticket %s' \
+    "$SELF" "${MISSION_ID:-<mission-id>}" "${1:-<ticket-id>}"
+}
 
 # --- tiny JSON readers (no jq; same style as file.sh / status.sh) ----------
 json_str() { # file key  → first matching "key": "value"
@@ -428,6 +441,10 @@ json_escape() { # string → JSON-string-safe (printed, no surrounding quotes)
 emit_event() { # type stage detail [key=value ...]
   [ -n "${MISSION_DIR:-}" ] || return 0
   local ts type stage detail mid
+  # S312 — the RAW type, kept before the `shift 3` below, for the supersede rule
+  # at the end of this function. `$type` is json-escaped and `$1` is a data pair
+  # by then, so neither can answer "what kind of event was this".
+  local ev_type="${1:-}"
   ts="${LCARS_NOW:-$(date +%s)}"
   type="$(json_escape "${1:-}")"
   stage="$(json_escape "${2:-}")"
@@ -451,6 +468,45 @@ emit_event() { # type stage detail [key=value ...]
 
   printf '{"ts":%s,"mission":"%s","stage":"%s","type":"%s","detail":"%s"%s}\n' \
     "$ts" "$mid" "$stage" "$type" "$detail" "$data" >>"$MISSION_DIR/events.jsonl"
+
+  # S312 — THE SUPERSEDE RULE LIVES WITH THE EVENT, not with the drive loop.
+  # A Stage advanced by anything other than the drive loop (a `--step` resume,
+  # the daemon, a hand-run `emit-event`) must clear the record too, and wiring
+  # this into the drive loop instead left exactly those paths behind: the
+  # event-log failure went and the state.json one stood, so `lcars status` kept
+  # calling a healthy mission failed. One rule, one place, for both readers.
+  #
+  # S312 FIX ROUND 1 — AND IT IS CLEARED BY A STAGE THAT **SUCCEEDS**, NEVER BY
+  # ONE THAT STARTS. `stage_start` used to be in this list (mirroring the event
+  # log's own rule), and a fresh tester measured what that costs: fail Research,
+  # start a retry, hard-kill the driver mid-stage — the record was cleared when
+  # the attempt STARTED and never re-written, because the driver died before it
+  # could write anything. The mission went from visible to INVISIBLE by having a
+  # doomed drive started on it, on all four surfaces at once. And that is the
+  # ORDINARY case: the captain's laptop sleeps after one minute, on mains, so an
+  # unattended retry interrupted mid-stage is what normally happens.
+  #
+  # So an attempt that STARTS no longer erases what the last one proved; only an
+  # attempt that gets somewhere does. `stage_done` is a Stage that finished and
+  # `gate` is a run that stopped on a question (a mission parked awaiting-human
+  # is a visible state of its own) — both are real supersedes. The failure arms
+  # in the drive loop re-write the record themselves, so a retry that fails
+  # again lands a fresh failedAt rather than inheriting a stale one.
+  #
+  # DOES THIS DRIFT FROM THE EVENT LOG'S RULE? No, because the two are never both
+  # consulted: status.sh's `mission_failure` and local_adapter._stage_failure
+  # PREFER this record and fall back to the event log only for a mission that has
+  # none (everything filed before S312). The event lane's own rule is unchanged.
+  #
+  # THE PRICE, PAID DELIBERATELY: while a retry is in flight the stale record is
+  # still on disk, so every surface that renders it has to be guarded by a
+  # liveness check or a running mission reads as failed. All four are
+  # (mission_work_live in ech.sh; driver_live + worker_adapter_live in status.sh;
+  # _driver_running + _worker_adapter_running in local_adapter), and the control
+  # for it is tests/stage-failed-state.test.sh § 3.
+  case "$ev_type" in
+    stage_done|gate) drive_clear_stage_failed ;;
+  esac
 }
 # --- durable dedup/indexing helpers (derive from events.jsonl, not a local) --
 # The Implement stage is RE-INVOKED on real runs (a manual `lcars run` retry, or
@@ -1059,10 +1115,10 @@ than one, or an empty one — naming every offending ticket and criterion in one
 message. A plain string is still correct everywhere else: on every
 `changesScreenAppearance: false` ticket, and on every Mission with no mockup.
 
-At least one criterion on the ticket must be `drawnAt`. A ticket that says it
-changes what a screen looks like is drawn SOMEWHERE in %s, and naming it
-in the `description` does not count — the description is not what the work is
-judged against.
+A screen-changing ticket may be entirely absent from the drawing. In that case
+declare each visible criterion `notDrawn` with its reason, and each genuinely
+non-visual criterion `notVisual`: true. No `drawnAt` is required on that ticket.
+Do not fabricate a citation or add unrelated drawn criteria to satisfy the gate.
 
 ### `notDrawn` is not a loophole, and `notVisual` is not a shrug
 
@@ -1142,7 +1198,7 @@ is part of the work, and the work is judged where it is built.
     "rationale": "…"
 
 The mockups this Mission carries:
-%s' "$names" "$freedom" "$first" "$(printf '%s' "$names" | tr ' ' '\n' | sed 's/^/- /')"
+%s' "$names" "$freedom" "$(printf '%s' "$names" | tr ' ' '\n' | sed 's/^/- /')"
 
   # ROUND 3 — THE VOCABULARY, PUBLISHED. `drawnAt` must CITE a place the drawing
   # actually has, and the only fair way to demand that is to hand the planner the
@@ -2059,6 +2115,10 @@ except OSError:
 want = "open questions from the design session"
 body, lvl = [], None
 for ln in text.replace("\r\n", "\n").split("\n"):
+    if lvl is not None and re.match(
+            r"^\*\*(?:Mission(?: title)?|Type|Goal|Acceptance Criteria|"
+            r"Out of Scope|Constraints)\s*:\*\*", ln, re.I):
+        break
     m = re.match(r"^(#{1,6})\s+(.*)$", ln)
     if m:
         name = re.sub(r"[^a-z0-9]+", " ", m.group(2).lower()).strip()
@@ -2083,6 +2143,9 @@ entries, cur = [], None
 for ln in body:
     t = ln.strip()
     if not t:
+        if cur:
+            entries.append(" ".join(cur.split()))
+        cur = None
         continue
     m = BULLET.match(t)
     if m:
@@ -2091,10 +2154,11 @@ for ln in body:
         cur = t[m.end():]
     elif cur is not None:
         cur = cur + " " + t
-    else:
-        entries.append(" ".join(t.split()))
 if cur:
     entries.append(" ".join(cur.split()))
+entry_kind = "bullet" if entries else "non-bullet"
+if not entries:
+    entries = [" ".join(ln.split()) for ln in body if ln.strip()]
 
 # ── FIX ROUND 1 / D5: THE PREFIX CONTRACT, IN THE FORMS A MODEL WRITES ────
 # `- STILL OPEN: …` parsed. `- **STILL OPEN:** …` — what a model writing
@@ -2106,6 +2170,7 @@ EMPH = re.compile(r"^[*_`]+|[*_`]+$")
 STILL = re.compile(r"(?i)^still\s+open\b[\s:\-—]*")
 RESOLVED = re.compile(r"(?i)^resolved\b")
 out, unparsed = [], []
+declared = 0
 for e in entries:
     lead = EMPH.sub("", e).lstrip()
     # `**STILL OPEN:**` leaves a trailing `**` on the marker, not the sentence,
@@ -2116,23 +2181,27 @@ for e in entries:
         rest = re.sub(r"^[\s:\-—]+", "", rest)
         if rest:
             out.append(" ".join(rest.split()))
+            declared += 1
+        else:
+            unparsed.append(e)
         continue
     if RESOLVED.match(lead):
+        declared += 1
         continue
     unparsed.append(e)
 
-# FAIL LOUD, NEVER A SILENT ZERO. If the section exists and has content but
-# nothing in it declares itself, that is a refusal — the whole subject of this
-# round is mechanisms that disengage without saying so.
-if lvl is not None and unparsed and not out:
+# Prose beside declared bullets is not another entry. A section with no bullets
+# still has to declare its content, rather than silently yielding no questions.
+# Resolved entries prove the section parsed even when nothing is left open.
+if unparsed:
     sys.stderr.write(
         "lcars: prd.md has an '## Open questions from the design session' "
-        "section with %d entr%s, and NOT ONE of them declares itself. Each must "
+        "section where %d of %d %s entries declare themselves. Each must "
         "start with `STILL OPEN:` (still unsettled) or `RESOLVED` (settled with "
         "the captain during Align) — see skills/lcars-file/SKILL.md. Without "
-        "that the Plan Stage is told nothing and every one of these becomes a "
-        "decision nobody was asked about. Could not read:\n%s\n"
-        % (len(unparsed), "y" if len(unparsed) == 1 else "ies",
+        "that, an undeclared entry cannot reach the Plan Stage as a question. "
+        "Could not read:\n%s\n"
+        % (declared, len(entries), entry_kind,
            "\n".join("  - " + u for u in unparsed)))
     sys.exit(1)
 sys.stdout.write("\n".join(out) + ("\n" if out else ""))
@@ -2171,7 +2240,7 @@ S175_PY
 # entry prd.md's open-questions section marked RESOLVED, or NOTHING.
 #
 # TOLERANT WHERE ITS SIBLING IS STRICT, on purpose. `mission_open_questions`
-# REFUSES a section whose entries declare nothing, because Plan is entitled to
+# REFUSES undeclared bullet entries, because Plan is entitled to
 # insist the brief say what is open. This reader is consumed by PLAN REVIEW,
 # which today cannot fail for any reason to do with the PRD at all — giving it a
 # brand-new way to die over a file it is not even shown would be a worse bug than
@@ -2193,6 +2262,10 @@ except OSError:
 want = "open questions from the design session"
 body, lvl = [], None
 for ln in text.replace("\r\n", "\n").split("\n"):
+    if lvl is not None and re.match(
+            r"^\*\*(?:Mission(?: title)?|Type|Goal|Acceptance Criteria|"
+            r"Out of Scope|Constraints)\s*:\*\*", ln, re.I):
+        break
     m = re.match(r"^(#{1,6})\s+(.*)$", ln)
     if m:
         name = re.sub(r"[^a-z0-9]+", " ", m.group(2).lower()).strip()
@@ -2216,6 +2289,9 @@ entries, cur = [], None
 for ln in body:
     t = ln.strip()
     if not t:
+        if cur:
+            entries.append(" ".join(cur.split()))
+        cur = None
         continue
     m = BULLET.match(t)
     if m:
@@ -2224,10 +2300,10 @@ for ln in body:
         cur = t[m.end():]
     elif cur is not None:
         cur = cur + " " + t
-    else:
-        entries.append(" ".join(t.split()))
 if cur:
     entries.append(" ".join(cur.split()))
+if not entries:
+    entries = [" ".join(ln.split()) for ln in body if ln.strip()]
 
 EMPH = re.compile(r"^[*_`]+|[*_`]+$")
 RESOLVED = re.compile(r"(?i)^resolved\b")
@@ -3732,9 +3808,32 @@ LCARS_AWK_CRIT_EOF
 # non-empty, three further DECLARATION checks apply; none of them reads a
 # ticket's prose to decide anything (see the design note above
 # plan_mockup_contract_block).
-validate_plan_json() { # file [mockup-basenames] [mockup-place-names]
-  awk -v mock="${2:-}" -v places="${3:-}" "$LCARS_AWK_CRIT"'
+validate_plan_json() { # file [mockup-basenames] [mockup-place-names] [final-attempt]
+  awk -v mock="${2:-}" -v places="${3:-}" -v rl_final="${4:-0}" "$LCARS_AWK_CRIT"'
     function fail(msg) { failed=1; printf "lcars run: %s\n", msg > "/dev/stderr"; exit 1 }
+    # === S313: DOES THIS TICKET NAME ITSELF A REGRESSION LOCK? ===============
+    # The vocabulary a planner uses when it writes a characterisation / golden /
+    # snapshot ticket. This is HALF of a two-signal rule and it is deliberately
+    # the WEAKER half: a text search cannot tell a lock ticket from a ticket
+    # that merely mentions one (the S174 history above this function is a
+    # catalogue of text rules beaten in an afternoon). It only ever runs beside
+    # the arithmetic the planner itself declared — estimatedNewLoc 0 with test
+    # LoC on the same ticket — and a miss here costs nothing: an undetected lock
+    # ticket meets the flip-flop gate refusal, which since S313 names the same
+    # cure this message does.
+    function rl_locktext(s) {
+      return (s ~ /golden/ \
+           || s ~ /characteri[sz]ation/ \
+           || s ~ /characteri[sz]ing/ \
+           || s ~ /snapshot test/ \
+           || s ~ /regression[ -]lock/ \
+           || s ~ /lock (in |down |the )?(today|current|existing)/ \
+           || s ~ /lock[a-z]* (today|current|existing)/ \
+           || s ~ /preserv(e|es|ing) (the )?(existing|current|today)/ \
+           || s ~ /no behaviou?r change/ \
+           || s ~ /behaviou?r is unchanged/ \
+           || s ~ /unchanged behaviou?r/)
+    }
     # --- S174: EVERY criterion DECLARES where it came from --------------------
     # S169 closed "no criterion names the drawing" and left "at least one does".
     # MEASURED on lcars-20260814-001: t-012 named attachment-01.html in criterion
@@ -3802,13 +3901,10 @@ validate_plan_json() { # file [mockup-basenames] [mockup-place-names]
     #      other criterion passes, and keeps the Verify list empty. notVisual is
     #      a claim about what a criterion IS; refusing it is the same classifier.
     #
-    # A CONSEQUENCE WORTH KNOWING, because it pushes toward (1) and (2): a ticket
-    # that genuinely changes a screen the drawing does NOT show has no legal
-    # honest move. Every criterion notDrawn is refused by the >=1-drawnAt rule,
-    # which fires first; so the planner must either fabricate a drawnAt or
-    # declare the ticket false. The schema pressures toward the two lies it
-    # cannot catch. If that shows up in practice, it is an argument for changing
-    # the >=1-drawnAt rule, not for another anchor format.
+    # S335 removes the ticket-level >=1-drawnAt rule: it deadlocked honest
+    # all-undrawn tickets and pressured the planner toward (1) and (2). Every
+    # criterion still declares exactly one of the three. notDrawn reasons reach
+    # Verify; whether notVisual is truthful remains Plan Review'"'"'s judgement.
     #
     # NOT CHECKED, by design: whether an anchor RESOLVES to the surface the
     # criterion describes. Presence, not resolution — a validator that parses the
@@ -3868,7 +3964,9 @@ validate_plan_json() { # file [mockup-basenames] [mockup-place-names]
     # which writes its plans with json.dump(indent=2).)
     /^[[:space:]]*\{[[:space:]]*$/ && !in_ac && !in_deps {
       inobj=1; delete have; delete crit; acok=0; id=""; ndep=0; in_ac=0; actext=""; visual=""
-      in_deps=0; deptext=""; next
+      in_deps=0; deptext=""
+      ttl=""; enew=-1; etest=-1          # S313 — the regression-lock signals
+      next
     }
     /^[[:space:]]*\}[,]?[[:space:]]*$/ && !in_ac && !in_deps {
       if (!inobj) next
@@ -3901,7 +3999,7 @@ validate_plan_json() { # file [mockup-basenames] [mockup-place-names]
       # --- S169: the tickets must carry the mockup ---------------------------
       # Only for a Mission that ACTUALLY carries one. The planner DECLARES;
       # we check the declaration is there, is a boolean, and — when it says this
-      # ticket changes a screen — that a criterion names the drawing.
+      # ticket changes a screen — that EVERY criterion declares its provenance.
       if (nmock > 0) {
         if (!have["changesScreenAppearance"])
           fail("ticket " tickets " (" id ") is missing \"changesScreenAppearance\" — this Mission carries a mockup (" mock "), so every ticket must declare whether it changes what a screen looks like.")
@@ -3923,7 +4021,6 @@ validate_plan_json() { # file [mockup-basenames] [mockup-place-names]
           delete ctext; delete cdecl; delete cval; delete ctype
           ncrit = lcars_crit_entries(actext, ctext, cdecl, cval, ctype)
           tbad = ""
-          ndrawn = 0
           for (ci = 1; ci <= ncrit; ci++) {
             ndecl = (cdecl[ci] == "" ? 0 : split(cdecl[ci], dnames, " "))
             why = ""
@@ -3955,18 +4052,24 @@ validate_plan_json() { # file [mockup-basenames] [mockup-place-names]
               tbad = tbad "\n    criterion " ci " — " why
               if (ctext[ci] != "") tbad = tbad "\n        \"" excerpt(ctext[ci]) "\""
             }
-            else if (dnames[1] == "drawnAt") ndrawn++
           }
-          # The S169 rule survives the schema change, restated in it: a ticket
-          # that says it changes a screen must point INTO the drawing at least
-          # once. Without this, every criterion could be notVisual/notDrawn and
-          # the whole screen declared away. Naming it in the description does not
-          # count — the description is not what the work is judged against.
-          if (tbad == "" && ndrawn == 0)
-            tbad = "\n    NO acceptance criterion references the mockup with a \"drawnAt\" anchor — this ticket says it changes what a screen looks like, so at least one of its criteria is drawn somewhere in " mockname[1] ". Naming it in the description does not count."
           if (tbad != "") s174bad = s174bad "\n  ticket " tickets " (" id "):" tbad
         }
       }
+      # === S313: CLASSIFY THIS TICKET — regression lock, or not? ============
+      # TWO SIGNALS, BOTH REQUIRED, and the arithmetic one comes FIRST because
+      # the planner declared it as a number rather than as prose:
+      #   estimatedNewLoc == 0  AND  estimatedTestLoc > 0  — by its own account
+      #     this ticket authors tests and adds NO production code, so there is
+      #     nothing in it for a test to be red against;
+      #   rl_locktext()         — and it NAMES the shape in its own title or
+      #     criteria (golden / characterisation / lock todays behaviour / …).
+      # Judged in END, never here: whether this is a DEFECT depends on the rest
+      # of the plan (see the refusal), and one ticket cannot know that.
+      rl_is = 0
+      if (enew == 0 && etest > 0 && rl_locktext(tolower(ttl " " actext))) rl_is = 1
+      if (rl_is) { rl_n++; rl_id[rl_n]=id; rl_no[rl_n]=tickets; rl_lock[id]=1 }
+      else       { rl_free_n++; rl_free_id[rl_free_n]=id }
       ids[id]=1
       for (d=1; d<=ndep; d++) { depof[++drefs]=dep[d]; depticket[drefs]=id }
       inobj=0; next
@@ -3996,6 +4099,20 @@ validate_plan_json() { # file [mockup-basenames] [mockup-place-names]
       if (n < 2) next
       key=a[2]; have[key]=1
       if (key=="id") id=a[4]
+      # S313 — the TITLE text (taken as the whole line minus the key, for the
+      # same escaped-quote reason the criteria accumulator gives below) and the
+      # two LoC declarations the regression-lock rule reads. A bare numeric value
+      # carries no quotes, so it is read off the raw token after the colon
+      # exactly as the slice-pressure reader does.
+      else if (key=="title") {
+        v=$0; sub(/.*"title"[[:space:]]*:[[:space:]]*/, "", v); ttl=v
+      }
+      else if (key=="estimatedNewLoc") {
+        v=a[3]; gsub(/[^0-9]/, "", v); if (v != "") enew=v+0
+      }
+      else if (key=="estimatedTestLoc") {
+        v=a[3]; gsub(/[^0-9]/, "", v); if (v != "") etest=v+0
+      }
       else if (key=="acceptanceCriteria") {
         if (n >= 4) acok=1          # inline ["a", …] — criterion text on this line
         # S169: accumulate this ticket'"'"'s CRITERIA TEXT for the mockup check. The
@@ -4104,6 +4221,96 @@ validate_plan_json() { # file [mockup-basenames] [mockup-place-names]
         : "\n  This drawing carries NO element ids, so nothing can check WHICH place an anchor names — \"drawnAt\" only has to be a non-empty string here, and it is on you to make it point somewhere real.\n")
       if (s174bad != "" && !failed)
         fail("this plan'"'"'s screen-changing tickets do not declare where their criteria come from. This Mission carries a mockup (" mock "), so on every ticket with \"changesScreenAppearance\": true, EVERY entry of \"acceptanceCriteria\" must be an object — {\"text\": \"…\", …} — carrying EXACTLY ONE of:\n    \"drawnAt\":   \"<the screen id / section / row of " mockname[1] " this criterion'"'"'s surface appears in>\"\n    \"notDrawn\":  \"<why this VISIBLE thing is not in the drawing>\"   (legitimate — and the captain sees every one at Verify)\n    \"notVisual\": true                                          (this criterion makes no visual claim at all)\n" s174bad "\n" vocab "  A plain string stays fine on a changesScreenAppearance:false ticket, and on every Mission without a mockup. Open the drawing, then declare each criterion once.")
+      # === S313: A STANDALONE REGRESSION-LOCK TICKET IS UNLANDABLE ===========
+      # MEASURED on a real mission, on a ticket titled "Lock todays anchor-less
+      # comment thread rendering with golden tests": NINE Copilot TDD sessions
+      # and three human gates, ping-ponging declared-edits FAIL -> flip-flop FAIL (no red) ->
+      # result-v2 FAIL, each session curing the gate that complained last and
+      # tripping another. Two gates, each CORRECT on its own, are jointly
+      # impossible for that ticket: a characterisation test passes on the parent
+      # BY CONSTRUCTION so the flip-flop can never see red, and the escape
+      # (flipFlop "not-applicable") is refused beside a non-empty newTests. The
+      # tests ARE the deliverable, so "drop the tests" drops the ticket.
+      #
+      # LCARS PLAN WROTE THAT TICKET. It titled it, so it knew the shape. This is
+      # the one place that can stop it being born.
+      #
+      # IT CANNOT DEADLOCK A PLAN, and that bound is load-bearing — read the S175
+      # note above about the plan-wide mockup rule that WAS a deadlock: there was
+      # no honest plan that passed it, and the Stage stopped at three attempts. So
+      # this refuses ONLY when the cure it names is actually available in this
+      # plan: at least one NON-lock ticket to fold into. A plan whose tickets are
+      # ALL locks is a Mission that genuinely is a characterisation exercise;
+      # nothing here can fold it anywhere, so it is passed through untouched and
+      # the Implement-stage refusals (which name this same cure since S313) carry
+      # it.
+      if (rl_n > 0 && rl_free_n > 0 && !failed) {
+        rl_msg = ""
+        for (i = 1; i <= rl_n; i++)
+          rl_msg = rl_msg "\n    ticket " rl_no[i] " (" rl_id[i] ")"
+        rl_targets = ""
+        for (i = 1; i <= rl_free_n; i++)
+          rl_targets = rl_targets (rl_targets == "" ? "" : ", ") rl_free_id[i]
+        # WHICH non-lock ticket could PLAUSIBLY hold these goldens? MEASURED
+        # (fix round 1): a plan of "Add a dark-mode toggle" + "Lock todays CSV
+        # export column order with golden tests" was told, as its PRIMARY
+        # instruction, to fold the CSV lock into the dark-mode toggle. The out
+        # that was actually correct — it is not this Mission scope — came last.
+        #
+        # NOTHING HERE COMPUTES RELATEDNESS. Deciding whether a toggle and a CSV
+        # exporter are "about the same behaviour" is an inference, and an
+        # inference is exactly what the text half of this rule already warns is
+        # beatable in an afternoon. So it reads the one honest, cheap signal the
+        # planner WROTE DOWN: a declared DEPENDENCY EDGE between a lock ticket
+        # and a non-lock ticket, either direction. That edge is the planner
+        # stating itself that the two belong together, and it is the link the
+        # measured mission had (t-005 depended on t-002). With such an edge the
+        # FOLD leads; with none, the honest answer leads and the fold is offered
+        # second and conditionally. BOTH orderings still REFUSE — this changes
+        # which cure is read first, never whether the shape is accepted.
+        rl_linked = ""
+        for (i = 1; i <= drefs; i++) {
+          rl_cand = ""
+          if (rl_lock[depticket[i]] && ids[depof[i]] && !rl_lock[depof[i]]) rl_cand = depof[i]
+          else if (!rl_lock[depticket[i]] && rl_lock[depof[i]])             rl_cand = depticket[i]
+          if (rl_cand != "" && !rl_cseen[rl_cand]++)
+            rl_linked = rl_linked (rl_linked == "" ? "" : ", ") rl_cand
+        }
+        rl_why = "\n  NO worker can prove such a ticket. A characterisation test asserts behaviour that ALREADY EXISTS, so it passes on the parent commit by construction, the flip-flop gate finds no red, and declaring flipFlop \"not-applicable\" to get out is refused beside new tests. Measured once at nine TDD sessions and three human gates.\n"
+        if (rl_linked != "")
+          rl_cure = "  FOLD IT — the guard is real and it must SURVIVE, and this plan already says where it goes: the planner declared a dependency edge between the lock ticket(s) above and " rl_linked ", which is its own statement that they are about the same behaviour. Move those acceptance criteria, and the golden tests themselves as supporting tests riding along, INTO the ticket that CHANGES the behaviour they guard. That ticket has its own new tests to flip red on the parent and green on the tip, the goldens ride along declared, and the guard is still committed and still guarding. Guard preserved, proof honest.\n  Then retire the now-empty lock ticket and re-point any dependency that named it.\n  NOT THIS MISSION SCOPE is the other answer, and it is the right one if NO ticket here really changes the behaviour these goldens guard: say so in the ticket you do emit, and do not invent a ticket to hold the lock.\n  Either way, keep every golden you wrote. Relocating the guard is the cure; losing it is not."
+        else
+          rl_cure = "  NOT THIS MISSION SCOPE — read this answer FIRST. NO ticket in this plan declares any dependency relationship to the lock ticket(s) above, so nothing you have written says this Mission touches the behaviour those goldens guard. If it does not, then locking that behaviour is not work this Mission was asked for: retire the lock ticket, note in the ticket you do emit that the behaviour is left exactly as it is, and do not invent a ticket to hold the lock.\n  FOLD IT — only if one of the other tickets here (" rl_targets ") DOES change the behaviour those goldens guard. Then move those acceptance criteria, and the golden tests themselves as supporting tests riding along, INTO that ticket: its own new tests flip red on the parent and green on the tip, the goldens ride along declared, and the guard is still committed and still guarding. Guard preserved, proof honest. Then retire the now-empty lock ticket and re-point any dependency that named it.\n  Either way, keep every golden you wrote. Relocating the guard is the cure; losing it is not."
+        # ADVISORY ON THE LAST ATTEMPT, and this is not a softening — it is the
+        # SAME ruling, for the same reason, as the S178 over-correction guard
+        # below: a valid plan must never deadlock the Stage on a guard it cannot
+        # be rescued from. MEASURED (fix round 1): a worker that kept emitting
+        # the standalone-lock plan burned all three attempts — the refusal DID
+        # reach attempts 2 and 3 — and then the Stage died with "failed
+        # validation after 3 attempt(s) — Stage stopped, no advance", stage
+        # still `plan`, no awaitingHuman, no pendingQuestion. The card read "in
+        # Plan" over a Mission that was dead: precisely the invisibility S312
+        # had just finished curing.
+        #
+        # SAFE BECAUSE THIS RULE IS PREVENTIVE, NOT THE ENFORCEMENT. If the
+        # shape does install on the last attempt, the ticket still meets the
+        # flip-flop no-red refusal, which since S313 names this same fold and
+        # forecloses `not-applicable` by name. The shape is still caught; it is
+        # caught one step later, by the gate that was always going to catch it.
+        # So an honest plan can never be deadlocked here, and a dishonest one
+        # still cannot land.
+        #
+        # IT SAYS SO OUT LOUD. This goes down the channel cmd_plan_save ALWAYS
+        # replays (`[ -s "$_verr" ] && cat "$_verr" >&2`, which exists for
+        # exactly this case — a check that passes the plan while having
+        # something to report), so the plan is recorded as installed WITH the
+        # lock-shape warning rather than silently passing. `failed` is NOT set
+        # and nothing exits: every later check in this END block still runs.
+        if (rl_final+0 == 1)
+          printf "lcars run: %s\n", "⚠ REGRESSION-LOCK SHAPE UNRESOLVED — the last planning attempt still carries a standalone regression-lock ticket. The plan is otherwise VALID, so it is SAVED and handed to Plan Review WITH THIS WARNING rather than deadlocking the Mission here:" rl_msg rl_why "  WHY IT IS SAVED AND NOT REFUSED: this rule is PREVENTIVE, not the enforcement, and refusing a valid plan on the final attempt is how a preventive guard becomes a permanent deadlock. NOTHING IS WAIVED — if this shape really is unprovable, the Implement stage flip-flop refusal still catches it and names this same cure, one step later. Plan Review sees this plan and this warning.\n" rl_cure > "/dev/stderr"
+        else
+          fail("this plan emits a STANDALONE REGRESSION-LOCK ticket, and the proof gates cannot accept that shape from anyone. These ticket(s) declare \"estimatedNewLoc\": 0 beside test LoC AND name a golden / characterisation / lock-existing-behaviour deliverable in their own title or criteria:" rl_msg rl_why rl_cure)
+      }
       if (sdbad != "" && !failed)
         fail("this plan links a criterion to a requirement with \"serves\" but does not STATE which way round it is. Every acceptanceCriteria entry that carries \"serves\" MUST also carry \"direction\": \"delivers\" (the criterion makes that requirement true) or \"direction\": \"removes\" (it deliberately takes that requirement away) — nothing reads your prose to decide polarity, because that guess has been wrong before. Add the missing field on:" sdbad "\n  A criterion that links to no single requirement stays a plain string and declares neither.")
     }
@@ -4201,11 +4408,9 @@ LCARS_ANCHOR_FAIL_SIG='do not declare where their criteria come from'
 # tells the captain the truth, while a wrong park asks him a question he cannot
 # answer.
 #
-# The ticket-level "NO acceptance criterion references the mockup with a
-# drawnAt anchor" is DELIBERATELY NOT an anchor failure: every criterion there
-# made a legal declaration, and the fault is the ticket's own claim that it
-# changes a screen. That is a re-judgement of the ticket, not a choice between
-# anchors, so it keeps the stage stop.
+# Historical ticket-level "NO acceptance criterion references the mockup"
+# failures are not anchor choices. S335 no longer emits them; keep old reject
+# notes on the non-anchor path rather than asking an unanswerable question.
 anchor_failure_tickets() {
   [ -f "${1:-}" ] || return 0
   grep -qF "$LCARS_ANCHOR_FAIL_SIG" "$1" || return 0
@@ -4215,7 +4420,7 @@ anchor_failure_tickets() {
       id=$0; sub(/^[^(]*\(/, "", id); sub(/\).*$/, "", id)
       cur=id; next
     }
-    # The ticket-level ">=1 drawnAt" rule — not an anchor choice (see above).
+    # A pre-S335 ticket-level failure — not an anchor choice (see above).
     index($0, "NO acceptance criterion references the mockup") { other=1; next }
     # A per-criterion fault line: `    criterion 1 — <why>`
     cur != "" && /^[[:space:]]*criterion[[:space:]]+[0-9]+[[:space:]]/ {
@@ -5181,8 +5386,14 @@ cmd_plan_save() {
   # note is a COPY, filling a channel that was empty.
   local _verr; _verr="$(mktemp)"
   local _vrc=0
+  # The 4th argument is WHICH ATTEMPT THIS IS. Only the S313 regression-lock
+  # rule reads it, and only to go advisory on the last one — see the long note
+  # at that rule, and the identical reason given at the S178 over-correction
+  # guard below: a valid plan must never deadlock the Stage on a PREVENTIVE
+  # guard. Absent (a hand-run plan-save) it is 0, i.e. not the last attempt,
+  # which is the strict reading.
   validate_plan_json "$PLAN" "$(mission_mockup_names)" "$(mission_mockup_place_names)" \
-    2>"$_verr" || _vrc=$?
+    "${FINAL_ATTEMPT:-0}" 2>"$_verr" || _vrc=$?
   if [ "$_vrc" -eq 0 ]; then
     # S236 — the seams/entrypoints contract. Runs AFTER the shape validator so a
     # half-formed plan is never failed twice for the same thing, and so a
@@ -10599,6 +10810,133 @@ PDD_EOF
   return 1
 }
 
+# ===========================================================================
+# S311 — WHO CHANGED THIS TEST. FROM A RECORD, NEVER FROM A COMMIT MESSAGE.
+# ===========================================================================
+# The drift refusal named only the ticket that OWNS the drifted test. The ticket
+# that MADE the edit is a DIFFERENT one, and the declaration belongs in the
+# EDITOR's test-edits.json, not the owner's — so the refusal pointed the
+# operator at the wrong ticket, and every operator had to `git log` the file by
+# hand to find out who to actually fix.
+#
+# THE MAPPING IS ALREADY RECORDED. `commit_ticket` writes the ticket's commit
+# OBJECT to $(ticket_dir <id>)/.commit-sha at the moment it commits. These
+# helpers read THAT record and ask GIT — not prose — whether the recorded commit
+# is the one that touched the drifted path.
+#
+# THEY NEVER PARSE A COMMIT MESSAGE FOR A TICKET ID. Reading back human-written
+# text to recover a fact the producer could have recorded is the single most
+# expensive recurring mistake in this codebase: it burned fix rounds in S147,
+# S156 and S188, every time for the same reason — the captain writes specs
+# *about LCARS*, so the prose eventually contains the very vocabulary the parser
+# keys on, and the parser starts confidently answering with garbage. There IS a
+# `lcars(<mission>) <ticket>:` subject prefix on these commits, and it is
+# deliberately NOT used here.
+#
+# WHEN THE RECORD DOES NOT ACCOUNT FOR THE CHANGE, these say so. An honest
+# "the editing ticket is NOT RECORDED, here is the commit git blames" beats an
+# invented attribution, and no refusal is ever softened by the absence.
+
+# git's own patch identity for a commit — the thing a cherry-pick PRESERVES.
+# A wave's ticket commits are built on a detached worktree and CHERRY-PICKED
+# onto the mission branch, which REWRITES the sha, so sha equality alone would
+# miss the common case. patch-id is still git answering about its own objects;
+# it is not a reading of anybody's prose. Empty when git cannot answer.
+drift_patch_id() { # tree sha → patch-id (empty = unknown)
+  [ -n "${2:-}" ] || return 0
+  ( cd "$1" 2>/dev/null \
+      && "$GIT_BIN" show "$2" 2>/dev/null | "$GIT_BIN" patch-id --stable 2>/dev/null ) \
+    | awk 'NR==1 {print $1}'
+}
+
+# The ticket that CHANGED <relpath>, and the commit it changed it in.
+# Echoes "<ticketId>\t<sha>" when the record accounts for it, "\t<sha>" when only
+# git can name the commit, and NOTHING when neither can. Never fails the caller.
+drift_editor_of() { # relpath owner-ticket [tree] → "<ticket>\t<sha>" | "\t<sha>" | ""
+  local rel="$1" owner="${2:-}" tree="${3:-${REPO_ROOT:-$PWD}}"
+  local c id td sha first="" cands=""
+  [ -n "$rel" ] && [ -n "${MISSION_DIR:-}" ] || return 0
+  # git's OWN history of the file, newest first, BOUNDED (a refusal must never
+  # become a long walk through history).
+  cands="$( cd "$tree" 2>/dev/null \
+            && "$GIT_BIN" log -n 25 --format=%H -- "$rel" 2>/dev/null )"
+  [ -n "$cands" ] || return 0
+  first="$(printf '%s\n' "$cands" | awk 'NR==1')"
+  # PASS 1 — exact sha equality against the record. Cheapest and strongest.
+  while IFS= read -r c; do
+    [ -n "$c" ] || continue
+    for td in "$MISSION_DIR"/tickets/*/; do
+      [ -d "$td" ] || continue
+      id="$(basename "$td")"
+      [ "$id" = "$owner" ] && continue      # the OWNER is not the editor
+      sha="$(cat "$td/.commit-sha" 2>/dev/null || true)"
+      [ -n "$sha" ] && [ "$sha" = "$c" ] || continue
+      printf '%s\t%s\n' "$id" "$c"
+      return 0
+    done
+  done <<DEO1_EOF
+$cands
+DEO1_EOF
+  # PASS 2 — patch identity, for the cherry-picked wave case.
+  local want pid
+  while IFS= read -r c; do
+    [ -n "$c" ] || continue
+    pid="$(drift_patch_id "$tree" "$c")"
+    [ -n "$pid" ] || continue
+    for td in "$MISSION_DIR"/tickets/*/; do
+      [ -d "$td" ] || continue
+      id="$(basename "$td")"
+      [ "$id" = "$owner" ] && continue
+      sha="$(cat "$td/.commit-sha" 2>/dev/null || true)"
+      [ -n "$sha" ] || continue
+      want="$(drift_patch_id "$tree" "$sha")"
+      [ -n "$want" ] && [ "$want" = "$pid" ] || continue
+      printf '%s\t%s\n' "$id" "$c"
+      return 0
+    done
+  done <<DEO2_EOF
+$cands
+DEO2_EOF
+  # NOT RECORDED. Name the commit git blames, attribute no ticket.
+  printf '\t%s\n' "$first"
+  return 0
+}
+
+# The cure block every drift refusal ends on: who owns what, who changed it, and
+# the ONE runnable command that clears it. Shared by all three drift sites so
+# they cannot drift apart from each other.
+drift_cure_block() { # owner-ticket  drifted-rels(newline)  [tree] → the block
+  local owner="$1" rels="$2" tree="${3:-${REPO_ROOT:-$PWD}}"
+  local rel ed id sha who="" target="" shortsha
+  while IFS= read -r rel; do
+    [ -n "$rel" ] || continue
+    ed="$(drift_editor_of "$rel" "$owner" "$tree")"
+    id="$(printf '%s' "$ed" | cut -f1)"
+    sha="$(printf '%s' "$ed" | cut -f2)"
+    shortsha="$( cd "$tree" 2>/dev/null && "$GIT_BIN" rev-parse --short=9 "$sha" 2>/dev/null )"
+    [ -n "$shortsha" ] || shortsha="$sha"
+    if [ -n "$id" ]; then
+      who="${who}    - ${rel}: OWNED by ticket ${owner}; CHANGED by ticket ${id} in commit ${shortsha}. The declaration belongs in ${id}'s test-edits.json, not ${owner}'s.
+"
+      [ -n "$target" ] || target="$id"
+    elif [ -n "$sha" ]; then
+      who="${who}    - ${rel}: OWNED by ticket ${owner}; last CHANGED by commit ${shortsha}, which no ticket's recorded .commit-sha accounts for — the editing ticket is NOT RECORDED. Identify it from that commit before declaring the edit.
+"
+    else
+      who="${who}    - ${rel}: OWNED by ticket ${owner}; no commit in this branch's history of the file could be resolved, so the editor is NOT RECORDED.
+"
+    fi
+  done <<DCB_EOF
+$rels
+DCB_EOF
+  [ -n "$target" ] || target="$owner"
+  printf 'WHO OWNS WHAT, AND WHO CHANGED IT:
+%sTO CLEAR THIS, RE-OPEN THE EDITING TICKET SO IT CAN DECLARE THE EDIT WITH A REASON — run exactly:
+    %s
+That is the sanctioned re-open; there is no `lcars reopen`. Restoring the test byte-for-byte also clears the block, but it REVERTS the adaptation, so prefer the re-open whenever the changed test is the correct one.' \
+    "$who" "$(reopen_hint "$target")"
+}
+
 # --- GUARDRAIL 3: test quality (the suite must assert something) ------------
 # Light, language-agnostic: reject a suite where no file contains any common
 # assertion construct — an empty / zero-assertion / sandbagged contract proves
@@ -11537,6 +11875,1334 @@ proof_scope_glob_char() { # abs-scope → the first glob metachar in it ("" = sa
   printf ''
 }
 
+# =============================================================================
+# THE GATE TIMEOUT, RESOLVED PER LEG (S308)
+# =============================================================================
+# Both flip-flop legs run under a portable hard timeout so a suite that never
+# settles is rendered INCONCLUSIVE instead of hanging the ticket build. That
+# bound was added 2026-07-23 (fbe77e4). S322 raises its default to 500s,
+# together with the probe window; timeout probes now seed a provisional budget.
+#
+# THE DEFECT (B2, measured on a real repo, 2026-10-21): it was read from the
+# ENVIRONMENT ONLY — `${LCARS_GATE_TIMEOUT:-120}`. A repo whose suite
+# legitimately needs longer had nowhere to RECORD that. Worse, answering a human
+# gate RESUMES the mission by starting a driver that inherits the RESPONDER's
+# environment, so a value set on `lcars run` and not on `lcars respond` silently
+# became 120 again. Two apparently-correct fixes did nothing for exactly that
+# reason.
+#
+# RESOLUTION ORDER, and it is resolved PER LEG, never once per process: an
+# explicit $LCARS_GATE_TIMEOUT wins (a one-off, and what the ECH injects), then
+# the repo's own `gateTimeout` in .git/lcars/config.json (what `lcars init`
+# seeds when the probe finds a suite that needs it), then the 500s default.
+# Per leg is the point: a mission already in flight picks up a changed value,
+# and a respond-resumed driver reads the repo's record instead of an empty
+# environment. $LCARS_GATE_TIMEOUT_DEFAULT moves the LAST resort only (the test
+# rig uses it to prove the seeding without shipping a 500-second fixture).
+#
+# GATE_TIMEOUT_SRC is the RECORD of which of the three answered, so the leg's
+# artifact can say it and nobody has to infer it from a number.
+#
+# GATE_TIMEOUT_NOTE is the second half of that record (S308 fix round 1,
+# DEFECT 4): what was WRONG with the value the repo (or the environment) handed
+# over, and what was used instead. Empty when nothing needed saying.
+GATE_TIMEOUT_SECS=500; GATE_TIMEOUT_SRC=default; GATE_TIMEOUT_NOTE=""
+# THE SANE UPPER BOUND, and why it is one hour. The gate timeout exists to bound
+# a suite that never settles; past it the ticket is parked INCONCLUSIVE rather
+# than hanging the build. A finger-slip in a config file ("999999999" — 31
+# years) therefore does not merely set a generous bound, it REMOVES the hang
+# protection altogether and an unattended overnight drive burns its whole window
+# on one leg. One hour is far above anything LCARS has ever measured (the worst
+# real suite it has timed was 228s) and far above any plausible single-ticket
+# proof leg, so it cannot swallow a deliberate large-but-reasonable value — and
+# when it does bite, it says so by name.
+GATE_TIMEOUT_MAX=3600
+GATE_TIMEOUT_SAID=""   # the last raw value spoken about, so N legs say it ONCE
+# SAY IT. A value failing safe to the default is right; doing it in SILENCE is the exact
+# failure mode that burned eight worker sessions — the captain had recorded what
+# he thought was a 300s gate and every leg kept dying at 120 with no word
+# anywhere. One line, naming the offending value and what was used instead.
+# S308 FIX ROUND 2 (LOW 5): THE EVENT NAME IS A PARAMETER, because "we could
+# not use your value" and "we used your value, written oddly" are DIFFERENT
+# FACTS and a count of the first one must not include the second. A quoted
+# `"30"` is HONOURED as 30s and still emitted `gate_timeout_unusable`, so any
+# measurement that counts that event overstated the failures. Three names now:
+#   gate_timeout_unusable — REFUSED; the default was used instead.
+#   gate_timeout_coerced  — read and HONOURED as written (quoted, padded,
+#                           leading zero): the seconds used are the captain's.
+#   gate_timeout_capped   — honoured but CLAMPED to the maximum.
+gate_timeout_say() { # raw-value note [event]
+  [ "$GATE_TIMEOUT_SAID" = "$1" ] && return 0
+  GATE_TIMEOUT_SAID="$1"
+  printf '  ⚠ gate timeout: %s\n' "$2" >&2
+  [ -n "${MISSION_DIR:-}" ] && emit_event "${3:-gate_timeout_unusable}" implement "$2" || :
+  return 0
+}
+gate_cfg_file() { # [tree] → path to .git/lcars/config.json ("" = none found)
+  if [ -n "${LCARS_CFG:-}" ] && [ -f "$LCARS_CFG" ]; then printf '%s' "$LCARS_CFG"; return 0; fi
+  local t="${1:-}" g
+  [ -n "$t" ] || t="${REPO_ROOT:-$PWD}"
+  g="$("$GIT_BIN" -C "$t" rev-parse --git-common-dir 2>/dev/null)" || return 0
+  case "$g" in /*) : ;; *) g="$t/$g" ;; esac
+  [ -f "$g/lcars/config.json" ] && printf '%s' "$g/lcars/config.json"
+  return 0
+}
+gate_timeout_config_read() { # config reader → gateTimeout scalar
+  # Decode key tokens and allow JSON whitespace on either side of the colon.
+  # Keep the legacy scalar readers/coercions, including their permissiveness
+  # on malformed documents; this adapter is not whole-config validation.
+  "${LCARS_PYTHON_BIN:-python3}" - "$1" <<'PY' | "$2" /dev/stdin gateTimeout
+import json, re, sys
+with open(sys.argv[1]) as stream:
+    text = stream.read()
+string = r'"(?:[^"\\]|\\.)*"'
+for token in re.finditer(string, text):
+    if json.loads(token.group()) != "gateTimeout":
+        continue
+    scalar = re.match(r'\s*:\s*(' + string + r'|[^,}\s]+)', text[token.end():])
+    if scalar:
+        print('{"gateTimeout": ' + scalar.group(1) + '}')
+        break
+PY
+}
+resolve_gate_timeout() { # [tree] → seconds (also sets GATE_TIMEOUT_SECS/SRC/NOTE)
+  local raw="${LCARS_GATE_TIMEOUT:-}" src=env cfg dflt="${LCARS_GATE_TIMEOUT_DEFAULT:-500}"
+  local knob='LCARS_GATE_TIMEOUT' from='the environment' quoted="" t how="" note=""
+  case "$dflt" in ''|*[!0-9]*) dflt=500 ;; esac
+  [ "$dflt" -gt 0 ] 2>/dev/null || dflt=500
+  GATE_TIMEOUT_NOTE=""
+  if [ -z "$raw" ]; then
+    src=config; knob='gateTimeout'; from='.git/lcars/config.json'
+    cfg="$(gate_cfg_file "${1:-}")"
+    if [ -n "$cfg" ]; then
+      raw="$(gate_timeout_config_read "$cfg" json_raw 2>/dev/null)"
+      case "$raw" in null) raw="" ;; esac
+      # json_raw reads BARE tokens only — its character class stops at the
+      # opening quote, so a hand-edited `"gateTimeout": "30"` came back EMPTY
+      # and vanished into the default without a word. Read it as a STRING
+      # when the bare read finds nothing, so the value can be NAMED at all.
+      if [ -z "$raw" ]; then
+        raw="$(gate_timeout_config_read "$cfg" json_str 2>/dev/null)"
+        [ -n "$raw" ] && quoted=1
+      fi
+    fi
+  fi
+  # NOTHING RECORDED ANYWHERE is the quiet, correct path: the default, no word.
+  if [ -z "$raw" ]; then
+    GATE_TIMEOUT_SECS="$dflt"; GATE_TIMEOUT_SRC=default
+    printf '%s' "$dflt"; return 0
+  fi
+  # A TOLERANT READ, STATED OUT LOUD — a DESIGN CHOICE, not an obvious win.
+  # `"30"` is a very plausible hand edit, because every other value in that
+  # config file is quoted; `"  12  "` is the same slip with a stray space. The
+  # captain's intent is unmistakable in both, and refusing them would mean his
+  # recorded gate silently did not apply — one notch away from the silence this
+  # fix exists to kill. So they are HONOURED and the coercion is SAID, with the
+  # bare-number form to record instead. Anything that is not an integer number
+  # of seconds (abc, -5, 0, 7.5, true) carries no discoverable intent at all and
+  # is REFUSED, equally out loud.
+  t="$(printf '%s' "$raw" | tr -d '[:space:]')"
+  [ -n "$quoted" ] && how="recorded as a JSON string"
+  [ "$t" = "$raw" ] || how="${how:+$how and }padded with whitespace"
+  case "$t" in ''|*[!0-9]*) t="" ;; esac
+  # S308 FIX ROUND 2, DEFECT 2 — A LEADING ZERO IS NORMALISED TO DECIMAL HERE,
+  # BEFORE ANY ARITHMETIC OR ANY MESSAGE. It was the worst item of fix round 1
+  # because it corrupted the file a verdict is read from:
+  #   • `[ "$t" -gt 0 ]` and every later `$(( ))` read `010` as OCTAL 8, so a
+  #     leg recorded as "the 010s gate timeout" was killed at 7997ms;
+  #   • `"timeoutSecs": 030` is NOT VALID JSON — `json.load` refuses the whole
+  #     flip-flop.json, so the gate's own record became unreadable;
+  #   • and round 1's advice line literally told the captain to write that
+  #     invalid form back ("Record it as a bare number (gateTimeout: 0030)").
+  # Stripping the zeros first makes all three disappear at once and keeps the
+  # captain's obvious intent, which is what the tolerant read above is for.
+  # `030` → 30, `010` → 10, `000` → 0 (then refused by the >0 test below).
+  if [ -n "$t" ]; then
+    local zraw="$t"
+    t="${t#"${t%%[!0]*}"}"; [ -n "$t" ] || t=0
+    # The raw value is already quoted by the message template, so the clause
+    # names the SHAPE, not the value, and the sentence reads once.
+    [ "$t" = "$zraw" ] || how="${how:+$how and }written with a LEADING ZERO, which shell arithmetic reads as OCTAL and which is not valid JSON"
+  fi
+  [ -n "$t" ] && { [ "$t" -gt 0 ] 2>/dev/null || t=""; }
+  if [ -z "$t" ]; then
+    note="ignoring $knob=$raw (from $from) — it must be a bare positive integer number of seconds; using ${dflt}s"
+    gate_timeout_say "$raw" "$note" gate_timeout_unusable
+    GATE_TIMEOUT_SECS="$dflt"; GATE_TIMEOUT_SRC=default; GATE_TIMEOUT_NOTE="$note"
+    printf '%s' "$dflt"; return 0
+  fi
+  if [ "$t" -gt "$GATE_TIMEOUT_MAX" ]; then
+    note="$knob=$t (from $from) exceeds the ${GATE_TIMEOUT_MAX}s maximum this harness will honour — using ${GATE_TIMEOUT_MAX}s. A bound longer than an hour stops protecting against the never-settling suite the gate exists to catch; if a leg genuinely needs longer, the suite is the thing to fix"
+    t="$GATE_TIMEOUT_MAX"
+    gate_timeout_say "$raw" "$note" gate_timeout_capped
+  elif [ -n "$how" ]; then
+    # $t is already the NORMALISED decimal, so the number this line tells the
+    # captain to record is a legal JSON number — round 1's advice was not.
+    note="$knob was $how (\"$raw\") in $from — read as ${t}s and honoured. Record it as a bare number ($knob: $t) so it cannot be misread"
+    gate_timeout_say "$raw" "$note" gate_timeout_coerced
+  fi
+  GATE_TIMEOUT_SECS="$t"; GATE_TIMEOUT_SRC="$src"; GATE_TIMEOUT_NOTE="$note"
+  printf '%s' "$t"
+}
+# proof_say_scope — SAY, ONCE, WHAT THIS LEG IS SCOPED TO, when the answer is
+# not the obvious one. The B1-ROOT burn cost eight worker sessions precisely
+# because a widened leg looked exactly like a narrow one: a valid path, no
+# warning, five identical INCONCLUSIVE verdicts. Two cases are reported BY NAME
+# so the run is diagnosable in one line:
+#   proof_scope_full_suite_fallback — the leg could NOT be narrowed and will run
+#       the repo's FULL SUITE. This is the loud one.
+#   proof_scope_per_file — a directory scope would have widened the run, so the
+#       leg runs the ticket's declared files one by one. Not a fallback: the
+#       cure. Named anyway, because "why did this leg run twice?" must have an
+#       answer in the record.
+# The single-file and exact-ancestor kinds say nothing: they are the quiet,
+# correct path and a line per leg would be noise.
+proof_say_scope_kind() { # kind why
+  case "${1:-}" in
+    tree)
+      printf '  ⚠ proof scope: FULL SUITE — %s\n' "${2:-}" >&2
+      emit_event proof_scope_full_suite_fallback implement \
+        "proof leg fell back to the FULL SUITE — ${2:-}" || : ;;
+    files)
+      printf '  · proof scope: the ticket'"'"'s declared test files, one run each — %s\n' "${2:-}" >&2
+      emit_event proof_scope_per_file implement \
+        "proof leg scoped to the ticket's DECLARED test files instead of a directory — ${2:-}" || : ;;
+  esac
+  return 0
+}
+proof_say_scope() { # [tree] — the same, from the leg's recorded decision
+  proof_say_scope_kind "$PROOF_LEG_SCOPE_KIND" "$PROOF_LEG_SCOPE_WHY"
+}
+
+# === A REFUSED LEG RECORDS WHAT IT REFUSED (S308 fix round 2, LOW 4) =========
+# MEASURED 22 Oct 2026: a ticket declaring TWO test files, one of them
+# unmatchable, was correctly rendered INCONCLUSIVE — and the artifact recorded
+#     "scopeKind": "file",
+#     "scopeWhy":  "one declared test file, run as a precise positional filter"
+# Two files were declared, and NOTHING was run as any filter. Both halves of
+# that record are false, and `scopeKind` is exactly the field a later
+# measurement of "how often does the gate narrow?" would be keyed on — so the
+# mis-recording class this whole session exists to kill was reproduced by the
+# session's own fix. A leg that never produced a verdict-bearing run records the
+# REFUSAL (with the scope kind it WOULD have used, which is the diagnostic
+# value), never the filter it did not apply.
+proof_leg_refused_scope() { # rels(newline) intended-kind reason
+  local n; n="$(printf '%s\n' "${1:-}" | grep -c . 2>/dev/null | tr -d '[:space:]')"
+  case "$n" in ''|*[!0-9]*) n=0 ;; esac
+  local noun="declared test files"; [ "$n" = 1 ] && noun="declared test file"
+  PROOF_LEG_SCOPE_KIND=refused
+  PROOF_LEG_SCOPE_WHY="$n $noun; this leg was REFUSED and NOTHING was run as any filter — ${3:-no reason recorded}. The scope kind it would otherwise have used was \"${2:-unknown}\""
+  return 0
+}
+
+# The clause the timeout message carries, so the reader knows WHICH knob to turn.
+# It always names LCARS_GATE_TIMEOUT (the override that works everywhere).
+gate_timeout_clause() { # → "(…)"
+  case "$GATE_TIMEOUT_SRC" in
+    env)    printf '(LCARS_GATE_TIMEOUT, from the environment)' ;;
+    config) printf '(gateTimeout in .git/lcars/config.json; LCARS_GATE_TIMEOUT overrides it)' ;;
+    *)      printf '(the default — use lcars update --gate-timeout <seconds>, or set LCARS_GATE_TIMEOUT)' ;;
+  esac
+}
+
+# === DOES THE SCOPE SELECT ANYTHING AT ALL? (S308 fix round 1, DEFECT 1) =====
+# THE DEFECT, measured 22 Oct 2026. A ticket declared ONE test file,
+# `tests/ticket_up_spec.js`, in a repo whose testCommand is the very common
+#
+#     node --test --test-concurrency=1 $(find "$LCARS_TESTS_DIR" -name "*.test.js")
+#
+# `find <that file> -name "*.test.js"` matches NOTHING, so the command
+# substitution collapses to the EMPTY STRING, the runner receives an EMPTY
+# ARGUMENT LIST, and `node --test` falls back to its OWN discovery — running the
+# eight tests the ticket never declared on BOTH legs. The leg recorded
+# `scopeKind: "file"`, `scopeWhy: "one declared test file, run as a precise
+# positional filter"` (false for that run) and printed the fully confident
+#
+#     ✗ flip-flop FAIL — the ticket's tests PASS on the PARENT commit
+#
+# while the ticket's own test never ran once. That reason sends an engineer
+# hunting a red-on-parent problem that does not exist — the exact
+# five-sessions-of-nothing class this session exists to kill — and a false PASS
+# is reachable the same way whenever the fallback suite happens to be
+# green-on-tip and red-on-parent. Under the old DIRECTORY scope the argument
+# list could never be empty; file/files mode introduces this path.
+#
+# DETECTED AT THE SOURCE, not inferred downstream. The question "did this scope
+# select anything?" is answerable BEFORE a single test runs, by evaluating the
+# command's own file-SELECTION with $LCARS_TESTS_DIR set to the scope. A
+# selection that resolves to nothing is a FACT about this leg, so it is recorded
+# where it is produced (PROOF_LEG_SCOPE_SELECTED_NOTHING + a named event) rather
+# than guessed later from a finished run's test counts.
+#
+# WHAT COUNTS AS A SELECTION. Only a `$( … )` command substitution that
+# REFERENCES $LCARS_TESTS_DIR: that is what a testCommand uses the scope for,
+# and it is the whole of the empty-argument-list hazard. A command that hands
+# "$LCARS_TESTS_DIR" straight to the runner has no selection to be empty (and
+# every runner we support accepts an explicit path whatever its own naming
+# conventions), so nothing fires and its behaviour is byte-identical.
+#
+# THE RESIDUAL RISK, stated: the selection is EVALUATED, so a substitution with
+# side effects would run twice (once here, once in the real command). It is
+# bounded to substitutions that mention the scope variable — an expression whose
+# whole job is to produce a file list — and to a short hard timeout, and a
+# selection that errors or times out is treated as UNKNOWN and changes nothing.
+# Backtick substitutions are deliberately not parsed: `$( … )` is the shape
+# every seeded and every observed testCommand uses.
+PROOF_SCOPE_SELECT_EXPR=""
+proof_scope_selection_exprs() { # testCommand → one $( … ) body per line
+  printf '%s' "$1" | "${LCARS_PYTHON_BIN:-python3}" -c '
+import sys
+cmd = sys.stdin.read()
+i = 0
+n = len(cmd)
+while True:
+    j = cmd.find("$(", i)
+    if j < 0:
+        break
+    k = j + 2
+    depth = 1
+    while k < n and depth:
+        if cmd.startswith("$(", k):
+            depth += 1
+            k += 2
+            continue
+        c = cmd[k]
+        if c == ")":
+            depth -= 1
+            k += 1
+            continue
+        if c == "\\":
+            k += 2
+            continue
+        k += 1
+    if depth:
+        break
+    body = cmd[j + 2:k - 1]
+    if "LCARS_TESTS_DIR" in body:
+        sys.stdout.write(" ".join(body.split()) + "\n")
+    i = k
+' 2>/dev/null
+}
+# 0 when some selection in <cmd> matches NOTHING for <scope>; the offending
+# expression is left in $PROOF_SCOPE_SELECT_EXPR.
+proof_scope_selects_nothing() { # run_dir cmd scope [secs]
+  PROOF_SCOPE_SELECT_EXPR=""
+  local run_dir="$1" cmd="$2" scope="$3" secs="${4:-10}" expr rc of
+  [ "$secs" -ge 1 ] 2>/dev/null || secs=1
+  [ "$secs" -le 10 ] || secs=10
+  of="$(mktemp "${TMPDIR:-/tmp}/lcars-sel.XXXXXX" 2>/dev/null)" || return 1
+  while IFS= read -r expr; do
+    [ -n "$expr" ] || continue
+    rc=0
+    ( cd "$run_dir" 2>/dev/null || exit 0
+      export LCARS_TESTS_DIR="$scope"
+      run_with_hard_timeout "$secs" "$of" bash -c "$expr" ) || rc=$?
+    # FIX ROUND 2, DEFECT 1 — THE RULE IS THE OUTPUT, NOT THE EXIT CODE.
+    # Round 1 wrote `[ "$rc" -eq 0 ] || continue`, reasoning that a selection
+    # which errored told us nothing. It is the opposite: for the commands people
+    # actually write, "MATCHED NOTHING" **IS** A NON-ZERO EXIT — `grep` returns
+    # 1, `ls <no match>` returns non-zero, a failing glob leaves a bad path.
+    # The tester's decisive measurement on this very gate: `$(find … | grep …)`
+    # was refused, and the SAME expression with `|| true` appended — byte-
+    # identical EMPTY output, rc 0 — was waved through to a confident verdict.
+    # Two spellings of one fact cannot have two verdicts. An empty selection is
+    # an empty argument list whatever the exit code, so emptiness decides.
+    #
+    # UNKNOWN is now reserved strictly for "we could not COMPLETE the
+    # measurement": the hard timeout (124) or a signal (>=128). Those change
+    # nothing and the real run proceeds under its own gate timeout.
+    case "$rc" in 124) continue ;; esac
+    [ "$rc" -lt 128 ] 2>/dev/null || continue
+    [ -n "$(tr -d '[:space:]' <"$of" 2>/dev/null)" ] && continue
+    PROOF_SCOPE_SELECT_EXPR="$expr"
+    rm -f "$of"
+    return 0
+  done <<PSSN_EOF
+$(proof_scope_selection_exprs "$cmd")
+PSSN_EOF
+  rm -f "$of"
+  return 1
+}
+
+# === DID THE SCOPE CHANGE ANYTHING? THE CONTROL RUN (S308 fix round 2) =======
+# THE DEFECT CLASS, measured four ways by a captain-stand-in tester on 22 Oct
+# 2026 and reproduced by hand here. Every one of these testCommands silently
+# ran the UNDECLARED suite on both legs while the artifact recorded a precise
+# file scope, and one of them certified a ticket with a FALSE PASS:
+#   a. node --test `find "$LCARS_TESTS_DIR" -name "*.test.js"`     (backticks)
+#   b. $(find "$LCARS_TESTS_DIR" -type f | grep "\.test\.js$")      (a pipeline)
+#   c. $(ls "$LCARS_TESTS_DIR"/*.test.js 2>/dev/null)              (a failing ls)
+#   d. node --test "$LCARS_TESTS_DIR"/*.test.js                    (a bare glob)
+# They share ONE mechanism — the command's own file selection matches nothing,
+# the runner is handed an EMPTY argument list, and it discovers its own tests —
+# and they differ only in SPELLING.
+#
+# WHY THIS IS NOT ANOTHER PARSER. ORCHESTRATION.md's infer-vs-record rule
+# records that S147 burned FOUR GENERATIONS of a source parser, S156's
+# classifier collapsed on a reworded corpus, and S188 was beaten twice in one
+# session; the round-1 pre-check (proof_scope_selection_exprs) is a parser of
+# `$( … )` bodies and routes (a) and (d) are simply spellings it does not know.
+# Teaching it backticks and globs would be generation three of the thing S147
+# proved cannot be finished, so it is NOT done here.
+#
+# INSTEAD THE QUESTION IS ANSWERED BY EXPERIMENT, and the experiment is blind to
+# spelling: RUN THE REPO'S OWN testCommand AGAIN, IDENTICALLY, WITH THE SCOPE
+# POINTED AT AN EMPTY DIRECTORY. That is the control. If the leg's run and the
+# control execute THE SAME NUMBER OF TESTS under the same runner, then handing
+# the command the ticket's test file(s) changed NOTHING about what ran — so
+# whatever that leg's colour was, it was not about this ticket. No command shape
+# is privileged: backticks, globs, pipes, `|| true`, a wrapper script, anything.
+#
+# WHY THE MEASUREMENT COULD NOT BE RECORDED ONCE PER REPO (which is what a
+# first reading of the infer-vs-record rule suggests, and what was tried first):
+# the capability is NOT a property of the repo. In the very fixture this session
+# ships, ONE testCommand (`find … -name "*.test.js"`) narrows PERFECTLY for a
+# ticket whose file is `ticket_up.test.js` and collapses COMPLETELY for one
+# whose file is `ticket_up_spec.js`. A per-repo "can it narrow?" flag is
+# therefore false for half the tickets whichever way it is recorded, and a
+# per-repo FALLBACK COUNT goes stale the moment the suite grows (the stale
+# direction is a MISS, not a false alarm). The fact is per-leg, so it is
+# measured per-leg and recorded in that leg's artifact.
+#
+# THE COST, stated plainly: one extra invocation of the testCommand per gate.
+# It is nearly free for a command that OBEYS its scope (an empty directory
+# yields an empty run in milliseconds) and expensive only for a command that
+# falls back to its own discovery — which is exactly the case whose leg is about
+# to be refused anyway. It is bounded by the same gate timeout as a leg, and a
+# control that times out or cannot be read changes NOTHING (recorded as
+# unmeasured; extra INCONCLUSIVE is acceptable, a confident verdict built on a
+# guess is not).
+# THE PRECONDITION, and it is what keeps the control from false-refusing. When
+# the leg's count and the control's count are EQUAL there are TWO explanations
+# and the output cannot tell them apart: the scope selected nothing and the
+# runner discovered everything (the defect), OR the ticket's declared test files
+# ARE the whole of this tree's test suite, so discovering everything and running
+# the ticket's tests are THE SAME RUN (harmless — and measured: this is the
+# ordinary shape of a small repo, and refusing it parked FIVE honest tickets in
+# tests/proof-gates.test.sh on the first cut of this check). The two are
+# separated by a FILESYSTEM fact, not by reading anything: is there a test file
+# in this tree that the ticket did NOT declare? If there is not, no fallback
+# discovery can run anything but the ticket's own tests and the verdict stands.
+# Tracked files only (the gate runs on a committed tip); an UNTRACKED undeclared
+# test file is the one shape this misses, and it misses by NOT refusing.
+proof_undeclared_test_exists() { # tree rels(newline) → 0 when one exists
+  local tree="$1" rels="$2" p
+  while IFS= read -r p; do
+    [ -n "$p" ] || continue
+    proof_is_test_path "$p" || continue
+    printf '%s\n' "$rels" | grep -qxF "$p" && continue
+    return 0
+  done < <("$GIT_BIN" -C "$tree" ls-files 2>/dev/null)
+  return 1
+}
+# === THE CONTROL RUN'S OWN BUDGET (S308 fix round 3, CURE 1) ================
+# WHY IT CANNOT BE THE LEG'S BUDGET, and this is the trap that nearly turned
+# cure 1 into a regression. The control hands the testCommand an EMPTY scope, so
+# a command that does not obey its scope falls back to discovering the WHOLE
+# SUITE — the control is the FULL-SUITE-SHAPED run by construction. Round 2
+# bounded it by the NARROWED leg's gate, and MEASURED 22 Oct 2026 on this repo's
+# own fixture (a ~10s suite with LCARS_GATE_TIMEOUT=5): the leg passed correctly
+# in ~2s while the control was KILLED, recording `narrowingProven: false`.
+#
+# So in exactly the repos this session exists for — a full suite slower than the
+# gate — the control gave ZERO coverage. Make cure 1 act on that `false` and
+# every such leg becomes INCONCLUSIVE: five consecutive no-information verdicts,
+# which is the measured live-run burn this whole session is fixing. A regression dressed
+# as a safety fix.
+#
+# THE RESOLUTION: budget the control against the FULL-SUITE number, never the
+# narrow leg's. The repo RECORDS what its suite needs — `gateTimeout` in
+# .git/lcars/config.json, which `lcars init` seeds from the probe's measured
+# wall clock — so that is the number, falling back to the same 500s default
+# every leg uses. The leg's own bound is a FLOOR, not a ceiling: an env
+# LCARS_GATE_TIMEOUT of 600 still raises the control to 600, because a one-off
+# override that RAISES the bound is the captain asking for more time. What it
+# can no longer do is LOWER the control below the repo's recorded need.
+#
+# THE COST, stated: one run per gate, now bounded by the repo's full-suite
+# budget instead of a narrow one. It is still capped by GATE_TIMEOUT_MAX, and
+# still nearly free for a command that OBEYS its scope (an empty directory
+# yields an empty run in milliseconds) — expensive only for the command whose
+# leg is about to be refused anyway.
+#
+# The env override is NOT consulted here: resolve_gate_timeout already applied
+# it to the leg, and this function's job is to answer the DIFFERENT question
+# "how long does this repo's whole suite need?".
+proof_control_budget() { # tree leg-secs → seconds on stdout
+  local leg="${2:-500}" dflt="${LCARS_GATE_TIMEOUT_DEFAULT:-500}" cfg raw t
+  case "$leg"  in ''|*[!0-9]*) leg=500 ;; esac
+  case "$dflt" in ''|*[!0-9]*) dflt=500 ;; esac
+  [ "$dflt" -gt 0 ] 2>/dev/null || dflt=500
+  t="$dflt"
+  cfg="$(gate_cfg_file "${1:-}")"
+  if [ -n "$cfg" ]; then
+    raw="$(gate_timeout_config_read "$cfg" json_raw 2>/dev/null)"
+    case "$raw" in null) raw="" ;; esac
+    [ -n "$raw" ] || raw="$(gate_timeout_config_read "$cfg" json_str 2>/dev/null)"
+    raw="$(printf '%s' "$raw" | tr -d '[:space:]')"
+    # 10# forces decimal for the same reason resolve_gate_timeout does: a
+    # leading zero read as octal is how the 010s gate died at 7997ms.
+    case "$raw" in ''|*[!0-9]*) raw="" ;; *) raw="$(( 10#$raw ))" ;; esac
+    [ -n "$raw" ] && [ "$raw" -gt 0 ] 2>/dev/null && t="$raw"
+  fi
+  [ "$t" -ge "$leg" ] 2>/dev/null || t="$leg"
+  [ "$t" -le "$GATE_TIMEOUT_MAX" ] 2>/dev/null || t="$GATE_TIMEOUT_MAX"
+  printf '%s' "$t"
+}
+PROOF_SCOPE_CONTROL=""   # "<runner> <executed>" | "" when it could not be read
+# PROOF_SCOPE_CONTROL_ZERO (S308 fix round 3) — the control run COLLECTED NO
+# TESTS AT ALL, in its runner's OWN words. This is NOT a nicety: it is what
+# keeps cure 1 from parking an entire class of honest repo.
+#
+# proof_executed_count reads SUMMARY NUMBERS, and several runners print no
+# summary numbers when they collect nothing — pytest's zero-test run is
+# `===== no tests ran in 0.01s =====` and exit 5, with no passed/failed/error
+# to read. So the control would come back UNREADABLE, and an unreadable control
+# is `unproven`, which cure 1 turns into INCONCLUSIVE. Every leg in every pytest
+# repo, on the exact measurement that was supposed to protect them.
+#
+# But a control that collected NOTHING is the STRONGEST possible form of the
+# same evidence: the scope was emptied and the command ran nothing, so handing
+# it the ticket's files is what produced the leg's tests. It is read from the
+# runners' own "no tests collected / ran" sentences (the shared `zerotests`
+# signature, which is deliberately tight and already anchored against a healthy
+# suite that merely prints a zero), never from an absent number.
+PROOF_SCOPE_CONTROL_ZERO=""
+PROOF_SCOPE_CONTROL_WHY=""
+proof_scope_control_exec() { # run_dir cmd [secs] [runner]
+  PROOF_SCOPE_CONTROL=""; PROOF_SCOPE_CONTROL_ZERO=""; PROOF_SCOPE_CONTROL_WHY=""
+  local rd="$1" cmd="$2" secs="${3:-500}" runner="${4:-}" d of rc=0 cout
+  case "$secs" in ''|*[!0-9]*) secs=500 ;; esac
+  [ -n "$rd" ] && [ -n "$cmd" ] || return 0
+  if [ "$runner" = unittest ]; then
+    # An explicit unittest top-level directory requires an importable child.
+    d="$(mktemp -d "$rd/lcars_ctlscope_XXXXXX" 2>/dev/null)" || {
+      PROOF_SCOPE_CONTROL_WHY="the gate could not create its unittest control package in $rd"; return 0;
+    }
+    : >"$d/__init__.py"
+  else
+    d="$(mktemp -d "${TMPDIR:-/tmp}/lcars-ctlscope.XXXXXX" 2>/dev/null)" || return 0
+  fi
+  of="$(mktemp "${TMPDIR:-/tmp}/lcars-ctlout.XXXXXX" 2>/dev/null)" || { rm -rf "$d"; return 0; }
+  ( cd "$rd" 2>/dev/null || exit 0
+    LCARS_TESTS_DIR="$d" run_with_hard_timeout "$secs" "$of" bash -c "$cmd" ) || rc=$?
+  # 124 = the control never settled; it tells us nothing and must not decide.
+  if [ "$rc" != 124 ]; then
+    cout="$(cat "$of" 2>/dev/null)"
+    PROOF_SCOPE_CONTROL="$(proof_executed_count "$cout")"
+    if [ -z "$PROOF_SCOPE_CONTROL" ] && suite_collected_zero_tests "$cout"; then
+      PROOF_SCOPE_CONTROL_ZERO=true
+    fi
+    PROOF_SCOPE_CONTROL_WHY="the control exited $rc without a readable test count or zero-test result; runner output:
+$(printf '%s\n' "$cout" | tail -8)"
+  else
+    PROOF_SCOPE_CONTROL_WHY="the control exceeded the ${secs}s budget chosen by the gate and was terminated; this does not establish a narrowing failure or a repository defect"
+  fi
+  rm -rf "$d"; rm -f "$of"
+  return 0
+}
+
+# === THE DECLARED-FILE ACCOUNTING MEASUREMENT (S318, D9) ===================
+# THE QUESTION THE GATE HAD NEVER ASKED: *did each DECLARED test file actually
+# execute?* Measured on the committed tip, a ticket declaring two test files —
+# one honest, one named `_spec.js` in a `*.test.js` world and GENUINELY RED on
+# the tip — was certified `flip-flop PASS` in FOUR separate narrowing states:
+#
+#   ancestor          one invocation for N files: no per-file evidence at all.
+#                     THIS IS THE NORMAL NESTED LAYOUT.
+#   moot              the control is skipped. Its premise is TRUE (a fallback to
+#                     the runner's own discovery can only run DECLARED tests) and
+#                     the inference drawn from it is wrong — that says nothing
+#                     about whether EACH of them ran.
+#   uncountable       no readable count, reached on a js repo by an ordinary
+#                     quiet CI wrapper printing ALL GREEN / SUITE FAILED.
+#   tree/not-narrowed the testCommand never interpolates $LCARS_TESTS_DIR, so the
+#                     leg ran the whole suite — which cannot include a file the
+#                     runner is unable to discover.
+#
+# S308's per-invocation control closed `files` mode ONLY, because that is the one
+# state that already carries per-file numbers. Nothing anywhere compared
+# `testFiles` (the DECLARATION) against what executed.
+#
+# IT IS A MEASUREMENT, NOT A PARSER (ORCHESTRATION.md § the infer-vs-record
+# check; S147 burned four generations of a source parser). Nothing here reads a
+# runner's prose, recognises a command's shape, or looks for a file NAME in any
+# output. The evidence is a COUNT produced by the repo's own testCommand:
+#
+#   file / files   the leg ALREADY ran one invocation per declared file, so its
+#                  own `legExecutedEach` IS the per-file measurement and NOTHING
+#                  EXTRA RUNS. A file whose invocation executed nothing is
+#                  unaccounted for.
+#   ancestor       one invocation covered N files, so the measurement has to be
+#                  made: the testCommand is re-run once per declared file with
+#                  the scope pointed at THAT FILE. A file is accounted for when
+#                  its own run executed at least one test, was read by the same
+#                  runner, and executed NO MORE than the leg itself did — a run
+#                  bigger than the leg cannot have been a subset of it, which is
+#                  exactly the signature of a selection that matched nothing and
+#                  fell back to discovering the whole suite. The per-file counts
+#                  must then SUM to no more than the leg's own count, or the
+#                  files cannot be separated and none of them is accounted for.
+#   tree / native  refused without running anything: an unscoped testCommand
+#                  cannot be measured per file, and saying so costs N full-suite
+#                  runs less than proving it.
+#
+# S328: a Python file may take part without producing tests. Code called during
+# tests in a passing, positive FILE-scoped run also accounts for it.
+# Zero-test snapshots supply no credit; ancestor probes must agree with the
+# actual leg's calls and never credit their own source file.
+#
+# POSITIVE EVIDENCE ONLY. Nothing here concludes from an ABSENCE ("no failure was
+# recorded" treated as "it passed") — that is how S310's fix loop manufactured a
+# false claim. Every accounted file has a positive executed count or an observed
+# call from a passing invocation with a positive count.
+#
+# FAIL SAFE IN ONE DIRECTION ONLY: a file this cannot account for makes the leg
+# INCONCLUSIVE. Extra inconclusive is acceptable; a confident verdict on tests
+# that did not run is not.
+# PROOF_FILE_EXEC     "<runner> <executed>" | "" when the run could not be read
+# PROOF_FILE_EXEC_RC  the run's own rc, so a TIMEOUT is never stored as a zero
+#                     (fix round 1, D6: a timed-out ablation was reported as
+#                     "no run executed a single test out of <file>").
+PROOF_FILE_EXEC=""; PROOF_FILE_EXEC_RC=""; PROOF_FILE_IMPORTED=""; PROOF_FILE_COLLECTED_ZERO=""
+proof_scope_command() { # cmd scope -> runnable cmd; directory scopes stay byte-identical
+  [ -f "$2" ] || { printf '%s' "$1"; return 0; }
+  "${LCARS_PYTHON_BIN:-python3}" - "$1" "$2" "${3:-discover}" "${4:-$PWD}" <<'PY'
+import os, re, shlex, sys
+cmd, scope, mode, run_dir = sys.argv[1:]
+try:
+    args = shlex.split(cmd)
+except ValueError:
+    print(cmd, end="")
+    sys.exit(0)
+# Only adapt the direct unittest CLI. Other runners retain their own file API;
+# compound commands and wrappers are not safe to reconstruct as an argv.
+if (len(args) < 5 or args[1:4] != ["-m", "unittest", "discover"]
+        or any(c in cmd for c in (";", "&", "|", ">", "<", "`", "$("))):
+    print(cmd, end="")
+    sys.exit(0)
+words = list(re.finditer(r"""(?:[^\s'"\\]|\\[\s\S]|'[^']*'|"(?:\\[\s\S]|[^"\\])*")+""", cmd))
+if [shlex.split(w.group())[0] for w in words] != args:
+    print(cmd, end="")
+    sys.exit(0)
+if mode == "support":
+    # Load the file itself, without discovery's filename or -k filters.
+    print(words[0].group() + " -m unittest " + shlex.quote(os.path.relpath(scope, run_dir))
+          + ' || { rc=$?; [ "$rc" -eq 5 ] || exit "$rc"; }', end="")
+    sys.exit(0)
+variables = {"$LCARS_TESTS_DIR", "${LCARS_TESTS_DIR}", "${LCARS_TESTS_DIR:-tests}"}
+start = None
+for i, arg in enumerate(args):
+    if arg in ("-s", "--start-directory") and i + 1 < len(args):
+        start = (i+1, "", args[i+1])
+    elif arg.startswith("--start-directory="):
+        start = (i, "--start-directory=", arg.split("=", 1)[1])
+if start is None or start[2] not in variables:
+    print(cmd, end="")
+    sys.exit(0)
+# Edit only the scope word; retain all other shell expansion and quoting.
+i, prefix, _ = start
+word = words[i]
+adapted = cmd[:word.start()] + shlex.quote(prefix + os.path.dirname(scope)) + cmd[word.end():]
+# unittest permits repeated -p/--pattern options and the LAST one wins.
+adapted += " -p " + shlex.quote(os.path.basename(scope))
+# Python 3.14 exits 5 for an empty discovery. Let sibling files run; the
+# gate still sees its zero count and cannot certify an entirely empty leg.
+print(adapted + ' || { rc=$?; [ "$rc" -eq 5 ] || exit "$rc"; }', end="")
+PY
+}
+proof_unittest_support_file() { # run_dir raw_cmd file budget -> positive no-tests evidence
+  local rd="$1" cmd="$2" scope="$3" secs="$4" probe of out rc=0
+  # A module can suppress both discovery and direct loading. Only inert source
+  # can establish absence independently; all executable module code is unknown.
+  "${LCARS_PYTHON_BIN:-python3}" - "$scope" <<'PY' || return 1
+import ast, sys, tokenize
+try:
+    with tokenize.open(sys.argv[1]) as source:
+        tree = ast.parse(source.read())
+except (OSError, SyntaxError, UnicodeError):
+    sys.exit(1)
+def literal(node):
+    if isinstance(node, ast.Constant):
+        return type(node.value) in (str, int, float, complex, bool, type(None))
+    if isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.UAdd, ast.USub)):
+        return isinstance(node.operand, ast.Constant) \
+            and type(node.operand.value) in (int, float, complex)
+    if isinstance(node, (ast.Tuple, ast.List, ast.Set)):
+        return all(literal(item) for item in node.elts)
+    if isinstance(node, ast.Dict):
+        return all(key is not None and literal(key) and literal(value)
+                   for key, value in zip(node.keys, node.values))
+    return False
+
+for node in tree.body:
+    if isinstance(node, ast.Pass):
+        continue
+    if isinstance(node, ast.Expr) and isinstance(node.value, ast.Constant) \
+            and isinstance(node.value.value, str):
+        continue
+    if isinstance(node, ast.Assign) and literal(node.value) \
+            and all(isinstance(target, ast.Name) and target.id != "load_tests"
+                    and not target.id.startswith("__") for target in node.targets):
+        continue
+    if isinstance(node, ast.FunctionDef):
+        args = node.args
+        parameters = args.posonlyargs + args.args + args.kwonlyargs
+        parameters += [arg for arg in (args.vararg, args.kwarg) if arg is not None]
+        if (node.name != "load_tests" and not node.name.startswith("__")
+                and not node.decorator_list and not node.returns
+                and not getattr(node, "type_params", [])
+                and not args.defaults and not any(args.kw_defaults)
+                and not any(arg.annotation for arg in parameters)):
+            continue
+    sys.exit(1)
+PY
+  probe="$(proof_scope_command "$cmd" "$scope" support "$rd")"
+  [ "$probe" != "$cmd" ] || return 1
+  of="$(mktemp "${TMPDIR:-/tmp}/lcars-supportout.XXXXXX" 2>/dev/null)" || return 1
+  ( cd "$rd" && run_with_hard_timeout "$secs" "$of" bash -c "$probe" ) || rc=$?
+  out="$(cat "$of" 2>/dev/null)"; rm -f "$of"
+  [ "$rc" -eq 0 ] && [ "$(proof_executed_count_ext "$out")" = "unittest 0" ] \
+    && printf '%s\n' "$out" | grep -q '^Ran 0 tests in '
+}
+proof_python_command() { # cmd evidence-directory -> observed direct Python cmd, or unchanged
+  "${LCARS_PYTHON_BIN:-python3}" "$SKILL_DIR/proof-python.py" command "$1" "$2"
+}
+proof_python_imports() { # root evidence-directory rels -> declared paths whose code was called
+  printf '%s\n' "$3" | "${LCARS_PYTHON_BIN:-python3}" "$SKILL_DIR/proof-python.py" read "$1" "$2"
+}
+proof_file_scope_exec() { # run_dir cmd scope-abs [secs]
+  PROOF_FILE_EXEC=""; PROOF_FILE_EXEC_RC=""; PROOF_FILE_IMPORTED=""; PROOF_FILE_COLLECTED_ZERO=""
+  local rd="$1" cmd="$2" sc="$3" secs="${4:-500}" of rc=0 cout observed evidence rawcmd="$2"
+  case "$secs" in ''|*[!0-9]*) secs=500 ;; esac
+  [ -n "$rd" ] && [ -n "$cmd" ] && [ -n "$sc" ] || return 0
+  cmd="$(proof_scope_command "$cmd" "$sc")"
+  of="$(mktemp "${TMPDIR:-/tmp}/lcars-declout.XXXXXX" 2>/dev/null)" || return 0
+  evidence="$(mktemp -d "${TMPDIR:-/tmp}/lcars-imports.XXXXXX")" || { rm -f "$of"; return 0; }
+  observed="$(proof_python_command "$cmd" "$evidence")"
+  # The rc is DELIBERATELY ignored except for the hard timeout: a measurement
+  # run that goes RED still produced a count, and this measurement is about
+  # participation, never about colour.
+  ( cd "$rd" 2>/dev/null || exit 0
+    LCARS_TESTS_DIR="$sc" run_with_hard_timeout "$secs" "$of" bash -c "$observed" ) || rc=$?
+  PROOF_FILE_EXEC_RC="$rc"
+  if [ "$rc" != 124 ]; then
+    cout="$(cat "$of" 2>/dev/null)"
+    PROOF_FILE_EXEC="$(proof_executed_count_ext "$cout")"
+    if [ "$rc" -eq 0 ] && [ "$PROOF_FILE_EXEC" = "unittest 0" ] \
+       && printf '%s\n' "$cout" | grep -q '^Ran 0 tests in ' \
+       && proof_unittest_support_file "$rd" "$rawcmd" "$sc" "$secs"; then
+      PROOF_FILE_COLLECTED_ZERO=true
+    fi
+    if [ "$rc" -eq 0 ] && [ -n "$PROOF_FILE_EXEC" ] \
+       && [ "${PROOF_FILE_EXEC##* }" -gt 0 ] && [ -f "$sc" ]; then
+      # Unadapted unittest discovery cannot select a file: its calls could
+      # belong to siblings rather than this probe's intended test file.
+      if [ "${PROOF_FILE_EXEC%% *}" != unittest ] || [ "$cmd" != "$rawcmd" ]; then
+        PROOF_FILE_IMPORTED="$(proof_python_imports "${PROOF_IMPORT_ROOT:-$rd}" "$evidence" "${PROOF_IMPORT_RELS:-}" \
+          | grep -vxF "${sc#"${PROOF_IMPORT_ROOT:-$rd}"/}" || :)"
+      fi
+    fi
+  fi
+  rm -f "$of"; rm -rf "$evidence"
+  return 0
+}
+# A declared "test file" THAT HOLDS NOTHING (fix round 1, D4). MEASURED: a
+# ZERO-BYTE declared test file was certified as "executed at least one test",
+# because `node --test` counts an empty file as one passing test — while the
+# all-`test.skip` equivalent was correctly refused, which is what made this an
+# oversight rather than a policy. A file with no content declares no test, and
+# that is a FILESYSTEM FACT (is there anything in it at all?), not a reading of
+# what the content means.
+proof_decl_file_is_empty() { # abs-path
+  [ -f "$1" ] || return 1
+  [ -s "$1" ] || return 0
+  [ -z "$(tr -d '[:space:]' <"$1" 2>/dev/null | head -c 1)" ]
+}
+# PROOF_DECL_METHOD  how the accounting was attempted:
+#   leg-invocations    read off the leg's own per-file invocations (no extra run)
+#   ablation           the testCommand re-run with the LEG'S OWN SCOPE and the
+#                      declared file moved aside, once per declared file
+#   unreadable-runner  the runner prints no test count — refused BY NAME
+#   unscoped-command   the leg ran the full suite with no narrowing — refused
+#   not-applicable     nothing to account for, or no re-runnable testCommand
+#                      exists (the native lane: LEDGERED, see below)
+# PROOF_DECL_EACH    "<rel>=<n|called>" per declared file, in the leg's own order
+# PROOF_DECL_UNACC   the declared files it could NOT account for, one per line
+# PROOF_DECL_WHY     one sentence a captain can act on
+# PROOF_DECL_FIX     the remediation for THIS reason (fix round 1, D5: the
+#                    `_spec.js` rename paragraph was appended to EVERY refusal,
+#                    including ones where the filenames were already exactly
+#                    what the selection expects, so he was sent renaming
+#                    correct files)
+PROOF_DECL_METHOD=""; PROOF_DECL_EACH=""; PROOF_DECL_UNACC=""; PROOF_DECL_WHY=""
+PROOF_DECL_FIX=""
+PROOF_DECL_EXCLUDED=""
+# Set when the leg's own count was unreadable and the ablation lane re-measured
+# the un-ablated leg with the extended reader: "<runner> <executed>".
+PROOF_DECL_RECOUNT=""
+# THE RENAME REMEDIATION, and the ONLY reason it explains: a declared file whose
+# removal from the scope changed nothing about what ran.
+PROOF_DECL_FIX_RENAME="The commonest cause is a test file the repo's OWN testCommand cannot see — a name its selection does not match (\`_spec.js\` where the selection says \`*.test.js\`), so the runner is handed an empty argument list and discovers its own tests instead. Either name the ticket's test files the way the existing selection expects, or hand \"\$LCARS_TESTS_DIR\" to the runner directly (\`lcars update --fix-tests\`) so no fallback discovery is possible at all."
+# === S318 FIX ROUND 2: THE ABLATION'S DATA-LOSS WINDOW, CLOSED ==============
+# The ablation below copies a declared test file aside, REMOVES it from the REAL
+# working tree, re-runs the repo's own test command, and puts it back. That
+# middle step is a full invocation of the captain's suite — minutes, on exactly
+# the slow-suite repo class this measurement exists for — and there was NO TRAP.
+# For the whole of that window the file existed only in $TMPDIR. MEASURED (a
+# fresh suite row): TERM the gate mid-ablation and the declared test file is
+# GONE from the working tree, the tree is left `D tests/a/ticket_up.test.js`,
+# and the holding directory leaks into $TMPDIR for the OS to collect whenever it
+# feels like it. This laptop idle-sleeps after one minute on mains, an
+# orchestrator dying mid-run is a recurring event here, and `rm -f` on a test
+# file the worker has only just written on the tip is NOT recoverable from git.
+#
+# So the restore is made to survive the process dying: these four globals say
+# what is currently moved aside, and the handler below puts it back. The handler
+# is IDEMPOTENT (it runs again on EXIT after a successful restore has already
+# happened, and must do nothing then), depends on nothing that may be unset, and
+# never fails in a way that could mask an exit status.
+PROOF_ABLATE_HOLD=""      # the holding directory, while one exists to remove
+PROOF_ABLATE_WT=""        # the worktree the moved-aside file belongs to
+PROOF_ABLATE_REL=""       # the declared file CURRENTLY moved aside ("" = none)
+PROOF_ABLATE_HELD=""      # its copy inside the holding directory
+proof_ablate_rescue() {
+  if [ -n "${PROOF_ABLATE_REL:-}" ] && [ -n "${PROOF_ABLATE_WT:-}" ] \
+     && [ -f "${PROOF_ABLATE_HELD:-}" ] && [ ! -f "$PROOF_ABLATE_WT/$PROOF_ABLATE_REL" ]; then
+    cp -p "$PROOF_ABLATE_HELD" "$PROOF_ABLATE_WT/$PROOF_ABLATE_REL" 2>/dev/null || :
+  fi
+  PROOF_ABLATE_REL=""; PROOF_ABLATE_HELD=""
+  # The holding directory goes too — unless the abort path has deliberately
+  # cleared this, because its refusal NAMES the held copy as the captain's way
+  # back and deleting it would be the data loss all over again.
+  [ -n "${PROOF_ABLATE_HOLD:-}" ] && rm -rf "$PROOF_ABLATE_HOLD" 2>/dev/null || :
+  PROOF_ABLATE_HOLD=""
+  return 0
+}
+# DISARM BACK TO DEFAULT — AND NOT BY RE-ARMING WHAT `trap -p` REPORTED, WHICH
+# WAS MEASURED TO BE A NEW DEFECT. The obvious shape is "save `trap -p EXIT INT
+# TERM HUP`, restore it after", because an outer trap DOES exist above this
+# code: cmd_implement arms `trap … cm_heartbeat_stop … EXIT INT TERM` and
+# cmd_implement_ticket arms an EXIT trap that writes the ticket's `.build-rc`,
+# which its parent reads as the build's exit code.
+#
+# But the only PRODUCTION caller runs the whole gate inside a COMMAND
+# SUBSTITUTION — `ffout="$(flip_flop_gate … 2>&1)"` — and bash resets trapped
+# signals to their default in that subshell while `trap -p` STILL PRINTS the
+# inherited command strings (bash 3.2, measured here). So "restoring" them would
+# ARM in the subshell traps that were inert: at the gate's exit `.build-rc`
+# would be overwritten with the gate's own rc, cm_heartbeat_stop would reap the
+# comment heartbeat mid-ticket, and the handlers' stdout would be CAPTURED INTO
+# $ffout and fed to _tdd_reject as the gate's reason.
+#
+# Resetting to default is therefore the faithful restore, not a compromise: on
+# the production path those traps are already inert here, and on the only other
+# path (the `flip-flop-gate-test` hook) no trap is armed at all. There is no
+# caller that reaches this function with a LIVE trap in the SAME shell — and in
+# bash 3.2 a live trap and an inherited-inert one are indistinguishable, so
+# nothing could tell them apart if one appeared. If a future caller invokes the
+# gate directly from a shell holding a live trap, it must re-arm it itself.
+proof_ablate_disarm() {
+  proof_ablate_rescue
+  trap - EXIT INT TERM HUP 2>/dev/null || :
+  return 0
+}
+# A SIGNAL STILL KILLS THE GATE. The file is put back FIRST, the traps go back to
+# default SECOND, and then we exit — so the drive dies as the sender asked
+# instead of carrying on. A bare `trap 'rescue' TERM` would have SWALLOWED the
+# signal: bash runs the handler and then resumes the script, which would have
+# made the gate unkillable for the length of the ablation. On the production
+# path this exits the gate's command substitution, so the caller reads a
+# non-zero gate — never a pass — while the captain's file is already back.
+proof_ablate_signal_exit() { # exit-code
+  proof_ablate_disarm
+  exit "${1:-143}"
+}
+
+proof_declared_accounting() { # wt rels kind leg-exec exec-each run_dir raw_cmd budget leg-rc [excluded]
+  PROOF_DECL_METHOD=""; PROOF_DECL_EACH=""; PROOF_DECL_UNACC=""; PROOF_DECL_WHY=""
+  PROOF_DECL_FIX=""; PROOF_DECL_RECOUNT=""
+  PROOF_DECL_EXCLUDED="${10:-}"
+  local wt="$1" rels="$2" scope_rels="$2" kind="$3" legexec="$4" execeach="$5"
+  local rundir="$6" rawcmd="$7" budget="$8" legrc="${9:-0}"
+  local n legn legrunner rel idx c crunner sum=0 names
+  local hold="" held="" scope="" contrib tmo="" anc="" sym=""
+  local imported="${PROOF_LEG_IMPORTED:-}" actual_imported="${PROOF_LEG_MODULES:-}"
+  local PROOF_IMPORT_RELS="$rels" PROOF_IMPORT_ROOT="$wt" used_rel
+  # Probes must confirm calls in the actual leg, never create their own credit.
+  if [ "$kind" = ancestor ] && [ "${legrc:-0}" -eq 0 ] \
+     && [ "$(proof_python_command "$rawcmd" "")" != "$rawcmd" ]; then
+    imported=""
+    while IFS= read -r rel; do
+      [ -n "$rel" ] || continue
+      case "$rel" in *.py) ;; *) continue ;; esac
+      proof_file_scope_exec "$rundir" "$rawcmd" "$wt/$rel" "$budget"
+      while IFS= read -r used_rel; do
+        [ -n "$used_rel" ] || continue
+        # A probe cannot manufacture participation absent from the actual leg.
+        if printf '%s\n' "$actual_imported" | grep -qxF "$used_rel"; then
+          imported="${imported}${imported:+
+}$used_rel"
+        fi
+      done <<PDA_USED
+$PROOF_FILE_IMPORTED
+PDA_USED
+    done <<PDA_IMPORTS
+$rels
+PDA_IMPORTS
+  fi
+  # Restored from the parent: inert source AND a direct zero-test load are
+  # independent evidence; this does not exempt classes or executable modules.
+  local eligible="" eligible_each="" original_idx=0
+  while IFS= read -r rel; do
+    [ -n "$rel" ] || continue
+    original_idx=$((original_idx + 1))
+    if [ "$kind" = ancestor ] \
+       && [ "$(proof_scope_command "$rawcmd" "$wt/$rel")" != "$rawcmd" ]; then
+      proof_file_scope_exec "$rundir" "$rawcmd" "$wt/$rel" "$budget"
+      if [ -n "$PROOF_FILE_COLLECTED_ZERO" ]; then
+        PROOF_DECL_EXCLUDED="${PROOF_DECL_EXCLUDED}${PROOF_DECL_EXCLUDED:+
+}$rel"
+      fi
+    fi
+    if printf '%s\n' "$PROOF_DECL_EXCLUDED" | grep -qxF "$rel"; then
+      continue
+    fi
+    eligible="${eligible}${eligible:+
+}$rel"
+    c="$(printf '%s\n' "$execeach" | awk -v i="$original_idx" '{ print $i }' | head -1)"
+    eligible_each="${eligible_each}${eligible_each:+ }$c"
+  done <<PDA_ELIGIBLE
+$rels
+PDA_ELIGIBLE
+  rels="$eligible"; execeach="$eligible_each"
+  n="$(printf '%s\n' "$rels" | grep -c . | tr -d '[:space:]')"
+  case "$n" in ''|*[!0-9]*) n=0 ;; esac
+  if [ "$n" -eq 0 ]; then
+    PROOF_DECL_METHOD=not-applicable
+    PROOF_DECL_WHY="the ticket declared no test file, so there is nothing to account for"
+    return 0
+  fi
+  # === D4: A DECLARED TEST FILE WITH NOTHING IN IT ==========================
+  # Checked FIRST and for EVERY scope kind, because no arithmetic downstream can
+  # see it: whatever number a runner prints for an empty file, the ticket wrote
+  # no test there. This is not about colour and not about discovery.
+  while IFS= read -r rel; do
+    [ -n "$rel" ] || continue
+    if proof_decl_file_is_empty "$wt/$rel"; then
+      PROOF_DECL_EACH="$PROOF_DECL_EACH${PROOF_DECL_EACH:+ }$rel=empty-file"
+      PROOF_DECL_UNACC="$PROOF_DECL_UNACC$rel
+"
+    fi
+  done <<PDA_EMPTY
+$rels
+PDA_EMPTY
+  if [ -n "$PROOF_DECL_UNACC" ]; then
+    PROOF_DECL_METHOD=empty-declared-file
+    names="$(printf '%s' "$PROOF_DECL_UNACC" | grep . | tr '\n' ' ' | sed 's/ $//')"
+    PROOF_DECL_WHY="the declared test file(s) $names hold NO CONTENT AT ALL (an empty file), so whatever a runner counted for them, the ticket wrote no test there"
+    PROOF_DECL_FIX="Nothing about the repo's test command is wrong here: the ticket DECLARED a test file it left empty. Either write the test the ticket's spec calls for, or stop declaring that path."
+    return 0
+  fi
+  # THE NATIVE LANE IS OUT OF SCOPE AND SAYS SO. A native stack (go / cargo /
+  # dotnet) scopes by runner ARGUMENT, never by $LCARS_TESTS_DIR, so no per-file
+  # scope exists to re-run and this measurement cannot be constructed at all.
+  # Those lanes carry their own declaration guards (the dotnet declared-vs-
+  # collected floor below, cargo's harness=false refusal). LEDGERED, deliberately
+  # NOT refused here: blanket-parking every native ticket to close a route this
+  # check cannot even measure would be a regression dressed as a safety fix.
+  if [ -z "$rundir" ] || [ -z "$rawcmd" ]; then
+    PROOF_DECL_METHOD=not-applicable
+    PROOF_DECL_WHY="this leg is not driven through a re-runnable testCommand (a native stack scopes by runner argument, not by \$LCARS_TESTS_DIR), so no per-file measurement could be constructed — LEDGERED, out of this check's reach"
+    return 0
+  fi
+  legrunner="${legexec%% *}"; legn="${legexec##* }"
+  # === AN UNREADABLE LEG COUNT, RE-MEASURED FOR THE ABLATION LANE ==========
+  # The leg's own `executed` is read by the MAIN grammar set, which deliberately
+  # did not grow (proof_executed_count_ext says why, with the three proof-gates
+  # rows it would otherwise have parked). So when the leg carries no number and
+  # the ablation lane could read one, the un-ablated leg is measured ONCE more
+  # with the extended reader, and the whole arithmetic is then done in THAT
+  # reader's numbers — baseline and ablations read by the same grammar, never
+  # mixed. It costs one extra run, and only on a repo that would otherwise be
+  # refused outright. A genuinely countless runner (a quiet CI wrapper printing
+  # ALL GREEN / SUITE FAILED, go, cargo) stays unreadable here too and falls
+  # straight through to the refusal below, so D9's `uncountable` path is
+  # untouched.
+  case "$legn" in
+    ''|*[!0-9]*)
+      if [ "$kind" = ancestor ]; then
+        anc="$(common_ancestor_dir "$scope_rels")"
+        scope="$wt${anc:+/$anc}"
+        if [ -d "$scope" ]; then
+          proof_file_scope_exec "$rundir" "$rawcmd" "$scope" "$budget"
+          case "${PROOF_FILE_EXEC##* }" in
+            ''|*[!0-9]*) : ;;
+            *) if [ "${PROOF_FILE_EXEC##* }" -ge 1 ] 2>/dev/null; then
+                 legexec="$PROOF_FILE_EXEC"
+                 legrunner="${legexec%% *}"; legn="${legexec##* }"
+                 PROOF_DECL_RECOUNT="$legexec"
+               fi ;;
+          esac
+        fi
+      fi ;;
+  esac
+  case "$legn" in
+    ''|*[!0-9]*)
+      # NO NUMBER EXISTS ANYWHERE, so no arithmetic can ever account for a file.
+      #
+      # FIX ROUND 1, D1 — WHERE THIS CAUSE ACTUALLY LIVES. The first cut refused
+      # every multi-file ticket on such a repo FOREVER, and a captain-stand-in
+      # tester measured three of them — python unittest's `Ran 3 tests in
+      # 0.000s`/`OK`, TAP's `1..2`/`ok 1`, and a bare `N passed, 0 failed` — in
+      # which BOTH declared files demonstrably ran green. The number was printed
+      # right there in the output; it was this HARNESS that could not read it.
+      # So those three grammars were added to proof_executed_count and those
+      # repos are now countable, which routes them through the ablation below
+      # like any other. What is left here is the genuinely countless runner — a
+      # quiet CI wrapper printing ALL GREEN / SUITE FAILED, go, cargo — and for
+      # those the refusal stands, because arithmetic is the whole mechanism.
+      #
+      # THE n>=2 BOUND, MEASURED, NOT ASSUMED: this accounting is about
+      # ATTRIBUTION AMONG THE DECLARED FILES — which of them contributed. With
+      # exactly ONE declared file there is nothing to attribute: the leg ran one
+      # invocation and it was handed that one file. Refusing those too parked
+      # FIVE honest tickets in tests/proof-gates.test.sh (every python row whose
+      # runner is `python3 -m unittest discover`) — the same regression S308
+      # round 2 and S310 round 1 each produced by over-applying a new guard.
+      if [ "$n" -lt 2 ]; then
+        PROOF_DECL_METHOD=not-applicable
+        PROOF_DECL_WHY="this repo's test command printed no test count this harness can read, and the ticket declared exactly ONE test file, so there is nothing to attribute between files — the leg's one invocation was handed that one file (whether the repo's own selection then narrowed to it is the scope question the pre-check and the control own; on a countless runner that stays unproven and is LEDGERED, pre-existing)"
+        return 0
+      fi
+      PROOF_DECL_METHOD=unreadable-runner
+      PROOF_DECL_UNACC="$(printf '%s\n' "$rels" | grep .)"
+      PROOF_DECL_WHY="this repo's test command printed no test count in any grammar this harness can read, so there is no number in which any of the $n declared test files could be shown to have contributed even one executed test. An accounting of declared tests is arithmetic, and a runner that counts nothing cannot be counted"
+      # D5: KEYED TO THE REASON. Nothing about the ticket's FILENAMES is at
+      # issue here, and the old advice ("have the testCommand print its runner's
+      # own summary") was sent to commands that already print one — the gap was
+      # a grammar this harness did not know, which is not his to fix in his repo.
+      PROOF_DECL_FIX="Nothing about the ticket's test files is wrong here, and nothing about their NAMES: the gate needs a test COUNT and this command's output carries none it recognises. LCARS reads node:test, vitest, jest, pytest, rspec, minitest, VSTest, python unittest (\`Ran N tests\`), TAP (\`1..N\`) and a bare \`N passed, N failed\`. If the command wraps a runner and swallows its summary (printing only ALL GREEN / SUITE FAILED), let that summary through; if the runner genuinely counts nothing, expect every multi-file ticket on this repo to need the captain's own eyes at Verify."
+      return 0 ;;
+  esac
+  if [ "$legn" -le 0 ]; then
+    # Zero executed is decided by the zero-evidence refusal on its own evidence
+    # — and zero executed on a RED leg is REAL evidence (a greenfield parent
+    # whose staged copy dies at import). Not this check's business.
+    PROOF_DECL_METHOD=not-applicable
+    PROOF_DECL_WHY="this leg executed no tests at all, which the zero-evidence refusal decides on its own evidence"
+    return 0
+  fi
+  case "$kind" in
+    file|files)
+      # ONE INVOCATION PER DECLARED FILE ALREADY RAN. Its count is the per-file
+      # measurement, so this costs NOTHING. The order is the leg's own: both the
+      # scope list and these counts are built from $rels in sequence.
+      PROOF_DECL_METHOD=leg-invocations
+      idx=0
+      while IFS= read -r rel; do
+        [ -n "$rel" ] || continue
+        idx=$((idx + 1))
+        c="$(printf '%s\n' "$execeach" | awk -v i="$idx" '{ print $i }' | head -1)"
+        case "$c" in
+          '')
+            # The invocation never happened. A declared-files leg is an `&&`
+            # chain, so a RED earlier file stops it — and that stop is itself a
+            # declared test running and failing, which can only ever permit a
+            # FAIL, never a pass (a leg that stopped early is never green).
+            if [ "${legrc:-0}" -ne 0 ] 2>/dev/null; then
+              PROOF_DECL_EACH="$PROOF_DECL_EACH${PROOF_DECL_EACH:+ }$rel=not-reached"
+            else
+              PROOF_DECL_EACH="$PROOF_DECL_EACH${PROOF_DECL_EACH:+ }$rel=unrun"
+              PROOF_DECL_UNACC="$PROOF_DECL_UNACC$rel
+"
+            fi ;;
+          *[!0-9]*)
+            PROOF_DECL_EACH="$PROOF_DECL_EACH${PROOF_DECL_EACH:+ }$rel=unreadable"
+            PROOF_DECL_UNACC="$PROOF_DECL_UNACC$rel
+" ;;
+          *)
+            if [ "$c" -eq 0 ] && printf '%s\n' "$imported" | grep -qxF "$rel"; then
+              PROOF_DECL_EACH="$PROOF_DECL_EACH${PROOF_DECL_EACH:+ }$rel=called"
+            else
+              PROOF_DECL_EACH="$PROOF_DECL_EACH${PROOF_DECL_EACH:+ }$rel=$c"
+              [ "$c" -ge 1 ] 2>/dev/null || PROOF_DECL_UNACC="$PROOF_DECL_UNACC$rel
+"
+            fi ;;
+        esac
+      done <<PDA_FILES
+$rels
+PDA_FILES
+      ;;
+    ancestor)
+      # === THE ABLATION (fix round 1 — it REPLACES the per-file re-run) =======
+      # ONE invocation covered N declared files, so the per-file numbers do not
+      # exist yet and have to be MEASURED. Round 1 measured them by pointing the
+      # scope at each declared FILE in turn and accepting any count >= 1. A
+      # captain-stand-in tester beat that two ways, and one of them PARKED AN
+      # HONEST TICKET:
+      #
+      #   D2 FALSE REFUSAL — a repo whose test command always runs a FIXED EXTRA
+      #      SUITE alongside the scope (a global smoke suite, a jest `projects`
+      #      config, a Makefile `test` target). The leg ran `tests 6 / pass 6`
+      #      with both declared files executing, but each per-file run carried
+      #      the same fixed 4-test overhead, so 5 + 5 > 6 and the gate said "the
+      #      leg cannot have run all of them" — which is FALSE.
+      #   D3 FALSE PASS — a per-file run was credited to a file it never touched.
+      #      An unmatchable, genuinely RED declared file's own run selected
+      #      NOTHING, the runner fell back to its own discovery, and the count
+      #      that came back was a SIBLING'S.
+      #
+      # So the measurement is turned round. Instead of asking "what does this
+      # file run on its own?", which cannot be separated from a fixed overhead or
+      # from a fallback, it asks THE ABLATION QUESTION:
+      #
+      #      contribution(f) = legExecuted - executed(same scope, f moved aside)
+      #      f is accounted for  iff  contribution(f) >= 1
+      #
+      # Both runs use THE LEG'S OWN SCOPE, so they differ in exactly one thing:
+      # whether f is in the tree. A fixed extra suite is in BOTH numbers and
+      # CANCELS (D2 dissolves). A file the command's selection cannot see changes
+      # nothing when it is removed, so its contribution is 0 and no sibling's
+      # output can be credited to it (D3 dissolves) — with no identity check, no
+      # filename matched against any output, and no command shape recognised.
+      # Anything that reads $LCARS_TESTS_DIR sees the SAME directory in both
+      # runs, so the directory-vs-file asymmetry round 1's per-file scope exposed
+      # is gone as well.
+      #
+      # WHY THE BASELINE-SUBTRACTION FORM OF THIS WAS REJECTED (it was measured,
+      # not reasoned about): subtracting the EMPTY-SCOPE control instead would
+      # only work where that control is the fixed overhead. For the ordinary
+      # `$(find "$LCARS_TESTS_DIR" …)` command an empty scope selects nothing and
+      # the runner falls back to discovering the WHOLE SUITE, so the control is a
+      # full-suite count — and subtracting it parks every honest ticket on the
+      # commonest testCommand there is. The ablation needs no baseline because
+      # the overhead never leaves the measurement.
+      #
+      # THE COST IS UNCHANGED: N runs per leg, exactly what the per-file control
+      # cost. And the ablation is not run on a RED leg at all (see D7 at the call
+      # site), which is strictly cheaper than round 1.
+      #
+      # IT MUTATES THE TREE, AND THAT IS HANDLED: the file is copied to a holding
+      # directory outside the worktree, removed, measured, and put back before
+      # the next one is touched. If a restore ever fails the accounting STOPS and
+      # refuses rather than measure on a tree it has damaged.
+      #
+      # SAFE BY CONSTRUCTION FOR THE SCOPE ITSELF: `ancestor` is the recorded
+      # fact that the scope directory holds NO test file the ticket did not
+      # declare (intree_dir_extra_tests), and this arm is only reached with n>=2,
+      # so every ablation leaves at least one declared test file in the scope.
+      PROOF_DECL_METHOD=ablation
+      anc="$(common_ancestor_dir "$scope_rels")"
+      scope="$wt${anc:+/$anc}"
+      hold="$(mktemp -d "${TMPDIR:-/tmp}/lcars-ablate.XXXXXX" 2>/dev/null)" || hold=""
+      if [ -z "$hold" ] || [ ! -d "$scope" ]; then
+        PROOF_DECL_METHOD=ablation-unavailable
+        PROOF_DECL_UNACC="$(printf '%s\n' "$rels" | grep .)"
+        PROOF_DECL_WHY="the ablation measurement could not be set up (no holding directory, or the leg's own scope directory is not there), so no declared file could be accounted for"
+        PROOF_DECL_FIX="This is a harness-side failure, not a fault in the ticket: re-run the gate. If it repeats, \$TMPDIR is unwritable."
+        [ -n "$hold" ] && rm -rf "$hold"
+        return 0
+      fi
+      # ARMED BEFORE THE FIRST `rm`, and before the loop that does it, so no
+      # path through this arm can remove a file with no handler watching.
+      PROOF_ABLATE_HOLD="$hold"; PROOF_ABLATE_WT="$wt"
+      PROOF_ABLATE_REL=""; PROOF_ABLATE_HELD=""
+      trap 'proof_ablate_rescue' EXIT
+      trap 'proof_ablate_signal_exit 130' INT
+      trap 'proof_ablate_signal_exit 143' TERM
+      trap 'proof_ablate_signal_exit 129' HUP
+      idx=0
+      while IFS= read -r rel; do
+        [ -n "$rel" ] || continue
+        idx=$((idx + 1))
+        if printf '%s\n' "$imported" | grep -qxF "$rel"; then
+          PROOF_DECL_EACH="$PROOF_DECL_EACH${PROOF_DECL_EACH:+ }$rel=called"
+          continue
+        fi
+        # S318 FIX ROUND 3: A SYMLINK IS NEVER MOVED ASIDE. The copy-aside is
+        # `cp -p`, which FOLLOWS a symlink and copies its TARGET's bytes; the
+        # `rm` then removes the LINK; and the restore writes a REGULAR FILE
+        # where the link was. MEASURED twice: a normal, successful, signal-free
+        # gate run turned a declared `linked.test.js -> ticket_up.test.js` into
+        # a 306-byte regular file, left the tree `T linked.test.js` (`mode
+        # change 120000 => 100644`), and returned a PASS — tree damage on a
+        # pass, with no word of it in the artifact. Content survived only
+        # because the file was TRACKED; an UNTRACKED symlink has no way back.
+        #
+        # So this measurement REFUSES to touch one. The alternative cure —
+        # preserving the link through the move — would make the ablation
+        # correct for symlinks, but it rewrites the copy-aside, the restore AND
+        # the signal-rescue predicates (`[ -f "$held" ]` is false for a
+        # RELATIVE link moved into $TMPDIR, so the rescue would silently
+        # decline to put it back) on the one path that is already verified
+        # byte-identical under TERM/INT/HUP. A false refusal costs a captain an
+        # INCONCLUSIVE leg on a ticket that declares a symlinked test file;
+        # silent tree damage on a PASS costs him the file. THE COST IS NAMED:
+        # a repo whose declared test files include a symlink now gets
+        # INCONCLUSIVE on ancestor-scoped tickets, and the reason says why.
+        #
+        # Because the file is skipped before `PROOF_ABLATE_REL` is ever set to
+        # it, the trap/rescue path handles it identically: a symlink is never
+        # moved aside, so no signal can bring one back as a regular file.
+        # Checked FIRST, before the absent test, so a DANGLING link is refused
+        # on the same honest ground rather than reported as a missing file.
+        if [ -L "$wt/$rel" ]; then
+          PROOF_DECL_EACH="$PROOF_DECL_EACH${PROOF_DECL_EACH:+ }$rel=symlink"
+          PROOF_DECL_UNACC="$PROOF_DECL_UNACC$rel
+"
+          sym="$sym${sym:+ }$rel"
+          continue
+        fi
+        if [ ! -f "$wt/$rel" ]; then
+          PROOF_DECL_EACH="$PROOF_DECL_EACH${PROOF_DECL_EACH:+ }$rel=absent"
+          PROOF_DECL_UNACC="$PROOF_DECL_UNACC$rel
+"
+          continue
+        fi
+        held="$hold/held.$idx"
+        if ! cp -p "$wt/$rel" "$held" 2>/dev/null; then
+          PROOF_DECL_EACH="$PROOF_DECL_EACH${PROOF_DECL_EACH:+ }$rel=unmeasurable"
+          PROOF_DECL_UNACC="$PROOF_DECL_UNACC$rel
+"
+          continue
+        fi
+        # WHAT IS MOVED ASIDE, RECORDED BEFORE IT IS MOVED. If this process
+        # dies anywhere in the run below, the handler reads these and puts the
+        # file back.
+        PROOF_ABLATE_REL="$rel"; PROOF_ABLATE_HELD="$held"
+        rm -f "$wt/$rel"
+        proof_file_scope_exec "$rundir" "$rawcmd" "$scope" "$budget"
+        crunner="${PROOF_FILE_EXEC%% *}"; c="${PROOF_FILE_EXEC##* }"
+        tmo=""; [ "${PROOF_FILE_EXEC_RC:-0}" = 124 ] && tmo=1
+        # PUT BACK BEFORE ANYTHING ELSE IS DECIDED, so the tree the next
+        # measurement runs on is the tree the leg ran on.
+        if ! cp -p "$held" "$wt/$rel" 2>/dev/null || [ ! -f "$wt/$rel" ]; then
+          PROOF_DECL_METHOD=ablation-aborted
+          PROOF_DECL_UNACC="$(printf '%s\n' "$rels" | grep .)"
+          PROOF_DECL_WHY="the ablation measurement could not put '$rel' back after moving it aside, so this gate STOPPED rather than judge the ticket against a tree it had damaged — the file is held at $held"
+          PROOF_DECL_FIX="This is a harness-side failure, not a fault in the ticket. Restore '$rel' from $held before re-running anything."
+          # The held copy is the captain's ONLY copy, so the handler must not
+          # delete it: clear the holding dir it would remove, and clear the
+          # restore state so nothing contradicts the abort this is recording.
+          PROOF_ABLATE_HOLD=""; PROOF_ABLATE_REL=""; PROOF_ABLATE_HELD=""
+          proof_ablate_disarm
+          return 0
+        fi
+        PROOF_ABLATE_REL=""; PROOF_ABLATE_HELD=""
+        rm -f "$held"
+        if [ -n "$tmo" ]; then
+          # D6: A TIMEOUT IS NOT A ZERO. Round 1 stored it as `unreadable` and
+          # then said "no run executed a single test out of <file>", which
+          # describes a measurement that never finished as one that came back
+          # empty.
+          PROOF_DECL_EACH="$PROOF_DECL_EACH${PROOF_DECL_EACH:+ }$rel=timed-out"
+          PROOF_DECL_UNACC="$PROOF_DECL_UNACC$rel
+"
+          tmo=timeout
+          continue
+        fi
+        if [ -z "$PROOF_FILE_EXEC" ]; then
+          PROOF_DECL_EACH="$PROOF_DECL_EACH${PROOF_DECL_EACH:+ }$rel=unreadable"
+          PROOF_DECL_UNACC="$PROOF_DECL_UNACC$rel
+"
+          continue
+        fi
+        if [ "$crunner" != "$legrunner" ]; then
+          PROOF_DECL_EACH="$PROOF_DECL_EACH${PROOF_DECL_EACH:+ }$rel=$crunner:$c"
+          PROOF_DECL_UNACC="$PROOF_DECL_UNACC$rel
+"
+          continue
+        fi
+        case "$c" in
+          ''|*[!0-9]*)
+            PROOF_DECL_EACH="$PROOF_DECL_EACH${PROOF_DECL_EACH:+ }$rel=unreadable"
+            PROOF_DECL_UNACC="$PROOF_DECL_UNACC$rel
+"
+            continue ;;
+        esac
+        contrib=$((legn - c))
+        PROOF_DECL_EACH="$PROOF_DECL_EACH${PROOF_DECL_EACH:+ }$rel=$contrib"
+        if [ "$contrib" -lt 1 ]; then
+          # TAKING THE FILE OUT OF THE SCOPE CHANGED NOTHING (or made the run
+          # BIGGER, which is the signature of a selection that then matched
+          # nothing and fell back to discovering the whole suite). Either way
+          # nothing the ticket wrote in this file took part in this leg.
+          PROOF_DECL_UNACC="$PROOF_DECL_UNACC$rel
+"
+        else
+          sum=$((sum + contrib))
+        fi
+      done <<PDA_ANC
+$rels
+PDA_ANC
+      # The holding directory goes and the outer traps come back. Everything
+      # after this point only reads numbers already measured.
+      proof_ablate_disarm
+      # THE JOINT CHECK. Each contribution is already measured against the leg's
+      # own count, so this only catches an arithmetic impossibility: the declared
+      # files cannot together have contributed more tests than the leg ran.
+      if [ -z "$PROOF_DECL_UNACC" ] && [ "$sum" -gt "$legn" ] 2>/dev/null; then
+        PROOF_DECL_UNACC="$(printf '%s\n' "$rels" | grep .)"
+        PROOF_DECL_WHY="each declared test file contributed at least one test when it was moved aside, but their contributions sum to $sum while this leg executed only $legn — that is arithmetically impossible, so none of them can be treated as accounted for"
+        PROOF_DECL_FIX="$PROOF_DECL_FIX_RENAME"
+        return 0
+      fi
+      ;;
+    *)
+      # NO NARROWING AT ALL. `tree` is the recorded fact that this repo's
+      # testCommand never interpolates $LCARS_TESTS_DIR, so no scope can change
+      # what it runs: every per-file measurement would be the same full suite,
+      # and running N of them to discover that costs N full suites for nothing.
+      #
+      # Bounded to a MULTI-FILE ticket for the same measured reason as the
+      # countless-runner arm above: with one declared file there is nothing to
+      # attribute between files, and an unscoped command with one declared file
+      # is already refused by the control run (it executes the same count with an
+      # empty scope as with the file).
+      if [ "$n" -lt 2 ]; then
+        PROOF_DECL_METHOD=not-applicable
+        PROOF_DECL_WHY="this leg was not narrowed (scope kind '${kind:-none}') and the ticket declared exactly ONE test file, so there is nothing to attribute between files; an unscoped command with a single declared file is refused by the control run instead"
+        return 0
+      fi
+      PROOF_DECL_METHOD=unscoped-command
+      PROOF_DECL_UNACC="$(printf '%s\n' "$rels" | grep .)"
+      PROOF_DECL_WHY="this leg ran the repo's FULL SUITE with no narrowing at all (scope kind '${kind:-none}'), so no scoped measurement exists in which any single declared test file could be shown to have contributed — and a full-suite run cannot include a file the runner is unable to discover"
+      # D5: KEYED TO THE REASON. The ticket's filenames are not the problem when
+      # the command ignores the scope entirely — every name would fare the same.
+      PROOF_DECL_FIX="Nothing about the ticket's test files or their NAMES is at issue: this repo's test command ignores the scope it is handed, so the gate has no narrowed run to measure anything in. Make the testCommand run only \"\$LCARS_TESTS_DIR\" when it is set (\`lcars update --fix-tests\`)."
+      return 0 ;;
+  esac
+  if [ -n "$PROOF_DECL_UNACC" ]; then
+    names="$(printf '%s' "$PROOF_DECL_UNACC" | grep . | tr '\n' ' ' | sed 's/ $//')"
+    if [ "$tmo" = timeout ]; then
+      # D6: SAY WHICH IT WAS. A measurement that ran out of its budget is not a
+      # measurement that came back empty.
+      PROOF_DECL_WHY="the measurement for $names did not FINISH — it exceeded its ${budget}s budget and was killed — so this gate holds no number for those file(s) either way. A timeout is not a zero"
+      PROOF_DECL_FIX="Nothing here says the ticket's tests did not run; it says the gate ran out of time asking. Use \`lcars update --gate-timeout <seconds>\` to give this repo's full-suite measurement the budget it needs."
+    elif [ -n "$sym" ]; then
+      # S318 FIX ROUND 3: SAY WHICH IT WAS. A file this measurement REFUSED to
+      # touch is not a file whose removal changed nothing — the ablation
+      # sentence below would be a straight untruth about a run that never
+      # happened, and it would send the captain to the rename advice for a
+      # reason that has nothing to do with names.
+      PROOF_DECL_WHY="the declared test file(s) $sym are SYMBOLIC LINKS, and this measurement will not move a symlink aside — putting one back would replace the link with a regular file and silently damage the working tree on a PASS — so no contribution could be measured for them and the declared file(s) $names stay unaccounted for"
+      PROOF_DECL_FIX="Nothing about the ticket's tests is wrong here, and nothing about their NAMES: this gate refuses to mutate a symlinked test file in order to measure it. Declare the real path the link points at instead of the link itself, or make the ticket's test files regular files."
+    elif [ "$PROOF_DECL_METHOD" = ablation ]; then
+      PROOF_DECL_WHY="taking $names out of the leg's own scope and re-running this repo's testCommand changed NOTHING about how many tests ran (or made it run MORE), so nothing the ticket wrote in those file(s) took part in this leg"
+      PROOF_DECL_FIX="$PROOF_DECL_FIX_RENAME"
+    else
+      PROOF_DECL_WHY="no run measured by this gate executed a single test out of $names, so nothing shows the test(s) the ticket wrote there took part in this leg"
+      PROOF_DECL_FIX="$PROOF_DECL_FIX_RENAME"
+    fi
+  elif [ "$PROOF_DECL_METHOD" = ablation ]; then
+    PROOF_DECL_WHY="every non-excluded declared file contributed executed tests or code called during tests in a passing, positive file-scoped run; test contributions sum to $sum inside this leg's own $legn (per declared file: $PROOF_DECL_EACH)${PROOF_DECL_RECOUNT:+ — this leg's count was re-measured for the accounting as $PROOF_DECL_RECOUNT, because the gate's main grammar set could not read this runner}"
+  else
+    PROOF_DECL_WHY="every non-excluded declared file executed at least one test or code called during tests in a passing invocation that executed tests (per declared file: $PROOF_DECL_EACH)"
+  fi
+  return 0
+}
+
 # Run the ticket's tests SCOPED, per stack, from a given tree root (either the
 # tip worktree or the parent scratch worktree). Sets PROOF_LEG_RC + PROOF_LEG_OUT.
 # rc 96/97 are local sentinels for "cannot even construct the run" (no
@@ -11550,10 +13216,62 @@ proof_scope_glob_char() { # abs-scope → the first glob metachar in it ("" = sa
 # Recording it makes the gate self-evidencing. It is the real string (filter
 # terms, per-project `cd` legs, the LCARS_TESTS_DIR scope and the cwd), NOT a
 # label — a pretty summary would re-open exactly the gap this closes.
+# PROOF_LEG_TIMEOUT / _TIMEOUT_SRC / _SCOPE_KIND / _SCOPE_WHY (S308) — the two
+# decisions this leg made before it ran a single test, recorded so the artifact
+# can state them. See resolve_gate_timeout and intree_scopes_for.
+# PROOF_LEG_TIMEOUT_NOTE (fix round 1, DEFECT 4) — what was wrong with the
+# recorded timeout value and what was used instead; empty when nothing needed
+# saying. PROOF_LEG_SCOPE_SELECTED_NOTHING (DEFECT 1) — the leg's scope was
+# handed to the testCommand and its own file selection matched NOTHING, so the
+# leg was REFUSED rather than run; recorded here because it is produced here.
+# PROOF_LEG_EXEC (DEFECT 2) — the tests this leg's runner(s) reported executing,
+# SUMMED across the invocations that actually ran. In files mode the leg runs
+# once per declared file, and reading the concatenated buffer with
+# proof_executed_count kept only the FIRST summary it found: two runs of one
+# test each recorded 1, not 2. That number is the evidence the zero-collect and
+# anti-gutting checks rest on, so a per-run zero could be MASKED by a sibling
+# run's count. Counted per invocation, where each number is produced.
+# PROOF_LEG_EXEC_EACH (S308 fix round 3, CURE 2) — the SAME numbers, kept APART:
+# one per invocation, space separated, in the order they ran. The SUM alone made
+# the control comparison dead in files mode: the control runs ONCE, so for a
+# two-file ticket the leg's sum can essentially never equal the single control
+# count and `narrowingProven` went true regardless. MEASURED 22 Oct 2026 — a
+# ticket with one matchable sibling (1 test) and one unmatchable declared file
+# (which fell back to discovering 3 undeclared tests) summed to 4, against a
+# control of 3 and a control x N of 6: nothing matched, nothing fired, and the
+# gate certified `pass` while the ticket's OTHER declared test was RED on the tip
+# and never executed. The comparison has to be made where each number was
+# produced — per invocation. Empty when no honest per-invocation count exists
+# (an unreadable or mixed-runner leg), which is what `checked: false` is for.
 PROOF_LEG_RC=0; PROOF_LEG_OUT=""; PROOF_LEG_CMD=""
+PROOF_LEG_TIMEOUT=500; PROOF_LEG_TIMEOUT_SRC=default; PROOF_LEG_TIMEOUT_NOTE=""
+PROOF_LEG_SCOPE_KIND=""; PROOF_LEG_SCOPE_WHY=""; PROOF_LEG_SCOPE_SELECTED_NOTHING=""
+PROOF_LEG_EXEC=""; PROOF_LEG_EXEC_EACH=""
+PROOF_LEG_FAILED_EXEC=""
+PROOF_LEG_FAILED_OUT=""
+PROOF_LEG_EXCLUDED=""
+PROOF_LEG_IMPORTED=""
+PROOF_LEG_MODULES=""
+# PROOF_LEG_ZERO_EXEC (S308 fix round 2, route d) — this leg's own runner said
+# it executed ZERO tests on a run that EXITED GREEN. Recorded, never decided
+# here; see the block where it is set and flip_flop_gate's zero-evidence check.
+PROOF_LEG_ZERO_EXEC=""
+# PROOF_LEG_RUN_DIR / PROOF_LEG_RAW_CMD (S308 fix round 2) — the cwd and the
+# repo's own testCommand this js/py leg used, recorded so the CONTROL RUN below
+# can repeat the identical invocation with a different scope. Empty on the
+# native lane, which hands the runner no repo path and has no scope to control.
+PROOF_LEG_RUN_DIR=""; PROOF_LEG_RAW_CMD=""
 proof_scoped_leg_run() { # leg-root rels(newline)
   local root="$1" rels="$2" first cmd run_dir rc=0 out
   PROOF_LEG_RC=0; PROOF_LEG_OUT=""; PROOF_LEG_CMD=""
+  PROOF_LEG_SCOPE_KIND=""; PROOF_LEG_SCOPE_WHY=""; PROOF_LEG_SCOPE_SELECTED_NOTHING=""
+  PROOF_LEG_EXEC=""; PROOF_LEG_EXEC_EACH=""; PROOF_LEG_ZERO_EXEC=""
+  PROOF_LEG_FAILED_EXEC=""
+  PROOF_LEG_FAILED_OUT=""
+  PROOF_LEG_EXCLUDED=""
+  PROOF_LEG_IMPORTED=""
+  PROOF_LEG_MODULES=""
+  PROOF_LEG_RUN_DIR=""; PROOF_LEG_RAW_CMD=""
   first="$(printf '%s\n' "$rels" | grep . | head -1)"
   local stack; stack="$(resolve_stack)"
   # S133/DEFECT-2: both flip-flop legs run under a PORTABLE hard timeout so a
@@ -11561,13 +13279,23 @@ proof_scoped_leg_run() { # leg-root rels(newline)
   # self-smoke used to catch) is rendered INCONCLUSIVE — sentinel 98 — instead
   # of silently hanging the ticket build. run_with_hard_timeout group-kills the
   # runner (perl setsid) so no forked child (vitest/jest pool) survives.
-  local gsecs="${LCARS_GATE_TIMEOUT:-120}"
-  case "$gsecs" in ''|*[!0-9]*) gsecs=120 ;; esac
+  # S308: resolved PER LEG — env > the repo's recorded gateTimeout > 500.
+  # NOT in a command substitution — GATE_TIMEOUT_SRC is a global and a subshell
+  # would discard the one fact the artifact has to state.
+  resolve_gate_timeout "$root" >/dev/null
+  local gsecs="$GATE_TIMEOUT_SECS"
+  PROOF_LEG_TIMEOUT="$GATE_TIMEOUT_SECS"; PROOF_LEG_TIMEOUT_SRC="$GATE_TIMEOUT_SRC"
+  PROOF_LEG_TIMEOUT_NOTE="$GATE_TIMEOUT_NOTE"
   local gof; gof="$(mktemp "${TMPDIR:-/tmp}/lcars-ffleg.XXXXXX" 2>/dev/null)" \
     || gof="${MISSION_DIR:-$root}/.ffleg.$$"
   if stack_is_native; then
     # S106 native scoping: cargo test --test <stem> / go test -run '^(funcs)$',
-    # built from the staged files AT THIS LEG'S ROOT.
+    # built from the staged files AT THIS LEG'S ROOT. A native lane never hands
+    # the runner a repo path, so it has no $LCARS_TESTS_DIR scope to resolve —
+    # recorded as `native` rather than left blank, so the artifact says which
+    # kind of scoping decided the run.
+    PROOF_LEG_SCOPE_KIND=native
+    PROOF_LEG_SCOPE_WHY="a native stack ($stack) scopes by runner argument (target/filter), not by \$LCARS_TESTS_DIR"
     cmd="$(printf '%s\n' "$rels" | REPO_ROOT="$root" native_scoped_cmd "$stack")"
     if [ -z "$cmd" ]; then
       rm -f "$gof"
@@ -11582,8 +13310,9 @@ proof_scoped_leg_run() { # leg-root rels(newline)
     PROOF_LEG_CMD="cd $(proof_shq "$run_dir") && $cmd"
     ( cd "$run_dir" && run_with_hard_timeout "$gsecs" "$gof" bash -c "$cmd" ); rc=$?
   else
-    # js/py: the S87 dir-scoped run — LCARS_TESTS_DIR points at the single file
-    # (or the common ancestor), invoked from the tests' own package.
+    # js/py: the S87 scoped run — LCARS_TESTS_DIR points at the single declared
+    # file, their exact common-ancestor directory, or (S308) each declared file
+    # in turn, invoked from the tests' own package.
     cmd="$(resolve_test_cmd)"
     if [ -z "$cmd" ]; then
       rm -f "$gof"
@@ -11593,17 +13322,79 @@ proof_scoped_leg_run() { # leg-root rels(newline)
     fi
     local pkg; pkg="$(package_of_relpath "$first" "$root")"
     run_dir="$root${pkg:+/$pkg}"
-    local scope; scope="$(intree_scope_for "$root" "$rels")"
+    # S308: the scopes this leg will run — the declared file, their exact
+    # common-ancestor directory, or (when that directory would widen the run)
+    # ONE INVOCATION PER DECLARED FILE. intree_scopes_for also records WHY.
+    # NOT in a command substitution: the kind and the reason are globals (see
+    # intree_scopes_for), and a subshell would discard both.
+    intree_scopes_for "$root" "$rels" >/dev/null
+    local scopes="$INTREE_SCOPES"
+    PROOF_LEG_SCOPE_KIND="$INTREE_SCOPE_KIND"; PROOF_LEG_SCOPE_WHY="$INTREE_SCOPE_WHY"
+    # A testCommand that never interpolates $LCARS_TESTS_DIR cannot be narrowed
+    # by ANY scope — it runs the repo's whole suite whatever it is handed. (init
+    # warns about that at setup; until now the GATE said nothing, and the leg's
+    # artifact recorded a scope that did nothing.) So say it here, where the
+    # consequence lands, and run the command ONCE: a per-file list would re-run
+    # the same full suite once per declared file for no added information.
+    case "$PROOF_LEG_SCOPE_KIND:$cmd" in
+      files:*'$LCARS_TESTS_DIR'*|files:*'${LCARS_TESTS_DIR'*) : ;;
+      files:*)
+        scopes="$(printf '%s' "$scopes" | head -1)"
+        PROOF_LEG_SCOPE_KIND=tree
+        PROOF_LEG_SCOPE_WHY="this repo's testCommand never interpolates \$LCARS_TESTS_DIR, so NO scope can narrow it — this leg runs the repo's FULL SUITE. Make the testCommand run only \"\$LCARS_TESTS_DIR\" when it is set (\`lcars update --fix-tests\`)." ;;
+    esac
+    proof_say_scope "$root"
     # S148 GUARD — a scope the runner would re-interpret as a glob PATTERN (see
     # proof_scope_glob_char). Refuse the leg rather than run it: unrun is
     # INCONCLUSIVE, whereas running it is either a mystery red or a widened run
     # whose green (or whose parent-leg red) came from a file the ticket never
     # touched. Native lanes are immune — no repo path enters their command.
-    local gch; gch="$(proof_scope_glob_char "$scope")"
+    # Checked over EVERY scope: one bad path in a declared-files list is the
+    # same hazard as one bad path on its own.
+    local gch="" scope1
+    while IFS= read -r scope1; do
+      [ -n "$scope1" ] || continue
+      gch="$(proof_scope_glob_char "$scope1")"
+      [ -n "$gch" ] && break
+    done <<SCOPE_GLOB_EOF
+$scopes
+SCOPE_GLOB_EOF
     if [ -n "$gch" ]; then
       rm -f "$gof"
       PROOF_LEG_RC=96
-      PROOF_LEG_OUT="proof-gate: the path this leg must hand the test runner contains \`$gch\`, which the runner re-interprets as a GLOB PATTERN instead of a literal path (scope: $scope) — the run would either find nothing or silently widen to files the ticket never touched, so it was NOT run. Nothing is wrong with the ticket: it is WHERE the repo lives. Move or rename the checkout to a path free of \` * ? [ { \\ \` and re-run."
+      proof_leg_refused_scope "$rels" "$PROOF_LEG_SCOPE_KIND" \
+        "the path it would have handed the runner contains the glob metacharacter \`$gch\`"
+      PROOF_LEG_OUT="proof-gate: the path this leg must hand the test runner contains \`$gch\`, which the runner re-interprets as a GLOB PATTERN instead of a literal path (scope: $(printf '%s' "$scopes" | tr '\n' ' ')) — the run would either find nothing or silently widen to files the ticket never touched, so it was NOT run. Nothing is wrong with the ticket: it is WHERE the repo lives. Move or rename the checkout to a path free of \` * ? [ { \\ \` and re-run."
+      return 0
+    fi
+    # DEFECT-1 GUARD (fix round 1) — DOES THE SCOPE SELECT ANYTHING AT ALL?
+    # See proof_scope_selects_nothing for the measured failure. A scope the
+    # command's own selection cannot match hands the runner an EMPTY argument
+    # list, and a runner left with no argument discovers its own tests — so the
+    # leg would run, and be scored, on files the ticket never declared. Refuse
+    # it: unrun is INCONCLUSIVE, which is honest, whereas running it produces a
+    # confident PASS or FAIL about tests that never took part.
+    local selnothing="" selexpr="" scope2
+    while IFS= read -r scope2; do
+      [ -n "$scope2" ] || continue
+      if proof_scope_selects_nothing "$run_dir" "$cmd" "$scope2" "$gsecs"; then
+        selnothing="$scope2"; selexpr="$PROOF_SCOPE_SELECT_EXPR"; break
+      fi
+    done <<SCOPE_SEL_EOF
+$scopes
+SCOPE_SEL_EOF
+    if [ -n "$selnothing" ]; then
+      rm -f "$gof"
+      PROOF_LEG_SCOPE_SELECTED_NOTHING=true
+      PROOF_LEG_RC=96
+      proof_leg_refused_scope "$rels" "$PROOF_LEG_SCOPE_KIND" \
+        "the testCommand's own file selection matched NOTHING for the scope $selnothing"
+      PROOF_LEG_OUT="proof-gate: this leg's scope SELECTED NO TEST FILE, so it was NOT run. The scope was handed to this repo's testCommand as \$LCARS_TESTS_DIR, and the command's own file selection matched NOTHING — the runner would have received an EMPTY argument list and fallen back to its OWN discovery, running tests the ticket never declared and scoring the ticket on them. Nothing about this ticket could be proven either way.
+  the scope that selected nothing: $selnothing
+  the selection that matched it to nothing: $selexpr
+Nothing is wrong with the ticket's code: the repo's testCommand cannot SEE a test file with that name. Either widen the command's selection so it matches the ticket's test file(s), hand \"\$LCARS_TESTS_DIR\" to the runner directly (\`lcars update --fix-tests\`), or name the ticket's test files the way the existing selection expects."
+      emit_event proof_scope_selected_nothing implement \
+        "proof leg REFUSED — its scope selected no test file ($selnothing); the testCommand's own selection ($selexpr) matched nothing, so the runner would have run undeclared tests instead" || :
       return 0
     fi
     # S148 — WHITESPACE IN THE CHECKOUT PATH. $scope is ABSOLUTE, so it carries
@@ -11631,13 +13422,148 @@ proof_scoped_leg_run() { # leg-root rels(newline)
     # artifact assert the OPPOSITE of what the gate did — a scoped green recorded
     # as a command that re-runs red on unrelated tests. Quoting `$cmd` and handing
     # it to `bash -c` is what the line below genuinely executes.
-    PROOF_LEG_CMD="cd $(proof_shq "$run_dir") && LCARS_TESTS_DIR=$(proof_shq "$scope") bash -c $(proof_shq "$cmd")"
-    ( cd "$run_dir" && LCARS_TESTS_DIR="$scope" run_with_hard_timeout "$gsecs" "$gof" bash -c "$cmd" ); rc=$?
+    # S308: ONE INVOCATION PER SCOPE, `&&`-joined — which for the single-scope
+    # kinds (file / ancestor) is exactly the one run it has always been, recorded
+    # in exactly the same shape so the paste-back contract above is untouched.
+    # A declared-files leg stops at the first failing file: the rc is what an
+    # `&&` chain would produce, and the recorded command reproduces it verbatim.
+    #
+    # THE TIMEOUT IS THE LEG'S BUDGET, not a per-file allowance. Each invocation
+    # gets what is LEFT of $gsecs, so N files can never multiply the bound the
+    # hang protection exists to impose (and a leg that burns the budget is
+    # reported as the timeout it is, with the same sentinel 98).
+    local scope cmdrec="" csep="" leg_out="" t0 rem used
+    # DEFECT-2 accumulator: each invocation's OWN executed count, summed. The
+    # total is only honest when every run that happened was READ by the SAME
+    # runner grammar, so an unreadable or mixed-runner leg records NOTHING
+    # rather than a partial sum ("" is what `executed.checked:false` is for).
+    local ex_sum=0 ex_runner="" ex_bad="" one_out one_exec ex_each=""
+    t0="$(date +%s 2>/dev/null || echo 0)"
+    rc=0
+    while IFS= read -r scope; do
+      [ -n "$scope" ] || continue
+      local one_rec scope_cmd observed evidence observed_exec observed_imports
+      scope_cmd="$(proof_scope_command "$cmd" "$scope")"
+      used=$(( $(date +%s 2>/dev/null || echo 0) - t0 ))
+      rem=$(( gsecs - used )); [ "$rem" -ge 1 ] || rem=1
+      evidence="$(mktemp -d "${TMPDIR:-/tmp}/lcars-imports.XXXXXX")" || {
+        rc=96; leg_out="proof-gate: could not create runtime import evidence directory"; break;
+      }
+      observed="$(proof_python_command "$scope_cmd" "$evidence")"
+      one_rec="cd $(proof_shq "$run_dir") && LCARS_TESTS_DIR=$(proof_shq "$scope") bash -c $(proof_shq "$observed")"
+      if [ -n "$csep" ]; then cmdrec="$cmdrec$csep( $one_rec )"; else cmdrec="$one_rec"; fi
+      csep=" && "
+      ( cd "$run_dir" && LCARS_TESTS_DIR="$scope" run_with_hard_timeout "$rem" "$gof" bash -c "$observed" ); rc=$?
+      one_out="$(cat "$gof" 2>/dev/null)"
+      leg_out="${leg_out}${one_out}
+"
+      # Counted HERE, per invocation, because this is where the number exists:
+      # the concatenated buffer below can only ever yield the first summary.
+      one_exec="$(proof_executed_count "$one_out")"
+      # The adapted unittest invocation has a readable summary; keep the
+      # legacy reader for unchanged commands and their existing scope control.
+      if [ "$scope_cmd" != "$cmd" ]; then
+        one_exec="$(proof_executed_count_ext "$one_out")"
+      fi
+      observed_exec="$(proof_executed_count_ext "$one_out")"
+      if [ -f "$scope" ] && [ "$rc" -eq 0 ] && [ "$one_exec" = "unittest 0" ] \
+         && printf '%s\n' "$one_out" | grep -q '^Ran 0 tests in ' \
+         && proof_unittest_support_file "$run_dir" "$cmd" "$scope" "$rem"; then
+        PROOF_LEG_EXCLUDED="${PROOF_LEG_EXCLUDED}${PROOF_LEG_EXCLUDED:+
+}${scope#"$root"/}"
+      fi
+      if [ "$rc" -eq 0 ] && [ -n "$observed_exec" ] && [ "${observed_exec##* }" -gt 0 ]; then
+        observed_imports="$(proof_python_imports "$root" "$evidence" "$rels")"
+        PROOF_LEG_MODULES="${PROOF_LEG_MODULES}${PROOF_LEG_MODULES:+
+}$observed_imports"
+        if [ -f "$scope" ]; then
+          PROOF_LEG_IMPORTED="${PROOF_LEG_IMPORTED}${PROOF_LEG_IMPORTED:+
+}$(printf '%s\n' "$observed_imports" | grep -vxF "${scope#"$root"/}" || :)"
+        fi
+      fi
+      rm -rf "$evidence"
+      if [ "$rc" -ne 0 ]; then
+        PROOF_LEG_FAILED_EXEC="$(proof_executed_count_ext "$one_out")"
+        PROOF_LEG_FAILED_OUT="$one_out"
+      fi
+      if [ -z "$one_exec" ]; then ex_bad=1
+      elif [ -n "$ex_runner" ] && [ "$ex_runner" != "${one_exec%% *}" ]; then ex_bad=1
+      else ex_runner="${one_exec%% *}"; ex_sum=$((ex_sum + ${one_exec##* }))
+           ex_each="${ex_each}${ex_each:+ }${one_exec##* }"; fi
+      [ "$rc" -eq 0 ] || break
+    done <<SCOPE_RUN_EOF
+$scopes
+SCOPE_RUN_EOF
+    if [ -n "$ex_bad" ] || [ -z "$ex_runner" ]; then PROOF_LEG_EXEC=unreadable; PROOF_LEG_EXEC_EACH=""
+    else PROOF_LEG_EXEC="$ex_runner $ex_sum"; PROOF_LEG_EXEC_EACH="$ex_each"; fi
+    # The FIRST element of a multi-scope record has no parentheses, so a reader
+    # pasting it back gets the same `cd … && …` opening the single-scope form
+    # has always had; every later element is parenthesised so its `cd` cannot
+    # leak into the next one.
+    PROOF_LEG_CMD="$cmdrec"
+    PROOF_LEG_RUN_DIR="$run_dir"; PROOF_LEG_RAW_CMD="$cmd"
+    printf '%s' "$leg_out" >"$gof"
+    # === ROUTE (d), S308 fix round 2: ZERO EXECUTED IS NEVER EVIDENCE ========
+    # MEASURED on this gate with the bare-glob testCommand
+    #     node --test --test-concurrency=1 "$LCARS_TESTS_DIR"/*.test.js
+    # and a declared file whose name DOES match: the scope is a FILE, so
+    # `<file>/*.test.js` matches nothing, bash leaves the pattern literal, and
+    # `node --test` prints `pass 0 / fail 0` and EXITS 0. Both legs were green
+    # on ZERO tests, so the gate printed the fully confident
+    #     ✗ flip-flop FAIL — the ticket's tests PASS on the PARENT commit
+    # with `executed {0,0}, checked:true`. A conclusion from literally no
+    # evidence, and the file-scoping S308 added is what makes an empty
+    # selection reachable in the first place.
+    #
+    # proof_zero_collected cannot see this one: its phrasings are the runners'
+    # OWN "no tests collected/ran" sentences, and node:test prints no such
+    # sentence — it prints a NUMBER. That number is already produced, per
+    # invocation, three lines above (PROOF_LEG_EXEC, S308 DEFECT 2). So the
+    # refusal reads the RECORD rather than another phrasing: a leg whose own
+    # runner says it executed zero tests has proven nothing about this ticket.
+    #
+    # SENTINEL 95, not 96: this leg DID run (its command and its count are
+    # recorded, and the parent leg's `ran` must stay honest) — it simply
+    # produced no evidence. Inconclusive is never a pass.
+    #
+    # ONLY WHEN THE LEG IS GREEN (`rc 0`), and that bound is load-bearing, not
+    # caution. ZERO EXECUTED ON A **RED** LEG IS THE FLAGSHIP LEGITIMATE RED:
+    # the greenfield parent whose copy of the test DIES AT IMPORT because the
+    # module the ticket adds does not exist there yet registers no test at all,
+    # and that import death IS the red-on-parent this gate exists to require
+    # (see the vacuity note on proof_executed_count, which the captain approved
+    # with exactly this case on the table). Refusing it would convert the
+    # flagship PASS into INCONCLUSIVE. GREEN on nothing is the trap; red on
+    # nothing is already triaged by proof_parent_red_kind.
+    # RECORDED HERE, DECIDED IN THE GATE. The refusal is NOT taken on this leg
+    # alone, because a better reason may exist one leg later: when the PARENT
+    # executed tests and the tip executed none, that is GUTTING and the S157
+    # anti-gutting check already names it with both counts, which is far more
+    # use to a worker than "zero". So the leg records the fact where it is
+    # produced and flip_flop_gate decides once both counts are in. (It also
+    # leaves scopeKind/scopeWhy truthful: this leg really did run with that
+    # scope, so unlike the pre-run refusals it has no false record to avoid.)
+    if [ "$rc" -eq 0 ] && [ -z "$ex_bad" ] && [ -n "$ex_runner" ] && [ "$ex_sum" -eq 0 ]; then
+      PROOF_LEG_ZERO_EXEC=true
+    fi
   fi
   out="$(cat "$gof" 2>/dev/null)"; rm -f "$gof"
+  # `unreadable` is the js/py lane saying it counted per invocation and could
+  # NOT produce an honest total; an EMPTY value means no per-invocation count was
+  # taken at all (the native lane, which is always a single run), so the whole
+  # buffer is read exactly as it always was.
+  case "$PROOF_LEG_EXEC" in
+    unreadable) PROOF_LEG_EXEC="" ;;
+    '')         PROOF_LEG_EXEC="$(proof_executed_count "$out")" ;;
+  esac
+  # A SINGLE-RUN lane (native, or a buffer read whole) is a one-element list, so
+  # the per-invocation comparison never has to special-case "no list at all".
+  if [ -z "$PROOF_LEG_EXEC_EACH" ] && [ -n "$PROOF_LEG_EXEC" ]; then
+    PROOF_LEG_EXEC_EACH="${PROOF_LEG_EXEC##* }"
+  fi
   if [ "$rc" = 124 ]; then
     PROOF_LEG_RC=98
-    PROOF_LEG_OUT="scoped test run exceeded the ${gsecs}s gate timeout (LCARS_GATE_TIMEOUT) and was terminated — $(proof_timeout_cause "$out")
+    PROOF_LEG_OUT="scoped test run exceeded the ${gsecs}s gate timeout $(gate_timeout_clause) and was terminated — $(proof_timeout_cause "$out")
 ${out}"
     return 0
   fi
@@ -12077,6 +14003,100 @@ if mf and mp:
 ' 2>/dev/null
 }
 
+# === THE EXTENDED COUNT READER (S318 fix round 1, D1) ======================
+# proof_executed_count is read by the WHOLE gate — the zero-evidence refusal,
+# the anti-gutting comparison, the scope control. Three ordinary runner grammars
+# were missing from it, and a captain-stand-in tester measured the consequence:
+# an honest two-file ticket was REFUSED on each of python unittest
+# (`Ran 3 tests in 0.000s` / `OK`), TAP (`1..2` / `ok 1`) and a bare
+# `N passed, 0 failed`, because the declared-file accounting is arithmetic and
+# there was no number to do it with. The number was printed right there; it was
+# this harness that could not read it.
+#
+# THEY ARE ADDED HERE, NOT TO proof_executed_count, AND THAT IS MEASURED TOO.
+# Teaching the MAIN reader python unittest turned THREE legitimate rows of
+# tests/proof-gates.test.sh (S5a, S5c, Z10a) from PASS to INCONCLUSIVE: those
+# fixtures run `make test` -> `python3 -m unittest discover`, and the moment
+# their count became readable S308's empty-scope control could run and correctly
+# observed that the scope changes nothing — so a pre-existing refusal fired on
+# three honest tickets. A cure for an over-refusal must not buy itself a fresh
+# one. So the extra grammars are confined to the ONE question that needs
+# arithmetic and nothing else: did each declared test file contribute a test?
+# Every other consumer of `executed` keeps the exact numbers it had, and the
+# accounting never mixes the two readers — when it uses this one it re-measures
+# its own baseline with it (see proof_declared_accounting).
+proof_executed_count_ext() { # runner-output -> "<runner> <executed>" | ""
+  local base
+  base="$(proof_executed_count "$1")"
+  if [ -n "$base" ]; then printf '%s' "$base"; return 0; fi
+  printf '%s' "$1" | "${LCARS_PYTHON_BIN:-python3}" -c '
+import re, sys
+out = sys.stdin.read()
+
+# python unittest / nose — `Ran 3 tests in 0.001s` + `OK` / `OK (skipped=1)` /
+# `FAILED (failures=1, skipped=2)`. `Ran` counts SKIPPED tests too, so the
+# skips are subtracted: EXECUTED, not COLLECTED, the same rule as every arm
+# above.
+m = re.search(r"^Ran (\d+) tests? in ", out, re.M)
+if m and re.search(r"^(OK|FAILED|NO TESTS RAN)\b", out, re.M):
+    sk = re.search(r"^(?:OK|FAILED)\b[^\n]*?\bskipped=(\d+)", out, re.M)
+    print("unittest %d" % (int(m.group(1)) - int(sk.group(1) if sk else 0))); sys.exit(0)
+
+# TAP — a `1..N` plan line plus `ok` / `not ok` result lines. The PLAN is only
+# the identifier; the count is the result lines that actually ran, so a
+# `# SKIP` / `# TODO` directive is not counted.
+if re.search(r"^1\.\.\d+\s*$", out, re.M):
+    ran = 0
+    for ln in out.splitlines():
+        if re.match(r"^(not ok|ok)\b", ln) and not re.search(r"#\s*(SKIP|TODO)", ln, re.I):
+            ran += 1
+    print("tap %d" % ran); sys.exit(0)
+
+# A bare `2 passed, 0 failed` summary with no decoration — what a hand-rolled
+# runner and several CI wrappers print. The pytest arm above requires its `===`
+# banner, so this one is not reachable from pytest output.
+m = re.search(r"^[^\n]*?\b(\d+) passed,\s*(\d+) failed\b", out, re.M)
+if m:
+    print("bare %d" % (int(m.group(1)) + int(m.group(2)))); sys.exit(0)
+' 2>/dev/null
+}
+
+proof_assertion_failure() { # runner-output -> runner-reported failed tests without a count
+  printf '%s' "$1" | "${LCARS_PYTHON_BIN:-python3}" -c '
+import re, sys
+out = sys.stdin.read()
+if re.search(r"^--- FAIL: (Test|Example|Fuzz)\S*", out, re.M):
+    sys.exit(0)
+# Quiet pytest omits the banner required by the legacy count reader. Require
+# both its failed test identifier and its nonzero failure summary.
+if (re.search(r"^FAILED \S+::[^\n]+$", out, re.M)
+        and re.search(r"^[1-9]\d* failed(?:, [^\n]+)? in \d+(?:\.\d+)?s\s*$", out, re.M)):
+    sys.exit(0)
+# Dot prints no counts. Its failed-test section must contain a failed record
+# with a test callback stack, not merely a failed file-process wrapper.
+section = re.search(r"^Failed tests:\s*\n(.*)", out, re.M | re.S)
+if section:
+    blocks = re.split(r"(?=^\u2716 )", section.group(1), flags=re.M)
+    for block in blocks:
+        if (re.match(r"^\u2716 [^\n]+\n", block)
+                and re.search(r"^\s+at TestContext\.", block, re.M)):
+            sys.exit(0)
+sys.exit(1)
+'
+}
+
+proof_node_boot_failure() { # TAP file-process failures are not executed test methods
+  printf '%s' "$1" | "${LCARS_PYTHON_BIN:-python3}" -c '
+import re, sys
+out = sys.stdin.read()
+total = re.search(r"^# tests (\d+)\s*$", out, re.M)
+blocks = re.findall(r"^not ok \d+[^\n]*\n  ---\n(.*?)^  \.\.\.", out, re.M | re.S)
+boot = sum(bool(re.search(r"^  code: .ERR_TEST_FAILURE.", b, re.M)
+                and re.search(r"^  exitCode: [1-9]\d*\s*$", b, re.M)) for b in blocks)
+sys.exit(0 if total and boot > 0 and boot == int(total.group(1)) else 1)
+'
+}
+
 # S157 (trimmed): the REPAIR PATH IS WITHDRAWN when the ticket's diff touches any
 # NON-TEST path. That routing is spec, not a heuristic — a repair is
 # test-infrastructure only, and a `vite.config.ts` (neither product source nor a
@@ -12107,12 +14127,79 @@ FF_PAR_REFUSED=""
 # carried no count this reader understands, in which case the check is SKIPPED
 # and recorded as such — never assumed to have passed.
 FF_TIP_EXEC=""; FF_PAR_EXEC=""
+# S308: the two decisions the gate made BEFORE it ran a test — the timeout it
+# ran under (and which of env / config / default supplied it) and what the legs
+# were scoped to (and why). Taken from the TIP leg, which both legs resolve
+# identically from the same declared relpaths. Recorded because the B1-ROOT burn
+# was a leg that LOOKED narrow, and because a captain reading this file must not
+# have to infer either fact from a path.
+FF_GATE_TIMEOUT=""; FF_GATE_TIMEOUT_SRC=""; FF_GATE_SCOPE_KIND=""; FF_GATE_SCOPE_WHY=""
+FF_GATE_TIMEOUT_NOTE=""; FF_GATE_SCOPE_SELNOTHING=""
+# FF_GATE_SCOPE_CONTROL (fix round 2) — what the CONTROL RUN executed: the same
+# testCommand, same cwd, scope pointed at an EMPTY directory. "" means it was
+# not measured (an unnarrowed leg, a zero-executed leg, a timeout, or a runner
+# this harness cannot count). Recorded because "the scope was proven to change
+# what ran" is the one fact that distinguishes a real narrow leg from a leg that
+# silently ran the whole suite, and nobody should have to infer it from a path.
+FF_GATE_SCOPE_CONTROL=""
+# FF_GATE_SCOPE_NARROWING / _NARROW_WHY / _CONTROL_SECS / FF_GATE_TIP_EXEC_EACH
+# (S308 fix round 3, CURE 1) — the state the gate now ACTS on, and why.
+#
+# THE DEFECT, verified by reading the source 22 Oct 2026:
+# `grep -n narrowingProven run.sh` returned exactly ONE line — the printf that
+# writes it into flip-flop.json. It was never read, never compared, never acted
+# on. The harness ran the control, honestly recorded that it could not prove the
+# narrowing, and then issued a fully confident verdict anyway. FOUR measured
+# routes into that state, every one ending in a confident PASS or FAIL: the
+# control exits nonzero, its output is unparseable, it is skipped by the
+# precondition, or it is killed by the gate timeout.
+#
+# A boolean could not carry the fix, because "false" meant four different
+# things and only SOME of them are a problem. The state is therefore NAMED:
+#   proven       the control ran, was read by the same runner, and executed a
+#                DIFFERENT number from this leg — handing the ticket's file(s)
+#                over demonstrably changed what ran.
+#   moot         a FILESYSTEM fact settles it: every test file tracked in this
+#                tree is one the ticket declared, so even a total fallback to
+#                the runner's own discovery can only run the ticket's tests.
+#                Nothing to prove; the verdict stands. (This is the precondition
+#                round 2 added after its first cut parked five honest tickets.)
+#   not-narrowed the leg claimed no narrowing (a `tree` or `native` scope), so
+#                there is no narrowing to prove.
+#   uncountable  no count exists to compare — this runner prints none (go and
+#                cargo carry no test count at all; LEDGERED, out of scope), or
+#                the leg executed nothing and the zero-evidence refusal owns it.
+#   unproven     the control was ATTEMPTED and failed to establish anything, OR
+#                it established that the scope changed nothing. This is the one
+#                that must not yield a confident verdict.
+# `narrowingProven` is kept, in its original position, as `narrowing == proven`.
+FF_GATE_SCOPE_NARROWING=""; FF_GATE_SCOPE_NARROW_WHY=""
+FF_GATE_SCOPE_CONTROL_SECS=""; FF_GATE_TIP_EXEC_EACH=""
+# FF_GATE_SCOPE_CONTROL_ZERO — the control run collected NOTHING in its runner's
+# own words (so `executed` carries no number to print). Recorded, because
+# "no count" and "a count of nothing" are different facts.
+FF_GATE_SCOPE_CONTROL_ZERO=""
+# FF_GATE_DECL_* (S318, D9) — THE ACCOUNTING OF THE TICKET'S DECLARED TESTS.
+# `testFiles` has always been WRITTEN DOWN in this artifact and never CHECKED:
+# a ticket could be stamped `flip-flop PASS` while one of its own declared test
+# files was RED on the tip and never executed once. See
+# proof_declared_accounting for the measurement and the four states it closes.
+FF_GATE_DECL_METHOD=""; FF_GATE_DECL_EACH=""; FF_GATE_DECL_UNACC=""
+FF_GATE_DECL_WHY=""
+FF_GATE_DECL_EXCLUDED=""
 _ff_reset() {
   FF_TIP_RC=null; FF_TIP_TAIL=""; FF_TIP_CMD=""
   FF_PAR_RC=null; FF_PAR_KIND=""; FF_PAR_TAIL=""; FF_PAR_CMD=""
   FF_PAR_SOURCES=""; FF_PAR_MODE="none"; FF_PAR_RAN=false
   FF_PAR_REFUSED=""
   FF_TIP_EXEC=""; FF_PAR_EXEC=""
+  FF_GATE_TIMEOUT=""; FF_GATE_TIMEOUT_SRC=""; FF_GATE_SCOPE_KIND=""; FF_GATE_SCOPE_WHY=""
+  FF_GATE_TIMEOUT_NOTE=""; FF_GATE_SCOPE_SELNOTHING=""
+  FF_GATE_SCOPE_CONTROL=""
+  FF_GATE_SCOPE_NARROWING=""; FF_GATE_SCOPE_NARROW_WHY=""
+  FF_GATE_SCOPE_CONTROL_SECS=""; FF_GATE_TIP_EXEC_EACH=""; FF_GATE_SCOPE_CONTROL_ZERO=""
+  FF_GATE_DECL_METHOD=""; FF_GATE_DECL_EACH=""; FF_GATE_DECL_UNACC=""; FF_GATE_DECL_WHY=""
+  FF_GATE_DECL_EXCLUDED=""
 }
 # The rels carrying a given source, space-separated (for the verdict wording).
 _ff_rels_with_source() { # source-token
@@ -12169,6 +14256,76 @@ FFS_EOF
     # position and meaning, so the CLI verify readout and the board's
     # local_adapter._ticket_proof (both read only verdict/reason/kind) are
     # untouched. json_escape handles the quotes and `$` the command carries.
+    # S308 `gate`: the timeout this leg ran under, WHERE the number came from
+    # (env | config | default), and what the leg was scoped to with the reason.
+    # ADDITIVE — every pre-existing field keeps its name, position and meaning.
+    # `timeoutNote` + `scopeSelectedNothing` (fix round 1) are the two facts a
+    # reader would otherwise have to guess from the reason prose: what was wrong
+    # with the recorded timeout value, and whether this leg was REFUSED because
+    # its scope selected no test file at all. Both ADDITIVE.
+    # DEFECT 2 (fix round 2), THE BACKSTOP: `timeoutSecs` is printed BARE, so a
+    # value that is not a JSON number makes this whole artifact unparseable —
+    # measured, with `"timeoutSecs": 030` defeating `json.load` outright. The
+    # producer (resolve_gate_timeout) now normalises to decimal; this re-checks
+    # at the point of emission, because the one invariant a gate record must
+    # never lose is that a machine can read it. 10# forces decimal, so no
+    # leading-zero form can reach the file even if a new caller forgets.
+    local _tsecs="${FF_GATE_TIMEOUT:-}"
+    case "$_tsecs" in ''|*[!0-9]*) _tsecs=null ;; *) _tsecs="$(( 10#$_tsecs ))" ;; esac
+    printf '  "gate": { "timeoutSecs": %s, "timeoutSource": "%s", "timeoutNote": "%s", "scopeKind": "%s", "scopeWhy": "%s", "scopeSelectedNothing": %s },\n' \
+      "$_tsecs" "$(json_escape "${FF_GATE_TIMEOUT_SRC:-}")" \
+      "$(json_escape "${FF_GATE_TIMEOUT_NOTE:-}")" \
+      "$(json_escape "${FF_GATE_SCOPE_KIND:-}")" "$(json_escape "${FF_GATE_SCOPE_WHY:-}")" \
+      "$( [ -n "${FF_GATE_SCOPE_SELNOTHING:-}" ] && printf true || printf false )"
+    # ADDITIVE: the control run's own numbers, and whether the narrowing was
+    # PROVEN by them. `narrowingProven` is false when the control could not be
+    # measured — never silently true. FIX ROUND 3: the four meanings that false
+    # used to collapse together are now NAMED in `narrowing` with the sentence
+    # in `narrowingWhy`, the control's OWN budget is recorded in `budgetSecs`
+    # (it is the full-suite-shaped run, so it is NOT bounded by the narrowed
+    # leg's gate), and `legExecutedEach` carries the per-invocation counts the
+    # comparison is actually made against. Every pre-existing key keeps its name
+    # and position; `narrowingProven` is now exactly `narrowing == "proven"`.
+    # budgetSecs is printed BARE, so it is normalised to decimal or null for the
+    # same reason timeoutSecs is: an artifact a verdict is read from must parse.
+    local _cbud="${FF_GATE_SCOPE_CONTROL_SECS:-}"
+    case "$_cbud" in ''|*[!0-9]*) _cbud=null ;; *) _cbud="$(( 10#$_cbud ))" ;; esac
+    printf '  "scopeControl": { "executed": "%s", "runner": "%s", "narrowingProven": %s, "narrowing": "%s", "narrowingWhy": "%s", "budgetSecs": %s, "legExecutedEach": "%s", "collectedZero": %s },\n' \
+      "$(json_escape "${FF_GATE_SCOPE_CONTROL##* }")" "$(json_escape "${FF_GATE_SCOPE_CONTROL%% *}")" \
+      "$( [ "${FF_GATE_SCOPE_NARROWING:-}" = proven ] && printf true || printf false )" \
+      "$(json_escape "${FF_GATE_SCOPE_NARROWING:-}")" \
+      "$(json_escape "${FF_GATE_SCOPE_NARROW_WHY:-}")" \
+      "$_cbud" "$(json_escape "${FF_GATE_TIP_EXEC_EACH:-}")" \
+      "$( [ -n "${FF_GATE_SCOPE_CONTROL_ZERO:-}" ] && printf true || printf false )"
+    # S328 `declaredRan`: whether every file in `testFiles` produced tests or
+    # had code called during tests in a positive file-scoped Python run, and which could not be
+    # accounted for. ADDITIVE — every pre-existing key keeps its name, position
+    # and meaning. `unaccounted` is [] on a leg that accounted for all of them,
+    # and `method` says how it was established (leg-invocations costs no extra
+    # run; ablation re-runs the repo's testCommand once per declared file with
+    # THAT FILE MOVED ASIDE, so `each` carries the file's CONTRIBUTION to the
+    # leg, not what the file runs on its own — round 1's per-file form could be
+    # credited with a sibling's output and could not separate a fixed overhead).
+    # See proof_declared_accounting.
+    local _dunacc="" _dsep="" _done
+    while IFS= read -r _done; do
+      [ -n "$_done" ] || continue
+      _dunacc="$_dunacc$_dsep\"$(json_escape "$_done")\""; _dsep=", "
+    done <<FFD_EOF
+$FF_GATE_DECL_UNACC
+FFD_EOF
+    local _dexcluded="" _dxsep=""
+    while IFS= read -r _done; do
+      [ -n "$_done" ] || continue
+      _dexcluded="$_dexcluded$_dxsep{ \"path\": \"$(json_escape "$_done")\", \"reason\": \"inert Python source cannot define or suppress test collection; direct unittest loading also confirmed zero tests\" }"
+      _dxsep=", "
+    done <<FFDX_EOF
+$FF_GATE_DECL_EXCLUDED
+FFDX_EOF
+    printf '  "declaredRan": { "checked": %s, "method": "%s", "each": "%s", "unaccounted": [%s], "excluded": [%s], "why": "%s" },\n' \
+      "$( [ "${FF_GATE_DECL_METHOD:-}" = leg-invocations ] || [ "${FF_GATE_DECL_METHOD:-}" = ablation ] && printf true || printf false )" \
+      "$(json_escape "${FF_GATE_DECL_METHOD:-}")" "$(json_escape "${FF_GATE_DECL_EACH:-}")" \
+      "$_dunacc" "$_dexcluded" "$(json_escape "${FF_GATE_DECL_WHY:-}")"
     printf '  "tip": { "rc": %s, "cmd": "%s", "tail": "%s" },\n' \
       "${FF_TIP_RC:-null}" "$(json_escape "${FF_TIP_CMD:-}")" "$(json_escape "${FF_TIP_TAIL:-}")"
     printf '  "parent": { "rc": %s, "kind": "%s", "cmd": "%s", "tail": "%s" }\n' \
@@ -12271,10 +14428,19 @@ flip_flop_gate() { # ticket parent-sha worktree
 
   # --- TIP leg: the implemented tree must be GREEN on the ticket's tests -----
   proof_scoped_leg_run "$wt" "$rels"
+  # S308: record the gate's own two decisions from the leg that just ran.
+  FF_GATE_TIMEOUT="$PROOF_LEG_TIMEOUT"; FF_GATE_TIMEOUT_SRC="$PROOF_LEG_TIMEOUT_SRC"
+  FF_GATE_TIMEOUT_NOTE="$PROOF_LEG_TIMEOUT_NOTE"
+  FF_GATE_SCOPE_KIND="$PROOF_LEG_SCOPE_KIND"; FF_GATE_SCOPE_WHY="$PROOF_LEG_SCOPE_WHY"
+  FF_GATE_SCOPE_SELNOTHING="$PROOF_LEG_SCOPE_SELECTED_NOTHING"
   FF_TIP_RC="$PROOF_LEG_RC"
   FF_TIP_CMD="$PROOF_LEG_CMD"
   FF_TIP_TAIL="$(printf '%s' "$PROOF_LEG_OUT" | tail -20)"
-  FF_TIP_EXEC="$(proof_executed_count "$PROOF_LEG_OUT")"
+  # DEFECT 2: the SUM the leg counted per invocation, not a re-read of the
+  # concatenated buffer (which could only ever see the first run's summary).
+  FF_TIP_EXEC="$PROOF_LEG_EXEC"
+  FF_GATE_DECL_EXCLUDED="$PROOF_LEG_EXCLUDED"
+  local ff_tip_zero="$PROOF_LEG_ZERO_EXEC"
   if [ "$PROOF_LEG_RC" = 96 ] || [ "$PROOF_LEG_RC" = 97 ] || [ "$PROOF_LEG_RC" = 98 ]; then
     local tipreason="$PROOF_LEG_OUT"
     [ "$PROOF_LEG_RC" = 98 ] && tipreason="the TIP leg's $PROOF_LEG_OUT"
@@ -12285,8 +14451,27 @@ flip_flop_gate() { # ticket parent-sha worktree
   # S193 FIX 2: `$wt` is the crate root, so the cargo arm can read Cargo.toml's
   # own `harness` declaration — a label the project wrote about itself, deciding
   # which OUTPUT GRAMMAR applies, never whether a test is genuine.
-  if proof_zero_collected "$PROOF_LEG_OUT" "$rels" "$wt"; then
-    local tipzero="the TIP leg collected ZERO tests — a run that selects nothing proves nothing (the green-on-nothing trap)"
+  if { [ -z "$FF_GATE_DECL_EXCLUDED" ] || [ -z "$FF_TIP_EXEC" ] \
+       || [ "${FF_TIP_EXEC##* }" -eq 0 ]; } \
+     && proof_zero_collected "$PROOF_LEG_OUT" "$rels" "$wt"; then
+    local tipzero="the TIP leg collected ZERO tests — the command produced no executed tests, so it proves nothing (the green-on-nothing trap)"
+    if [ "$FF_GATE_SCOPE_KIND" = files ] && [ -n "$FF_TIP_EXEC" ] \
+       && [ "${FF_TIP_EXEC##* }" -gt 0 ]; then
+      # One file's zero must remain visible even when its honest sibling ran.
+      proof_declared_accounting "$wt" "$rels" "$FF_GATE_SCOPE_KIND" "$FF_TIP_EXEC" \
+        "$PROOF_LEG_EXEC_EACH" "$PROOF_LEG_RUN_DIR" "$PROOF_LEG_RAW_CMD" \
+        "$FF_GATE_TIMEOUT" "$FF_TIP_RC" "$FF_GATE_DECL_EXCLUDED"
+      FF_GATE_DECL_METHOD="$PROOF_DECL_METHOD"; FF_GATE_DECL_EACH="$PROOF_DECL_EACH"
+      FF_GATE_DECL_UNACC="$PROOF_DECL_UNACC"; FF_GATE_DECL_WHY="$PROOF_DECL_WHY"
+      FF_GATE_DECL_EXCLUDED="$PROOF_DECL_EXCLUDED"
+      tipzero="a declared file collected ZERO tests while its sibling executed tests; the gate cannot account for every declared file, so the run is INCONCLUSIVE, never a pass"
+    fi
+    # A zero-test file may have participated through a positive sibling's
+    # runtime calls. Only that observed evidence can discharge this refusal.
+    if [ "$FF_GATE_SCOPE_KIND" = files ] && [ "$PROOF_DECL_METHOD" = leg-invocations ] \
+       && [ -z "$PROOF_DECL_UNACC" ] && [ "$FF_TIP_RC" -eq 0 ]; then
+      tipzero=""
+    fi
     # THE REFUSAL MUST BE LEGIBLE. A custom-harness crate is a legitimate, working
     # project, and telling its captain "zero tests collected" when the suite he
     # just watched pass is a mystery park. Say what LCARS actually could not do.
@@ -12296,8 +14481,11 @@ flip_flop_gate() { # ticket parent-sha worktree
       manifest-unreadable)
         tipzero="a Cargo.toml in play declares a \`harness\` key but LCARS could not establish WHICH cargo target it belongs to. A \`harness = false\` target opts out of cargo's standard test harness and its output is not libtest test results, so until the declaration can be read LCARS cannot tell whether this run's scoreboard is real — and inconclusive is never a pass. Exactly what defeated it: ${PROOF_ZERO_DETAIL:-unrecorded}" ;;
     esac
-    _ff_finish "$t" "$parent" "$ffj" inconclusive "$tipzero" "$rels"
-    return $?
+    if [ -n "$tipzero" ]; then
+      _ff_finish "$t" "$parent" "$ffj" inconclusive "$tipzero
+  what the TIP leg ran: $FF_TIP_CMD" "$rels"
+      return $?
+    fi
   fi
   # GUARD 2 (S147 round 3): did everything the staged file PROMISED actually
   # run? The dotnet filter is built from a source scan, and every silent green
@@ -12321,6 +14509,147 @@ flip_flop_gate() { # ticket parent-sha worktree
   # GUARD 1 instead of being left to this check. GUARD 2 is the backstop for
   # unknown-unknowns — a type shape nobody has thought of yet — where the same
   # slack still exists but there is nothing more specific to say.
+  # === THE CONTROL RUN'S VERDICT (fix round 2) ==============================
+  # Asked BEFORE the tip-red FAIL below as well as before any PASS, because a
+  # widened leg can be red on undeclared tests just as easily as green on them,
+  # and "the ticket's tests do not pass" would be the same false sentence.
+  # Only for a leg that was NARROWED (file / files / ancestor) and that executed
+  # something: an unnarrowed `tree` leg claims nothing to check, and a
+  # zero-executed leg is already handled where the counts are compared.
+  # FIX ROUND 3, CURE 1: the outcome is a NAMED STATE and the gate ACTS on it.
+  # Every branch below assigns one, so an unprovable narrowing can no longer
+  # fall through to a confident verdict by being silently unrecorded.
+  FF_GATE_TIP_EXEC_EACH="$PROOF_LEG_EXEC_EACH"
+  case "$FF_GATE_SCOPE_KIND" in
+    file|files|ancestor)
+      if [ -z "$PROOF_LEG_RUN_DIR" ] || [ -z "$PROOF_LEG_RAW_CMD" ]; then
+        # No re-runnable testCommand was recorded (the native lane), so the
+        # control cannot be CONSTRUCTED. Recorded, not acted on: LEDGERED.
+        FF_GATE_SCOPE_NARROWING=uncountable
+        FF_GATE_SCOPE_NARROW_WHY="this leg's runner is not driven through a re-runnable testCommand, so no control run could be constructed for it"
+      elif [ -z "$FF_TIP_EXEC" ]; then
+        # The runner printed no count this harness understands (go and cargo
+        # print none at all). There is nothing to compare the control against,
+        # and closing that is a separate, LEDGERED question — the pre-existing
+        # `executed.checked: false` already says the comparison was not made.
+        FF_GATE_SCOPE_NARROWING=uncountable
+        FF_GATE_SCOPE_NARROW_WHY="this runner's output carries no test count this harness can read, so a control run would have nothing to be compared against (the comparison is recorded as not made; see executed.checked)"
+      elif [ "${FF_TIP_EXEC##* }" -le 0 ] 2>/dev/null; then
+        FF_GATE_SCOPE_NARROWING=uncountable
+        FF_GATE_SCOPE_NARROW_WHY="this leg executed no tests at all, which the zero-evidence refusal decides on its own evidence rather than by comparison"
+      elif ! proof_undeclared_test_exists "$wt" "$rels"; then
+        # THE PRECONDITION, as a positive fact rather than a skipped step: every
+        # test file tracked in this tree is one the ticket DECLARED, so even a
+        # total fallback to the runner's own discovery can only run the ticket's
+        # own tests. Settled by the FILESYSTEM, so no control run is needed and
+        # the verdict stands. (Round 2 added this after its first cut parked
+        # five honest tickets whose declared files WERE the whole suite.)
+        FF_GATE_SCOPE_NARROWING=moot
+        FF_GATE_SCOPE_NARROW_WHY="every test file tracked in this tree is one the ticket DECLARED, so no fallback discovery could run anything but the ticket's own tests — the narrowing needs no control run (a filesystem fact, not an inference)"
+      else
+        # THE CONTROL GETS ITS OWN BUDGET (proof_control_budget): it is the
+        # full-suite-shaped run, so bounding it by the NARROWED leg's gate gave
+        # zero coverage in exactly the slow-suite repos this session exists for.
+        FF_GATE_SCOPE_CONTROL_SECS="$(proof_control_budget "$wt" "$FF_GATE_TIMEOUT")"
+        proof_scope_control_exec "$PROOF_LEG_RUN_DIR" "$PROOF_LEG_RAW_CMD" "$FF_GATE_SCOPE_CONTROL_SECS" "${FF_TIP_EXEC%% *}"
+        FF_GATE_SCOPE_CONTROL="$PROOF_SCOPE_CONTROL"
+        # A files-mode leg runs ONE INVOCATION PER DECLARED FILE, so if its
+        # selection collapsed, EACH invocation ran the control's discovery and
+        # the leg's SUM is N times the control, not equal to it. N is the number
+        # of declared files; a leg that stopped early on a red file runs fewer
+        # and is the one shape this comparison can miss (it ends in a FAIL,
+        # which blocks, never in a pass).
+        local ctl_n=1 ctl_want ctl_hit="" ctl_one
+        case "$FF_GATE_SCOPE_KIND" in
+          files) ctl_n="$(printf '%s\n' "$rels" | grep -c . | tr -d '[:space:]')"
+                 case "$ctl_n" in ''|*[!0-9]*) ctl_n=1 ;; esac ;;
+        esac
+        ctl_want=-1
+        case "${PROOF_SCOPE_CONTROL##* }" in
+          ''|*[!0-9]*) : ;;
+          *) ctl_want=$(( ${PROOF_SCOPE_CONTROL##* } * ctl_n )) ;;
+        esac
+        # CURE 2 — THE COMPARISON IS MADE PER INVOCATION, where each number was
+        # produced. The control runs ONCE; a files-mode leg runs once per
+        # declared file and its `executed` is the SUM, so for a two-file ticket
+        # the sum could essentially never equal the single control count and the
+        # comparison was dead. MEASURED: 1 (an honest matchable sibling) + 3 (an
+        # unmatchable file falling back to discovery) = 4, against a control of 3
+        # and a control x N of 6 — nothing matched, and the gate certified a
+        # ticket whose other declared test was RED on the tip and never ran.
+        # ONE invocation that matches the control is enough: that invocation ran
+        # the runner's own discovery, so whatever it contributed to the leg's
+        # colour is not about the file it was handed.
+        if [ -n "$PROOF_SCOPE_CONTROL" ] && [ "${PROOF_SCOPE_CONTROL%% *}" = "${FF_TIP_EXEC%% *}" ]; then
+          for ctl_one in $FF_GATE_TIP_EXEC_EACH; do
+            [ "$ctl_one" = "${PROOF_SCOPE_CONTROL##* }" ] && { ctl_hit=1; break; }
+          done
+        fi
+        if [ -z "$PROOF_SCOPE_CONTROL" ] && [ -n "$PROOF_SCOPE_CONTROL_ZERO" ]; then
+          # The control collected NOTHING, said in its runner's own words. The
+          # scope being emptied emptied the run, so the ticket's file(s) are
+          # what produced this leg's tests. Checked BEFORE "unreadable",
+          # because several runners print no summary numbers on a zero run.
+          FF_GATE_SCOPE_NARROWING=proven
+          FF_GATE_SCOPE_CONTROL_ZERO=true
+          FF_GATE_SCOPE_NARROW_WHY="the control run COLLECTED NO TESTS AT ALL with the scope pointed at an EMPTY directory — its runner said so in its own words — while this leg executed ${FF_TIP_EXEC##* } via ${FF_TIP_EXEC%% *}${FF_GATE_TIP_EXEC_EACH:+ (per invocation: $FF_GATE_TIP_EXEC_EACH)}: emptying the scope emptied the run, which is the strongest form of this measurement (measured under a ${FF_GATE_SCOPE_CONTROL_SECS}s control budget)"
+        elif [ -z "$PROOF_SCOPE_CONTROL" ]; then
+          FF_GATE_SCOPE_NARROWING=unproven
+          FF_GATE_SCOPE_NARROW_WHY="${PROOF_SCOPE_CONTROL_WHY:-the gate could not construct or read its control run}"
+        elif [ "${PROOF_SCOPE_CONTROL%% *}" != "${FF_TIP_EXEC%% *}" ]; then
+          FF_GATE_SCOPE_NARROWING=unproven
+          FF_GATE_SCOPE_NARROW_WHY="the control run was read by a DIFFERENT runner grammar (${PROOF_SCOPE_CONTROL%% *}) from this leg (${FF_TIP_EXEC%% *}), so the two counts do not mean the same thing and comparing them would invent a result"
+        elif [ -n "$ctl_hit" ] \
+           || [ "${PROOF_SCOPE_CONTROL##* }" = "${FF_TIP_EXEC##* }" ] \
+           || [ "$ctl_want" = "${FF_TIP_EXEC##* }" ]; then
+          FF_GATE_SCOPE_NARROWING=unproven
+          FF_GATE_SCOPE_NARROW_WHY="this repo's testCommand executed THE SAME ${PROOF_SCOPE_CONTROL##* } test(s) with an EMPTY scope as this leg did with the ticket's file(s)${FF_GATE_TIP_EXEC_EACH:+ (per invocation: $FF_GATE_TIP_EXEC_EACH)} — the scope selected nothing and what ran was the runner's own discovery"
+          # D6 (fix round 3, LOW): the control MEASURED that the scope selected
+          # nothing, so the record says so. Before this, a leg made inconclusive
+          # by the control still carried `scopeSelectedNothing: false` while its
+          # own `reason` said the scope selected nothing — two fields of one
+          # record contradicting each other. The round-2 `scopeKind: "refused"`
+          # cure covers only the PRE-FLIGHT path, which never ran at all; this
+          # leg DID run, with that scope, so scopeKind stays truthful.
+          FF_GATE_SCOPE_SELNOTHING=true
+          emit_event proof_scope_not_narrowed implement \
+            "proof leg REFUSED — the repo's testCommand executed the SAME ${PROOF_SCOPE_CONTROL##* } test(s) with the ticket's file(s) as it did with an EMPTY scope, so the scope selected nothing and the run was the runner's own discovery" "ticket=$t" || :
+          _ff_finish "$t" "$parent" "$ffj" inconclusive \
+            "this repo's testCommand executed THE SAME ${PROOF_SCOPE_CONTROL##* } test(s) whether it was handed the ticket's test file(s) or an EMPTY directory — so the scope selected NOTHING and what ran was the runner's OWN discovery, not the ticket's tests. Nothing about this ticket could be proven either way, in either direction, and inconclusive is never a pass.
+  measured by re-running the repo's own testCommand with the scope pointed at an empty directory (${PROOF_SCOPE_CONTROL%% *}: ${PROOF_SCOPE_CONTROL##* } executed, the same as this leg)
+  what the TIP leg ran: $FF_TIP_CMD
+Nothing is wrong with the ticket's code: the repo's testCommand cannot SEE a test file at the path it was handed, so the runner received an EMPTY argument list and fell back to discovering its own tests. Either widen the command's own selection so it matches the ticket's test file(s), hand \"\$LCARS_TESTS_DIR\" to the runner directly (\`lcars update --fix-tests\`), or name the ticket's test files the way the existing selection expects." "$rels"
+          return $?
+        else
+          FF_GATE_SCOPE_NARROWING=proven
+          FF_GATE_SCOPE_NARROW_WHY="the control run executed ${PROOF_SCOPE_CONTROL##* } test(s) with the scope pointed at an EMPTY directory while this leg executed ${FF_TIP_EXEC##* }${FF_GATE_TIP_EXEC_EACH:+ (per invocation: $FF_GATE_TIP_EXEC_EACH)} under the same runner — handing the ticket's test file(s) over demonstrably changed what ran (measured under a ${FF_GATE_SCOPE_CONTROL_SECS}s control budget)"
+        fi
+      fi ;;
+    *)
+      FF_GATE_SCOPE_NARROWING=not-narrowed
+      FF_GATE_SCOPE_NARROW_WHY="this leg claimed no narrowing (scope kind '${FF_GATE_SCOPE_KIND:-none}'), so there is no narrowing for a control run to prove" ;;
+  esac
+  # === CURE 1: AN UNPROVABLE NARROWING MAY NOT YIELD A CONFIDENT VERDICT =====
+  # A leg that cannot establish that it ran the ticket's DECLARED tests is not
+  # allowed to say "the ticket's tests PASS/FAIL on the parent". The same-count
+  # branch above has its own, more specific refusal and has already returned;
+  # this is the one that closes the three routes nothing acted on — the control
+  # unreadable, the control killed, the grammars not comparable.
+  #
+  # IT IS A TIGHTENING, NOT A RELAXATION: the leg moves from a confident verdict
+  # it had no basis for to INCONCLUSIVE, and inconclusive is never a pass.
+  if [ "$FF_GATE_SCOPE_NARROWING" = unproven ]; then
+    emit_event proof_scope_narrowing_unproven implement \
+      "proof leg REFUSED — the gate could not PROVE that this leg ran the ticket's declared tests: $FF_GATE_SCOPE_NARROW_WHY" "ticket=$t" || :
+    _ff_finish "$t" "$parent" "$ffj" inconclusive \
+      "this gate could NOT PROVE that the leg ran the ticket's DECLARED test file(s), so it has no standing to say anything about the parent commit in either direction. Inconclusive is never a pass.
+  why the narrowing could not be proven: $FF_GATE_SCOPE_NARROW_WHY
+  what this leg executed: ${FF_TIP_EXEC##* } test(s) via ${FF_TIP_EXEC%% *}${FF_GATE_TIP_EXEC_EACH:+ (per invocation: $FF_GATE_TIP_EXEC_EACH)}
+  the control run: ${FF_GATE_SCOPE_CONTROL:-not readable} (budget ${FF_GATE_SCOPE_CONTROL_SECS:-unset}s)
+  what the TIP leg ran: $FF_TIP_CMD
+The control re-runs the repo's testCommand with an empty test scope. An incomplete or unreadable control leaves narrowing UNKNOWN; it does not show that selection failed. Inspect the control diagnostic above before changing the command or budget." "$rels"
+    return $?
+  fi
   if [ "$(resolve_stack)" = dotnet ]; then
     local dn_declared=0 dn_collected dn_one dn_rel2
     while IFS= read -r dn_rel2; do
@@ -12339,8 +14668,69 @@ FF_DECL
     fi
   fi
   if [ "$FF_TIP_RC" -ne 0 ]; then
+    local failed_exec="$PROOF_LEG_FAILED_EXEC"
+    local failed_out="$PROOF_LEG_FAILED_OUT"
+    if [ -z "$PROOF_LEG_RUN_DIR" ]; then
+      failed_exec="$(proof_executed_count_ext "$PROOF_LEG_OUT")"
+      failed_out="$PROOF_LEG_OUT"
+    fi
+    if { [ -z "$failed_exec" ] || [ "${failed_exec##* }" -eq 0 ] \
+         || proof_node_boot_failure "$failed_out"; } \
+       && ! proof_assertion_failure "$failed_out"; then
+      _ff_finish "$t" "$parent" "$ffj" inconclusive \
+        "the TIP command supplied no evidence of executed test methods (exit $FF_TIP_RC); a file-process boot failure is not a test method. The gate cannot attribute the non-zero exit to failing tests. The run is INCONCLUSIVE, not RED.
+  what the TIP leg ran: $FF_TIP_CMD" "$rels"
+      return $?
+    fi
     _ff_finish "$t" "$parent" "$ffj" fail \
       "the TIP leg is RED (exit $FF_TIP_RC) — the ticket's tests do not pass on the implemented tree" "$rels"
+    return $?
+  fi
+  # === S318 / D9: DID EACH DECLARED TEST FILE ACTUALLY RUN? ================
+  # The ONE question the gate had never asked. `testFiles` was written into this
+  # artifact from the first version and never checked against anything, so a
+  # ticket could be certified while one of its own declared tests was RED on the
+  # tip and never executed — in `ancestor`, `moot`, `uncountable` and `tree`
+  # alike. S308's control closed `files` mode only, because that is the single
+  # state that already carries per-file numbers.
+  #
+  # FIX ROUND 1, D7 — ASKED AFTER THE TIP-RED FAIL, NOT BEFORE IT. Round 1 put
+  # this question first on the reasoning that a leg which cannot account for the
+  # ticket's tests has no standing to say they FAIL either. Measured consequence:
+  # a genuinely RED tip leg stopped reporting "the TIP leg is RED (exit 1) — the
+  # ticket's tests do not pass", which is the true cause and what the committed
+  # code said, and reported "could not account for the declared files" instead.
+  # Both are non-pass so nothing ships either way, but the captain lost the real
+  # reason. S321 requires executed-test or assertion-failure evidence on the
+  # failing invocation; a non-zero exit alone is not test evidence.
+  # The accounting below guards the PASS. See proof_declared_accounting.
+  proof_declared_accounting "$wt" "$rels" "$FF_GATE_SCOPE_KIND" "$FF_TIP_EXEC" \
+    "$FF_GATE_TIP_EXEC_EACH" "$PROOF_LEG_RUN_DIR" "$PROOF_LEG_RAW_CMD" \
+    "$(proof_control_budget "$wt" "$FF_GATE_TIMEOUT")" "$FF_TIP_RC" "$FF_GATE_DECL_EXCLUDED"
+  FF_GATE_DECL_METHOD="$PROOF_DECL_METHOD"; FF_GATE_DECL_EACH="$PROOF_DECL_EACH"
+  FF_GATE_DECL_UNACC="$PROOF_DECL_UNACC";   FF_GATE_DECL_WHY="$PROOF_DECL_WHY"
+  FF_GATE_DECL_EXCLUDED="$PROOF_DECL_EXCLUDED"
+  if [ -n "$FF_GATE_DECL_UNACC" ]; then
+    local dl_names
+    dl_names="$(printf '%s' "$FF_GATE_DECL_UNACC" | grep . | tr '\n' ' ' | sed 's/ $//')"
+    emit_event proof_declared_test_unaccounted implement \
+      "proof leg REFUSED — the gate could not show that the ticket's DECLARED test file(s) $dl_names executed at all on this leg: $FF_GATE_DECL_WHY" "ticket=$t" || :
+    # D5: THE REMEDIATION IS THE ONE FOR THIS REASON. Round 1 appended the
+    # `_spec.js`-vs-`*.test.js` rename paragraph to EVERY refusal, including the
+    # unreadable-runner, unscoped-command and timeout ones — where the ticket's
+    # filenames are already exactly what the selection expects, so the captain
+    # was sent renaming correct files, and where the python case was told to
+    # "have the testCommand print its runner's own summary" by a gate reading a
+    # command that already printed `Ran 3 tests in 0.000s`.
+    _ff_finish "$t" "$parent" "$ffj" inconclusive \
+      "this gate could NOT ACCOUNT FOR the ticket's DECLARED test file(s) $dl_names — it holds no measurement showing that each of them contributed a test to this leg — so it has no standing to say the ticket's tests pass. A verdict on tests that may never have run is worse than no verdict, and inconclusive is never a pass.
+  the declared test file(s) it could not account for: $dl_names
+  how the accounting was attempted: ${FF_GATE_DECL_METHOD:-none}${FF_GATE_DECL_EACH:+
+  what each declared file contributed, measured by taking it back out of the scope this leg ran: $FF_GATE_DECL_EACH}
+  why: $FF_GATE_DECL_WHY
+  what this leg executed: ${FF_TIP_EXEC##* } test(s) via ${FF_TIP_EXEC%% *}${FF_GATE_TIP_EXEC_EACH:+ (per invocation: $FF_GATE_TIP_EXEC_EACH)}
+  what the TIP leg ran: $FF_TIP_CMD
+${PROOF_DECL_FIX:-$PROOF_DECL_FIX_RENAME}" "$rels"
     return $?
   fi
 
@@ -12373,7 +14763,8 @@ FF_STAGE_EOF
   FF_PAR_RC="$PROOF_LEG_RC"
   FF_PAR_CMD="$PROOF_LEG_CMD"
   FF_PAR_TAIL="$(printf '%s' "$PROOF_LEG_OUT" | tail -20)"
-  FF_PAR_EXEC="$(proof_executed_count "$PROOF_LEG_OUT")"
+  FF_PAR_EXEC="$PROOF_LEG_EXEC"
+  local ff_par_zero="$PROOF_LEG_ZERO_EXEC"
   local par_out="$PROOF_LEG_OUT"
   # PRUNE FIRST — on every verdict path (behavior: pruned on success AND failure).
   proof_prune_scratch "$wt" "$scratch"
@@ -12395,7 +14786,17 @@ NOTE: the parent scratch worktree has been PRUNED, so the directory this leg's r
   # declaration that describes what was executed. The tip leg above has already
   # refused when that manifest opts the ticket's target out, so this call can only
   # ever make the parent leg MORE cautious, never less.
-  if proof_zero_collected "$par_out" "$rels" "$wt"; then
+  # In files mode an earlier helper's zero summary does not describe the
+  # invocation that actually failed. Judge that invocation's own evidence;
+  # the tip accounting has already required every declared file to take part.
+  local par_zero_out="$par_out"
+  if [ "$FF_GATE_SCOPE_KIND" = files ] && [ "$FF_PAR_RC" -ne 0 ] \
+     && [ -n "$PROOF_LEG_FAILED_OUT" ]; then
+    par_zero_out="$PROOF_LEG_FAILED_OUT"
+  fi
+  if { [ -z "$PROOF_LEG_EXCLUDED" ] || [ -z "$FF_PAR_EXEC" ] \
+       || [ "${FF_PAR_EXEC##* }" -eq 0 ]; } \
+     && proof_zero_collected "$par_zero_out" "$rels" "$wt"; then
     local parzero="the PARENT leg collected ZERO tests (e.g. go's 'no tests to run' or rspec's '0 examples, 0 failures' both exit 0) — red-on-parent is unproven, and inconclusive is never a pass"
     case "$PROOF_ZERO_KIND" in
       harness-false)
@@ -12406,12 +14807,100 @@ NOTE: the parent scratch worktree has been PRUNED, so the directory this leg's r
     _ff_finish "$t" "$parent" "$ffj" inconclusive "$parzero" "$rels"
     return $?
   fi
+  # === ROUTE (d), S308 fix round 2: ZERO EXECUTED IS NOT EVIDENCE ===========
+  # MEASURED on this gate with the bare-glob testCommand
+  #     node --test --test-concurrency=1 "$LCARS_TESTS_DIR"/*.test.js
+  # and a declared file whose name DOES match: the scope is a FILE, so
+  # `<file>/*.test.js` matches nothing, bash leaves the pattern literal, and
+  # `node --test` prints `pass 0 / fail 0` and EXITS 0. Both legs were GREEN on
+  # ZERO tests, so the gate printed the fully confident
+  #     ✗ flip-flop FAIL — the ticket's tests PASS on the PARENT commit
+  # with `executed {0,0}, checked:true` — a conclusion drawn from literally no
+  # evidence, and a PASS is reachable the same way whenever the parent happens
+  # to be red for an unrelated reason. The file-scoping S308 added is what makes
+  # an empty selection reachable at all.
+  #
+  # proof_zero_collected cannot see this one: its arms are the runners' OWN "no
+  # tests collected/ran" SENTENCES, and node:test prints no such sentence — it
+  # prints a NUMBER. So this check reads the number that was already recorded
+  # per invocation (PROOF_LEG_EXEC) instead of hunting another phrasing.
+  #
+  # IT IS DELIBERATELY NOT THE FIRST WORD ON A ZERO. When the PARENT executed
+  # tests and the tip executed none, that is GUTTING, and the S157 anti-gutting
+  # check below names it with both counts — a far more useful rejection than
+  # "zero". So this fires only when no such comparison is coming: either the
+  # parent executed nothing either, or its count is unreadable, or the modes
+  # mean the comparison is never made. Both ways out are INCONCLUSIVE, so no
+  # judgement is relaxed; this only decides WHICH true sentence is printed.
+  if [ -n "$ff_tip_zero" ]; then
+    local zev_gut=""
+    case "$FF_PAR_MODE" in
+      parent-own|mixed)
+        if [ -n "$FF_PAR_EXEC" ] && [ -n "$FF_TIP_EXEC" ] \
+           && [ "${FF_PAR_EXEC%% *}" = "${FF_TIP_EXEC%% *}" ] \
+           && [ "${FF_PAR_EXEC##* }" -gt 0 ] 2>/dev/null; then zev_gut=1; fi ;;
+    esac
+    if [ -z "$zev_gut" ]; then
+      local zev_par="${FF_PAR_EXEC##* }"; [ -n "$FF_PAR_EXEC" ] || zev_par="unreadable"
+      emit_event proof_leg_zero_executed implement \
+        "flip-flop INCONCLUSIVE for $t — the TIP leg's runner executed ZERO tests (parent: $zev_par), so neither leg carries evidence about the ticket" "ticket=$t" || :
+      _ff_finish "$t" "$parent" "$ffj" inconclusive \
+        "the TIP leg ran GREEN while its own runner reported executing ZERO tests (tip: 0, parent: $zev_par) — so this gate has NO evidence about the ticket in either direction: a green on nothing is not a pass, and the parent leg's colour cannot prove work that was never run. Inconclusive is never a pass.
+Nothing is necessarily wrong with the ticket's code. Either this repo's testCommand cannot SEE a test file at the scope it was handed — a filter or glob that matches nothing hands the runner an EMPTY argument list — or the declared file genuinely contains no test. Hand \"\$LCARS_TESTS_DIR\" to the runner directly (\`lcars update --fix-tests\`), or name the ticket's test files the way the existing selection expects.
+  what the TIP leg ran: $FF_TIP_CMD" "$rels"
+      return $?
+    fi
+  fi
+  # === CURE 3 (S308 fix round 3): THE SAME RULE ON THE **PARENT** LEG ========
+  # The zero-executed-green refusal above was implemented for the TIP leg only.
+  # MEASURED 22 Oct 2026 on this gate:
+  #     executed { parent: "0", tip: "1", checked: true }, parent rc 0,
+  #     parent tail `tests 0`   →   verdict FAIL,
+  #     "the ticket's tests PASS on the PARENT commit"
+  # The parent's count was read into a local and then IGNORED (that local,
+  # `ff_par_zero`, was assigned and never used anywhere in the file). Nothing
+  # ran on the parent, so "they pass there" describes a run that never happened
+  # — and that sentence sends a worker to rewrite a test that is fine.
+  #
+  # DIRECTION: this BLOCKS either way, so it is less severe than the false pass;
+  # what changes is that the record and the reason are TRUE, and the ticket is
+  # routed as "no evidence" (a fresh worker) rather than "your test asserts
+  # pre-existing behaviour" (a rewrite that cannot help).
+  #
+  # THE BOUND IS THE SAME AS THE TIP'S, and it is load-bearing: PROOF_LEG_ZERO_EXEC
+  # is only ever set on a GREEN leg (rc 0). ZERO EXECUTED ON A **RED** PARENT IS
+  # THE FLAGSHIP LEGITIMATE RED — the greenfield parent whose copy of the test
+  # DIES AT IMPORT because the module the ticket adds does not exist there yet
+  # registers no test at all, and that import death IS the red-on-parent this
+  # gate requires. So this can never reach it.
+  #
+  # NO BETTER SENTENCE IS COMING, unlike the tip's case: the S157 anti-gutting
+  # check needs the PARENT count to be > 0 to say anything, so when the parent
+  # is the zero there is nothing more specific left to print.
+  if [ -n "$ff_par_zero" ]; then
+    emit_event proof_leg_zero_executed implement \
+      "flip-flop INCONCLUSIVE for $t — the PARENT leg ran GREEN while its own runner executed ZERO tests (tip: ${FF_TIP_EXEC##* }), so red-on-parent could never have been produced there" "ticket=$t" || :
+    _ff_finish "$t" "$parent" "$ffj" inconclusive \
+      "the PARENT leg ran GREEN while its own runner reported executing ZERO tests (parent: 0, tip: ${FF_TIP_EXEC##* }) — so nothing on the parent commit was ever tested, and \"the ticket's tests pass on the parent\" would describe a run that never happened. Red-on-parent is UNPROVEN, not disproven, and inconclusive is never a pass.
+Nothing is necessarily wrong with the ticket's code. The parent leg's own selection found no test to run in the parent scratch worktree — a filter, glob or tracked-files query that matches nothing there hands the runner an EMPTY argument list, and the runner's own discovery then finds nothing either. Hand \"\$LCARS_TESTS_DIR\" to the runner directly (\`lcars update --fix-tests\`), or name the ticket's test files the way the existing selection expects.
+  what the PARENT leg ran: $FF_PAR_CMD" "$rels"
+    return $?
+  fi
   # THE GREEN PARENT = NO PROOF. The wording states what was ACTUALLY proven, per
   # source mode — the S157 repair path rejects for a DIFFERENT reason than the
   # staged path, and reusing the staged sentence would describe work that did not
   # happen. The `staged` sentence is byte-identical to pre-S157 on purpose: that
   # is the unchanged new-test path.
   if [ "$FF_PAR_RC" -eq 0 ]; then
+    local parent_exec="$FF_PAR_EXEC"
+    [ -n "$parent_exec" ] || parent_exec="$(proof_executed_count_ext "$par_out")"
+    if [ -z "$parent_exec" ] || [ "${parent_exec##* }" -eq 0 ]; then
+      _ff_finish "$t" "$parent" "$ffj" inconclusive \
+        "the PARENT command produced no executed tests that this gate could count, so its zero exit cannot establish that the ticket's tests pass there. Red-on-parent is unproven, not disproven.
+  what the TIP leg ran: $FF_TIP_CMD
+  what the PARENT leg ran: $FF_PAR_CMD" "$rels"
+      return $?
+    fi
     local greenreason
     case "$FF_PAR_MODE" in
       parent-own)
@@ -12430,8 +14919,44 @@ NOTE: the parent scratch worktree has been PRUNED, so the directory this leg's r
     [ -n "$FF_PAR_REFUSED" ] && greenreason="$greenreason
 
 $FF_PAR_REFUSED"
-    _ff_finish "$t" "$parent" "$ffj" fail "$greenreason" "$rels"
-    return $?
+    # === S313: THE REFUSAL NAMES THE ESCAPE ================================
+    # A GREEN parent is the no-red case, and ONE of its causes is not a code
+    # fault at all: the ticket is a REGRESSION LOCK (golden / characterisation
+    # tests over behaviour that already exists), which passes on the parent BY
+    # CONSTRUCTION. No rewrite of the implementation can produce a red for it,
+    # so a worker handed only the sentence above does the one thing left — it
+    # tries the other gate, is refused there too, and comes back. MEASURED:
+    # nine Copilot TDD sessions and three human gates on one such ticket,
+    # declared-edits FAIL -> flip-flop FAIL -> result-v2 FAIL, each session
+    # curing the complaint it saw last.
+    #
+    # The finding asked for exactly this and said why: the timeout verdict
+    # became diagnosable in a SINGLE READ the day it named
+    # $LCARS_GATE_TIMEOUT. So this names BOTH the real cure (fold the goldens
+    # into the ticket that changes the behaviour they guard) and the FALSE one
+    # it must not waste a session on (flipFlop "not-applicable", which the
+    # result gate refuses beside new tests).
+    #
+    # TEXT ONLY, AND DELIBERATELY OUTSIDE THE VERDICT. The gate still FAILS,
+    # with the same rc, the same event and a `reason` recorded in
+    # flip-flop.json that is BYTE-IDENTICAL to pre-S313 (tests/proof-gates.test.sh
+    # pins that string at C5b/P3d and it must keep holding). This paragraph is
+    # printed beside it, which is enough to reach every reader that matters: the
+    # terminal, and the bounce prompt of the next session (_tdd_reject carries
+    # the gate OUTPUT as well as the json).
+    local __ffrc=0
+    _ff_finish "$t" "$parent" "$ffj" fail "$greenreason" "$rels" || __ffrc=$?
+    printf '    ─ if those are CHARACTERISATION tests — a golden / snapshot / REGRESSION LOCK
+      over behaviour that ALREADY EXISTS — then this ticket cannot be proven AS
+      DRAWN, and no change to your implementation will alter that: there is no red
+      for them to flip from. Declaring flipFlop "not-applicable" is NOT the way
+      out either; the result gate refuses "not-applicable" beside a non-empty
+      newTests, and that loop has cost nine sessions before. The cure is a PLAN
+      cure: FOLD the goldens into the ticket that CHANGES the behaviour they
+      guard, where the tests that ticket adds supply the red and the goldens ride
+      along as declared supporting tests. Keep the guard, report this shape in
+      your summary, and stop — never weaken a test to manufacture a red.\n' >&2
+    return $__ffrc
   fi
   # S193 (D2): the parent sha + tip worktree are passed so the kinding can ask a
   # GIT question — is the module python could not import a file this ticket ADDS?
@@ -12529,18 +15054,32 @@ declared_edits_guard() { # ticket parent-sha worktree
     printf 'proof-gate: declared-edits guard — no result.json for %s, so declarations cannot be verified.\n' "$t" >&2
     return 1
   fi
-  local rels declared undeclared="" p
+  local rels declared undeclared="" absent="" p
   rels="$(proof_test_rels_in_diff "$parent" "$wt")"     # all — deletions included
   declared="$(proof_result_declared_paths "$resf")"
   while IFS= read -r p; do
     [ -n "$p" ] || continue
-    printf '%s\n' "$declared" | grep -Fxq "$p" || undeclared="${undeclared:+$undeclared }$p"
+    printf '%s\n' "$declared" | grep -Fxq "$p" && continue
+    # S311 — AN ABSENT PATH IS A DELETION, AND MUST BE SAID TO BE ONE.
+    # A worker created a test package, consolidated it into an existing module
+    # and DELETED the package. Deletions count as edits, so this gate correctly
+    # refused — but it named paths that NO LONGER EXIST on the branch in wording
+    # that read as though they were present and undeclared. That sent a worker
+    # hunting the wrong file SIX SESSIONS RUNNING. The refusal is unchanged in
+    # what it REFUSES; the two classes are simply no longer lumped into one list.
+    if [ -e "$wt/$p" ]; then undeclared="${undeclared:+$undeclared }$p"
+    else                     absent="${absent:+$absent }$p"; fi
   done <<DE_EOF
 $rels
 DE_EOF
-  if [ -n "$undeclared" ]; then
-    printf 'proof-gate: UNDECLARED test edit(s) for %s — the diff vs %s touches test-classified file(s) the result never declared (newTests / testEdits): %s. Deletions count as edits. Declare every test edit with a reason, or leave the file untouched.\n' \
-      "$t" "$parent" "$undeclared" >&2
+  if [ -n "$undeclared" ] || [ -n "$absent" ]; then
+    printf 'proof-gate: UNDECLARED test edit(s) for %s — the diff vs %s touches test-classified file(s) the result never declared (newTests / testEdits). Declare every test edit with a reason, or leave the file untouched.\n' \
+      "$t" "$parent" >&2
+    [ -n "$undeclared" ] && \
+      printf '  STILL PRESENT on the branch and undeclared: %s\n' "$undeclared" >&2
+    [ -n "$absent" ] && \
+      printf '  DELETED — these were deleted and are NOT on the branch any more, so do not go looking for them: %s. A DELETION IS A DECLARED EDIT: declare it in testEdits with a reason (naming the path it was consolidated into, if it was), exactly as for a file you changed.\n' \
+        "$absent" >&2
     return 1
   fi
   proof_write_test_edits "$resf" "$td/test-edits.json"
@@ -12670,7 +15209,26 @@ if not isinstance(nt, list) or any(not (isinstance(p, str) and p) for p in nt):
 # repo FIRST test AND waives, because its parent has no runner for that test to
 # be red against. Every other ticket keeps the original rule verbatim.
 if d.get("flipFlop") == "not-applicable" and nt and os.environ.get("LCARS_FF_SCAFFOLD") != "1":
-    print("proof-gate: result.json REJECTED — the result declares new tests yet claims flip-flop \"not-applicable\"; a ticket that authors tests must expect them to flip. Declare flipFlop \"expected\", or drop the tests."); sys.exit(1)
+    # S313: THE REFUSAL STANDS, AND NOW IT NAMES THE CURE. The rule is
+    # unchanged — a ticket that authors genuinely new tests must expect them
+    # to flip, and declaring the waiver beside them is still REFUSED, in the
+    # same opening words (tests/init-mission.test.sh B8 and
+    # tests/proof-gates.test.sh I3 pin them, and both still pass). What was
+    # missing is the sentence after it. MEASURED: this refusal and the
+    # flip-flop no-red refusal are jointly impossible for a pure
+    # regression-lock ticket, and a worker shown only one of them fixes that
+    # one and trips the other — nine sessions, three human gates.
+    #
+    # THE ESCAPE NO LONGER CONTRADICTS THE PARAGRAPH AFTER IT. The inherited
+    # sentence ended "Declare flipFlop \"expected\", or drop the tests." and the
+    # paragraph below then said "Do not drop the guard" — so a worker that
+    # acted on the FIRST sentence it read DELETED THE GUARD, the exact outcome
+    # this rule exists to prevent, and "drop the tests" was never an option it
+    # could take anyway when the tests ARE the deliverable. The escape now
+    # POINTS AT the paragraph instead of offering the one thing the paragraph
+    # forbids. Only that clause moved: the opening clause and the verdict are
+    # byte-identical.
+    print("proof-gate: result.json REJECTED — the result declares new tests yet claims flip-flop \"not-applicable\"; a ticket that authors tests must expect them to flip. Declare flipFlop \"expected\" — and if you cannot honestly declare that, the TICKET is what is wrong and not the declaration, so read the next paragraph rather than touching a test.\n  If EVERY test this ticket authors is a CHARACTERISATION test over behaviour that already exists (a golden / snapshot / regression lock), it can never be red on its parent, so neither gate can pass this ticket as drawn. FOLD those goldens into the ticket that CHANGES the behaviour they guard — the tests that ticket adds supply the red, the goldens ride along as declared supporting tests, and the guard still ships. Keep every test you wrote: never weaken a test to manufacture a red, and never lose the guard to get past this gate."); sys.exit(1)
 def bad(e):
     return not (isinstance(e, dict) and isinstance(e.get("path"), str) and e["path"]
                 and isinstance(e.get("reason"), str) and e["reason"])
@@ -12722,6 +15280,30 @@ QF_EOF
 # cmd_implement_ticket). The parent commit is the snapshot.
 
 # --- GUARDRAIL 5: the post-commit verification (BUG-017) --------------------
+proof_committed_python_run() { # tree rels -> output; same accounting as flip-flop
+  proof_scoped_leg_run "$1" "$2"
+  printf '%s\n' "$PROOF_LEG_OUT"
+  case "$PROOF_LEG_RC" in
+    96|97|98) return 6 ;;
+    5) if proof_zero_collected "$PROOF_LEG_OUT" "$2" "$1"; then return 6; fi ;;
+  esac
+  [ "$PROOF_LEG_RC" -eq 0 ] || return "$PROOF_LEG_RC"
+  proof_declared_accounting "$1" "$2" "$PROOF_LEG_SCOPE_KIND" "$PROOF_LEG_EXEC" \
+    "$PROOF_LEG_EXEC_EACH" "$PROOF_LEG_RUN_DIR" "$PROOF_LEG_RAW_CMD" \
+    "$PROOF_LEG_TIMEOUT" "$PROOF_LEG_RC" "$PROOF_LEG_EXCLUDED"
+  if [ -n "$PROOF_DECL_UNACC" ] || [ -n "$PROOF_LEG_ZERO_EXEC" ]; then
+    printf 'proof-gate: committed Python test accounting INCONCLUSIVE: %s\n' "$PROOF_DECL_WHY"
+    return 6
+  fi
+  if [ -z "$PROOF_DECL_EXCLUDED" ] && [ -z "$PROOF_LEG_IMPORTED" ] \
+     && proof_zero_collected "$PROOF_LEG_OUT" "$2" "$1"; then
+    printf 'proof-gate: committed Python run collected ZERO tests\n'
+    return 6
+  fi
+  printf 'proof-gate: committed Python accounting PASS: %s%s\n' \
+    "$PROOF_DECL_EACH" "${PROOF_DECL_EXCLUDED:+; inert exclusions: $PROOF_DECL_EXCLUDED}"
+}
+
 # The adversarial Implementer often builds in its OWN ephemeral per-ticket git
 # worktree ($LCARS_TICKET_WORKTREE) or a scratch tree, then self-reports
 # passed:true. commit_ticket assembles the ticket's scoped diff onto the mission
@@ -12931,7 +15513,7 @@ post_commit_gate() { # ticket
   # S87: a sub-package ticket runs vitest/jest FROM its package root (run_dir=<wt>/<pkg>)
   # for discovery/config; an empty pkg_rel runs from the worktree root.
   local pkg_rel; pkg_rel="$(ticket_target_package "$t" "$wt")"
-  local run_dir rc=0 out="" rels scope tamper=0 undecl
+  local run_dir rc=0 out="" rels scope tamper=0 undecl zero=0
   run_dir="$wt"
   if [ -n "$pkg_rel" ]; then run_dir="$wt/$pkg_rel"
   else
@@ -12943,7 +15525,13 @@ post_commit_gate() { # ticket
   if [ -n "$(printf '%s' "$rels" | grep . || true)" ]; then
     undecl="$(proof_drift_declared_ok "$t" "$wt")" || {
       tamper=1
-      local tdetail="POST-COMMIT GATE — UNDECLARED TEST DRIFT: ticket $t's COMMITTED test file(s) no longer match the proof-time snapshot (proof-tests.sha256) and NO ticket declared that edit (test-edits.json): $(printf '%s' "$undecl" | tr '\n' ' '). A test may only change when the editing ticket declares it with a reason; refusing. This is NOT a normal red and is NOT self-healable. Restore the test or re-open the ticket."
+      # S311: the DETECTION and the SEVERITY are untouched — same snapshot
+      # comparison, same "NOT self-healable", same distinct code 4 below. Only
+      # the closing sentence changes: from a verb that does not exist
+      # ("re-open the ticket") to the command that actually does it, aimed at
+      # the ticket that MADE the edit rather than the one that owns the test.
+      local tdetail="POST-COMMIT GATE — UNDECLARED TEST DRIFT: ticket $t's COMMITTED test file(s) no longer match the proof-time snapshot (proof-tests.sha256) and NO ticket declared that edit (test-edits.json): $(printf '%s' "$undecl" | tr '\n' ' '). A test may only change when the editing ticket declares it with a reason; refusing. This is NOT a normal red and is NOT self-healable.
+$(drift_cure_block "$t" "$undecl" "$wt")"
       printf '  ✗ %s\n' "$tdetail" >&2
       [ -n "$POST_COMMIT_SIGNAL" ] && printf '%s\n' "$tdetail" >"$POST_COMMIT_SIGNAL"
     }
@@ -12957,8 +15545,24 @@ post_commit_gate() { # ticket
 $rels
 PC_RELS_EOF
       if [ -n "$(printf '%s' "$_pcrels" | grep . || true)" ]; then
-        scope="$(intree_scope_for "$wt" "$_pcrels")"
-        out="$( cd "$run_dir" && LCARS_TESTS_DIR="$scope" bash -c "$cmd" 2>&1 )" || rc=$?
+        # S308: the ticket's DECLARED files, not the directory that happens to
+        # contain them — a flat tests/ layout made that directory the whole
+        # suite, so this gate re-ran 1255 tests to judge two. One invocation per
+        # scope; `intree_scoped_run` stops at the first failure, so the rc means
+        # exactly what it meant before.
+        intree_scopes_for "$wt" "$_pcrels" >/dev/null
+        scope="$INTREE_SCOPES"
+        proof_say_scope_kind "$INTREE_SCOPE_KIND" "$INTREE_SCOPE_WHY"
+        if [ "$(proof_python_command "$cmd" "")" != "$cmd" ]; then
+          out="$(proof_committed_python_run "$wt" "$_pcrels")" || rc=$?
+          [ "$rc" = 6 ] && zero=1
+        else
+          out="$(intree_scoped_run "$run_dir" "$cmd" "$scope")" || rc=$?
+          if proof_zero_collected "$out" "$_pcrels" "$wt"; then zero=1; fi
+        fi
+        if printf '%s\n' "$out" | grep -q '^ImportError: Start directory is not importable:'; then
+          zero=1
+        fi
       fi
     fi
   fi
@@ -12971,6 +15575,15 @@ PC_RELS_EOF
   # S102: a tampered COMMITTED test blocks with a DISTINCT code, ahead of the normal
   # env/red verdicts (the signal was already written above).
   [ "$tamper" = 1 ] && return 4
+
+  if [ "$zero" = 1 ]; then
+    local zdetail="POST-COMMIT GATE — COULD NOT RUN THE TESTS for ticket $t against the committed state (commit ${ref}): the runner collected ZERO tests or could not start discovery. Nothing was verified; this is not evidence of a missing implementation. Check the testCommand and its file/directory scope. Command run: $cmd.
+$(printf '%s\n' "$out" | tail -12)"
+    POST_COMMIT_SKIPPED_KIND="error"
+    printf '  ✗ %s\n' "$zdetail" >&2
+    [ -n "$POST_COMMIT_SIGNAL" ] && printf '%s\n' "$zdetail" >"$POST_COMMIT_SIGNAL"
+    return 6
+  fi
 
   [ "$rc" -eq 0 ] && return 0
 
@@ -13009,7 +15622,142 @@ PC_RELS_EOF
     return 3
   fi
 
-  local detail="POST-COMMIT GATE — ticket $t's suite is RED against the COMMITTED branch state (commit ${ref}). The implementation is NOT present on the committed branch: the Implementer reported green from its OWN scratch worktree, but the change never landed (or only an out-of-scope change was committed). The ticket FAILS this worker session — it must land its change on the committed branch to pass. Command run: $cmd."
+  # =========================================================================
+  # S311 — IS THIS VERDICT STILL ABOUT THE COMMIT THAT ANSWERS THE QUESTION?
+  # =========================================================================
+  # MEASURED (21-22 Oct 2026): a ticket was failed here with "the implementation
+  # is NOT present on the committed branch (commit 3fea5b5)" while a LATER
+  # worker session had already committed 4c6c286 for the SAME ticket, which is
+  # green (verified by hand: 1518 tests OK). A finished, passing ticket looked
+  # permanently broken, and the human gate it raised was about a commit nobody
+  # was building on any more.
+  #
+  # The gate itself is excellent and is NOT being relaxed. This re-asks the SAME
+  # question of the CURRENT branch tip before raising a human gate, and only
+  # when the tip STRICTLY SUPERSEDES the judged commit — i.e. the judged commit
+  # is an ANCESTOR of it, the same line of history carried further. A DIVERGED
+  # tip is not a supersession and is NOT re-run; it is only reported, so
+  # staleness is visible either way.
+  #
+  # IT CANNOT MANUFACTURE A PASS. The tip leg re-runs the SAME scoped command on
+  # a CLEAN worktree, and the tip's copy of the ticket's own recorded tests must
+  # be BYTE-IDENTICAL to the proof-time snapshot (proof-tests.sha256) — so a tip
+  # that is "green" because the tests were deleted, truncated or quietly
+  # rewritten buys nothing. Red at the tip still FAILS, and that is pinned by a
+  # regression lock.
+  #
+  # IT IS SNAPSHOT IDENTITY, NOT A DECLARATION. (Fix round 1, 23 Oct 2026 — a
+  # route this very session opened, proven NEW with a control at bacae6f.) This
+  # leg first gated on proof_drift_declared_ok, i.e. "did SOMEBODY DECLARE this
+  # edit?" — the downstream drift contract's question, which is the right
+  # question for "may this branch merge" and the WRONG one here. A sibling
+  # ticket declaring an edit to this ticket's test is the ordinary owner/editor
+  # case S311 is built around, and the declaration is EXACTLY what S311's own
+  # drift refusal instructs an operator to create. So a tip where the
+  # implementation was STILL ABSENT, with this ticket's test rewritten to assert
+  # nothing (or truncated to zero bytes) and declared by a sibling, returned
+  # rc 0 and announced "present, undrifted and GREEN. A later session landed the
+  # work." Nothing had landed. The question this leg must ask is not "was the
+  # edit permitted" but "IS THIS STILL THE TEST THAT WAS PROVED" — only an
+  # unchanged test can re-prove a verdict about the old one, and a declaration
+  # does not make a changed test the same test. A DECLARED adaptation at the tip
+  # therefore makes the tip UNUSABLE for re-checking, not green: the leg says so
+  # and the ticket keeps its honest red from the judged commit (the pre-S311
+  # outcome), which is a false STOP at worst, never a false pass.
+  #
+  # AND THE GREEN-ON-NOTHING GUARD APPLIES HERE TOO, as it does on every other
+  # proof leg: byte-identity cannot see a tip whose runner SELECTED nothing (a
+  # narrowed `include`, a skip list, a moved config), and a run that collects
+  # zero tests proves nothing. Measured: that route also returned rc 0.
+  #
+  # THE GENUINE SUPERSEDE IS UNAFFECTED, by construction. A later session that
+  # really lands this ticket re-runs the whole worker loop, and on passing its
+  # gates `proof_snapshot_tests` REWRITES proof-tests.sha256 from its own tree
+  # before it commits — so snapshot and tip agree. The unchanged-test case
+  # agrees trivially. Both are pinned as controls.
+  local tip=""; tip="$(mission_branch_tip)"
+  local bothnote=""
+  if [ -n "$tip" ] && [ -n "$ref" ] && [ "$tip" != "$ref" ]; then
+    bothnote=" JUDGED COMMIT: ${ref}. CURRENT BRANCH TIP: ${tip}."
+    if ( cd "${REPO_ROOT:-.}" && "$GIT_BIN" merge-base --is-ancestor "$ref" "$tip" ) 2>/dev/null; then
+      local twt trc=0 tout="" tscope tpresent="" tdrift="" tnorecheck=""
+      twt="$(mktemp -d "$MISSION_DIR/postcommit-tip-${t}.XXXXXX" 2>/dev/null || true)"
+      [ -n "$twt" ] || twt="$MISSION_DIR/postcommit-tip-${t}.$$"
+      rm -rf "$twt"
+      if "$GIT_BIN" worktree add -q --detach "$twt" "$tip" >/dev/null 2>&1; then
+        provision_worktree "$twt" || :
+        # The recorded tests must still BE there, and must still be THE SAME
+        # BYTES that were proved — not merely an edit somebody declared.
+        tdrift="$(proof_tests_drift "$t" "$twt")"
+        local _tr
+        while IFS= read -r _tr; do
+          [ -n "$_tr" ] && [ -f "$twt/$_tr" ] && tpresent="${tpresent}${_tr}
+"
+        done <<PCTIP_EOF
+$rels
+PCTIP_EOF
+        if [ -z "$(printf '%s' "$tpresent" | grep . || true)" ]; then
+          trc=1
+          tnorecheck="the ticket has no recorded test file present at the tip at all, so there was NOTHING to re-run there"
+        elif [ -n "$(printf '%s' "$tdrift" | grep . || true)" ]; then
+          trc=1
+          tnorecheck="the ticket's own recorded test file(s) at the tip are missing or no longer the bytes that were proved (proof-tests.sha256): $(printf '%s' "$tdrift" | tr '\n' ' ') — a CHANGED test cannot re-prove a verdict about the test that was proved, and a declaration does not make it the same test, so nothing was re-run there"
+        else
+          local trun_dir="$twt"
+          local _tpkg; _tpkg="$(ticket_target_package "$t" "$twt")"
+          if [ -n "$_tpkg" ]; then trun_dir="$twt/$_tpkg"
+          else
+            local _ttpkg; _ttpkg="$(ticket_tests_package "$t" "$twt")"
+            [ -n "$_ttpkg" ] && trun_dir="$twt/$_ttpkg"
+          fi
+          intree_scopes_for "$twt" "$tpresent" >/dev/null
+          tscope="$INTREE_SCOPES"
+          if [ "$(proof_python_command "$cmd" "")" != "$cmd" ]; then
+            tout="$(proof_committed_python_run "$twt" "$tpresent")" || trc=$?
+          else
+            tout="$(intree_scoped_run "$trun_dir" "$cmd" "$tscope")" || trc=$?
+          fi
+          # GREEN ON NOTHING: the same guard every other proof leg applies. A
+          # tip run that SELECTED nothing is not evidence that anything landed.
+          if [ "$trc" -eq 0 ] && [ "$(proof_python_command "$cmd" "")" = "$cmd" ] \
+             && proof_zero_collected "$tout" "$tpresent" "$twt"; then
+            trc=1
+            tnorecheck="the re-run at the tip collected ZERO tests — a run that selects nothing proves nothing (the green-on-nothing trap), so the tip's green is not evidence that anything landed"
+          fi
+        fi
+        "$GIT_BIN" worktree remove --force "$twt" >/dev/null 2>&1 || rm -rf "$twt" 2>/dev/null || :
+        if [ "$trc" -eq 0 ]; then
+          # SUPERSEDED AND NOW GREEN. The ticket is not broken; the verdict was
+          # about a commit a later session had already replaced. Say both
+          # commits out loud so the staleness is on the record either way.
+          local okdetail="POST-COMMIT GATE — STALE VERDICT, RE-CHECKED AT THE TIP: ticket $t's suite is RED at the commit this gate was handed (JUDGED COMMIT: ${ref}), but that commit has been SUPERSEDED — it is an ancestor of the mission branch's CURRENT BRANCH TIP (${tip}), where the ticket's own recorded tests are present, undrifted and GREEN. A later session landed the work. The ticket PASSES on the state the Mission is actually building on; refusing to raise a human gate about a commit nobody is on any more. Command run: $cmd."
+          printf '  ⚠ %s\n' "$okdetail" >&2
+          [ -n "$POST_COMMIT_SIGNAL" ] && printf '%s\n' "$okdetail" >"$POST_COMMIT_SIGNAL"
+          return 0
+        fi
+        # SAY ONLY WHAT WAS OBSERVED. When the tip could not be used — no
+        # recorded test there, the recorded test no longer the proved bytes, or
+        # a run that collected nothing — the suite was NEVER RUN at the tip, and
+        # the old wording ("RE-CHECKED there too, and the suite is STILL RED")
+        # asserted a run that never happened. An operator told "still red at the
+        # tip" goes hunting a red test that is not there: the identical
+        # wrong-file hunt S311 just cured one function over.
+        if [ -n "$tnorecheck" ]; then
+          bothnote=" JUDGED COMMIT: ${ref}. CURRENT BRANCH TIP: ${tip} — the tip could NOT be re-checked: ${tnorecheck}. So this verdict is the one from the JUDGED COMMIT and was not re-tested at the tip."
+        else
+          bothnote=" JUDGED COMMIT: ${ref}. CURRENT BRANCH TIP: ${tip} — RE-CHECKED there too, and the suite is STILL RED, so this is not a stale verdict."
+        fi
+      else
+        bothnote=" JUDGED COMMIT: ${ref}. CURRENT BRANCH TIP: ${tip} — a worktree could NOT be cut at the tip, so the tip was not re-checked and this verdict may be stale."
+      fi
+    else
+      bothnote=" JUDGED COMMIT: ${ref}. CURRENT BRANCH TIP: ${tip} — the tip has DIVERGED from the judged commit (it is not a descendant), so it was not re-checked; confirm which commit you mean before acting."
+    fi
+  elif [ -n "$tip" ]; then
+    bothnote=" JUDGED COMMIT: ${ref}. CURRENT BRANCH TIP: ${tip} (the same commit — this verdict is about the current state of the branch)."
+  fi
+
+  local detail="POST-COMMIT GATE — ticket $t's suite is RED against the COMMITTED branch state (commit ${ref}). The implementation is NOT present on the committed branch: the Implementer reported green from its OWN scratch worktree, but the change never landed (or only an out-of-scope change was committed). The ticket FAILS this worker session — it must land its change on the committed branch to pass.${bothnote} Command run: $cmd. To re-open this ticket and let a fresh worker land it, run: $(reopen_hint "$t")"
   printf '  ✗ %s\n' "$detail" >&2
   [ -n "$POST_COMMIT_SIGNAL" ] && printf '%s\n' "$detail" >"$POST_COMMIT_SIGNAL"
   return 1
@@ -13111,6 +15859,12 @@ $(cat "$pcsig")"
           "ticket $TICKET — the post-commit gate could NOT run (a clean worktree could not be cut at the committed ref); nothing was verified and no green is claimed" \
           "ticket=$TICKET" "iterations=$attempts"
         die "ticket $TICKET could not be re-verified — the post-commit gate could not cut a clean worktree at the committed ref, so the suite never ran against the committed state. Nothing was verified; refusing to record a green.$why"
+        ;;
+      6)
+        emit_event ticket_postcommit_error implement \
+          "ticket $TICKET — the post-commit gate could not run the tests (zero tests collected or discovery could not start); nothing was verified and no green is claimed" \
+          "ticket=$TICKET" "iterations=$attempts"
+        die "ticket $TICKET could not be re-verified — the post-commit gate could not run the tests. Nothing was verified; refusing to record a green.$why"
         ;;
       *)
         # S111: before declaring the work missing, check whether it landed in the
@@ -13304,20 +16058,157 @@ EOF
 # appended to the global $RETEST_FAILED list, and (when $RETEST_CAPTURE is set)
 # its combined stdout/stderr is captured to $RETEST_CAPTURE/<id>.log so the
 # reconcile author can quote the failure. Returns 0 iff every suite passed.
-# The absolute $LCARS_TESTS_DIR scope for a set of relpaths: the single file when
-# there is exactly one (precise positional filter), else the deepest COMMON ANCESTOR
-# dir of the files — so a ticket whose tests span multiple dirs re-tests
-# symmetrically here (post-commit / full-suite / reconcile). Empty rels → the tree.
-intree_scope_for() { # tree  rels(newline)
-  local tree="$1" rels="$2" n first ca
+# =============================================================================
+# THE $LCARS_TESTS_DIR SCOPE FOR A SET OF DECLARED RELPATHS (S308)
+# =============================================================================
+# WHAT A SCOPE IS FOR. Every proof leg (flip-flop tip/parent, post-commit,
+# full-suite retest, reconcile) runs the repo's testCommand with
+# $LCARS_TESTS_DIR pointing at the ticket's OWN tests, so the verdict is about
+# the ticket and nothing else. One declared file is a precise positional filter.
+#
+# THE DEFECT THIS REPLACES (B1-ROOT, measured on a real repo, 2026-10-21).
+# For TWO OR MORE declared files the scope used to be the deepest COMMON
+# ANCESTOR DIRECTORY of their dirnames. In a FLAT `tests/` layout — every module
+# directly under tests/, no tests/unit/ — that ancestor IS the tests directory,
+# so the "scoped" leg ran the ENTIRE suite: 1255 tests, 228s, terminated at the
+# 120s gate, recorded `flip-flop INCONCLUSIVE` five times running with a reason
+# that blamed a hang in the ticket's own two test files. Eight Copilot TDD
+# sessions were burned on verdicts that carried no information about the code.
+# It produced a VALID PATH, so nothing warned. (A degenerate ancestor of ""
+# collapsed even further: `${ca:+/$ca}` expanded to nothing and the scope became
+# the whole tree.)
+#
+# THE RULE NOW. A directory is a scope only when it selects NOTHING the ticket
+# did not declare. So:
+#   • 1 declared file                     → that file                 (kind: file)
+#   • n>1 whose common ancestor holds no
+#     UNDECLARED test file                → that ancestor dir     (kind: ancestor)
+#   • n>1 whose common ancestor holds
+#     other tests (the flat case), or
+#     which share no ancestor at all      → the n DECLARED FILES    (kind: files)
+#   • no declared relpaths at all         → the tree, which is the FULL SUITE,
+#                                           and it is SAID OUT LOUD    (kind: tree)
+# The nested arm is kept deliberately: a runner invoked ONCE over a directory
+# that contains exactly the ticket's tests collects them together, reports one
+# scoreboard, and is cheaper than n invocations — and the executed-count
+# comparison in the flip-flop gate reads that scoreboard. Only a WIDENING
+# directory is refused.
+#
+# WHY FILES AND NOT A MULTI-PATH $LCARS_TESTS_DIR: every testCommand LCARS
+# seeds interpolates the scope as ONE quoted argument (S148 — unquoted, a repo
+# path containing a space false-failed honest tickets). A space-separated list
+# would arrive as a single nonsense path. So a declared-files scope is run as
+# one invocation PER FILE, `&&`-joined, which needs no change to any repo's
+# existing testCommand.
+#
+# INTREE_SCOPE_KIND / INTREE_SCOPE_WHY are the RECORD of that decision (never
+# re-derived by a reader from the resulting path): the callers put them in the
+# leg's artifact and emit a named event, so a widened run is diagnosable in one
+# line instead of five sessions.
+# IT SETS GLOBALS AS WELL AS PRINTING, and a caller that needs the KIND must
+# call it WITHOUT a command substitution and read $INTREE_SCOPES — a `$( … )`
+# runs in a subshell, so the kind and the reason would be thrown away exactly
+# when they matter.
+INTREE_SCOPES=""       # newline-separated absolute scopes (also stdout)
+INTREE_SCOPE_KIND=""   # file | ancestor | files | tree
+INTREE_SCOPE_WHY=""
+intree_scopes_for() { # tree  rels(newline) → one ABSOLUTE scope per line
+  local tree="$1" rels="$2" n first ca extra rel
+  INTREE_SCOPES=""; INTREE_SCOPE_KIND=""; INTREE_SCOPE_WHY=""
   n="$(printf '%s' "$rels" | grep -c . || true)"
   first="$(printf '%s' "$rels" | grep . | head -1)"
-  [ -n "$first" ] || { printf '%s' "$tree"; return; }
-  if [ "$n" -eq 1 ]; then printf '%s/%s' "$tree" "$first"
+  if [ -z "$first" ]; then
+    INTREE_SCOPE_KIND=tree
+    INTREE_SCOPE_WHY="no declared test relpath reached this leg, so there was nothing to narrow to — it runs the FULL SUITE at $tree"
+    INTREE_SCOPES="$tree"
+  elif [ "$n" -eq 1 ]; then
+    INTREE_SCOPE_KIND=file
+    # S308 FIX ROUND 2: SAY WHAT LCARS DID, NOT WHAT IT HOPES THE RUNNER DID.
+    # Round 1's wording — "run as a precise positional filter" — asserted that
+    # the run WAS narrowed to this file. LCARS does not know that: the repo's
+    # own testCommand decides how to turn $LCARS_TESTS_DIR into a file list, and
+    # a selection inside it that matches nothing hands the runner an EMPTY
+    # argument list, after which the runner discovers its own tests. That is
+    # measured, not hypothetical (routes a–d of the 22 Oct report), and the
+    # false confidence was IN THIS SENTENCE. So the record now states the fact
+    # LCARS owns — what it handed over — and names the part it has not verified.
+    INTREE_SCOPE_WHY="one declared test file, handed to this repo's testCommand as \$LCARS_TESTS_DIR; whether the command's own file selection narrowed the run to that file is NOT verified by this record"
+    INTREE_SCOPES="$tree/$first"
   else
     ca="$(common_ancestor_dir "$rels")"
-    printf '%s%s' "$tree" "${ca:+/$ca}"
+    extra=1
+    [ -n "$ca" ] && extra="$(intree_dir_extra_tests "$tree" "$ca" "$rels")"
+    if [ -n "$ca" ] && [ "${extra:-1}" -eq 0 ]; then
+      INTREE_SCOPE_KIND=ancestor
+      INTREE_SCOPE_WHY="the $n declared test files' deepest common ancestor '$ca' holds no test file the ticket did not declare, so that directory selects exactly the ticket's tests"
+      INTREE_SCOPES="$tree/$ca"
+    else
+      if [ -n "$ca" ]; then
+        INTREE_SCOPE_WHY="the $n declared test files' deepest common ancestor '$ca' also holds other test file(s) the ticket never declared, so a directory scope would run them too (a flat tests/ layout collapses to the whole suite this way) — the leg runs the $n DECLARED FILES instead"
+      else
+        INTREE_SCOPE_WHY="the $n declared test files share no parent directory below the repo root, so a directory scope would be the whole repo — the leg runs the $n DECLARED FILES instead"
+      fi
+      INTREE_SCOPE_KIND=files
+      while IFS= read -r rel; do
+        [ -n "$rel" ] || continue
+        INTREE_SCOPES="${INTREE_SCOPES:+$INTREE_SCOPES
+}$tree/$rel"
+      done <<ITS_EOF
+$rels
+ITS_EOF
+    fi
   fi
+  printf '%s' "$INTREE_SCOPES"
+}
+
+# How many TEST-CLASSIFIED files under <tree>/<dir> the ticket did NOT declare.
+# Stops counting at 1 — the question is only "would this directory widen the
+# run?" — so it costs one bounded `find`, never a walk of a whole monorepo.
+# Provisioning and build trees are pruned (node_modules, .venv, target, …): they
+# are not authored tests, and on a repo that symlinks node_modules a find that
+# followed them would never return.
+intree_dir_extra_tests() { # tree dir rels → 0 or 1 (1 = the dir widens the run)
+  local tree="$1" dir="$2" rels="$3" root f rel
+  root="$tree${dir:+/$dir}"
+  [ -d "$root" ] || { printf 0; return 0; }
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    rel="${f#"$tree"/}"
+    proof_is_test_path "$rel" || continue
+    printf '%s\n' "$rels" | grep -Fxq -- "$rel" && continue
+    printf 1; return 0
+  done <<EOF
+$(find "$root" \( -name .git -o -name node_modules -o -name .venv -o -name venv \
+      -o -name vendor -o -name target -o -name dist -o -name build \
+      -o -name __pycache__ \) -prune -o -type f -print 2>/dev/null)
+EOF
+  printf 0
+}
+
+# The SINGLE-VALUE form, kept for any caller that can hand the runner only one
+# path: the first scope intree_scopes_for resolved. Every proof leg uses the
+# list form; this exists so a one-path caller cannot silently get a list.
+intree_scope_for() { # tree  rels(newline) → one scope
+  intree_scopes_for "$1" "$2" | head -1
+}
+
+# Run <cmd> once per SCOPE from <run_dir>, `&&`-style: stop at the first failing
+# scope and return its rc. Echoes the combined output of the invocations that
+# ran. Directory scopes keep the original command byte-identical.
+intree_scoped_run() { # run_dir cmd scopes(newline) → output; rc = first failure
+  local run_dir="$1" cmd="$2" scopes="$3" out="" one sc scope_cmd rc=0
+  while IFS= read -r sc; do
+    [ -n "$sc" ] || continue
+    scope_cmd="$(proof_scope_command "$cmd" "$sc")"
+    one="$( cd "$run_dir" && LCARS_TESTS_DIR="$sc" bash -c "$scope_cmd" 2>&1 )" || rc=$?
+    out="${out}${one}
+"
+    [ "$rc" -eq 0 ] || break
+  done <<EOF
+$scopes
+EOF
+  printf '%s' "$out"
+  return "$rc"
 }
 
 RETEST_FAILED=""     # space-separated ticket ids that failed the last retest
@@ -13362,7 +16253,10 @@ retest_ticket_suites() { # run_dir  cmd  ordered ticketId...
       emit_event ticket_locked_test_tampered implement \
         "ticket $id — committed test drifted from the proof-time snapshot with no declaring ticket (pre-merge drift check)" \
         "ticket=$id" || :
-      die "PRE-MERGE UNDECLARED TEST DRIFT: ticket $id's COMMITTED test file(s) no longer match the proof-time snapshot and NO ticket declared that edit (test-edits.json): $(printf '%s' "$undecl" | tr '\n' ' '). BLOCKED: the Mission cannot merge an undeclared test edit, and this is NOT a self-healable regression. Restore the test or re-open the ticket."
+      # S311: same detection, same BLOCK, same severity words — only the
+      # closing cure changes, and it now names the EDITING ticket's re-open.
+      die "PRE-MERGE UNDECLARED TEST DRIFT: ticket $id's COMMITTED test file(s) no longer match the proof-time snapshot and NO ticket declared that edit (test-edits.json): $(printf '%s' "$undecl" | tr '\n' ' '). BLOCKED: the Mission cannot merge an undeclared test edit, and this is NOT a self-healable regression.
+$(drift_cure_block "$id" "$undecl" "$run_dir")"
     }
     # Run only the still-present recorded tests IN PLACE at their committed paths
     # (a DECLARED deletion is legal and simply has nothing to re-run).
@@ -13374,8 +16268,12 @@ retest_ticket_suites() { # run_dir  cmd  ordered ticketId...
 $rels
 RT_RELS_EOF
     [ -n "$(printf '%s' "$_rrels" | grep . || true)" ] || continue
-    scope="$(intree_scope_for "$run_dir" "$_rrels")"
-    out="$( cd "$trun" && LCARS_TESTS_DIR="$scope" bash -c "$cmd" 2>&1 )" || rc=$?
+    # S308: scoped to the ticket's DECLARED files (see intree_scopes_for) —
+    # same reason as the post-commit gate, and symmetric with it by design.
+    intree_scopes_for "$run_dir" "$_rrels" >/dev/null
+    scope="$INTREE_SCOPES"
+    proof_say_scope_kind "$INTREE_SCOPE_KIND" "$INTREE_SCOPE_WHY"
+    out="$(intree_scoped_run "$trun" "$cmd" "$scope")" || rc=$?
     if [ "$rc" -ne 0 ]; then
       RETEST_FAILED="${RETEST_FAILED:+$RETEST_FAILED }$id"
       [ -n "$RETEST_CAPTURE" ] && { mkdir -p "$RETEST_CAPTURE"; printf '%s\n' "$out" >"$RETEST_CAPTURE/$id.log"; }
@@ -13681,6 +16579,11 @@ escalate_full_suite_regression() { # reason  ordered ticketId...
   local victims; victims="$(tickets_to_issues $regressed_ids)"
   local culprit; culprit="$(tickets_to_issues "$regressor")"
   local summary
+  # S310 FIX 2 D4: the reconcile dispatch count, guarded. Neither roundsSpent
+  # nor applyFailures can answer "did a worker run?" — a round is REFUNDED on an
+  # apply failure and on a parked discard — so this counter exists for it.
+  local dispatched="${SELFHEAL_DISPATCHES:-0}"
+  case "$dispatched" in ''|*[!0-9]*) dispatched=0 ;; esac
   # S157 × #93: AN ENVIRONMENT FAULT READS AS ONE. The generic "a change conflicts
   # with the rest of the branch" copy is actively misleading for a toolchain
   # fault — it points a human at code when the repair is provisioning, and it
@@ -13693,34 +16596,227 @@ escalate_full_suite_regression() { # reason  ordered ticketId...
   # S157: no "the fix for X re-broke a test from Y" — that named a cause the gate
   # never established. Say what happened, who owns the broken test, and what the
   # harness tried.
+  # S310 FIX 2 D4: ¶1 MUST NOT CLAIM A RECONCILE THAT NEVER HAPPENED. Three of
+  # the stops (base-drift, stale-attribution, contradiction) dispatch NOTHING —
+  # dispatch.log is literally 0 lines — and this field still opened with "the
+  # harness's last reconcile attempt went to issue #102 … and did not clear it",
+  # then contradicted itself two paragraphs later with "no worker was
+  # dispatched". The false half came FIRST, on the one surface `lcars answer`
+  # and the board replay to him. The dispatch count is known, so say the true
+  # thing: nobody was sent, and the reason why is below.
+  # S310 FIX 2 D1: and the parked discard gets its own ¶1. A reconcile DID run
+  # here, so the 0-dispatch wording below would be wrong — but "went to the
+  # ticket and did not clear it" reads as a failed repair, which is the opposite
+  # of what happened: it passed every gate and was thrown away.
+  # S310 FIX 3: the dispatch that produced NOTHING gets its own ¶1, ahead of the
+  # parked-green one it was wrongly borrowing. A worker DID go out, so the
+  # 0-dispatch wording is wrong — but it came back with no result at all, so
+  # "PASSED its proof gates" is a false claim, and it was the first thing he read.
+  # S320 (D18): the reconcile that went GREEN and did not LAND, over a gate that
+  # then passed WITHOUT it. ¶1 must not borrow any of the stories below: the
+  # reconcile did NOT fail to clear the break (it passed every gate), nothing was
+  # discarded for a park, and the worker did produce a result. What is false here
+  # is the GREEN — and this is the one stop where the harness is telling him that
+  # its own last measurement does not mean what it says, so it comes first and
+  # does not depend on the victims line resolving.
+  elif [ "${SELFHEAL_STOP_REASON:-}" = heal-unverified ]; then
+    summary="A test that was green when it was built no longer passes on the branch${victims:+ — $victims}. The harness's reconcile DID run and went GREEN, but its commit would not LAND — so the harness went and READ THE BRANCH TIP ITSELF, looking for the ticket's own declared proof test(s) there and re-running them, and ${SELFHEAL_UNVERIFIED_VERDICT:-the repair could NOT be verified on the branch}: ${SELFHEAL_UNVERIFIED_WHY:-the tip could not be read}. The full-suite gate's green therefore is not evidence the repair worked, and the harness refuses to call this healed. READ THE BRANCH TIP YOURSELF before you trust it: the regression may still be live there. Free whatever holds the branch, then reply with how to reconcile, send the mission back to re-fix, or drop one."
+  elif [ -n "$victims" ] && [ "${SELFHEAL_STOP_REASON:-}" = worker-no-result ]; then
+    summary="A test that was green when it was built no longer passes on the branch — $victims. A reconcile worker WAS dispatched and it produced NO RESULT: no result file, no commit, no proof gate was ever run — so nothing was rebuilt, nothing passed, and nothing was accomplished. The regression is still live on the branch and no cause has been established. Repair the worker first (below); answering this gate on its own will only send another worker that fails the same way."
+  elif [ -n "$victims" ] && [ "${SELFHEAL_STOP_REASON:-}" = mission-parked ]; then
+    summary="A test that was green when it was built no longer passes on the branch — $victims. The harness's reconcile DID run and PASSED its proof gates, but it could not land and was discarded (below), so the regression is still live on the branch and no cause has been established. Reply with how to reconcile, send the mission back to re-fix, or drop one."
+  elif [ -n "$victims" ] && [ "$basis" = authored-failing-suite ] && [ "$dispatched" -eq 0 ]; then
+    summary="A test that was green when it was built no longer passes on the branch — $victims. NO reconcile was attempted: the harness dispatched no worker and spent nothing, because of what stopped it (below), and it has NOT established which change caused the break. Clear that first, then reply with how to reconcile, send the mission back to re-fix, or drop one."
   elif [ -n "$victims" ] && [ "$basis" = authored-failing-suite ]; then
     summary="A test that was green when it was built no longer passes on the branch — $victims. The harness's last reconcile attempt went to $culprit (the ticket that wrote a failing test) and did not clear it, and it has NOT established which change caused the break. Reply with how to reconcile, send the mission back to re-fix, or drop one."
+  elif [ -n "$victims" ] && [ "$dispatched" -eq 0 ]; then
+    summary="A test that was green when it was built no longer passes on the branch — $victims. The harness could not work out which ticket owns the failing test, and NO reconcile was attempted — no worker was dispatched, for the reason below. Reply with how to reconcile, send the mission back to re-fix, or drop one."
   elif [ -n "$victims" ]; then
     summary="A test that was green when it was built no longer passes on the branch — $victims. The harness could not work out which ticket owns the failing test, and its reconcile attempts did not clear it. Reply with how to reconcile, send the mission back to re-fix, or drop one."
   else
     summary="A change conflicts with the rest of the branch and the harness could not auto-reconcile it. Reply with how to reconcile, or send the mission back to re-fix."
   fi
 
-  local q; q="$(mktemp)"
-  printf '%s\n' "$reason" >"$q"
+  # "0" is a SET value, so a `:+` expansion of the counter would print this
+  # sentence with a zero in it — a sentence about apply failures that never
+  # happened. The test is on the NUMBER.
+  local afnote=""
+  if [ "${SELFHEAL_APPLY_FAILURES:-0}" -gt 0 ] 2>/dev/null; then
+    afnote=" Before that, ${SELFHEAL_APPLY_FAILURES} rebuild(s) were built and green and would not LAND — infrastructure, and no round was charged for them."
+  fi
+
+  # S310: WHY THE SELF-HEAL STOPPED IS PART OF THE QUESTION. Appended, never
+  # substituted, so the regression wording above is unchanged. A human reading
+  # "the harness tried three times and failed" has to know whether those three
+  # attempts were about the code at all: on the live run NONE of them were, and
+  # the fix was a one-minute rebase nobody was told to do.
+  case "${SELFHEAL_STOP_REASON:-}" in
+    base-drift)
+      summary="$summary
+
+WHAT ACTUALLY STOPPED THE SELF-HEAL: the mission branch is ${SELFHEAL_DRIFT_BEHIND:-?} commit(s) behind its base, so a rebuild would be composed on a tip the branch has already left behind. ${SELFHEAL_ROUNDS_SPENT:-0} of $SELFHEAL_CAP self-heal round(s) were spent and no worker was dispatched.${SELFHEAL_DRIFT_REASON:+ Recovery diagnosis: $SELFHEAL_DRIFT_REASON} Re-anchor the branch first: ${SELFHEAL_REANCHOR_FIX:-rebase the mission branch onto its base} $(selfheal_recovery_order "re-anchor the branch with that command")" ;;
+    apply-failed)
+      summary="$summary
+
+WHAT ACTUALLY STOPPED THE SELF-HEAL: ${SELFHEAL_APPLY_FAILURES:-0} rebuild(s) were built and green and then would not LAND on the mission branch. That is an infrastructure fault, not a defect another worker session can fix, and ${SELFHEAL_ROUNDS_SPENT:-0} of $SELFHEAL_CAP self-heal round(s) were spent.${SELFHEAL_REANCHOR_FIX:+ Re-anchor the branch first: $SELFHEAL_REANCHOR_FIX} $(selfheal_recovery_order "free whatever holds the mission branch")" ;;
+    # S320 (D18): the same apply failure, but the gate that followed it went
+    # GREEN. Before S320 that green was taken as a heal unconditionally and this
+    # mission advanced to Verify with the regression live and the inbox empty.
+    heal-unverified)
+      summary="$summary
+
+WHAT ACTUALLY STOPPED THE SELF-HEAL: ${SELFHEAL_APPLY_FAILURES:-0} rebuild(s) were built and green and would not LAND on the mission branch, and the full-suite gate then went GREEN anyway. The harness does NOT take that green on trust: it checks the tip for the ticket's own DECLARED proof test(s) and re-runs them there, and here ${SELFHEAL_UNVERIFIED_VERDICT:-the repair could NOT be verified} — ${SELFHEAL_UNVERIFIED_WHY:-the tip could not be read}. That matters because an unlanded rebuild can leave the ticket's declaration naming a file the branch does not have, in which case the gate skips that ticket and passes without testing it at all. So no heal is claimed and no defect round was charged (${SELFHEAL_ROUNDS_SPENT:-0} of $SELFHEAL_CAP spent). What is broken is the LANDING, not the code. (Where that same check FINDS the ticket's declared test on the branch and it PASSES, the harness resolves the mission itself instead of asking you — this stop means it could not.)${SELFHEAL_REANCHOR_FIX:+ Re-anchor the branch first: $SELFHEAL_REANCHOR_FIX} $(selfheal_recovery_order "free whatever holds the mission branch, and re-run the failing suite at the branch tip yourself")" ;;
+    # S310 FIX 2 D1: the GREEN reconcile that could not land. Distinguished from
+    # ticket-session-cap by a NEW ticket_flagged event — present there, absent
+    # here. Nothing was flagged, no defect verdict was reached, and no round is
+    # charged, so saying "the ticket burned its own session cap" was false twice
+    # over: about the ticket, and about the budget.
+    # S310 FIX 3: the reconcile that never ran to a result. Distinguished from
+    # BOTH stories above by POSITIVE evidence: no new ticket_green and no new
+    # ticket_postcommit_ok for this dispatch, and no new ticket_flagged either.
+    # It claims no rebuild, no gate pass and no intact budget, and it points at
+    # the engine — because the gate and the code are not what failed.
+    worker-no-result)
+      summary="$summary
+
+WHAT ACTUALLY STOPPED THE SELF-HEAL: a reconcile worker was dispatched and produced NO RESULT. It exited with status ${SELFHEAL_NORESULT_RC:-?} and the harness recorded ${SELFHEAL_NORESULT_EVENTS:-0} worker-failure/empty-output event(s) for it, with no proof-gate result of any kind. NOTHING was rebuilt, NO gate was run, and no defect verdict was reached, so no repair round was charged — but nothing was attempted successfully either, which is not the same as a budget that is intact because nothing was wrong (${SELFHEAL_ROUNDS_SPENT:-0} of $SELFHEAL_CAP self-heal round(s) spent across ${SELFHEAL_DISPATCHES:-0} reconcile dispatch(es)). This is the ENGINE, not the gate and not the code: check the worker CLI the harness is configured to spawn (\$LCARS_WORKER_BIN) — authentication, rate limits, and whether it returns anything at all. $(selfheal_recovery_order "repair the worker CLI so it answers at all")" ;;
+    mission-parked)
+      summary="$summary
+
+WHAT ACTUALLY STOPPED THE SELF-HEAL: the reconcile was rebuilt, it PASSED every proof gate, and no defect was established in any ticket — but the mission is parked at a human gate, so the rebuild could not land on the mission branch and was discarded. Nothing was flagged and NO repair round was charged: ${SELFHEAL_ROUNDS_SPENT:-0} of $SELFHEAL_CAP self-heal round(s) were spent across ${SELFHEAL_DISPATCHES:-0} reconcile dispatch(es). Answer this gate and run implement again — the reconcile has to be rebuilt from scratch, and nothing is lost but that worker session." ;;
+    stale-attribution)
+      summary="$summary
+
+WHAT ACTUALLY STOPPED THE SELF-HEAL: every regression the gate handed it had already cleared at the current tip, so there was nothing for a worker to fix. ${SELFHEAL_ROUNDS_SPENT:-0} of $SELFHEAL_CAP self-heal round(s) were spent and ${SELFHEAL_WORKERS_AVOIDED:-0} worker dispatch(es) were avoided. $(selfheal_recovery_order "re-run those suites yourself at this tip")" ;;
+    # S310 FIX 1 D3: KEYED ON THE STOP REASON, NOT ON THE STALE COUNTER. A
+    # contradiction used to borrow the stale-skip sentence, which says the
+    # OPPOSITE of what the harness just established: he read "there was nothing
+    # for a worker to fix" about a branch the harness had explicitly refused to
+    # vouch for. The event's wording was already right; it is reused here.
+    contradiction)
+      summary="$summary
+
+WHAT ACTUALLY STOPPED THE SELF-HEAL: the suite(s) the gate named PASSED when they were re-run on their own at the current tip and FAILED in the full-suite gate on that SAME tip. The harness cannot tell which run is true, so it refuses to spend a round guessing — ${SELFHEAL_ROUNDS_SPENT:-0} of $SELFHEAL_CAP self-heal round(s) were spent. Re-run that suite yourself at this tip before anyone is sent to fix code: a suite that flaps is not a regression. $(selfheal_recovery_order "re-run that suite yourself at this tip")" ;;
+    # The everyday outcome: the reconcile ticket could not do it inside its own
+    # worker-session cap. That is a real defect round, and it is NOT the
+    # self-heal budget running out — the two were told as one story.
+    ticket-session-cap)
+      summary="$summary
+
+WHAT ACTUALLY STOPPED THE SELF-HEAL: the reconcile ticket burned its OWN worker-session cap inside self-heal round ${SELFHEAL_ROUNDS_SPENT:-0} — the proof gates rejected every session it was given, so the self-heal stopped there instead of opening another round. ${SELFHEAL_ROUNDS_SPENT:-0} of $SELFHEAL_CAP self-heal round(s) were spent.$afnote" ;;
+    attempt-cap)
+      summary="$summary
+
+WHAT ACTUALLY STOPPED THE SELF-HEAL: the loop reached its attempt backstop with ${SELFHEAL_ROUNDS_SPENT:-0} of $SELFHEAL_CAP self-heal round(s) spent, ${SELFHEAL_APPLY_FAILURES:-0} rebuild(s) that would not LAND and ${SELFHEAL_STALE_SKIPS:-0} attributed regression(s) that had already cleared at the tip. Those last two are infrastructure outcomes, not defects a worker session can fix." ;;
+    no-regressor)
+      summary="$summary
+
+WHAT ACTUALLY STOPPED THE SELF-HEAL: the harness could not name any ticket to send a reconcile to, so no worker was dispatched and no round was spent." ;;
+    *)
+      # A cap genuinely exhausted on defects can still have had infrastructure
+      # outcomes alongside it — and those were invisible, which is how "round
+      # 3/3" came to be read as three failed attempts at the code.
+      if [ "${SELFHEAL_APPLY_FAILURES:-0}" -gt 0 ] || [ "${SELFHEAL_STALE_SKIPS:-0}" -gt 0 ]; then
+        summary="$summary
+
+ALONGSIDE THOSE ROUNDS: ${SELFHEAL_APPLY_FAILURES:-0} rebuild(s) were built and green and would not LAND, and ${SELFHEAL_STALE_SKIPS:-0} attributed regression(s) had already cleared at the tip. Those are infrastructure outcomes, not defects, and no round was charged for them."
+      fi
+      # ESCALATE ON A CHANGING FAILURE MODE, NOT ONLY ON THE ROUND COUNT. Two
+      # rounds failing for two DIFFERENT reasons is stronger evidence of a
+      # structural problem than two identical ones, and the recommendation that
+      # follows from it is different: reshape the mechanism, do not re-fix.
+      if [ -n "${SELFHEAL_MODE_SHIFT:-}" ]; then
+        summary="$summary
+
+READ THE ROUNDS TOGETHER: they each failed for a DIFFERENT reason (${SELFHEAL_ROUNDS_SPENT:-0} round(s): $(printf '%s' "${SELFHEAL_MODES:-}" | tr '\n' ';' | sed 's/;$//')). A changed failure mode between rounds points at a structural problem rather than one reducible regression, so reshaping the work is more likely to help than another re-fix."
+      fi ;;
+  esac
+
+  # THE BUDGET, SAID IN ONE LINE. Four of these stops spend NOTHING on defects,
+  # and that is the single most actionable fact about them: the repair budget is
+  # still there once the infrastructure is cleared. It was legible only by
+  # subtracting two numbers out of a paragraph.
+  case "${SELFHEAL_STOP_REASON:-}" in
+    apply-failed|base-drift|stale-attribution|contradiction|attempt-cap|no-regressor|mission-parked|heal-unverified)
+      if [ "${SELFHEAL_ROUNDS_SPENT:-0}" = 0 ]; then
+        summary="$summary
+
+YOUR REPAIR BUDGET IS UNTOUCHED: 0 of $SELFHEAL_CAP self-heal round(s) were spent — nothing that stopped this was a defect another worker session could fix."
+      fi ;;
+  esac
+
   local esctype="regression"
   [ "$basis" = environment-fault ] || [ -n "${FULL_SUITE_ENV_FAULT:-}" ] && esctype="environment"
-  LCARS_PENDING_HUMAN_SUMMARY="$summary" \
+
+  # THE FIRST LINE HE READS. "self-heal exhausted" is TRUE only when the rounds
+  # were spent on defects; on every other stop it is the pre-S310 sentence that
+  # cost the measured live run 2.5 hours, and it is also what the board and
+  # `lcars answer` replay back to him later. Keyed on the stop reason.
+  #
+  # S310 FIX 2 D4: COMPUTED HERE, ABOVE THE WRITES, BECAUSE IT HAS TO REACH
+  # `pendingQuestion`. It used to be built after them, so it existed only in the
+  # `gate` event and on stdout — and the one surface `lcars answer` and the board
+  # replay to him later never carried the keyed story at all (0 hits for
+  # "full-suite regression —" across all six stops).
+  local spent="${SELFHEAL_ROUNDS_SPENT:-0} of $SELFHEAL_CAP repair round(s) spent"
+  local what="full-suite regression — self-heal exhausted"
+  case "${SELFHEAL_STOP_REASON:-}" in
+    apply-failed)
+      what="full-suite regression — the rebuild would not LAND (infrastructure, not a defect); $spent" ;;
+    # S320 (D18): this stop's whole point is that the last green was not a heal,
+    # so the FIRST line he reads has to say that and nothing friendlier.
+    # S320 FIX 1: …but it says only what was MEASURED. This line used to assert
+    # "the repair is NOT on the branch" on every unverified path, and a tester
+    # read it over a tip whose source was repaired and whose own test exited 0.
+    # The verdict is now the one the evidence supports — see
+    # selfheal_repair_on_branch.
+    heal-unverified)
+      what="full-suite regression — the gate went GREEN but ${SELFHEAL_UNVERIFIED_VERDICT:-the repair could NOT be verified on the branch}, so NO heal is claimed; $spent" ;;
+    base-drift)
+      what="full-suite regression — self-heal REFUSED, the branch is behind its base; $spent" ;;
+    stale-attribution)
+      what="full-suite regression — every regression handed to self-heal had already cleared at the tip; $spent" ;;
+    contradiction)
+      what="full-suite regression — the suite passes alone and fails in the gate at the same tip; $spent" ;;
+    ticket-session-cap)
+      what="full-suite regression — the reconcile ticket burned its OWN worker-session cap; $spent" ;;
+    # S310 FIX 2 D1: the same exit, the opposite story. Nothing was flagged,
+    # the rebuild passed, and the mission's existing park is what blocked it.
+    mission-parked)
+      what="full-suite regression — the reconcile went GREEN and could not land: the mission is parked at a human gate; $spent" ;;
+    # S310 FIX 3: the third state. No green marker and no flag for the dispatch,
+    # so neither story above is true: the worker came back empty.
+    worker-no-result)
+      what="full-suite regression — the reconcile worker produced NO RESULT: nothing was rebuilt and no gate was run; $spent" ;;
+    attempt-cap)
+      what="full-suite regression — self-heal stopped at its attempt backstop; $spent" ;;
+    no-regressor)
+      what="full-suite regression — self-heal could attribute it to no ticket; $spent" ;;
+  esac
+  if [ "$esctype" = environment ]; then
+    what="full-suite gate — environment fault, self-heal SKIPPED (no ticket to dispatch)"
+  fi
+
+  # S310 FIX 2 D4: the keyed headline LEADS the field he actually reads. stdout
+  # keeps printing it on its own `IMPLEMENT:` line, so it is not doubled there.
+  local pq_text="$what
+
+$summary"
+
+  local q; q="$(mktemp)"
+  printf '%s\n' "$reason" >"$q"
+  LCARS_PENDING_HUMAN_SUMMARY="$pq_text" \
   LCARS_PENDING_ESCALATION_TYPE="$esctype" \
   LCARS_PENDING_TECHNICAL_DETAIL="$reason" \
     write_pending "$q" "implement"
   rm -f "$q"
   lcars_state_set "$STATE" awaitingHuman true
-  lcars_state_set_string "$STATE" pendingQuestion "$summary"
+  lcars_state_set_string "$STATE" pendingQuestion "$pq_text"
   lcars_state_refusal_die "lcars run"   # S207 D2: no gate written ⇒ no gate
   # In-flight stage label (implement) first, THEN the awaiting-human overlay, so
   # the parked card sits squarely in the Implement column (mirror validate-pause).
   gh_relabel "lcars:implement lcars:awaiting-human" ""
 
-  local what="full-suite regression — self-heal exhausted"
-  if [ "$esctype" = environment ]; then
-    what="full-suite gate — environment fault, self-heal SKIPPED (no ticket to dispatch)"
-  fi
   emit_event gate implement "$what, awaiting your answer: $summary" \
     "phase=full-suite-gate"
 
@@ -13744,6 +16840,394 @@ case "$SELFHEAL_CAP" in ''|*[!0-9]*) SELFHEAL_CAP=3 ;; esac
 SELFHEAL_LAST_REASON=""
 SELFHEAL_REGRESSOR=""        # S157: the ticket self-heal chose, and WHY it chose it
 SELFHEAL_REGRESSOR_BASIS=""
+
+# --- S310: A ROUND IS SPENT ON DEFECTS, NOT ON INFRASTRUCTURE --------------
+# Measured on a live repo 2026-10-22: ONE ticket burned THREE self-heal rounds,
+# FIVE worker sessions and ~2.5 hours on a regression that did not exist. Twice
+# the round reported the ticket GREEN and then "the rebuilt commit did not land
+# cleanly" — the WORK succeeded, only the APPLY failed — and the round was
+# ALREADY SPENT, because `round=$((round + 1))` was the second line of the loop
+# body and the apply-failure emit came later in the same iteration. The base had
+# moved three times underneath and the branch ended NINE commits behind, so every
+# round rebuilt against a base that was already stale. Rebasing took one minute.
+#
+# THE CAP ITSELF IS UNCHANGED (it is an invariant of this project): what changed
+# is what CONSUMES a round. A defect round is one where a worker was dispatched
+# against a regression that still exists at the current tip. Everything else —
+# an apply that could not land, a base that moved, an attribution that is already
+# green — is accounted for separately, with its own counter and its own bound.
+SELFHEAL_APPLY_CAP="${LCARS_SELFHEAL_APPLY_CAP:-$SELFHEAL_CAP}"
+case "$SELFHEAL_APPLY_CAP" in ''|*[!0-9]*) SELFHEAL_APPLY_CAP="$SELFHEAL_CAP" ;; esac
+SELFHEAL_STALE_CAP="${LCARS_SELFHEAL_STALE_CAP:-2}"
+case "$SELFHEAL_STALE_CAP" in ''|*[!0-9]*) SELFHEAL_STALE_CAP=2 ;; esac
+SELFHEAL_ROUNDS_SPENT=0      # DEFECT rounds only — the number the cap governs
+SELFHEAL_APPLY_FAILURES=0    # infrastructure: the rebuild would not land
+SELFHEAL_STALE_SKIPS=0       # the attributed regression was green at the tip
+SELFHEAL_WORKERS_AVOIDED=0   # worker dispatches the stale-attribution check saved
+SELFHEAL_TIP=""              # the branch tip THIS round re-anchored to
+SELFHEAL_STOP_REASON=""      # why the loop ended: cap | apply-failed | base-drift | …
+SELFHEAL_REANCHOR_FIX=""     # the ONE command that clears a base-drift refusal
+SELFHEAL_DRIFT_BEHIND=""     # how many commits behind its base the branch is
+SELFHEAL_DRIFT_REASON=""
+SELFHEAL_MODES=""            # one signature per spent round, newline-separated
+SELFHEAL_MODE_SHIFT=""       # set when two spent rounds failed for DIFFERENT reasons
+SELFHEAL_NORESULT_EVENTS=""  # S310 FIX 3: worker-failure/empty-output events this dispatch
+SELFHEAL_NORESULT_RC=""      # the exit status the reconcile worker died with
+SELFHEAL_RECHECK_UNMEASURED=""  # why the stale-attribution check could not run
+SELFHEAL_RECHECK_NOTED=""       # the last unmeasured reason already reported
+# S310 FIX 2 D4: HOW MANY RECONCILE WORKERS WERE ACTUALLY SPAWNED. Three of the
+# stops dispatch NOTHING (dispatch.log is literally 0 lines), yet the escalation
+# opened by telling him "the harness's last reconcile attempt … did not clear
+# it" — a reconcile that never happened — and then contradicted itself two
+# paragraphs later with "no worker was dispatched". Neither counter already here
+# can answer the question: a round is REFUNDED on an apply failure and on a
+# parked discard, so roundsSpent 0 does not mean nobody ran. This one only ever
+# goes up, right at the dispatch.
+SELFHEAL_DISPATCHES=0
+
+# ticket_flagged events on record, off disk. S310 FIX 2 D1 reads this BEFORE and
+# AFTER a reconcile dispatch: `awaitingHuman == true` afterwards is only evidence
+# that THIS dispatch flagged the ticket if a NEW ticket_flagged was written. The
+# mission may simply have been parked already — which is the state every one of
+# these six stops leaves behind.
+selfheal_flag_count() {
+  local n=0
+  if [ -n "${MISSION_DIR:-}" ] && [ -f "$MISSION_DIR/events.jsonl" ]; then
+    n="$(grep -c '"type":"ticket_flagged"' "$MISSION_DIR/events.jsonl" 2>/dev/null || true)"
+    n="$(printf '%s' "$n" | tr -dc '0-9')"
+  fi
+  printf '%s' "${n:-0}"
+}
+
+# S310 FIX 3: ANY event type on record, off disk — the same per-dispatch
+# pre/post counting technique as selfheal_flag_count, which held against a
+# back-dated ticket_flagged for the same ticket.
+selfheal_event_count() { # type…
+  local t n total=0
+  for t in "$@"; do
+    n=0
+    if [ -n "${MISSION_DIR:-}" ] && [ -f "$MISSION_DIR/events.jsonl" ]; then
+      n="$(grep -c "\"type\":\"$t\"" "$MISSION_DIR/events.jsonl" 2>/dev/null || true)"
+      n="$(printf '%s' "$n" | tr -dc '0-9')"
+    fi
+    total=$((total + ${n:-0}))
+  done
+  printf '%s' "$total"
+}
+
+# S310 FIX 3: POSITIVE evidence that a dispatch PRODUCED A RESULT. Fix round 2
+# discriminated the parked exit on the ABSENCE of a ticket_flagged — and absence
+# is not evidence of green: a reconcile worker that simply FAILS writes no
+# ticket_flagged either, so a dead engine was reported as "the reconcile went
+# GREEN … it PASSED every proof gate … nothing is lost". Three false sentences.
+# These are the markers the product writes when a gate really passed.
+selfheal_green_count() { selfheal_event_count ticket_green ticket_postcommit_ok; }
+
+# THE RECOVERY ORDER, SAID ONCE, FOR EVERY STOP THAT PARKS THE MISSION.
+# S310 FIX 2 D3: fix round 1 wrote "ANSWER THIS GATE FIRST, then free whatever
+# holds the branch" — and that order cannot be performed. Answering a gate
+# RESUMES THE DRIVE, which re-runs implement immediately: there is no gap
+# between step 1 and step 2. A tester followed it literally and the resumed
+# drive re-ran implement with the holder still attached — three more apply
+# failures, three more worker sessions, re-parked with the same story. So the
+# order is reversed: clear the obstacle, THEN answer. All four 0-round stops
+# carry it, because all four park the mission, all four ask him to act, and the
+# discard-while-parked hazard is identical on every one of them.
+selfheal_recovery_order() { # first-action
+  printf 'THE ORDER MATTERS: %s FIRST, and only THEN answer this gate — answering RESUMES the drive, which re-runs implement straight away, and while the mission is parked a self-heal round that SUCCEEDS is discarded (its rebuild never lands).' "$1"
+}
+
+# The self-heal's own record, on disk, next to the mission's events: what the
+# round counter actually is, what was spent on what, and why the loop stopped.
+# A counter nobody can read is a counter nobody can audit — the live run's whole
+# problem was that "round 2/3" and "did not land cleanly" were two lines in a log
+# with no number tying them together.
+selfheal_ledger_write() { # last-outcome
+  [ -n "${MISSION_DIR:-}" ] || return 0
+  local modes="" m first=1
+  while IFS= read -r m; do
+    [ -n "$m" ] || continue
+    if [ "$first" = 1 ]; then modes="\"$(json_escape "$m")\""; first=0
+    else modes="$modes, \"$(json_escape "$m")\""; fi
+  done <<SH_MODES
+$SELFHEAL_MODES
+SH_MODES
+  cat >"$MISSION_DIR/selfheal-ledger.json" <<JSON
+{
+  "cap": $SELFHEAL_CAP,
+  "roundsSpent": $SELFHEAL_ROUNDS_SPENT,
+  "capExhausted": $( [ "$SELFHEAL_ROUNDS_SPENT" -ge "$SELFHEAL_CAP" ] && printf true || printf false ),
+  "applyFailures": $SELFHEAL_APPLY_FAILURES,
+  "applyCap": $SELFHEAL_APPLY_CAP,
+  "staleAttributionSkips": $SELFHEAL_STALE_SKIPS,
+  "workersAvoided": $SELFHEAL_WORKERS_AVOIDED,
+  "dispatches": ${SELFHEAL_DISPATCHES:-0},
+  "tip": "$(json_escape "${SELFHEAL_TIP:-}")",
+  "stopReason": "$(json_escape "${SELFHEAL_STOP_REASON:-}")",
+  "modeShift": "$(json_escape "${SELFHEAL_MODE_SHIFT:-}")",
+  "modes": [$modes],
+  "lastOutcome": "$(json_escape "${1:-}")",
+  "reanchorFix": "$(json_escape "${SELFHEAL_REANCHOR_FIX:-}")"
+}
+JSON
+  return 0
+}
+
+# The mission branch's tip AS IT IS NOW. Read at the START of every round, so a
+# round composes on the tip it is actually about to land on rather than on a base
+# captured when the loop began.
+selfheal_branch_tip() { # branch
+  [ -n "${1:-}" ] || return 0
+  "$GIT_BIN" rev-parse --verify -q "refs/heads/$1" 2>/dev/null || true
+}
+
+# S320: IS THE TICKET'S REPAIR IN EFFECT ON THE BRANCH? Positive evidence, read
+# at the tip — never inferred from a gate verdict, which is the whole of D18.
+# Consulted ONLY after a replay FAILED, to answer the one case the apply-failure
+# comment below was written to protect: the work landed by ANOTHER ROUTE (a
+# sibling replay, or the captain's own checkout committing the fix while it held
+# the branch — the very thing that made the landing worktree unattachable).
+#
+# THIS REPLACES THE SHA-IDENTITY CHECK that stood here (`merge-base
+# --is-ancestor` on the rebuild's own commit), and replaces rather than joins it
+# for two reasons. It never fired on any constructible case: the replay
+# cherry-picks with --allow-empty, so a patch already on the branch SUCCEEDS
+# there and never reaches this point, and `.commit-sha` is rewritten every round
+# so nothing can pre-place that object. And where the two could differ they
+# would DISAGREE — commit identity is a CORRELATE of "is the branch actually
+# fixed", and an unreachable commit whose effect is present is exactly the false
+# stop this cures. One check, and it measures the effect. (ORCHESTRATION.md:
+# inspect the thing, do not measure a correlate.) It is also precisely the check
+# the escalation text already asks the captain to perform by hand, so the
+# harness does it instead of asking him.
+#
+# BOTH LEGS ARE LOAD-BEARING, and the measurement says which catches what:
+#   PRESENT at the tip — an unlanded rebuild rewrites the ticket's proof
+#     snapshot to name a file that exists ONLY in that commit (measured: the
+#     snapshot afterwards named `tests/t-002-regression.test.js` and nothing
+#     else), so the full-suite gate finds nothing of that ticket's to re-run,
+#     SKIPS it, and goes green VACUOUSLY. That is D18 — absent, no claim.
+#   PASSES at the tip — a declared test that IS on the branch and FAILS there is
+#     a branch still broken, whatever any gate said.
+# Cost: one `git cat-file -e` per declared file plus ONE scoped re-run, through
+# the same selfheal_failing_set_green / retest_ticket_suites machinery every
+# other re-check in this file uses. That call also sets
+# SELFHEAL_RECHECK_UNMEASURED; every caller of this helper either returns or
+# breaks out of the round loop, so no later iteration reads a stale value.
+# S320 FIX 1 — THE HARNESS MAY NOT ASSERT WHAT IT HAS NOT ESTABLISHED. The first
+# cut of this cure printed one blanket headline, "the repair is NOT on the
+# branch", on every unverified path — including paths where it had established
+# no such thing. These two globals are the fix: VERDICT is the strongest claim
+# the evidence actually supports, WHY is the observation itself. Every surface
+# that reports this stop reads them instead of asserting.
+SELFHEAL_UNVERIFIED_WHY=""      # what was OBSERVED when a repair could NOT be verified
+SELFHEAL_UNVERIFIED_VERDICT=""  # the strongest claim that observation supports
+selfheal_repair_on_branch() { # branch  ticketId → 0 = the ticket's declared proof PASSES at the tip
+  local branch="${1:-}" id="${2:-}" rels rel missing=""
+  SELFHEAL_UNVERIFIED_WHY=""; SELFHEAL_UNVERIFIED_VERDICT=""
+  if [ -z "$branch" ] || [ -z "$id" ]; then
+    SELFHEAL_UNVERIFIED_VERDICT="the harness could NOT check whether the repair is on the branch"
+    SELFHEAL_UNVERIFIED_WHY="there is no mission branch to read, so nothing could be checked at a tip"
+    return 1
+  fi
+  if ! "$GIT_BIN" show-ref --verify --quiet "refs/heads/$branch"; then
+    SELFHEAL_UNVERIFIED_VERDICT="the harness could NOT check whether the repair is on the branch"
+    SELFHEAL_UNVERIFIED_WHY="the mission branch '$branch' does not exist, so nothing could be checked at its tip"
+    return 1
+  fi
+  rels="$(proof_snapshot_rels "$id")"
+  if [ -z "$(printf '%s' "$rels" | grep . || true)" ]; then
+    SELFHEAL_UNVERIFIED_VERDICT="the harness could NOT check whether the repair is on the branch"
+    SELFHEAL_UNVERIFIED_WHY="ticket $id declares no proof test of its own, so nothing could show whether its repair is in effect"
+    return 1
+  fi
+  while IFS= read -r rel; do
+    [ -n "$rel" ] || continue
+    "$GIT_BIN" cat-file -e "refs/heads/$branch:$rel" 2>/dev/null \
+      || missing="${missing:+$missing }$rel"
+  done <<SH_REL_EOF
+$rels
+SH_REL_EOF
+  if [ -n "$missing" ]; then
+    # THE ONE PATH THAT MAY SAY "ABSENT", because this is where it was measured.
+    SELFHEAL_UNVERIFIED_VERDICT="the repair is NOT on the mission branch"
+    SELFHEAL_UNVERIFIED_WHY="ticket $id's declared proof test(s) $missing are NOT at the tip of '$branch', so the gate had nothing of $id's to re-run and SKIPPED it — its green never touched the repair"
+    return 1
+  fi
+  selfheal_failing_set_green "$id" && return 0
+  if [ -n "${SELFHEAL_RECHECK_UNMEASURED:-}" ]; then
+    SELFHEAL_UNVERIFIED_VERDICT="the harness could NOT check whether the repair is on the branch"
+    SELFHEAL_UNVERIFIED_WHY="ticket $id's declared proof test(s) are at the tip of '$branch' but could NOT be re-run there — ${SELFHEAL_RECHECK_UNMEASURED}"
+  else
+    SELFHEAL_UNVERIFIED_VERDICT="the repair is NOT in effect on the mission branch"
+    SELFHEAL_UNVERIFIED_WHY="ticket $id's declared proof test(s) ARE at the tip of '$branch' and FAIL when re-run there, so that branch is still broken whatever the gate said"
+  fi
+  return 1
+}
+
+# Both Implement recovery and Verify reconcile merge, never rewrite history.
+merge_base_in_worktree() { # worktree base-sha
+  ( cd "$1" && "$GIT_BIN" -c merge.autoStash=false merge --no-edit --no-overwrite-ignore "$2" )
+}
+
+# Merge off-branch, then publish only if the original tip still owns the ref.
+# The replay mutex serializes this with ticket landings and linked-bug folds.
+selfheal_merge_base() { # branch base
+  (
+    # Subshell-owned variables survive an early exit until its cleanup trap.
+    branch="$1"; base="$2"; wt=""
+    acquire_replay_lock
+    trap 'if [ -n "$wt" ]; then
+      "$GIT_BIN" worktree remove --force "$wt" >/dev/null 2>&1 ||
+        rmdir "$wt" 2>/dev/null ||
+        printf "Could not remove recovery worktree: %s\n" "$wt" >&2
+    fi; release_replay_lock' EXIT
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+    _lcars_base_inflight
+    if [ -n "$LCARS_BASE_INFLIGHT" ]; then
+      printf 'Recovery refused: %s operation-in-progress; finish it before retrying.\n' "$LCARS_BASE_INFLIGHT"
+      exit 1
+    fi
+    dirty="$("$GIT_BIN" status --porcelain 2>&1)" || { printf '%s\n' "$dirty"; exit 1; }
+    if [ -n "$dirty" ]; then
+      printf 'Recovery refused: dirty working tree; commit or stash your work before retrying.\n'
+      exit 1
+    fi
+    _lcars_base_worktree_of "$branch"
+    if [ -n "$LCARS_MB_WT" ]; then
+      printf "Recovery refused: '%s' is checked out at %s; free that checkout before retrying.\n" "$branch" "$LCARS_MB_WT"
+      exit 1
+    fi
+    tip="$("$GIT_BIN" rev-parse --verify "refs/heads/$branch")" || exit 1
+    basesha="$("$GIT_BIN" rev-parse --verify "refs/heads/$base")" || exit 1
+    wt="$(mktemp -d "$MISSION_DIR/reanchor.XXXXXX")" || exit 1
+    "$GIT_BIN" worktree add -q --detach "$wt" "$tip" || exit 1
+    if ! out="$(merge_base_in_worktree "$wt" "$basesha" 2>&1)"; then
+      printf 'Recovery merge failed; mission commits are untouched. Resolve the merge with a human before retrying:\n%s\n' "$out"
+      exit 1
+    fi
+    merged="$("$GIT_BIN" -C "$wt" rev-parse HEAD)" || exit 1
+    "$GIT_BIN" merge-base --is-ancestor "$tip" "$merged" &&
+      "$GIT_BIN" merge-base --is-ancestor "$basesha" "$merged" || {
+        printf 'Recovery refused: merge does not preserve both original tips.\n'; exit 1;
+      }
+    "$GIT_BIN" worktree remove "$wt" || exit 1
+    wt=""
+    _lcars_base_worktree_of "$branch"
+    if [ -n "$LCARS_MB_WT" ] ||
+       [ "$("$GIT_BIN" rev-parse "refs/heads/$base")" != "$basesha" ]; then
+      printf 'Recovery refused: branch checkout or base changed during the merge; retry after it settles.\n'
+      exit 1
+    fi
+    "$GIT_BIN" update-ref -m "lcars: merge $base into $branch for self-heal" \
+      "refs/heads/$branch" "$merged" "$tip" || {
+        printf 'Recovery refused: mission tip changed during the merge; no commits were replaced.\n'; exit 1;
+      }
+  )
+}
+
+# Fast-forward when lossless; otherwise merge the base into a working mission.
+# Re-testing remains in selfheal_failing_set_green / full_suite_gate below.
+# Returns 0 = REFUSE this round. Returns 1 = nothing in the way.
+selfheal_base_drift_blocks() { # branch base
+  local branch="${1:-}" base="${2:-}" merge_reason
+  SELFHEAL_REANCHOR_FIX=""; SELFHEAL_DRIFT_BEHIND=""; SELFHEAL_DRIFT_REASON=""
+  [ -n "$branch" ] && [ -n "$base" ] || return 1
+  [ "$branch" != "$base" ] || return 1
+  drive_load_base_lib || return 1
+  ensure_base_current "$base" || :
+  # A logged bug's base IS its parent's mission branch: LCARS takes no position
+  # on it and never moves the parent, so there is no drift to refuse.
+  [ "${LCARS_BASE_VERDICT:-}" = "child-base" ] && return 1
+  # Never turn the freshness guard's mid-operation refusal into permission to
+  # rebuild. Count only the recorded branch refs, without moving either one.
+  if [ "${LCARS_BASE_BLOCKER:-}" = "operation-in-progress" ]; then
+    SELFHEAL_DRIFT_BEHIND="$(_lcars_base_count "refs/heads/$branch" "refs/heads/$base")"
+    case "$SELFHEAL_DRIFT_BEHIND" in ''|0|*[!0-9]*) return 1 ;; esac
+    SELFHEAL_DRIFT_REASON="$LCARS_BASE_REASON"
+    SELFHEAL_REANCHOR_FIX="${LCARS_BASE_FIXNOTE:-finish the operation-in-progress, then retry}"
+    return 0
+  fi
+  lcars_base_advance_mission_branch "$branch" "$base" || :
+  case "${LCARS_MB_BEHIND:-}" in ''|0|*[!0-9]*) return 1 ;; esac
+  # The guard brought the branch up to date itself — that is the re-anchor, and
+  # there is nothing left to refuse.
+  [ "${LCARS_MB_MOVE:-}" = "moved" ] && return 1
+  case "${LCARS_MB_AHEAD:-}" in
+    ''|0|*[!0-9]*) : ;;
+    *)
+      if merge_reason="$(selfheal_merge_base "$branch" "$base" 2>&1)"; then
+        printf "  SELF-HEAL — merged '%s' into '%s'; re-testing the merged state.\n" "$base" "$branch"
+        return 1
+      fi
+      LCARS_MB_REASON="$merge_reason"
+      LCARS_MB_FIX="resolve the recovery blocker above, then retry; merge '$base' into '$branch' without rebasing or forcing"
+      ;;
+  esac
+  SELFHEAL_DRIFT_BEHIND="$LCARS_MB_BEHIND"
+  SELFHEAL_DRIFT_REASON="${LCARS_MB_REASON:-}"
+  SELFHEAL_REANCHOR_FIX="${LCARS_MB_FIX:-git rebase $base $branch}"
+  return 0
+}
+
+# IS THE ATTRIBUTED REGRESSION STILL THERE? Re-run ONLY the attributed failing
+# set, at the branch tip as it is now, BEFORE a worker is dispatched. On the live
+# run that one check would have saved all three rounds and five worker sessions:
+# the branch was green the whole time.
+#
+# Returns 0 ONLY on positive evidence of green. Every inability to measure —
+# no runner, no failing set, a worktree that would not cut — returns non-zero, so
+# an unmeasured repo can never be mistaken for a healed one.
+#
+# S310 FIX 1 D5: AN UNMEASURED CHECK SAYS SO. Every one of those inabilities
+# used to be silent, which means the whole budget-saving feature could switch
+# itself off on a real repo — a blocked worktree path is enough — with nothing
+# in the timeline or on stdout saying it had. The reason is recorded here and
+# reported by the caller.
+selfheal_failing_set_green() { # ticketId...
+  SELFHEAL_RECHECK_UNMEASURED=""
+  [ $# -gt 0 ] || { SELFHEAL_RECHECK_UNMEASURED="the gate attributed the regression to no ticket, so there was no failing set to re-run"; return 1; }
+  local cmd; cmd="$(resolve_test_cmd)"
+  [ -n "$cmd" ] || { SELFHEAL_RECHECK_UNMEASURED="this repo has no test command, so nothing can be re-run"; return 1; }
+  local branch wt_base wt rc=0
+  branch="$(json_str "$STATE" branch)"
+  wt_base="$MISSION_DIR/selfheal-recheck-wt"
+  rm -rf "$wt_base" 2>/dev/null || :
+  wt="$(make_ticket_worktree "$wt_base" "$branch" "recheck")" \
+    || { SELFHEAL_RECHECK_UNMEASURED="the re-check worktree at $wt_base could not be cut"; return 1; }
+  [ -n "$wt" ] || wt="$REPO_ROOT"
+  retest_ticket_suites "$wt" "$cmd" "$@" || rc=$?
+  if [ "$wt" != "$REPO_ROOT" ]; then
+    "$GIT_BIN" worktree remove --force "$wt" >/dev/null 2>&1 || rm -rf "$wt"
+    "$GIT_BIN" worktree prune >/dev/null 2>&1 || :
+    rm -rf "$wt_base" 2>/dev/null || :
+  fi
+  return "$rc"
+}
+
+# One signature per SPENT round: the basis the attribution rested on plus the set
+# of suites that were failing. Two rounds with the same signature are the same
+# problem twice; two with different signatures are two problems, which is a
+# stronger reason to stop and reshape than the round count alone.
+selfheal_record_mode() { # basis failing-set
+  local sig="${1:-unknown}|${2:-none}"
+  case "$SELFHEAL_MODES" in
+    "") SELFHEAL_MODES="$sig" ;;
+    *)
+      case "
+$SELFHEAL_MODES
+" in
+        *"
+$sig
+"*) : ;;
+        *) SELFHEAL_MODE_SHIFT="the rounds did NOT fail the same way" ;;
+      esac
+      SELFHEAL_MODES="$SELFHEAL_MODES
+$sig" ;;
+  esac
+  return 0
+}
 self_heal_full_suite() { # reason  ordered ticketId...
   local reason="$1"; shift
   local ordered="$*"
@@ -13768,6 +17252,13 @@ self_heal_full_suite() { # reason  ordered ticketId...
     emit_event selfheal_skipped implement \
       "self-heal SKIPPED — the full-suite gate diagnosed an environment fault (${FULL_SUITE_ENV_FAULT}), which attributes to no ticket and no worker edit can clear; escalating with the diagnosis" \
       "fault=${FULL_SUITE_ENV_FAULT}" || :
+    # D4: the loop never starts, so nothing resets the counters — write the
+    # record anyway, with the reason, rather than leaving no ledger at all.
+    SELFHEAL_STOP_REASON="environment-fault"
+    SELFHEAL_ROUNDS_SPENT=0; SELFHEAL_APPLY_FAILURES=0; SELFHEAL_STALE_SKIPS=0
+    SELFHEAL_WORKERS_AVOIDED=0; SELFHEAL_MODES=""; SELFHEAL_MODE_SHIFT=""
+    SELFHEAL_DISPATCHES=0
+    selfheal_ledger_write environment-fault
     return 1
   fi
 
@@ -13781,9 +17272,54 @@ self_heal_full_suite() { # reason  ordered ticketId...
   local branch; branch="$(json_str "$STATE" branch)"
   local wt_base="$MISSION_DIR/selfheal-wt"
 
+  # S310: the counters start clean for THIS self-heal, and the ledger is written
+  # before anything is spent so "round 0" is on disk too.
+  SELFHEAL_ROUNDS_SPENT=0; SELFHEAL_APPLY_FAILURES=0; SELFHEAL_STALE_SKIPS=0
+  SELFHEAL_WORKERS_AVOIDED=0; SELFHEAL_STOP_REASON=""; SELFHEAL_MODES=""
+  SELFHEAL_MODE_SHIFT=""; SELFHEAL_REANCHOR_FIX=""; SELFHEAL_TIP=""
+  SELFHEAL_DISPATCHES=0
+  local base; base="$(json_str "$STATE" base)"
+  selfheal_ledger_write start
+
   local round=0 fssig regressor basis pick attribution
+  # S310: ATTEMPTS and DEFECT ROUNDS are different numbers. The loop is bounded
+  # by the cap in DEFECT rounds (unchanged) and separately by each
+  # infrastructure outcome's own bound, with one backstop so no combination of
+  # them can spin.
+  local attempt=0 attempt_cap
+  attempt_cap=$(( SELFHEAL_CAP + SELFHEAL_APPLY_CAP + SELFHEAL_STALE_CAP + 1 ))
   while [ "$round" -lt "$SELFHEAL_CAP" ]; do
-    round=$((round + 1))
+    attempt=$((attempt + 1))
+    if [ "$attempt" -gt "$attempt_cap" ]; then
+      SELFHEAL_STOP_REASON="attempt-cap"
+      selfheal_ledger_write attempt-cap
+      break
+    fi
+
+    # --- S310 (a) RE-ANCHOR, AT THE START OF THE ROUND -------------------
+    # Read the tip NOW. Everything this round composes, lands on and re-tests
+    # is anchored here — not on a base captured when the loop began, which is
+    # what made the live run's rebuild unlandable three times over.
+    cleanup_ticket_worktrees "$wt_base" || :
+
+    # --- S310 (b) BASE DRIFT REFUSES THE ROUND ---------------------------
+    if selfheal_base_drift_blocks "$branch" "$base"; then
+      SELFHEAL_STOP_REASON="base-drift"
+      SELFHEAL_TIP="$(selfheal_branch_tip "$branch")"
+      emit_event selfheal_refused implement \
+        "self-heal REFUSED before attempt $attempt — the mission branch '$branch' is ${SELFHEAL_DRIFT_BEHIND} commit(s) behind '$base', so a rebuild would be composed on a tip the branch has already left behind and could not land. No worker was dispatched and no round was spent (${SELFHEAL_ROUNDS_SPENT} of $SELFHEAL_CAP).${SELFHEAL_DRIFT_REASON:+ Recovery diagnosis: $SELFHEAL_DRIFT_REASON} Re-anchor first: ${SELFHEAL_REANCHOR_FIX}" \
+        "behindBy=${SELFHEAL_DRIFT_BEHIND}" "base=$base" "roundsSpent=$SELFHEAL_ROUNDS_SPENT" || :
+      selfheal_ledger_write base-drift
+      printf '  ⚠ SELF-HEAL REFUSED — %s is %s commit(s) behind %s\n' \
+        "$branch" "${SELFHEAL_DRIFT_BEHIND}" "$base" >&2
+      [ -n "${SELFHEAL_DRIFT_REASON:-}" ] && printf '    Why:    %s\n' "$SELFHEAL_DRIFT_REASON" >&2
+      printf '    Fix:    %s\n' "$SELFHEAL_REANCHOR_FIX" >&2
+      return 1
+    fi
+    # Read the tip AFTER the guard, so a fast-forward it performed is reflected
+    # rather than a tip that no longer exists.
+    SELFHEAL_TIP="$(selfheal_branch_tip "$branch")"
+
     # S157 D3: RE-PICK EVERY ROUND, from THIS round's failing set. Both halves of
     # the brief have to come from the same round: the reason below is rewritten
     # each iteration, so a regressor (and an attribution line) fixed before the
@@ -13794,11 +17330,94 @@ self_heal_full_suite() { # reason  ordered ticketId...
     pick="$(selfheal_regressor "$failing" "$ordered")"
     regressor="${pick%%$'\t'*}"; basis="${pick#*$'\t'}"
     SELFHEAL_REGRESSOR="$regressor"; SELFHEAL_REGRESSOR_BASIS="$basis"
-    [ -n "$regressor" ] || return 1
+    if [ -z "$regressor" ]; then
+      SELFHEAL_STOP_REASON="no-regressor"
+      emit_event selfheal_blocked implement \
+        "self-heal STOPPED before attempt $attempt — no ticket could be named to send a reconcile to, so no worker was dispatched and no round was spent (${SELFHEAL_ROUNDS_SPENT} of $SELFHEAL_CAP)." \
+        "roundsSpent=$SELFHEAL_ROUNDS_SPENT" "stop=no-regressor" || :
+      selfheal_ledger_write no-regressor
+      return 1
+    fi
+
+    # --- S310 (c) IS THE REGRESSION STILL THERE? -------------------------
+    # BEFORE the attribution is written and BEFORE a worker is dispatched, re-run
+    # the attributed failing set at the tip this round just anchored to. A set
+    # that is GREEN there means the attribution is STALE: the regression it names
+    # does not exist on this tip, so no edit to any ticket can clear it and a
+    # worker session would be spent re-solving a solved problem. Record the
+    # staleness, spend NO round and NO worker, and let the full-suite gate judge
+    # the real tip. On the live run this single check would have saved all three
+    # rounds and five worker sessions — the branch was green the whole time.
+    if selfheal_failing_set_green $failing; then
+      SELFHEAL_STALE_SKIPS=$((SELFHEAL_STALE_SKIPS + 1))
+      SELFHEAL_WORKERS_AVOIDED=$((SELFHEAL_WORKERS_AVOIDED + 1))
+      emit_event selfheal_stale_attribution implement \
+        "STALE ATTRIBUTION — the suite(s) the gate named (${failing:-none}) PASS at the current tip ${SELFHEAL_TIP:-unknown}, so the regression attributed to $regressor is not present there. NO worker was dispatched and no round was spent (${SELFHEAL_ROUNDS_SPENT} of $SELFHEAL_CAP); the full-suite gate now judges that tip." \
+        "ticket=$regressor" "failing=${failing:-}" "tip=${SELFHEAL_TIP:-}" \
+        "roundsSpent=$SELFHEAL_ROUNDS_SPENT" "workersAvoided=$SELFHEAL_WORKERS_AVOIDED" || :
+      selfheal_ledger_write stale-attribution
+      fssig="$MISSION_DIR/full-suite-signal.txt"; rm -f "$fssig"
+      if FULL_SUITE_SIGNAL="$fssig" full_suite_gate $ordered; then
+        rm -f "$fssig"
+        emit_event selfheal_ok implement \
+          "self-heal succeeded with NO worker session — the attributed regression was already absent at the tip and every suite passes again" \
+          "ticket=$regressor" "round=$SELFHEAL_ROUNDS_SPENT" "workersAvoided=$SELFHEAL_WORKERS_AVOIDED"
+        SELFHEAL_STOP_REASON="healed-stale"
+        selfheal_ledger_write healed
+        return 0
+      fi
+      [ -f "$fssig" ] && cp "$fssig" "$SELFHEAL_LAST_REASON"
+      rm -f "$fssig"
+      local prev_failing="$failing"
+      failing="${FULL_SUITE_REGRESSED:-}"
+      # The narrow re-check said green and the full gate says the SAME set is
+      # red. Those two cannot both be true of one tip, so the harness stops
+      # rather than loop on a contradiction it cannot resolve.
+      if [ "$failing" = "$prev_failing" ]; then
+        SELFHEAL_STOP_REASON="contradiction"
+        emit_event selfheal_blocked implement \
+          "self-heal STOPPED — the suite(s) ${failing:-none} passed when re-run on their own at tip ${SELFHEAL_TIP:-unknown} and failed in the full-suite gate on the same tip. The harness cannot tell which run is true, so it refuses to spend a round guessing (${SELFHEAL_ROUNDS_SPENT} of $SELFHEAL_CAP spent)." \
+          "roundsSpent=$SELFHEAL_ROUNDS_SPENT" "tip=${SELFHEAL_TIP:-}" || :
+        selfheal_ledger_write contradiction
+        return 1
+      fi
+      if [ "$SELFHEAL_STALE_SKIPS" -ge "$SELFHEAL_STALE_CAP" ]; then
+        SELFHEAL_STOP_REASON="stale-attribution"
+        emit_event selfheal_blocked implement \
+          "self-heal STOPPED after $SELFHEAL_STALE_SKIPS stale attribution(s) — every regression it was handed had already cleared at the tip, so there was nothing for a worker to fix. ${SELFHEAL_ROUNDS_SPENT} of $SELFHEAL_CAP defect round(s) were spent." \
+          "roundsSpent=$SELFHEAL_ROUNDS_SPENT" "staleSkips=$SELFHEAL_STALE_SKIPS" || :
+        selfheal_ledger_write stale-blocked
+        return 1
+      fi
+      continue
+    fi
+
+    # The check returned "not green" — but that is only trustworthy when it was
+    # MEASURED. Say so, once per distinct reason, on both surfaces: a worker is
+    # about to be spent on the gate's word alone.
+    if [ -n "${SELFHEAL_RECHECK_UNMEASURED:-}" ] \
+       && [ "${SELFHEAL_RECHECK_NOTED:-}" != "$SELFHEAL_RECHECK_UNMEASURED" ]; then
+      SELFHEAL_RECHECK_NOTED="$SELFHEAL_RECHECK_UNMEASURED"
+      emit_event selfheal_recheck_unmeasured implement \
+        "the STALE-ATTRIBUTION CHECK could not run — $SELFHEAL_RECHECK_UNMEASURED. The harness therefore cannot say whether the attributed regression still exists at tip ${SELFHEAL_TIP:-unknown}, so it proceeds on the gate's word and SPENDS a worker rather than risk a false heal. The round is not refunded, because a defect verdict was never ruled out." \
+        "ticket=$regressor" "tip=${SELFHEAL_TIP:-}" || :
+      printf '  ⚠ STALE-ATTRIBUTION CHECK DID NOT RUN — %s. The harness could not re-check the attributed regression at the tip, so it spends a worker on the gate'"'"'s word.\n' \
+        "$SELFHEAL_RECHECK_UNMEASURED" >&2
+    fi
+
+    # From here a worker IS dispatched against a regression that still exists at
+    # this tip — THAT is what spends a round.
+    round=$((round + 1)); SELFHEAL_ROUNDS_SPENT="$round"
     attribution="$(selfheal_attribution_note "$regressor" "$basis")"
+    # S310 FIX 1 D6: the ATTEMPT is in the line too. On an apply-failure stack
+    # the round is refunded, so three attempts emitted three byte-identical
+    # "round 1: … attributed to t-002" lines and the timeline read as a stutter.
     emit_event selfheal_attribution implement \
-      "round $round: full-suite regression attributed to $regressor ($basis)" \
-      "ticket=$regressor" "round=$round" || :
+      "attempt $attempt (defect round $round of $SELFHEAL_CAP): full-suite regression attributed to $regressor ($basis)" \
+      "ticket=$regressor" "round=$round" "attempt=$attempt" || :
+    emit_event selfheal_reanchor implement \
+      "round $round re-anchored to the mission branch tip as it is now: ${SELFHEAL_TIP:-unknown} — the rebuild composes on that commit, not on a base captured earlier" \
+      "ticket=$regressor" "round=$round" "tip=${SELFHEAL_TIP:-}" || :
     emit_event selfheal implement "self-heal round $round/$SELFHEAL_CAP — re-running $regressor's implementer to reconcile the regression" \
       "ticket=$regressor" "round=$round"
 
@@ -13808,6 +17427,19 @@ self_heal_full_suite() { # reason  ordered ticketId...
     # declared-edits guard + the pre-merge drift check).
     local irc=0
     rm -f "$(ticket_dir "$regressor")/.build-rc" "$(ticket_dir "$regressor")/.commit-sha" "$(ticket_dir "$regressor")/.commit-base" 2>/dev/null
+    # S310 FIX 2 D1/D4: the two facts that make the next check honest, read
+    # BEFORE the dispatch — how many flags were already on record, and whether
+    # the mission was ALREADY parked. Without them, `awaitingHuman == true`
+    # after the dispatch is indistinguishable from a park that pre-dates it.
+    # S310 FIX 3: and the THIRD fact — how much POSITIVE green evidence was on
+    # record before the dispatch, so "no ticket_flagged" cannot be read as
+    # "went green" when the worker simply died.
+    local pre_flagged pre_parked pre_green pre_noresult
+    pre_flagged="$(selfheal_flag_count)"
+    pre_green="$(selfheal_green_count)"
+    pre_noresult="$(selfheal_event_count ticket_worker_empty_output ticket_implementer_failed)"
+    pre_parked="$(json_raw "$STATE" awaitingHuman)"
+    SELFHEAL_DISPATCHES=$((SELFHEAL_DISPATCHES + 1))
     LCARS_GH_BIN="$GH_BIN" LCARS_GIT_BIN="$GIT_BIN" \
     LCARS_TICKET_WT_BASE="$wt_base" LCARS_TICKET_BRANCH="$branch" \
     LCARS_SELFHEAL_FEEDBACK="$attribution
@@ -13817,8 +17449,76 @@ $(cat "$SELFHEAL_LAST_REASON")" \
     # A flagged ticket (its own session cap) set awaitingHuman in shared state —
     # the per-ticket cap already handled it; stop self-healing here.
     if [ "$(json_raw "$STATE" awaitingHuman)" = "true" ]; then
-      emit_event selfheal implement "self-heal round $round flagged the ticket's own worker-session cap — stopping self-heal" \
-        "ticket=$regressor" "round=$round"
+      # S310 FIX 2 D1: TWO DIFFERENT THINGS REACHED THIS ONE EXIT.
+      # (a) the reconcile ticket really was FLAGGED — it burned its own
+      #     worker-session cap and a NEW ticket_flagged went on record. A real
+      #     defect round; the sentence below is true and the round is charged.
+      # (b) the ticket went GREEN and the mission was ALREADY parked at a human
+      #     gate when the self-heal started. Nothing was flagged, nothing was
+      #     established, and nothing could land — the rebuild is discarded (that
+      #     discard is INHERITED, ledgered as D17, and not changed here).
+      # Measured 2026-10-22 with one variable between two identical fixtures:
+      # case (b) printed "the reconcile ticket burned its OWN worker-session
+      # cap" over a timeline reading flip_flop_pass → ticket_postcommit_ok →
+      # ticket_green with NO ticket_flagged anywhere, and billed a repair round
+      # for a round that SUCCEEDED. Since every one of these six stops parks the
+      # mission, following the printed advice on any of them lands in (b).
+      # The discriminator is on disk, not inferred: a NEW ticket_flagged event.
+      local post_flagged; post_flagged="$(selfheal_flag_count)"
+      # S310 FIX 3: (c) THE THIRD STATE — NEITHER. No new ticket_flagged AND no
+      # new green marker: the worker produced no result at all. Fix round 2 read
+      # this as (b) and told him the reconcile "went GREEN", "PASSED every proof
+      # gate" and that "nothing is lost but that worker session" — three
+      # sentences that are false when the engine is the thing that broke, and it
+      # sent him to answer a gate that then re-dispatched the same dead worker.
+      # Discriminated on POSITIVE evidence, per dispatch, same counting
+      # technique. The product already named this state and wrote it in the
+      # measured runs (ticket_worker_empty_output / ticket_implementer_failed);
+      # it was simply never consulted here.
+      local post_green; post_green="$(selfheal_green_count)"
+      if [ "$post_flagged" -le "$pre_flagged" ] && [ "$post_green" -le "$pre_green" ]; then
+        # No verdict was reached and no work was done, so no round is charged —
+        # but nothing was accomplished either, which is NOT the same as a budget
+        # that is intact because nothing was wrong. The copy says so, and this
+        # stop is deliberately left OUT of the "BUDGET IS UNTOUCHED" line.
+        round=$((round - 1)); SELFHEAL_ROUNDS_SPENT="$round"
+        SELFHEAL_STOP_REASON="worker-no-result"
+        SELFHEAL_NORESULT_EVENTS="$(( $(selfheal_event_count ticket_worker_empty_output ticket_implementer_failed) - pre_noresult ))"
+        SELFHEAL_NORESULT_RC="$irc"
+        emit_event selfheal_worker_no_result implement \
+          "self-heal STOPPED, and NO round was charged: the reconcile worker for $regressor produced NO RESULT — it exited with status $irc and the harness recorded ${SELFHEAL_NORESULT_EVENTS} worker-failure/empty-output event(s) for this dispatch, with no ticket_green, no ticket_postcommit_ok and no ticket_flagged. NOTHING was rebuilt and NO proof gate was run, so no defect verdict was reached and nothing was accomplished. This is a WORKER/ENGINE fault — not a defect in $regressor, not its worker-session cap, and not a green rebuild that could not land (${SELFHEAL_ROUNDS_SPENT} of $SELFHEAL_CAP defect round(s) spent, ${SELFHEAL_DISPATCHES} reconcile dispatch(es))." \
+          "ticket=$regressor" "roundsSpent=$SELFHEAL_ROUNDS_SPENT" \
+          "dispatches=$SELFHEAL_DISPATCHES" "workerRc=$irc" \
+          "noResultEvents=$SELFHEAL_NORESULT_EVENTS" "tip=${SELFHEAL_TIP:-}" \
+          "stop=worker-no-result"
+        selfheal_ledger_write worker-no-result
+        return 1
+      fi
+      if [ "$post_flagged" -le "$pre_flagged" ]; then
+        # (b) Refund the round. A round bounds how many times a worker is asked
+        # to fix code and then JUDGED on it; no verdict was reached here, and the
+        # work the worker did was accepted by every gate it was shown to.
+        round=$((round - 1)); SELFHEAL_ROUNDS_SPENT="$round"
+        SELFHEAL_STOP_REASON="mission-parked"
+        local whenparked=""
+        [ "$pre_parked" = "true" ] && whenparked=" before this round began"
+        emit_event selfheal_parked implement \
+          "self-heal STOPPED, and NO round was charged: $regressor's rebuild passed its proof gates (no ticket_flagged was written), but the mission is parked at a human gate$whenparked, so nothing could land on the mission branch and the rebuild was discarded. This is NOT the ticket's worker-session cap and NOT a defect in $regressor — no defect verdict was reached (${SELFHEAL_ROUNDS_SPENT} of $SELFHEAL_CAP defect round(s) spent, ${SELFHEAL_DISPATCHES} reconcile dispatch(es))." \
+          "ticket=$regressor" "roundsSpent=$SELFHEAL_ROUNDS_SPENT" \
+          "dispatches=$SELFHEAL_DISPATCHES" "tip=${SELFHEAL_TIP:-}" "stop=mission-parked"
+        selfheal_ledger_write mission-parked
+        return 1
+      fi
+      # S310 FIX 1 D4: CLOSE THE LEDGER HERE TOO. This is the everyday outcome —
+      # the reconcile ticket could not do it inside its own session cap — and it
+      # was the one exit that left the new record at "roundsSpent 0, lastOutcome
+      # start, tip ''". A budget record that under-reports real spend is worse
+      # than no record, and an empty stop reason is also what dropped the
+      # escalation back onto the generic "self-heal exhausted" story.
+      SELFHEAL_STOP_REASON="ticket-session-cap"
+      emit_event selfheal implement "self-heal round $round of $SELFHEAL_CAP stopped: the reconcile ticket $regressor burned its OWN worker-session cap, so the self-heal stops here rather than opening another round (defect round(s) spent: $round)" \
+        "ticket=$regressor" "round=$round" "roundsSpent=$round" "stop=ticket-session-cap"
+      selfheal_ledger_write ticket-session-cap
       return 1
     fi
 
@@ -13828,20 +17528,110 @@ $(cat "$SELFHEAL_LAST_REASON")" \
     # SAME mutex-protected landing replay every other commit uses — the old inline
     # `checkout $branch` here is what left the captain's checkout stranded on the
     # mission branch after every heal (root-tree sovereignty).
-    local sha; sha="$(cat "$(ticket_dir "$regressor")/.commit-sha" 2>/dev/null || true)"
+    # S320: `landing` is the RECORD of what happened to the commit, in the three
+    # states that are actually different — `none` (there was nothing to land),
+    # `landed` (it is on the branch), `absent` (something needed to land and did
+    # not). `applied` already held two of those and the heal decision below read
+    # neither; see the S320 note there.
+    local sha applied=1 landing=none
+    sha="$(cat "$(ticket_dir "$regressor")/.commit-sha" 2>/dev/null || true)"
     if [ -n "$sha" ] && [ -n "$branch" ] && "$GIT_BIN" show-ref --verify --quiet "refs/heads/$branch"; then
-      replay_ticket_commit "$branch" "$sha" "$regressor" \
-        || emit_event selfheal implement \
-             "self-heal round $round: the rebuilt commit did not land cleanly (${REPLAY_FAIL_REASON:-cherry-pick failed}) — the full-suite retest will judge the unchanged tip" \
-             "ticket=$regressor" "round=$round"
+      landing=landed
+      if ! replay_ticket_commit "$branch" "$sha" "$regressor"; then
+        # S310: AN APPLY FAILURE IS AN INFRASTRUCTURE OUTCOME, NOT A DEFECT
+        # ROUND. The rebuild is built and green — the live run said exactly that
+        # immediately before each "did not land cleanly" — and what failed is the
+        # LANDING. Refund the round: the defect budget exists to bound how many
+        # times a worker is asked to fix code, and nothing here was about code.
+        # The ticket is named only as the owner of the commit; no defect is
+        # attributed to it, because none was established.
+        applied=0
+        landing=absent
+        round=$((round - 1)); SELFHEAL_ROUNDS_SPENT="$round"
+        SELFHEAL_APPLY_FAILURES=$((SELFHEAL_APPLY_FAILURES + 1))
+        emit_event selfheal_apply_failed implement \
+          "APPLY FAILED on attempt $attempt — $regressor's rebuild is built and green, but its commit would not land on '$branch': ${REPLAY_FAIL_REASON:-cherry-pick failed}. This is an INFRASTRUCTURE outcome, not a defect in $regressor and not a regression round, so the self-heal budget is UNCHANGED (${SELFHEAL_ROUNDS_SPENT} of $SELFHEAL_CAP spent, apply failure(s): $SELFHEAL_APPLY_FAILURES of $SELFHEAL_APPLY_CAP). The full-suite gate now judges the tip as it stands." \
+          "ticket=$regressor" "attempt=$attempt" "roundsSpent=$SELFHEAL_ROUNDS_SPENT" \
+          "applyFailures=$SELFHEAL_APPLY_FAILURES" "tip=${SELFHEAL_TIP:-}" || :
+        selfheal_ledger_write apply-failed
+        # S320: whether the work reached the branch ANYWAY — the one case the
+        # comment below protects — is asked at the HEAL DECISION, not here,
+        # because the question is what the gate's green is worth and the gate
+        # has not run yet. See selfheal_repair_on_branch there.
+      fi
     fi
 
-    # Re-run the full-suite gate. Green → healed.
+    # Re-run the full-suite gate. Green → healed. (Also after an apply failure:
+    # the gate, not the harness's guess, is what decides whether the branch is
+    # clear — the work may have landed by another route, or the regression may
+    # have cleared on its own, which is precisely what the live run missed.)
+    #
+    # S320 (D18, measured 2026-10-22/23 — the most serious finding of that
+    # night): THAT IS TRUE OF EVERYTHING EXCEPT THE ONE THING THE GATE CANNOT
+    # SEE. `applied` was computed above and consulted NOWHERE here, so a rebuild
+    # that was built, went green and would NOT LAND was reported as
+    # `selfheal_ok`, the ledger recorded "healed", the mission advanced to
+    # VERIFY and NOTHING was written to the inbox — while at the branch tip the
+    # source was still broken and the ticket's own test exited 1. The gate's
+    # green was not even evidence that the branch was clear: the gate re-runs
+    # each ticket's DECLARED tests, and this rebuild's declaration named a file
+    # that only existed in the commit that never landed, so the ticket was
+    # SKIPPED and the gate passed vacuously. A gate that never ran the repair
+    # cannot be evidence the repair worked.
+    #
+    # So the gate still decides, EXCEPT that a heal is only CLAIMED when the
+    # harness can show there was nothing to land (`none`) or that it landed
+    # (`landed`). The protected case survives intact: a regression that cleared
+    # on its own with nothing to land still resolves honestly — and the message
+    # now says WHICH of the three it was, instead of one sentence for all of
+    # them. This trades a possible FALSE STOP (parking work that was fine, which
+    # costs a session and arrives with a question he can answer) for the FALSE
+    # HEAL above (which ships a live break AND empties the inbox so nobody
+    # looks). That direction is deliberate.
     fssig="$MISSION_DIR/full-suite-signal.txt"; rm -f "$fssig"
     if FULL_SUITE_SIGNAL="$fssig" full_suite_gate $ordered; then
       rm -f "$fssig"
-      emit_event selfheal_ok implement "self-heal succeeded in round $round — every suite passes again" \
-        "ticket=$regressor" "round=$round"
+      if [ "$landing" = absent ]; then
+        # S320 FIX 1 — BEFORE PARKING, INSPECT THE THING. The first cut of this
+        # cure parked on `absent` alone, and `absent` is a fact about THE
+        # COMMIT, not about the branch: measured 2026-10-23, a run whose rebuild
+        # could not land while an unrelated commit repaired the break ON the
+        # branch was parked awaiting-human with a headline asserting "the repair
+        # is NOT on the branch" — while the tip read `=> true` and the ticket's
+        # own test exited 0 there. That is a FALSE STOP, in exactly the case the
+        # comment above was written to protect. So ask the branch: are the
+        # ticket's DECLARED proof tests at the tip, and do they PASS there? If
+        # they do, the repair is in effect however it arrived, and that resolves
+        # under its OWN reason (`healed-elsewhere`) — never by borrowing
+        # `healed`'s "the rebuild landed" story. If they are ABSENT, the gate
+        # skipped the ticket and its green is VACUOUS: park, exactly as before.
+        if selfheal_repair_on_branch "$branch" "$regressor"; then
+          landing=elsewhere
+        else
+          # ONE STOP, ONE STOP EVENT (S310 FIX 1 D6): set the reason, record it,
+          # and leave the prose to the single selfheal_exhausted detail built
+          # after the loop — exactly as the apply-failed stop does.
+          SELFHEAL_STOP_REASON="heal-unverified"
+          selfheal_ledger_write heal-unverified
+          break
+        fi
+      fi
+      local healsay="self-heal succeeded in round $round — $regressor's rebuild LANDED on '$branch' and every suite passes again"
+      case "$landing" in
+        none)
+          healsay="self-heal succeeded in round $round — NO commit needed to land (the rebuild produced none) and every suite passes again" ;;
+        elsewhere)
+          healsay="self-heal succeeded in round $round — $regressor's own rebuild did NOT land, but $regressor's declared test(s) ARE at the tip of '$branch' and PASS when re-run there, so the repair reached the branch by another route; every suite passes again" ;;
+      esac
+      emit_event selfheal_ok implement "$healsay" \
+        "ticket=$regressor" "round=$round" "landing=$landing"
+      if [ "$landing" = elsewhere ]; then
+        SELFHEAL_STOP_REASON="healed-elsewhere"
+        selfheal_ledger_write healed-elsewhere
+      else
+        SELFHEAL_STOP_REASON="healed"
+        selfheal_ledger_write healed
+      fi
       return 0
     fi
     [ -f "$fssig" ] && cp "$fssig" "$SELFHEAL_LAST_REASON"
@@ -13849,10 +17639,45 @@ $(cat "$SELFHEAL_LAST_REASON")" \
     # S157 D3: the reason and the attribution must stay in step — refresh the
     # failing set from the gate run that produced the reason just stored.
     failing="${FULL_SUITE_REGRESSED:-}"
+    # S310: a spent round's signature, for the escalation's "did these rounds
+    # fail the same way?" judgement. An un-applied attempt has no defect
+    # signature, because no defect verdict was reached.
+    if [ "$applied" = 1 ]; then
+      selfheal_record_mode "$basis" "${failing:-none}"
+      selfheal_ledger_write round-failed
+    elif [ "$SELFHEAL_APPLY_FAILURES" -ge "$SELFHEAL_APPLY_CAP" ]; then
+      # S310 FIX 1 D6: ONE STOP, ONE STOP EVENT. This used to emit
+      # selfheal_blocked here and selfheal_exhausted below for the same stop,
+      # so the timeline showed the run stopping twice. The prose moved into the
+      # single selfheal_exhausted detail built after the loop.
+      SELFHEAL_STOP_REASON="apply-failed"
+      selfheal_ledger_write apply-blocked
+      break
+    fi
   done
 
-  emit_event selfheal_exhausted implement "self-heal exhausted $SELFHEAL_CAP round(s) — regression is irreducible, escalating" \
-    "ticket=$regressor" "rounds=$SELFHEAL_CAP"
+  [ -n "$SELFHEAL_STOP_REASON" ] || SELFHEAL_STOP_REASON="cap"
+  # The sentence must not claim a budget was spent on defects when it was not:
+  # "round 3/3" above a stack of infrastructure failures is exactly the reading
+  # that cost the live run 2.5 hours.
+  local exh_detail="self-heal exhausted $SELFHEAL_CAP round(s) — regression is irreducible, escalating"
+  case "$SELFHEAL_STOP_REASON" in
+    apply-failed)
+      exh_detail="self-heal STOPPED after $SELFHEAL_APPLY_FAILURES failed attempt(s) to LAND a rebuild, WITHOUT exhausting its ${SELFHEAL_CAP}-round budget — every attempt produced green work that would not apply to '$branch', which is an infrastructure fault and not something another worker session can fix, and ${SELFHEAL_ROUNDS_SPENT} of $SELFHEAL_CAP defect round(s) were spent.${SELFHEAL_REANCHOR_FIX:+ Re-anchor first: $SELFHEAL_REANCHOR_FIX} Escalating." ;;
+    attempt-cap)
+      exh_detail="self-heal STOPPED at its attempt backstop — ${SELFHEAL_ROUNDS_SPENT} of $SELFHEAL_CAP defect round(s) were spent. Escalating." ;;
+    # S320: the stop that used to be a selfheal_ok. The gate went GREEN and the
+    # repair is NOT on the branch, so the green says nothing about the repair.
+    heal-unverified)
+      exh_detail="self-heal STOPPED WITHOUT claiming a heal — $SELFHEAL_APPLY_FAILURES rebuild(s) were built and green and would not LAND on '$branch', the full-suite gate then PASSED anyway, and a check of the tip for the ticket's own declared proof test(s) found that ${SELFHEAL_UNVERIFIED_VERDICT:-the repair could NOT be verified there} — ${SELFHEAL_UNVERIFIED_WHY:-the tip could not be read}. A gate that never ran the repair is not evidence the repair worked, so no heal is claimed and no defect round was charged for it (${SELFHEAL_ROUNDS_SPENT} of $SELFHEAL_CAP spent). What is broken is the LANDING, not the code. CHECK THE BRANCH TIP YOURSELF before trusting any green.${SELFHEAL_REANCHOR_FIX:+ Re-anchor first: $SELFHEAL_REANCHOR_FIX} Escalating." ;;
+    *)
+      [ -n "$SELFHEAL_MODE_SHIFT" ] && \
+        exh_detail="self-heal exhausted $SELFHEAL_CAP round(s) — the rounds did NOT fail the same way, which points at a structural problem rather than one reducible regression, escalating" ;;
+  esac
+  emit_event selfheal_exhausted implement "$exh_detail" \
+    "ticket=$regressor" "rounds=$SELFHEAL_CAP" "roundsSpent=$SELFHEAL_ROUNDS_SPENT" \
+    "stop=$SELFHEAL_STOP_REASON"
+  selfheal_ledger_write exhausted
   return 1
 }
 
@@ -15459,7 +19284,7 @@ reconcile_gate() {
   }
 
   local merge_rc=0 conflicted=""
-  ( cd "$wt" && "$GIT_BIN" merge --no-edit "$base_ref" ) >/dev/null 2>&1 || merge_rc=$?
+  merge_base_in_worktree "$wt" "$base_ref" >/dev/null 2>&1 || merge_rc=$?
   if [ "$merge_rc" -ne 0 ]; then
     conflicted="$( cd "$wt" && "$GIT_BIN" diff --name-only --diff-filter=U 2>/dev/null )"
     emit_event reconcile_conflict verify "textual merge conflict in: $(printf '%s' "$conflicted" | tr '\n' ' ')"
@@ -16051,14 +19876,24 @@ alias_for_tier() { # cli tier → flag string (stdout; may be empty)
       case "$tier" in sonnet) printf 'sonnet' ;; opus) printf 'opus' ;; esac ;;
     copilot)
       # S78 — copilot is OPUS-SAFE BY DEFAULT: BOTH the sonnet AND the opus tier
-      # resolve to `claude-opus-4.8`, so a Copilot mission runs opus on EVERY
+      # resolve to `claude-opus-4.8` (RETIRED 2026-10-16 — see the note below;
+      # the id is now `claude-opus-5.5`), so a Copilot mission runs opus on EVERY
       # stage regardless of the estimator's tier. WHY: Copilot's `create` tool
       # cannot overwrite an existing file (or mkdir) on a non-opus tier, so a
       # sonnet-tier Implement stage breaks the run. Pinning opus everywhere keeps
       # Copilot end-to-end-safe. This is the ONE home for the policy. Both tiers
       # stay config-overridable via modelAliases.copilot.<tier> (handled above):
       # a repo that sets modelAliases.copilot.sonnet still wins over this default.
-      case "$tier" in sonnet) printf 'claude-opus-4.8' ;; opus) printf 'claude-opus-4.8' ;; esac ;;
+      # 2026-10-16 — THE NAME MOVED, THE POLICY DID NOT. GitHub RETIRED
+      # `claude-opus-4.8` from Copilot: the CLI now answers `Error: Model
+      # "claude-opus-4.8" from --model flag is not available.` and exits 1, so
+      # every copilot cold worker was spawned against a model that no longer
+      # exists (a read-only role got no write tool, saved nothing, exited 0 —
+      # it killed a live run at Research). BOTH tiers move together to
+      # `claude-opus-5.5` so S78's opus-safe default above is preserved exactly;
+      # re-tiering the sonnet arm onto a real sonnet model would be a POLICY
+      # change, not a rename, and is deliberately not done here.
+      case "$tier" in sonnet) printf 'claude-opus-5.5' ;; opus) printf 'claude-opus-5.5' ;; esac ;;
   esac
 }
 
@@ -19592,7 +23427,7 @@ What is NOT fine is being over budget because the ticket BUNDLES two behaviors."
   # OUT LOUD. Nothing at all when the brief left none, so a pre-S175 Mission's
   # Plan prompt is byte-identical.
   local _oqb _oqrc=0; _oqb="$(plan_open_questions_block)" || _oqrc=$?
-  [ "$_oqrc" -eq 0 ] || die "prd.md's open-questions section declares nothing readable — see the message above; fix the PRD and re-run."
+  [ "$_oqrc" -eq 0 ] || die "prd.md's open-questions section has undeclared entries — see the message above; fix the PRD and re-run."
   extra="$extra$_oqb"
   # S181 — WHAT A DEPENDENCY IS, on the FIRST pass. S178 put this framing inside
   # the revision contract, which never fires on a first plan; the measured
@@ -20366,6 +24201,7 @@ $(printf '%s' "$PREFLIGHT_OUT" | tail -10)"
       _tdd_reject result missing \
 "the worker produced no result.json in its scratch output directory — the harness reads ONLY that file. Worker output tail:
 $(cat "$odir/.worker.out" "$odir/.worker.err" 2>/dev/null | tail -10)"
+      prior_empty=1
       continue
     fi
     # The gates read tickets/<id>/result.json — persist it BEFORE gating (it is
@@ -20996,7 +24832,7 @@ _replay_ticket_commit_locked() { # branch  sha  ticket
             /^worktree /{p=substr($0,10)}
             $0==b{print p; exit}' )"
       if [ -n "$held_wt" ]; then
-        REPLAY_FAIL_REASON="branch $branch is checked out at $held_wt (likely your own checkout) — git will not let the fix land while that tree holds the branch. The ticket's fix is built and green; switch that checkout to another branch (or \`git worktree remove\` a stale tree) and re-run implement. LCARS lands mission commits via its own worktree and never touches your checkout."
+        REPLAY_FAIL_REASON="branch $branch is checked out at $held_wt (likely your own checkout) — git will not let the fix land while that tree holds the branch. The ticket's fix is built and green; switch that checkout to another branch (or \`git worktree remove\` a stale tree), then ANSWER ANY AWAITING-HUMAN GATE ON THIS MISSION FIRST and re-run implement — a repair that succeeds while the mission is parked is discarded. LCARS lands mission commits via its own worktree and never touches your checkout."
       else
         REPLAY_FAIL_REASON="could not cut the landing worktree for branch $branch${add_err:+; git: $(printf '%s' "$add_err" | tr '\n' ' ')}"
       fi
@@ -21413,6 +25249,135 @@ drive_base_recheck() {
   drive_persist_base_freshness "$branch"
   drive_emit_base_stale "$stage"
   return 0
+}
+
+# === S312 — "FAILED AND IDLE" IS A STATE YOU CAN SEE ========================
+#
+# THE DEFECT, MEASURED. On a real mission a retry failed at 01:36 and the
+# mission sat UNTOUCHED FOR 4 HOURS 49 MINUTES. Nothing surfaced it, because
+# nothing in MISSION STATE said it had failed:
+#   • the ECH's `stalled` reported nothing — the driver had exited NORMALLY
+#     after the stage stop, which is a clean exit 0;
+#   • `status` showed `stage=implement`, which is what healthy work shows;
+#   • the hourly heartbeat printed that same line every hour.
+# S218 already records the failure in events.jsonl and the board and `lcars
+# status` already render it. But `stage` in state.json is the RESUME POINTER —
+# a freshly-filed mission whose Research died still reads `"stage": "align"` —
+# and every reader that asks mission state "how is this mission?" therefore got
+# the same answer for a dead mission as for a new one.
+#
+# SO THE FACT GOES WHERE THOSE READERS LOOK, following the `awaitingHuman`
+# precedent exactly: a flat field on state.json, written by the drive, cleared
+# when the condition passes. Three fields, because "it failed" without what,
+# when and why is another thing nobody can act on.
+#
+# IT IS A DISTINCT FACT FROM THE STAGE. A mission is "at implement, FAILED",
+# never "at failed". `stage` is NOT touched here — collapsing the two would
+# break every resume path, every label and every column.
+drive_mark_stage_failed() { # <stage> <one-line reason> [failure-log relpath]
+  local st="${1:-}" why="${2:-}" lg="${3:-}"
+  [ -n "$st" ] || return 0
+  # ONE LINE. The reason is read back and printed whole by `lcars status`, the
+  # board and the ECH's heartbeat, so a multi-line blob here would wreck all
+  # three. The drive's own `err_tail` is already one line; this is the guard for
+  # every other caller.
+  why="$(printf '%s' "$why" | tr '\n' ' ')"
+  lcars_state_set_string "$STATE" failedStage "$st"
+  lcars_state_set_string "$STATE" failedAt "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  lcars_state_set_string "$STATE" failedReason "$why"
+  # THE LOG PATH IS PART OF THE RECORD, when this run wrote one. S218 put it on
+  # the event as `data.log` and both the card and `lcars status` print it; a
+  # state.json record without it would be a record that LOSES information the
+  # moment it becomes the preferred source, which is exactly what happened the
+  # first time this was written with three fields (tests/lcars-research-failure
+  # 7e caught it). Unset, never an empty string, so a run that wrote no log is
+  # absent rather than carrying a blank path.
+  if [ -n "$lg" ]; then
+    lcars_state_set_string "$STATE" failedLog "$lg"
+  else
+    lcars_state_unset "$STATE" failedLog
+  fi
+  return 0
+}
+
+# …and the record describes the LAST ATTEMPT, so a SUCCESSFUL one supersedes it.
+# Its one caller is emit_event, on `stage_done` (a Stage finished) and `gate` (the
+# run stopped on a question) — NOT on `stage_start`. The reasoning, and the
+# measurement that changed it, are on that call site; the short version is that a
+# record cleared when an attempt STARTS does not survive the attempt being
+# killed, and an interrupted drive is the ordinary case on a laptop that sleeps.
+drive_clear_stage_failed() {
+  # Called from emit_event, which runs on paths where no mission has been
+  # located yet (and in subcommands that never touch state). No state file ⇒
+  # nothing to clear, and never an error.
+  [ -n "${STATE:-}" ] && [ -f "$STATE" ] || return 0
+  [ -n "$(json_str "$STATE" failedStage)" ] || return 0
+  lcars_state_unset "$STATE" failedStage
+  lcars_state_unset "$STATE" failedAt
+  lcars_state_unset "$STATE" failedReason
+  lcars_state_unset "$STATE" failedLog
+  return 0
+}
+
+# === S312 — THE UNDECLARED-DRIFT CHECK, AT DRIVE START ======================
+#
+# THE GATE IS NOT RELAXED AND NOT RE-IMPLEMENTED. `proof_drift_declared_ok` is
+# the same function the pre-merge gate calls (retest_ticket_suites), with the
+# same refusal words and the same `drift_cure_block` cure. All that changes is
+# WHEN it is first consulted.
+#
+# WHY EARLY. The drift a rebase leaves behind is a CONTENT difference, so it
+# survives a clean rebase with no error in the log, and the gate only re-fired
+# at the END of the next Implement pass — ~20 minutes of worker time on the real
+# mission, every time, for a run that could never have merged. This runs it in
+# cmd_drive's post-lock, pre-stage-loop slot (beside drive_base_recheck, for the
+# same two reasons: after the lock so two drives cannot race it, before the
+# stage loop so it is once per drive and nothing has been spawned yet).
+#
+# IT IS SILENT WHEN IT HAS NOTHING TO SAY. No recorded proof snapshot (every
+# mission before its first green ticket) ⇒ no opinion, no output, return 0. A
+# worktree it cannot cut ⇒ no opinion either: this is an EARLY WARNING for a
+# refusal the pre-merge gate will still make, so it must never turn a rig
+# problem into a mission failure.
+drive_early_drift_check() {
+  local snap t ids="" branch wt wt_base undecl
+  for snap in "$MISSION_DIR"/tickets/*/proof-tests.sha256; do
+    [ -f "$snap" ] || continue
+    t="$(basename "$(dirname "$snap")")"
+    ids="${ids:+$ids }$t"
+  done
+  [ -n "$ids" ] || return 0
+
+  branch="$(json_str "$STATE" branch)"
+  wt_base="$MISSION_DIR/earlydrift-wt"
+  # The MISSION BRANCH's tip is the tree that matters — the ambient checkout is
+  # whatever the captain last looked at, and judging that would be the S110
+  # wrong-tree failure. No branch ⇒ no tree to judge ⇒ no opinion.
+  wt="$(make_ticket_worktree "$wt_base" "$branch" "earlydrift" 2>/dev/null)" || wt=""
+  [ -n "$wt" ] || return 0
+
+  local bad_id="" bad_rels=""
+  for t in $ids; do
+    if ! undecl="$(proof_drift_declared_ok "$t" "$wt")"; then
+      bad_id="$t"; bad_rels="$undecl"; break
+    fi
+  done
+
+  local cure=""
+  [ -n "$bad_id" ] && cure="$(drift_cure_block "$bad_id" "$bad_rels" "$wt")"
+  "$GIT_BIN" worktree remove --force "$wt" >/dev/null 2>&1 || rm -rf "$wt"
+  "$GIT_BIN" worktree prune >/dev/null 2>&1 || :
+  rm -rf "$wt_base" 2>/dev/null || :
+  [ -n "$bad_id" ] || return 0
+
+  local stage; stage="$(json_str "$STATE" stage)"
+  emit_event ticket_locked_test_tampered "$stage" \
+    "ticket $bad_id — committed test drifted from the proof-time snapshot with no declaring ticket (caught at drive START, before any stage work)" \
+    "ticket=$bad_id" || :
+  drive_mark_stage_failed "$stage" \
+    "PRE-MERGE UNDECLARED TEST DRIFT on ticket $bad_id: $(printf '%s' "$bad_rels" | tr '\n' ' ')"
+  die "PRE-MERGE UNDECLARED TEST DRIFT: ticket $bad_id's COMMITTED test file(s) no longer match the proof-time snapshot and NO ticket declared that edit (test-edits.json): $(printf '%s' "$bad_rels" | tr '\n' ' '). BLOCKED: the Mission cannot merge an undeclared test edit, and this is NOT a self-healable regression. CAUGHT AT DRIVE START — no stage work was done, so nothing was wasted finding out.
+$cure"
 }
 
 # --- the PR merge-state poll: "merged" iff the host says state MERGED OR
@@ -22409,6 +26374,11 @@ cmd_drive() {
   # produced). It never blocks — see drive_base_recheck.
   drive_base_recheck
 
+  # S312 — UNDECLARED DRIFT, HERE, NOT TWENTY MINUTES FROM NOW. Same slot, same
+  # two reasons as the base re-check above (after the lock, once per drive,
+  # before anything is spawned). Same gate, same refusal; only earlier.
+  drive_early_drift_check
+
   local summary=""
   while :; do
     # Re-read the live state each pass (a Stage subprocess just rewrote it).
@@ -22519,6 +26489,10 @@ cmd_drive() {
 
     # Live BEGIN: log + print before the (output-captured) stage subprocess runs,
     # so a tail/scrollback shows the Stage starting in real time.
+    # S312 — a NEW attempt supersedes the last one's failure record. There is no
+    # second call here: emit_event itself clears it on stage_start, so the drive
+    # loop, a `--step` resume, the daemon and a hand-run emit-event all obey one
+    # rule instead of three.
     emit_event stage_start "$action" "starting"
     printf '%-12s ▶  running…\n' "$action"
     # S218 fix round 1 (F1) — the size of this Stage's failure log BEFORE it
@@ -22568,6 +26542,11 @@ cmd_drive() {
         # Mission sits, so a Research timeout banded itself ALIGN on the board
         # while the sentence beside it said Research.
         emit_event error "$action" "$action timed out under the stage watchdog (${stage_timeout}s) — escalated to awaiting-human" stageFailure=1
+        # S312 — the SAME fact, in state.json, for the readers that ask mission
+        # state rather than the event log. A timeout IS a failed attempt; it is
+        # awaiting-human AS WELL, and those are two facts, not one.
+        drive_mark_stage_failed "$action" \
+          "$action timed out under the stage watchdog (${stage_timeout}s) — escalated to awaiting-human"
         drive_print_summary "$summary"
         printf '⏱ stopped: %s timed out under the watchdog — flagged the human (resolve with: %s).\n' "$action" "$(respond_hint)"
         printf '%s\n' "$out"
@@ -22679,6 +26658,16 @@ cmd_drive() {
     [ -n "$fail_log_size1" ] && [ "$fail_log_size1" != "${fail_log_size0:-}" ] \
       && fail_log_kv+=("log=$fail_log_rel")
     emit_event error "$action" "$action failed${err_tail:+: $err_tail}" "${fail_log_kv[@]}"
+    # S312 — AND THE SAME FACT IN MISSION STATE. This is the exact arm the real
+    # mission took at 01:36: the driver then exited 0-ish and normally, the
+    # event log knew, and state.json said `"stage": "align"` — indistinguishable
+    # from a mission filed five seconds ago. `$action` (the stage that RAN), not
+    # `$stage` (where the mission sits) — the S214 D2 distinction.
+    # The log rides the record under the SAME condition it rides the event: only
+    # when THIS run actually wrote to it (fail_log_kv carries `log=` iff so).
+    local fail_log_rec=""
+    case " ${fail_log_kv[*]} " in *" log=$fail_log_rel "*) fail_log_rec="$fail_log_rel" ;; esac
+    drive_mark_stage_failed "$action" "$action failed${err_tail:+: $err_tail}" "$fail_log_rec"
     drive_print_summary "$summary"
     printf '⏹ stopped: %s failed\n' "$action"
     printf '%s\n' "$out"
@@ -23297,6 +27286,32 @@ FSG_EOF
   # against a mission fixture and prints its rc as a parseable token, so the
   # flip-flop / declared-edits / quality-floor / v2-result contracts are
   # exercised offline + token-free. Inert for every real subcommand.
+  # S308 test hook: the REAL scope resolver (the one every proof leg calls) over
+  # a ticket's declared test relpaths. With --sha it reads the relpaths out of
+  # the diff exactly as the flip-flop gate does; with no --sha it resolves the
+  # EMPTY set, which is the one case that genuinely cannot be narrowed — so the
+  # full-suite fallback's named event and its stated reason are provable without
+  # having to construct a repo the harness cannot scope. Prints KIND / WHY /
+  # SCOPES; emits the same event a live leg emits. Inert for real subcommands.
+  intree-scope-test)
+    locate_mission "$MISSION_ID"
+    __is_rels=""
+    [ -n "$RC_SHA" ] && __is_rels="$(proof_test_rels_in_diff "$RC_SHA" "${POSARG:-$REPO_ROOT}" existing)"
+    intree_scopes_for "${POSARG:-$REPO_ROOT}" "$__is_rels" >/dev/null
+    proof_say_scope_kind "$INTREE_SCOPE_KIND" "$INTREE_SCOPE_WHY"
+    printf 'KIND=%s\n' "$INTREE_SCOPE_KIND"
+    printf 'WHY=%s\n'  "$INTREE_SCOPE_WHY"
+    printf 'SCOPES=%s\n' "$(printf '%s' "$INTREE_SCOPES" | tr '\n' ' ')"
+    # NOT in a command substitution. resolve_gate_timeout answers by SETTING
+    # GATE_TIMEOUT_SECS/SRC/NOTE as globals, and a `$( … )` runs it in a
+    # subshell — so the number came back right while the SOURCE label was
+    # thrown away and this diagnostic printed `default` whatever the real
+    # source was. The leg path gets this right with an explicit comment; the
+    # hook missed it. A lying diagnostic is worse than none.
+    resolve_gate_timeout "${POSARG:-$REPO_ROOT}" >/dev/null
+    printf 'TIMEOUT=%s SOURCE=%s\n' "$GATE_TIMEOUT_SECS" "$GATE_TIMEOUT_SRC"
+    printf 'NOTE=%s\n' "$GATE_TIMEOUT_NOTE"
+    exit 0 ;;
   flip-flop-gate-test)
     locate_mission "$MISSION_ID"
     [ -n "$TICKET" ] || die "usage: run.sh flip-flop-gate-test --mission <id> --ticket <t> --sha <parent-sha> [worktree]"

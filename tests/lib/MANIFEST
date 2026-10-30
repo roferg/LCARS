@@ -28,8 +28,12 @@
 100644 tests/lib/cage.py                           exercised  harness, lcars-eeh, lcars-xo-observe/-press/-phone/-evidence/-render-gate
 100755 tests/lib/drive-rig.sh                      exercised  establish-vision, foundation-gate
 100644 tests/lib/evaluate_prompt_guard.py          exercised  lcars-xo-drives, lcars-xo-eyes
+100644 tests/lib/front-door-findings.test.py            exercised  front-door-findings
 100644 tests/lib/home_marks_guard.py               exercised  lcars-xo-selfrun
 100644 tests/lib/landing_forbidden_cures.py        exercised  lcars-xo-landing
+100644 tests/lib/lcars-ech-continuity.test.py           exercised  lcars-ech
+100644 tests/lib/lcars-ech-grants.test.py               exercised  lcars-ech
+100644 tests/lib/optional_runner.py                exercised  optional-runner, gate-execution-findings, settings-findings
 100644 tests/lib/phone-mkfixture.py                exercised  lcars-xo-phone
 100755 tests/lib/ptyrun.py                         exercised  harness, lcars-ech
 100755 tests/lib/real-worker.sh                    exercised  real-worker-resolution

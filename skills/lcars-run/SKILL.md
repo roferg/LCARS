@@ -164,6 +164,17 @@ commits of its own), by a pointer move when it is not checked out and by a real
 by a checkout, reset or force. `lcars file` does none of this: at file time a
 branch cut at an older commit was cut there on purpose.
 
+**Implement self-heal recovery is different from the startup fast-forward.**
+When the full-suite gate needs a repair and the Mission has both its own commits
+and a newer base, the self-heal guard merges the base instead of rewriting those
+commits. It builds the merge in a detached recovery worktree under the replay
+mutex, checks that both original tips remain ancestors, and publishes only if
+the Mission tip has not changed. The existing ticket re-check and full-suite
+gate then judge the merged state. A dirty tree, an operation in progress, a
+Mission branch checked out elsewhere, or a failed/conflicting merge stops
+recovery for a human without spending a repair round. The startup helper's
+refusal to force-move committed work and Verify's stage restriction are unchanged.
+
 The verdict is recorded on the Mission as `state.json.baseFreshness`
 (`verdict` ∈ `current | updated | stale | unknown | child-base`, plus `reason`,
 `fix` (one runnable command or nothing), `fixNote`, `blocker`,
@@ -710,9 +721,116 @@ around them (see vision.md → *Implement*):
   runner tails, and the per-file source provenance (`parentLeg`) land in
   `tickets/<id>/flip-flop.json`.
 
+  A non-zero TIP command is RED only when its failing invocation reports
+  executed tests or runner-reported failed-test evidence (including Go's
+  `--- FAIL: Test…`, quiet pytest's failed-test identifier plus nonzero failure
+  summary, and Node dot's failed-test record with a test callback stack).
+  Node TAP's `ERR_TEST_FAILURE` file-process wrappers alone do not prove test
+  methods ran: boot-only failures are INCONCLUSIVE for both TAP and dot.
+  Assertion text alone, including text in a passing doctest, is not failure
+  evidence. Zero or unreadable execution evidence without failed-test evidence is
+  INCONCLUSIVE, with the command recorded in the reason.
+  An unreadable GREEN parent likewise cannot justify FAIL by claiming the
+  ticket's tests passed there.
+  For file scopes, direct `python -m unittest discover -s "$LCARS_TESTS_DIR"`
+  commands receive the file's directory as the start directory and its basename
+  as the discovery pattern. Directory-scoped commands are unchanged.
+  Declared files must **take part**: produce executed tests, or have a function,
+  method, or class defined there called during tests in a passing, positive
+  file-scoped Python invocation. `sys.monitoring` observes direct
+  `python -m unittest` and `python -m pytest` commands, including dynamically
+  resolved calls; merely loading a module or executing its import-time body
+  earns no credit. No source import scan or
+  worker-declared helper exemption is used. A zero-test invocation supplies no
+  call credit. For ancestor-directory scopes, positive file-scoped probes
+  must agree with calls observed in the actual leg. Runtime participation appears
+  as `path=called` in `declaredRan.each`. The independent inert-source exclusion
+  is retained: inert Python source plus direct unittest loading that confirms
+  zero tests appears in `declaredRan.excluded`. Plain module-name assignments
+  of literal strings, numbers (including signed numbers), booleans, `None`,
+  and recursively literal tuples/lists/dicts/sets are also inert. Calls,
+  imports, comprehensions, classes, annotations, attribute/unpacking targets,
+  and assignments to `load_tests` or dunder names cannot use this exclusion.
+  The post-commit Python gate applies the same accounting.
+  A declared file with neither executed tests nor observed participation stays
+  INCONCLUSIVE. Wrappers, compound shell commands, isolated Python processes,
+  and other runtimes have no call observer and retain count/ablation
+  accounting; inability to observe is not permission to accept zero.
+
+  **What a leg is scoped to, and the clock it runs under** (S308), both recorded
+  in that file's `gate` block. The scope is the ticket's DECLARED test file; for
+  several files it is their common ancestor DIRECTORY only when that directory
+  holds no test the ticket did not declare — otherwise the leg runs the declared
+  files one at a time. (A flat `tests/` layout makes that ancestor the whole
+  suite: on one real repo a two-file ticket ran all 1255 tests, was terminated at
+  the timeout, and scored INCONCLUSIVE five times.) A leg that cannot be narrowed
+  at all says so by name — `proof_scope_full_suite_fallback` — instead of quietly
+  running everything. And a scope the repo's own testCommand **cannot select**
+  (the very common `$(find "$LCARS_TESTS_DIR" -name "*.test.js")` matches nothing
+  for a declared `…_spec.js`, so the runner gets an empty argument list and
+  discovers its own tests) refuses the leg before it runs: INCONCLUSIVE, named
+  `proof_scope_selected_nothing`, with `gate.scopeSelectedNothing` recorded —
+  never a confident verdict about tests that never took part.
+
+  **The scope is PROVEN to have narrowed the run, not asserted.** LCARS does not
+  know how a repo's testCommand turns `$LCARS_TESTS_DIR` into a file list, and a
+  selection written in backticks, piped through `grep`, or spelled as a bare glob
+  all hand the runner an empty argument list and let it discover its own tests.
+  So the question is settled by EXPERIMENT: one **control run** per gate re-runs
+  the repo's own testCommand with the scope pointed at an EMPTY directory. If any
+  invocation of the leg executed the same number of tests under the same runner
+  as that control, the scope selected nothing and the verdict is INCONCLUSIVE
+  (`proof_scope_not_narrowed`). The comparison is made **per invocation**, where
+  each count was produced — a declared-files leg runs once per file, and
+  comparing only the SUM let a ticket pass while one of its two declared tests
+  was red and never executed.
+
+  The control is the FULL-SUITE-shaped run (an empty scope is what makes a
+  command fall back to discovery), so it is budgeted against the repo's own
+  recorded `gateTimeout` — or 120s — rather than a one-off narrow
+  `LCARS_GATE_TIMEOUT`. Unittest controls use an empty importable package under
+  the runner's working directory so `-t "$PWD"` remains valid. An unreadable
+  control records its actual exit and runner diagnostic; a timeout names the
+  gate-chosen budget, not a supposed repository defect or selection failure.
+  A narrowing the gate cannot establish is **not** a
+  licence to decide: `scopeControl.narrowing` records which it was — `proven`,
+  `moot` (every tracked test file in the tree is one the ticket declared, so
+  discovery could only run the ticket's own tests), `not-narrowed`,
+  `uncountable` (this runner prints no test count), or `unproven` — and an
+  `unproven` leg is INCONCLUSIVE with the reason naming why
+  (`proof_scope_narrowing_unproven`), never a confident PASS or FAIL.
+
+  **Zero executed is never evidence, on EITHER leg.** A run that exits green
+  while its own runner reports executing zero tests is INCONCLUSIVE
+  (`proof_leg_zero_executed`) — on the tip because a green on nothing is not a
+  pass, and on the parent because "the ticket's tests pass on the parent commit"
+  would describe a run that never happened. Zero on a **red** leg is untouched:
+  that is the flagship legitimate red, the greenfield parent whose copy of the
+  test dies at import because the module the ticket adds is not there yet.
+
+  The timeout is resolved PER LEG as `LCARS_GATE_TIMEOUT` >
+  `gateTimeout` in `.git/lcars/config.json` > 120s, so a repo can record what its
+  suite really needs and a drive resumed by `lcars respond` cannot lose it. An
+  unusable `gateTimeout` is **never discarded in silence**: a quoted or
+  whitespace-padded integer (`"30"`, `"  12  "` — plausible, since every other
+  value in that file is quoted) is honoured and the coercion is said out loud;
+  anything else (`abc`, `-5`, `0`, `7.5`, `true`) falls back to 120s with one
+  line naming the offending value; and a value above **3600s** is capped, because
+  a bound longer than an hour stops protecting against the never-settling suite
+  the gate exists to catch. What was wrong and what was used instead is recorded
+  as `gate.timeoutNote`.
+
 On a full pass the driver commits the ticket (tests + code in one commit),
 re-verifies against the committed state (post-commit gate), and prints
 `⊘ isolated — implement(<id>)`.
+
+The post-commit gate and ticket-suite retests reuse the flip-flop gate's command
+adapter: a Python `unittest discover` file scope becomes its directory plus a
+basename pattern; directory-scoped commands stay byte-identical. At post-commit,
+zero collection or an unimportable discovery start directory is a
+**could not run the tests** error, never evidence that the implementation is
+missing (rc 6). A real failing test keeps the existing missing-implementation
+verdict.
 
 **A gate rejection bounces, it does not die**: the verdict + runner tail is
 written to `tickets/<id>/gate-signal.txt` and a FRESH worker is spawned carrying

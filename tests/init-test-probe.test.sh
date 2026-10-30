@@ -74,6 +74,8 @@ case "$mode" in
   fail) echo "Test Files  1 failed (3)"; echo "FAIL src/a.test.ts"; exit 1 ;;
   zero) echo "No test files found, exiting with code 1"; exit 1 ;;
   hang) sleep 30; exit 0 ;;
+  slow) sleep \${LCARS_FAKE_SUITE_SECS:-4}
+        echo "Test Files  3 passed (3)"; echo "     Tests  8 passed (8)"; exit 0 ;;
 esac
 EOF
   chmod +x "$repo/bin/claude" "$repo/bin/gh" "$repo/bin/npx"
@@ -274,6 +276,53 @@ check "8c. init says the runner collected ZERO tests" \
 R7="$(new_node_repo pass)"; run_init "$R7"
 check "8d. a HEALTHY node repo is still certified online" \
   'grep -q "TEST SYSTEMS ONLINE" "$R7/out.txt"'
+
+# --- 9. S308: THE PROBE SEEDS THE GATE TIMEOUT IT JUST MEASURED -----------
+# The probe is the only place LCARS ever times this repo's whole suite, and it
+# threw that number away. On the repo this was measured against it timed out
+# and said only "fix it before
+# relying on the Implement gates" — while the Implement gates went on to kill
+# every proof leg at 120s, five times, with no way for the repo to record that
+# its suite needs longer. A measured suite SLOWER than the default gate is a
+# fact about the repo; it belongs in .git/lcars/config.json, said out loud.
+#
+# $LCARS_GATE_TIMEOUT_DEFAULT moves the LAST-RESORT default only, so this proves
+# the seeding with a 4-second fake suite instead of a 120-second one. THE
+# SHIPPED DEFAULT IS 500s; settings-findings.test.sh locks the timeout path.
+cfg_gate() { "${LCARS_PYTHON_BIN:-python3}" -c 'import json,sys; print(json.load(open(sys.argv[1])).get("gateTimeout"))' "$1/.git/lcars/config.json" 2>/dev/null; }
+
+R9="$(new_repo slow)"
+run_init "$R9" LCARS_GATE_TIMEOUT_DEFAULT=2 LCARS_FAKE_SUITE_SECS=4
+check "9a. the measured wall-clock is reported at setup, in seconds" \
+  'grep -qE "in [0-9]+s" "$R9/out.txt"'
+check "9b. init SEEDS a gateTimeout for a suite slower than the gate" \
+  '[ -n "$(cfg_gate "$R9")" ] && [ "$(cfg_gate "$R9")" != None ] && [ "$(cfg_gate "$R9")" -gt 2 ]'
+check "9c. and SAYS so, naming the key the captain can change" \
+  'grep -q "gateTimeout" "$R9/out.txt"'
+check "9d. the recommendation names the key AND the file it is recorded in" \
+  'grep "gateTimeout" "$R9/out.txt" | grep -q "config.json"'
+
+# A FAST suite must not seed anything — the key stays null and nothing is said.
+R9b="$(new_repo pass)"
+run_init "$R9b"
+check "9e. a suite inside the 500s default seeds NOTHING" \
+  '[ "$(cfg_gate "$R9b")" = None ]'
+# (The key is named in the "keys seeded" line, which is correct and expected —
+# what must NOT appear is a recommendation about a suite that is not slow.)
+check "9f. ...and makes no gate-timeout recommendation" \
+  '! grep -qE "recorded gateTimeout=|proof-gate timeout" "$R9b/out.txt"'
+
+# A value the captain already recorded is never overwritten by a later measure.
+R9c="$(new_repo slow)"
+run_init "$R9c" LCARS_INIT_SKIP_PROBE=1
+# In place, ONE line — never a json round trip (see lcars_config_merge: a raw
+# value is preserved by capturing its line's tail, so a pretty-printer would
+# split `numberOne` across lines and corrupt the config).
+sed -i.bak 's/"gateTimeout": [^,]*,/"gateTimeout": 999,/' "$R9c/.git/lcars/config.json"
+rm -f "$R9c/.git/lcars/config.json.bak"
+run_init "$R9c" LCARS_GATE_TIMEOUT_DEFAULT=2 LCARS_FAKE_SUITE_SECS=4
+check "9g. an existing gateTimeout is PRESERVED, never re-measured over" \
+  '[ "$(cfg_gate "$R9c")" = 999 ]'
 
 printf '\n  %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

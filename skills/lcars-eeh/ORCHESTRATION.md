@@ -340,6 +340,43 @@ readout that you inferred, so the next reader knows what was actually establishe
 control proves your check can detect the fault; inspecting rather than measuring
 proves you are checking the fault at all.
 
+### Watch a running mission READ-ONLY — never put a worktree on its branch
+
+**Observing a mission must not touch the thing being observed.** To see what a
+run is doing, read `.git/lcars/missions/<id>/events.jsonl`, or run
+`lcars status` / the viewscreen. All three are read-only and all three tell you
+more than a checkout does.
+
+**NEVER `git worktree add` on a mission's branch, and never check that branch
+out anywhere, while the mission is live.** Git permits exactly one working tree
+to hold a branch. A second one makes the branch unavailable to LCARS at the
+moment it tries to land a ticket's commit — and the harness cannot land, cannot
+proceed, and cannot tell that the obstruction is an observer rather than a
+genuine conflict.
+
+**What it cost, measured (2026-10-27, M16 `t-002`).** An orchestrator forked a
+background agent to watch the build; that agent put a worktree on the mission
+branch. The ticket went **green four times** — at 11, 37, 47 and 75 minutes —
+and was pulled back three times. The work itself was done and proven **11
+minutes in**; the other **64 of its 75 minutes were churn**. Every other ticket
+on that mission took one or two worker sessions. This one took **eleven**.
+
+**The harness diagnosed it perfectly and nobody was reading.** Its own event
+says, in full: *"branch … is checked out at …/.git/lcars/tmp/m16-wt (likely your
+own checkout) — git will not let the fix land while that tree holds the branch.
+The ticket's fix is built and green; switch that checkout to another branch …
+then re-run implement."* **The remedy was named, with the path, at 06:43.** An
+unattended run has nobody to read it, which is exactly why this is a rule at the
+top rather than a message at the bottom.
+
+**Two defects downstream of it are ledgered and deliberately NOT cured** — the
+per-ticket session cap restarting on the rebuild path, and a worker being
+rejected for test drift the harness itself caused. They are real, and they are
+only ever reached through a failed landing. **This rule removes the only cause
+either has ever been observed to have** (captain's call, 2026-10-27: *"given
+this was you watching, maybe we just do fix A?"*). If a failed landing is ever
+seen from another cause, they come back on the list.
+
 ### Cage a hang probe in its own PROCESS GROUP
 
 `perl -e 'alarm N; exec @ARGV'` does **NOT** reliably kill a blocked probe. On
@@ -501,5 +538,6 @@ blind spots; the journey carries the experience.
   readout, offer the next; do not start it.
 - **A pre-flight failure means stand down** (dirty tree, install out of sync,
   missing auth) — report it rather than working around it.
+- **Never attach a worktree to a live mission's branch** — observe a run through its event log, `lcars status` or the viewscreen, never a checkout. See *Watch a running mission READ-ONLY*; this one cost 64 minutes and eight extra worker sessions on a single ticket.
 - **Never author under the install farms.** lcars-dev is for planning docs and
   meta-skills only; anything that ships is authored in the LCARS repo.

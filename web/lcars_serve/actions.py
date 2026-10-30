@@ -1180,14 +1180,16 @@ def _holodeck_model(engine):
     silently re-tier every grill in the product.
 
     claude  → "sonnet"           (the captain's pre-authorized S124 tier)
-    copilot → "claude-opus-4.8"  (free; kept for output quality)
+    copilot → "claude-opus-5.5"  (free; kept for output quality)
 
     NB the spike REFUTED the old justification for the copilot opus pin: on CLI
     1.0.79-1 `claude-sonnet-4.6` created AND edited files fine, and `create`
     cannot overwrite on opus either. The pin is a quality choice now, not a
     capability one.
     """
-    return "claude-opus-4.8" if _is_copilot(engine) else "sonnet"
+    # 2026-10-16: was claude-opus-4.8 until GitHub retired it from Copilot —
+    # the CLI now rejects that flag outright, so the holodeck turn never ran.
+    return "claude-opus-5.5" if _is_copilot(engine) else "sonnet"
 
 
 # ── S128 (FL-002 / FL-004) — the words that go with an in-flight turn ───────
@@ -7969,30 +7971,26 @@ class Actions(LogFacts):
         if not questions:
             return ""
         answers = answers if isinstance(answers, dict) else {}
-        out = ["## Open questions from the design session", "",
-               "These were raised while the design was being drawn. An answered "
+        guidance = ("These were raised while the design was being drawn. An answered "
                "one is the captain's own decision and is a requirement. For any "
-               "marked NO ANSWER RECORDED, READ THE QUESTION'S OWN LINE FIRST — "
+               "marked STILL OPEN (NO ANSWER RECORDED), READ THE QUESTION'S OWN LINE FIRST — "
                "it is quoted verbatim from the design doc, and if it records "
                "its own settlement then it IS settled and must not be asked "
                "again. Raise a human gate (`lcars:awaiting-human`) only for one "
                "the line leaves genuinely undecided. Never settle one yourself "
                "by taking whatever the mockup happens to show, and never treat "
-               "one as agreed because nobody objected.", ""]
-        for i, q in enumerate(questions):
+               "one as agreed because nobody objected.")
+        out = ["## Open questions from the design session", ""]
+        for q in questions:
             said = str(answers.get(q["id"], "") or "").strip()
-            out.append("%d. Q: %s" % (i + 1, q["text"]))
             if said:
-                out.append("   ANSWERED by the captain: %s" % said)
+                out.append("- RESOLVED with the captain: %s — DECIDED: %s"
+                           % (q["text"], said))
             else:
-                # THE FACT, AND ONLY THE FACT. It used to add "he was not asked,
-                # or did not answer" — a disjunction the daemon invented, whose
-                # first half the promote dialog makes false — and "Treat as
-                # undecided", which is a verdict on a line it never read.
-                out.append("   ⚠ NO ANSWER RECORDED at filing — he typed "
-                           "nothing in the box. Read the line above before "
-                           "you spend a gate on it.")
-        return "\n".join(out) + "\n"
+                out.append("- STILL OPEN: %s" % q["text"])
+        guidance += (" NO ANSWER RECORDED at filing means he typed nothing in "
+                     "the box; read the question before spending a gate on it.")
+        return "\n".join(out + ["", "## Design question guidance", "", guidance]) + "\n"
 
     @classmethod
     def _handoff_idea(cls, idea, scope, concept_text="", answers=None):
@@ -8010,12 +8008,33 @@ class Actions(LogFacts):
         disk, so a crafted request cannot put a sentence in front of a worker.
         """
         parts = [idea]
+        # A captain-supplied destination is authoritative. Filing checks its
+        # coverage; appending a second one would make correct input unfileable.
+        has_questions, fence = False, None
+        for line in idea.splitlines():
+            marker = re.match(r"^ {0,3}(`{3,}|~{3,})(.*)$", line)
+            if marker:
+                delimiter, suffix = marker.groups()
+                if fence is None:
+                    fence = delimiter
+                elif (delimiter[0] == fence[0] and len(delimiter) >= len(fence)
+                      and not suffix.strip()):
+                    fence = None
+                continue
+            if fence is not None:
+                continue
+            heading = re.match(r"^#{1,6}\s+(.*)$", line)
+            if heading and re.sub(r"[^a-z0-9]+", " ", heading.group(1).lower()
+                                 ).strip().startswith("open questions from the design session"):
+                has_questions = True
+                break
         # S178 CURE 5 — …and, after them, the CHECKLIST over both homes. It sits
         # here rather than inside either bucket's own block for the reason the
         # buckets are split at all: it is about BOTH of them, and neither one
         # owns it. Empty (and so byte-identical to the pre-S178 idea) whenever
         # the design session left nothing unsettled.
-        for block in (cls._handoff_questions_block(concept_text, answers),
+        for block in ("" if has_questions else
+                      cls._handoff_questions_block(concept_text, answers),
                       _handoff_carry_forward_block(concept_text)):
             if block:
                 parts.append(block.strip())
@@ -14540,7 +14559,7 @@ def _grill_model(engine):
 
     Mirrors alias_for_tier's per-engine DEFAULT (skills/lcars-run/run.sh) so the
     grill is NOT a bare CLI default and stays at CLI parity with the pipeline:
-      * copilot → "claude-opus-4.8" (OPUS-SAFE — copilot's create-tool can't
+      * copilot → "claude-opus-5.5" (OPUS-SAFE — copilot's create-tool can't
         overwrite on a non-opus tier, so the whole engine runs opus by default).
       * claude  → "sonnet" (its default reasoning tier).
     Engine is the worker bin path; selection is by basename (same idiom as
@@ -14549,7 +14568,9 @@ def _grill_model(engine):
     """
     base = os.path.basename(engine or "").lower()
     if "copilot" in base:
-        return "claude-opus-4.8"
+        # 2026-10-16: the id moved 4.8 → 5.5 (claude-opus-4.8 retired from
+        # Copilot); mirrors run.sh alias_for_tier, policy unchanged.
+        return "claude-opus-5.5"
     return "sonnet"
 
 

@@ -120,7 +120,20 @@ fi
 # with one commit, plus a local bare "origin" so `push-gated` has something to
 # push to for real.
 new_repo() {
-  local repo; repo="$(mktemp -d "$TMPROOT/repo.XXXXXX")"
+  # THE FENCE, MEASURED THE HARD WAY (S312 fix round 1). If $TMPROOT has gone —
+  # a concurrently running suite sweeping $TMPDIR will do it — `mktemp -d` fails,
+  # `$repo` is EMPTY, and every `git … "$repo"` below then operates on the CWD,
+  # which is the LCARS CHECKOUT ITSELF: `git init --bare ""` made the real repo
+  # bare, `git config user.email` overwrote the captain's identity in it, and
+  # `git branch lcars/<id> main` left five junk refs. It happened. So an empty or
+  # missing path is a REFUSAL, never a git command: no suite may write to the
+  # repo it is testing.
+  [ -n "${TMPROOT:-}" ] && [ -d "$TMPROOT" ] \
+    || { echo "FENCE: TMPROOT is missing — refusing to run git with an empty path" >&2; exit 97; }
+  local repo; repo="$(mktemp -d "$TMPROOT/repo.XXXXXX")" \
+    || { echo "FENCE: mktemp failed under $TMPROOT — refusing" >&2; exit 97; }
+  [ -n "$repo" ] && [ -d "$repo" ] \
+    || { echo "FENCE: empty repo path from mktemp — refusing" >&2; exit 97; }
   local bare="$repo.git"
   git init -q --bare "$bare"
   git init -q -b main "$repo"
@@ -563,8 +576,9 @@ check "LCARS_GATE_TIMEOUT came from the config" \
   "qgrep -q 'gate timeout is 600' '$R3/.git/lcars/autopilot/drive-lcars-drive-1.log'"
 check "the drive called run.sh drive --mission (it did not re-sequence stages)" \
   "qgrep -q 'run-long.sh drive --mission lcars-drive-1' '$STUB_LOG'"
+WAITER_SOURCE="$(sed -n '/^cmd_waiter() {/,/^}/p' "$SCRIPT")"
 check "no sleep-polling in the waiter: it blocks on the process" \
-  "! qgrep -qE '^[^#]*(sleep [0-9]+ *; *(kill|done)|while .*kill -0)' '$SCRIPT'"
+  "[ -n \"\$WAITER_SOURCE\" ] && ! printf '%s\n' \"\$WAITER_SOURCE\" | qgrep -qE '^[^#]*(sleep [0-9]+ *; *(kill|done)|while .*kill -0)'"
 
 # Kill the DRIVER; the waiter must notice through the process, within 5 s.
 kill -9 "$dpid" 2>/dev/null
@@ -621,6 +635,361 @@ ap "$R4b" record 'missions.M0.id' lcars-done-1 >/dev/null 2>&1
 ap "$R4b" record "drivers.lcars-done-1.exitedAt" 1 >/dev/null 2>&1
 check "a done mission is never reported stalled" \
   "! ap '$R4b' stalled 2>&1 | qgrep -q 'lcars-done-1'"
+
+# ==========================================================================
+# 4b. S312 — stalled CANNOT LIE ABOUT A LIVE WORKER, and it SEES "failed and idle"
+# ==========================================================================
+# TWO DEFECTS, ONE VERB, both measured on a real mission.
+#
+# (1) THE DANGEROUS ONE. cmd_stalled decided liveness from the ECH-RECORDED
+#     driver pid alone. A mission advanced by `lcars respond … answer` starts
+#     its OWN driver and writes the MISSION's own drive lock, so the pid the ECH
+#     recorded is a dead intermediate while a live validator works the mission.
+#     From the outside that read as abandoned. Acting on the report — clear the
+#     lock, re-drive — writes mission state UNDER A RUNNING WORKER and breaches
+#     the worker fence. So liveness is now THREE measurements, and any one of
+#     them being live is enough to stay silent.
+#
+# (2) THE INVISIBLE ONE. A stage that FAILED left the driver exiting NORMALLY,
+#     so there was nothing for `stalled` to notice at all and the mission sat
+#     for 4h49m. `stalled` now also reports FAILED AND IDLE, read from the
+#     mission's own state.json (S312's failedStage/failedAt/failedReason).
+#
+# EVERY LIVENESS CASE HERE USES A REAL PROCESS. A pid in a file with a made-up
+# number is a stub of the very thing under test: `kill -0` on an invented pid
+# answers whichever way the host's pid space happens to fall, so a suite built
+# on one cannot tell a working check from a broken one.
+echo "-- 4b. stalled vs a LIVE worker, and failed-and-idle (S312) --"
+R4c="$(new_repo)"
+ap "$R4c" init --spec "$TMPROOT/spec.md" --scope M0 >/dev/null 2>&1
+M4C="$R4c/.git/lcars/missions"
+
+# --- B5: the mission's OWN drive lock is held by a LIVE process, while the
+#         ECH-recorded pid is DEAD. This is the dangerous case.
+new_mission "$R4c" lcars-locked-1 implement
+ap "$R4c" record 'missions.M0.id' lcars-locked-1 >/dev/null 2>&1
+( exec -a lcars-fake-lockholder sh -c 'while :; do sleep 1; done' ) </dev/null >/dev/null 2>&1 &
+lock_pid=$!; BG_PIDS="$BG_PIDS $lock_pid"
+mkdir -p "$M4C/lcars-locked-1/driver.lock"
+printf '%s\n' "$lock_pid" >"$M4C/lcars-locked-1/driver.lock/pid"
+# …and a DEAD recorded driver that exited and was never picked up: exactly the
+# shape that made the old check shout.
+( exec -a lcars-dead-intermediate sh -c 'exit 0' ) </dev/null >/dev/null 2>&1 &
+dead_pid=$!; wait "$dead_pid" 2>/dev/null || true
+ap "$R4c" record "drivers.lcars-locked-1.pid" "$dead_pid" >/dev/null 2>&1
+ap "$R4c" record "drivers.lcars-locked-1.exitedAt" 1 >/dev/null 2>&1
+check "B5-setup. the lock holder is a REAL live process" "kill -0 $lock_pid 2>/dev/null"
+check "B5-setup. the ECH-recorded pid is genuinely dead" "! kill -0 $dead_pid 2>/dev/null"
+s4d="$(ap "$R4c" stalled 2>&1)"; rc4d=$?
+check "B5. stalled exits 0 (the heartbeat never fails)" "[ $rc4d -eq 0 ]"
+check "B5. a mission whose OWN driver.lock is held by a LIVE process is NOT reported" \
+  "! printf '%s' \"\$s4d\" | qgrep -q 'lcars-locked-1'"
+# …and the OTHER direction: kill the real holder and it MUST be reported. A
+# check that is silent both ways is useless, which is the regression risk here.
+kill -9 "$lock_pid" 2>/dev/null; wait "$lock_pid" 2>/dev/null || true
+s4e="$(ap "$R4c" stalled 2>&1)"
+check "B5. once the REAL lock holder dies, the same mission IS reported" \
+  "printf '%s' \"\$s4e\" | qgrep -q 'lcars-locked-1'"
+
+# --- B6: a LIVE worker-adapter working out of this mission's directory. No
+#         drive lock at all — the adapter process is the only witness.
+new_mission "$R4c" lcars-worker-1 implement
+WA_DIR="$TMPROOT/wa"; mkdir -p "$WA_DIR"
+cat >"$WA_DIR/worker-adapter.sh" <<'WAEOF'
+#!/usr/bin/env bash
+while :; do sleep 1; done
+WAEOF
+chmod +x "$WA_DIR/worker-adapter.sh"
+mkdir -p "$M4C/lcars-worker-1/implement"
+bash "$WA_DIR/worker-adapter.sh" spawn claude repo-write \
+  "$M4C/lcars-worker-1/implement" '<prompt 1234 bytes>' </dev/null >/dev/null 2>&1 &
+wa_pid=$!; BG_PIDS="$BG_PIDS $wa_pid"
+( exec -a lcars-dead-intermediate-2 sh -c 'exit 0' ) </dev/null >/dev/null 2>&1 &
+dead2=$!; wait "$dead2" 2>/dev/null || true
+ap "$R4c" record "drivers.lcars-worker-1.pid" "$dead2" >/dev/null 2>&1
+ap "$R4c" record "drivers.lcars-worker-1.exitedAt" 1 >/dev/null 2>&1
+check "B6-setup. a REAL worker-adapter process is running for this mission" \
+  "kill -0 $wa_pid 2>/dev/null && ps -p $wa_pid -o command= | qgrep -q 'worker-adapter'"
+s4f="$(ap "$R4c" stalled 2>&1)"
+check "B6. a mission with a LIVE worker-adapter is NOT reported stalled" \
+  "! printf '%s' \"\$s4f\" | qgrep -q 'lcars-worker-1'"
+kill -9 "$wa_pid" 2>/dev/null; wait "$wa_pid" 2>/dev/null || true
+s4g="$(ap "$R4c" stalled 2>&1)"
+check "B6. once that REAL worker exits, the same mission IS reported" \
+  "printf '%s' \"\$s4g\" | qgrep -q 'lcars-worker-1'"
+
+# --- B4: FAILED AND IDLE. The 4h49m case: the driver exited NORMALLY after the
+#         stage stop, so there is nothing in the drivers ledger to notice. The
+#         mission's own state.json is the witness.
+R4d="$(new_repo)"
+ap "$R4d" init --spec "$TMPROOT/spec.md" --scope M0 >/dev/null 2>&1
+M4D="$R4d/.git/lcars/missions"
+new_mission "$R4d" lcars-failed-1 implement
+ap "$R4d" record 'missions.M0.id' lcars-failed-1 >/dev/null 2>&1
+check "B4-setup. no drivers ledger entry at all for this mission" \
+  "[ -z \"\$(jget '$R4d/.git/lcars/autopilot.json' 'd.get(\"drivers\",{}).get(\"lcars-failed-1\")')\" ]"
+s4h="$(ap "$R4d" stalled 2>&1)"
+check "B4-control. before the failure is recorded, it is NOT reported" \
+  "! printf '%s' \"\$s4h\" | qgrep -q 'lcars-failed-1'"
+python3 - "$M4D/lcars-failed-1/state.json" <<'PY2'
+import json, sys
+d = json.load(open(sys.argv[1]))
+d["failedStage"] = "implement"
+d["failedAt"] = "2026-10-23T01:36:00Z"
+d["failedReason"] = "implement failed: the self-heal round could not apply its fix"
+json.dump(d, open(sys.argv[1], "w"), indent=2)
+PY2
+s4i="$(ap "$R4d" stalled 2>&1)"; rc4i=$?
+check "B4. stalled exits 0 when it reports a failed mission" "[ $rc4i -eq 0 ]"
+check "B4. a FAILED AND IDLE mission is reported" \
+  "printf '%s' \"\$s4i\" | qgrep -q 'lcars-failed-1'"
+check "B4. …and it says FAILED, not just 'stalled'" \
+  "printf '%s' \"\$s4i\" | qgrep -qi 'failed'"
+check "B4. …and names the STAGE it failed at" \
+  "printf '%s' \"\$s4i\" | qgrep -q 'implement'"
+check "B4. …and WHEN it failed" \
+  "printf '%s' \"\$s4i\" | qgrep -q '2026-10-23T01:36:00Z'"
+check "B4. …and the one-line REASON" \
+  "printf '%s' \"\$s4i\" | qgrep -q 'could not apply its fix'"
+# A failed mission is still a mission: a LIVE worker on it outranks the record,
+# because acting on it would breach the worker fence just the same.
+( exec -a lcars-fake-lockholder-2 sh -c 'while :; do sleep 1; done' ) </dev/null >/dev/null 2>&1 &
+lock2=$!; BG_PIDS="$BG_PIDS $lock2"
+mkdir -p "$M4D/lcars-failed-1/driver.lock"
+printf '%s\n' "$lock2" >"$M4D/lcars-failed-1/driver.lock/pid"
+s4j="$(ap "$R4d" stalled 2>&1)"
+check "B4. a FAILED mission with a LIVE worker is NOT reported (fence first)" \
+  "! printf '%s' \"\$s4j\" | qgrep -q 'lcars-failed-1'"
+kill -9 "$lock2" 2>/dev/null; wait "$lock2" 2>/dev/null || true
+# A DONE mission is never reported, failed record or not.
+new_mission "$R4d" lcars-failed-done done
+python3 - "$M4D/lcars-failed-done/state.json" <<'PY3'
+import json, sys
+d = json.load(open(sys.argv[1]))
+d["failedStage"] = "implement"
+d["failedReason"] = "an old failure, since shipped"
+json.dump(d, open(sys.argv[1], "w"), indent=2)
+PY3
+check "B4. a DONE mission is never reported, failed record or not" \
+  "! ap '$R4d' stalled 2>&1 | qgrep -q 'lcars-failed-done'"
+
+# --- B8 REGRESSION: a genuinely abandoned driver is STILL reported. This is
+#     what stops the liveness fix making the whole check useless — and it is
+#     asserted against a mission with NO lock dir and NO worker anywhere.
+R4e="$(new_repo)"
+ap "$R4e" init --spec "$TMPROOT/spec.md" --scope M0 >/dev/null 2>&1
+new_mission "$R4e" lcars-abandoned-1 implement
+ap "$R4e" record 'missions.M0.id' lcars-abandoned-1 >/dev/null 2>&1
+( exec -a lcars-abandoned-driver sh -c 'exit 0' ) </dev/null >/dev/null 2>&1 &
+ab_pid=$!; wait "$ab_pid" 2>/dev/null || true
+ap "$R4e" record "drivers.lcars-abandoned-1.pid" "$ab_pid" >/dev/null 2>&1
+ap "$R4e" record "drivers.lcars-abandoned-1.exitedAt" 1 >/dev/null 2>&1
+check "B8-setup. there is no driver.lock dir for this mission" \
+  "[ ! -d '$R4e/.git/lcars/missions/lcars-abandoned-1/driver.lock' ]"
+s4k="$(ap "$R4e" stalled 2>&1)"
+check "B8 REGRESSION. a genuinely abandoned driver is STILL reported stalled" \
+  "printf '%s' \"\$s4k\" | qgrep -q 'lcars-abandoned-1'"
+check "B8 REGRESSION. …and the report still names the stage and the exit" \
+  "printf '%s' \"\$s4k\" | qgrep -q 'stage=implement'"
+# A STALE lock (a crashed driver's pid file, owner long gone) must NOT buy
+# silence — that would be the liveness fix re-creating the invisibility it cures.
+mkdir -p "$R4e/.git/lcars/missions/lcars-abandoned-1/driver.lock"
+printf '%s\n' "$ab_pid" >"$R4e/.git/lcars/missions/lcars-abandoned-1/driver.lock/pid"
+s4l="$(ap "$R4e" stalled 2>&1)"
+check "B8 REGRESSION. a STALE driver.lock (dead owner) does not buy silence" \
+  "printf '%s' \"\$s4l\" | qgrep -q 'lcars-abandoned-1'"
+# …nor does a lock file with GARBAGE in it (a truncated write, a stray editor).
+printf 'not-a-pid\n' >"$R4e/.git/lcars/missions/lcars-abandoned-1/driver.lock/pid"
+s4m="$(ap "$R4e" stalled 2>&1)"
+check "B8 REGRESSION. a GARBAGE driver.lock pid does not buy silence either" \
+  "printf '%s' \"\$s4m\" | qgrep -q 'lcars-abandoned-1'"
+
+# ==========================================================================
+# 4c. S312 FIX ROUND 1 — ONE LANE, THE BEST MESSAGE, EXACTLY ONCE
+# ==========================================================================
+# MEASURED BY A FRESH TESTER, on a real `ech drive` of the fixture whose worker
+# produced nothing. The headline S312 shipped NEVER PRINTED on the only kind of
+# mission the incident actually happened to:
+#
+#   DID      a real drive, research genuinely failed, driver exited, `stalled`
+#   EXPECTED FAILED AND IDLE: … its research stage FAILED at … <reason>
+#   SAW      STALLED: … (stage=align, exit=1) — its driver ended and nobody
+#            picked it up.          …while state.json carried all three fields.
+#
+# MECHANISM: two lanes, mutually exclusive, and the GENERIC one won. Lane 1 walked
+# the drivers ledger and printed `STALLED:`; lane 2 then skipped any mission lane 1
+# had `seen`. `ech drive` ALWAYS writes a driver record, so an ECH-driven failed
+# mission was always claimed by the worse message. Isolated by the tester:
+# deleting the `drivers.<id>` key produced the right line, re-adding it suppressed
+# it again — and it reproduced with exitCode 0 too, so it was never about the code.
+#
+# AND A SECOND BLINDNESS, in the ordinary case: the captain's laptop sleeps after
+# one minute, even on mains. A drive interrupted that way leaves a `driver.lock`
+# whose owner is DEAD and (before this round) nothing at all in state.json, and
+# every surface went quiet. A stale lock with a dead owner is now reported in its
+# own right — a mission nobody is advancing is the whole question this verb asks.
+#
+# So there is ONE lane with THREE witnesses (a recorded failure, an unclaimed
+# driver exit, a dead lock owner); each mission is reported ONCE, with the best
+# witness it has; and every line carries the cure that actually silences IT.
+echo "-- 4c. stalled: one lane, best message, once (S312 fix round 1) --"
+R4f="$(new_repo)"
+ap "$R4f" init --spec "$TMPROOT/spec.md" --scope M0 >/dev/null 2>&1
+M4F="$R4f/.git/lcars/missions"
+
+# mkfailed <missions-dir> <id> [stage] — S312's recorded failure, the three fields.
+mkfailed() {
+  python3 - "$1/$2/state.json" "${3:-implement}" <<'PYF'
+import json, sys
+d = json.load(open(sys.argv[1]))
+d["failedStage"] = sys.argv[2]
+d["failedAt"] = "2026-10-23T01:36:00Z"
+d["failedReason"] = "implement failed: the self-heal round could not apply its fix"
+json.dump(d, open(sys.argv[1], "w"), indent=2)
+PYF
+}
+
+# headlines <output> <id> — how many REPORT LINES name this mission. The cure
+# lines beneath a headline also name it (they have to — they carry a command), so
+# "reported once" is counted on the headline prefixes, not on the id.
+headlines() { printf '%s\n' "$1" | grep -cE "^(STALLED|FAILED AND IDLE): $2 " ; }
+
+# --- D1: AN ECH-DRIVEN FAILED MISSION. A driver record IS present, exactly as a
+#         real drive leaves it: a recorded pid that is now dead, an exitedAt, an
+#         exit code, and nobody having picked it up.
+new_mission "$R4f" lcars-echdriven-1 implement
+ap "$R4f" record 'missions.M0.id' lcars-echdriven-1 >/dev/null 2>&1
+mkfailed "$M4F" lcars-echdriven-1 research
+( exec -a lcars-echdrive-dead sh -c 'exit 1' ) </dev/null >/dev/null 2>&1 &
+ed_pid=$!; wait "$ed_pid" 2>/dev/null || true
+ap "$R4f" record "drivers.lcars-echdriven-1.pid" "$ed_pid" >/dev/null 2>&1
+ap "$R4f" record "drivers.lcars-echdriven-1.exitedAt" 1 >/dev/null 2>&1
+ap "$R4f" record "drivers.lcars-echdriven-1.exitCode" 1 >/dev/null 2>&1
+check "D1-setup. the ECH-recorded driver pid is genuinely dead" \
+  "! kill -0 $ed_pid 2>/dev/null"
+check "D1-setup. a driver record IS present (this is what made the headline inert)" \
+  "[ -n \"\$(jget '$R4f/.git/lcars/autopilot.json' 'd[\"drivers\"][\"lcars-echdriven-1\"][\"exitedAt\"]')\" ]"
+s4n="$(ap "$R4f" stalled 2>&1)"; rc4n=$?
+check "D1. stalled still exits 0 (the heartbeat never fails)" "[ $rc4n -eq 0 ]"
+check "D1. an ECH-DRIVEN failed mission gets the INFORMATIVE message" \
+  "printf '%s' \"\$s4n\" | qgrep -q 'FAILED AND IDLE: lcars-echdriven-1'"
+check "D1. …and NOT the generic STALLED line that used to pre-empt it" \
+  "! printf '%s' \"\$s4n\" | qgrep -q 'STALLED: lcars-echdriven-1'"
+check "D1. …it names the STAGE that failed" \
+  "printf '%s' \"\$s4n\" | qgrep -q 'research stage FAILED'"
+check "D1. …WHEN it failed" \
+  "printf '%s' \"\$s4n\" | qgrep -q '2026-10-23T01:36:00Z'"
+check "D1. …and WHY" \
+  "printf '%s' \"\$s4n\" | qgrep -q 'could not apply its fix'"
+check "D1. REPORTED EXACTLY ONCE — one headline, not one per lane" \
+  "[ \"\$(headlines \"\$s4n\" lcars-echdriven-1)\" = 1 ]"
+
+# …and with exitCode 0, which is what the real incident had: the driver exited
+# NORMALLY after the stage stop. The tester reproduced the suppression both ways,
+# so it was never about the exit code.
+ap "$R4f" record "drivers.lcars-echdriven-1.exitCode" 0 >/dev/null 2>&1
+s4n0="$(ap "$R4f" stalled 2>&1)"
+check "D1. …and the same holds with exitCode 0 (the real incident's shape)" \
+  "printf '%s' \"\$s4n0\" | qgrep -q 'FAILED AND IDLE: lcars-echdriven-1'"
+check "D1. …still exactly one headline for it" \
+  "[ \"\$(headlines \"\$s4n0\" lcars-echdriven-1)\" = 1 ]"
+
+# --- D2: THE ADVICE NAMES SOMETHING THAT WORKS. The tester ran the cure the old
+#         footer printed — `record drivers.<id>.pickedUpAt <ts>` — and the line
+#         printed again unchanged: that cure silences a STALLED lane, not this
+#         one. A refusal naming a cure that does not work is the defect S311
+#         spent a whole session fixing one file over.
+ap "$R4f" record "drivers.lcars-echdriven-1.pickedUpAt" 9 >/dev/null 2>&1
+s4p="$(ap "$R4f" stalled 2>&1)"
+check "D2. picking the DRIVER up does not clear a FAILED ATTEMPT (it is a different fact)" \
+  "printf '%s' \"\$s4p\" | qgrep -q 'FAILED AND IDLE: lcars-echdriven-1'"
+check "D2. …so the line says plainly that pickedUpAt does NOT silence it" \
+  "printf '%s' \"\$s4p\" | qgrep -q 'pickedUpAt.*does NOT silence'"
+check "D2. …and names the cure that DOES clear it: a re-drive" \
+  "printf '%s' \"\$s4p\" | qgrep -q 'drive lcars-echdriven-1'"
+check "D2. …and the footer no longer prescribes pickedUpAt for every mission alike" \
+  "! printf '%s' \"\$s4p\" | qgrep -qE 'mission\(s\) need attention.*pickedUpAt'"
+
+# --- D3: NO DRIVER RECORD AT ALL — the lane that DID work. Regression.
+new_mission "$R4f" lcars-nodriver-1 implement
+mkfailed "$M4F" lcars-nodriver-1 implement
+s4r="$(ap "$R4f" stalled 2>&1)"
+check "D3-setup. this mission has NO drivers ledger entry" \
+  "[ -z \"\$(jget '$R4f/.git/lcars/autopilot.json' 'd.get(\"drivers\",{}).get(\"lcars-nodriver-1\")')\" ]"
+check "D3 REGRESSION. a failed mission with no driver record still gets the message" \
+  "printf '%s' \"\$s4r\" | qgrep -q 'FAILED AND IDLE: lcars-nodriver-1'"
+check "D3 REGRESSION. …exactly once" \
+  "[ \"\$(headlines \"\$s4r\" lcars-nodriver-1)\" = 1 ]"
+
+# --- D4: A DRIVE KILLED MID-STAGE. No failure record (the driver died before it
+#         could write one) and no ledger exit (it never got to record one) — just
+#         a `driver.lock` whose owner is DEAD. This is the lid-closing case.
+new_mission "$R4f" lcars-killedlock-1 implement
+( exec -a lcars-killed-driver sh -c 'while :; do sleep 1; done' ) </dev/null >/dev/null 2>&1 &
+kl_pid=$!; BG_PIDS="$BG_PIDS $kl_pid"
+mkdir -p "$M4F/lcars-killedlock-1/driver.lock"
+printf '%s\n' "$kl_pid" >"$M4F/lcars-killedlock-1/driver.lock/pid"
+check "D4-setup. the lock holder is a REAL live process" "kill -0 $kl_pid 2>/dev/null"
+check "D4-setup. there is no failure record and no ledger entry" \
+  "[ -z \"\$(jget '$M4F/lcars-killedlock-1/state.json' 'd.get(\"failedStage\")')\" ] \
+   && [ -z \"\$(jget '$R4f/.git/lcars/autopilot.json' 'd.get(\"drivers\",{}).get(\"lcars-killedlock-1\")')\" ]"
+s4s="$(ap "$R4f" stalled 2>&1)"
+check "D4-control. while that drive is LIVE the mission is NOT reported (fence first)" \
+  "! printf '%s' \"\$s4s\" | qgrep -q 'lcars-killedlock-1'"
+kill -9 "$kl_pid" 2>/dev/null; wait "$kl_pid" 2>/dev/null || true
+s4t="$(ap "$R4f" stalled 2>&1)"
+check "D4. a stale driver.lock whose owner is DEAD is reported — in its own right" \
+  "printf '%s' \"\$s4t\" | qgrep -q 'lcars-killedlock-1'"
+check "D4. …and the line says the lock owner is dead, so the operator knows why" \
+  "printf '%s' \"\$s4t\" | qgrep -qi 'dead'"
+check "D4. …and names the re-drive, which reclaims a stale lock by itself" \
+  "printf '%s' \"\$s4t\" | qgrep -q 'drive lcars-killedlock-1'"
+check "D4. …exactly once" \
+  "[ \"\$(headlines \"\$s4t\" lcars-killedlock-1)\" = 1 ]"
+
+# --- D5: THE STALLED LANE'S OWN CURE, PROVEN BY DOING IT. An unclaimed driver
+#         exit, no failure record, no lock: the generic line is the best witness
+#         there is, and `pickedUpAt` really does silence it.
+new_mission "$R4f" lcars-unclaimed-1 implement
+( exec -a lcars-unclaimed-driver sh -c 'exit 0' ) </dev/null >/dev/null 2>&1 &
+uc_pid=$!; wait "$uc_pid" 2>/dev/null || true
+ap "$R4f" record "drivers.lcars-unclaimed-1.pid" "$uc_pid" >/dev/null 2>&1
+ap "$R4f" record "drivers.lcars-unclaimed-1.exitedAt" 1 >/dev/null 2>&1
+ap "$R4f" record "drivers.lcars-unclaimed-1.exitCode" 0 >/dev/null 2>&1
+s4u="$(ap "$R4f" stalled 2>&1)"
+check "D5. with no better witness, the generic STALLED line is still printed" \
+  "printf '%s' \"\$s4u\" | qgrep -q 'STALLED: lcars-unclaimed-1'"
+check "D5. …and it still carries the stage and the exit code" \
+  "printf '%s' \"\$s4u\" | qgrep -q 'stage=implement' && printf '%s' \"\$s4u\" | qgrep -q 'exit=0'"
+check "D5. …and its cure line names pickedUpAt" \
+  "printf '%s\n' \"\$s4u\" | grep -A2 'STALLED: lcars-unclaimed-1' | qgrep -q 'pickedUpAt'"
+ap "$R4f" record "drivers.lcars-unclaimed-1.pickedUpAt" 2 >/dev/null 2>&1
+s4v="$(ap "$R4f" stalled 2>&1)"
+check "D5. …and DOING IT silences that line (the advice is proven, not asserted)" \
+  "! printf '%s' \"\$s4v\" | qgrep -q 'lcars-unclaimed-1'"
+
+# --- D6: ALL THREE WITNESSES AT ONCE on a mission whose work is LIVE: total
+#         silence. This is the false-positive this whole round risks.
+new_mission "$R4f" lcars-allthree-1 implement
+mkfailed "$M4F" lcars-allthree-1 implement
+( exec -a lcars-allthree-holder sh -c 'while :; do sleep 1; done' ) </dev/null >/dev/null 2>&1 &
+at_pid=$!; BG_PIDS="$BG_PIDS $at_pid"
+mkdir -p "$M4F/lcars-allthree-1/driver.lock"
+printf '%s\n' "$at_pid" >"$M4F/lcars-allthree-1/driver.lock/pid"
+ap "$R4f" record "drivers.lcars-allthree-1.pid" "$uc_pid" >/dev/null 2>&1
+ap "$R4f" record "drivers.lcars-allthree-1.exitedAt" 1 >/dev/null 2>&1
+s4w="$(ap "$R4f" stalled 2>&1)"
+check "D6-setup. the lock holder is a REAL live process" "kill -0 $at_pid 2>/dev/null"
+check "D6. a failed record + an unclaimed exit + a LIVE lock = total silence" \
+  "! printf '%s' \"\$s4w\" | qgrep -q 'lcars-allthree-1'"
+kill -9 "$at_pid" 2>/dev/null; wait "$at_pid" 2>/dev/null || true
+s4x="$(ap "$R4f" stalled 2>&1)"
+check "D6. …and once the real holder dies it is reported, with the BEST witness" \
+  "printf '%s' \"\$s4x\" | qgrep -q 'FAILED AND IDLE: lcars-allthree-1'"
+check "D6. …still exactly one headline, though all three witnesses apply" \
+  "[ \"\$(headlines \"\$s4x\" lcars-allthree-1)\" = 1 ]"
+check "D6. …and the extra witness is not lost: the dead lock is mentioned too" \
+  "printf '%s\n' \"\$s4x\" | grep -A3 'FAILED AND IDLE: lcars-allthree-1' | qgrep -qi 'lock'"
 
 # ==========================================================================
 # 5. land — the approve path, its refusals, and the hygiene
@@ -728,8 +1097,8 @@ kill -9 "$lp" 2>/dev/null || true
 # FALSIFIES the captain's record of what shipped: four laps produced six false
 # "merged" entries and nothing merged.
 # The cure is to re-read the mission's OWN state.json: landed only when the
-# stage is actually `done`. The mode must NEVER pass --reapprove itself —
-# that sign-off is the captain's by design.
+# stage is actually `done`. Without a grant the mode must not pass --reapprove;
+# S315's grant cases below prove the explicitly authorised path separately.
 R5E="$(new_repo)"
 ap "$R5E" init --spec "$TMPROOT/spec.md" --scope M0 >/dev/null 2>&1
 AP5E="$R5E/.git/lcars/autopilot.json"
@@ -759,7 +1128,7 @@ check "the question reports the stage the mission is actually at" \
   "printf '%s' \"\$(jget '$AP5E' 'd[\"pending\"]')\" | qgrep -q 'verify'"
 check "it pings the captain (this is a real stop-and-ask)" \
   "qgrep -q 'notify.sh lcars-reapp-1' '$STUB_LOG'"
-check "the mode NEVER passes --reapprove to approve itself" \
+check "without a grant the mode never passes --reapprove to approve itself" \
   "! qgrep -q -- '--reapprove' '$STUB_LOG'"
 check "approve was still called exactly once (no retry loop)" \
   "[ \"\$(grep -c 'approve.sh --mission lcars-reapp-1' '$STUB_LOG')\" = 1 ]"
@@ -1966,10 +2335,306 @@ LCDBAD="$(ap "$RLC" live-check done lcars-20261001-001 --verdict probably 2>&1)"
 check "a verdict that is neither pass nor bugs is REFUSED" "[ $lcdbrc -ne 0 ]"
 LCDNOV="$(ap "$RLC" live-check done lcars-20261001-001 2>&1)"; lcdnrc=$?
 check "\`done\` with no --verdict is REFUSED (no silent pass)" "[ $lcdnrc -ne 0 ]"
+python3 - "$LCEV/checks.json" <<'PYPAIRS'
+import json, pathlib, sys
+manifest = pathlib.Path(sys.argv[1])
+rows = json.loads(manifest.read_text())
+for row in rows:
+    row["detector"] = "inspect fixture product output"
+    for role, verdict in (("target", "pass"), ("control", "fail")):
+        evidence = manifest.parent / (row["id"].replace(":", "-") + "-" + role + ".txt")
+        evidence.write_text(role + " observed\n")
+        row[role].update(verdict=verdict, evidence=str(evidence), observation=role + " inspected")
+manifest.write_text(json.dumps(rows))
+PYPAIRS
 LCDONE2="$(ap "$RLC" live-check done lcars-20261001-001 --verdict pass 2>&1)"
 check "a second done OVERWRITES the verdict (a re-verify round can clear it)" \
   "[ \"\$(jget '$APLC' 'd[\"liveChecks\"][\"lcars-20261001-001\"][\"verdict\"]')\" = pass ]"
 git -C "$RLC" worktree remove --force "$lc_wt" 2>/dev/null || true
+# ==========================================================================
+# S304 — THE CHECKLIST THE SEAT CAN ACTUALLY READ
+# ==========================================================================
+# MEASURED LIVE 2026-10-17 18:18. A Copilot seat driving an unattended mission
+# reached the Verify gate, ran `grep '^### ' …/skills/lcars-run/live-check/cli.md`
+# — a path THIS SCRIPT handed it, one line above — and froze on:
+#
+#   "This action may read or write the following path outside the paths
+#    currently allowed for this session."
+#
+# The seat was not browsing. It is trusted inside the PRODUCT REPOSITORY it is
+# building in; LCARS's own installed source tree is a different directory, so
+# every checklist read was an out-of-world read and, unattended, a frozen night.
+#
+# THE CURE IS A COPY, NOT A SHORTER PROMPT. The checklist is 313 lines and its
+# whole value is that the seat RE-READS it at the moment it needs each item, so
+# it cannot be forgotten as the seat's context grows. Inlining it into a brief
+# destroys exactly that. A copy on disk inside the repo keeps it.
+#
+# WHAT IS PINNED HERE: the path handed out is in-repo, its CONTENT is the real
+# checklist (not a stub), the SOURCE is untouched, a STALE copy from an older
+# LCARS is refreshed rather than used, and LCARS_LIVE_CHECK_DIR still overrides
+# the SOURCE. Every one carries a control, because a guard that cannot go red
+# reads exactly like a pass.
+echo "-- S304 the checklist the seat can read --"
+
+SRCLC="$REPO_ROOT/skills/lcars-run/live-check"
+
+# lc_paths — the checklist paths a live-check run HANDED OUT, scraped from its
+# own output. Reads stdin. If this ever returns nothing the controls below go
+# red, which is the point: an extractor that finds no paths proves nothing.
+lc_paths() { sed -n 's/^===== CHECKLIST: [a-z][a-z]* (\(.*\)) =====$/\1/p'; }
+# lc_reaches_source — "yes" if ANY of the given paths reaches into LCARS's own
+# installed source tree. THIS is the predicate the defect would trip.
+lc_reaches_source() {
+  if printf '%s\n' "$1" | qgrep -q 'skills/lcars-run'; then echo yes; else echo no; fi
+}
+
+RLS="$(new_repo)"
+ap "$RLS" init --spec "$TMPROOT/spec.md" --scope M0 >/dev/null 2>&1
+new_mission "$RLS" lcars-20261001-003 verify
+
+# A STALE COPY FROM "AN OLDER LCARS", planted before the run.
+mkdir -p "$RLS/.git/lcars/live-check"
+printf 'STALE-FROM-AN-OLDER-LCARS\n' >"$RLS/.git/lcars/live-check/cli.md"
+
+# The source checksums, taken BEFORE the run, so "unmodified" is measured.
+SRC_CLI_SUM="$(cksum <"$SRCLC/cli.md")"
+SRC_WEB_SUM="$(cksum <"$SRCLC/web.md")"
+SRC_WF_SUM="$(cksum <"$SRCLC/workflow.md")"
+# S304 (1c): the BUG TEMPLATE's source sum, same reason — the copy must not
+# write back into LCARS's own tree.
+SRCBP="$REPO_ROOT/skills/lcars-eeh/bug-prd.md"
+SRC_BPRD_SUM="$(cksum <"$SRCBP")"
+# A STALE staged template from "an older LCARS", planted before the run.
+printf 'STALE-BUG-PRD-FROM-AN-OLDER-LCARS\n' >"$RLS/.git/lcars/bug-prd.md"
+
+LSOUT="$(ap "$RLS" live-check lcars-20261001-003 --type cli,web,workflow 2>&1)"; lsrc=$?
+ls_wt="$(printf '%s\n' "$LSOUT" | sed -n 's/^WORKTREE: //p' | head -1)"
+LSPATHS="$(printf '%s\n' "$LSOUT" | lc_paths)"
+LSREPO="$RLS/.git/lcars/live-check"
+
+check "S304. live-check still exits 0" "[ $lsrc -eq 0 ]"
+check "S304. it handed out one path per type asked for" \
+  "[ \"\$(printf '%s\n' \"\$LSPATHS\" | grep -c . )\" -eq 3 ]"
+
+# (1) THE DEFECT ITSELF.
+check "S304. NO path it handed out reaches into LCARS's own source tree" \
+  "[ \"\$(lc_reaches_source \"\$LSPATHS\")\" = no ]"
+check "S304. every path it handed out is INSIDE the repo's own .git/lcars" \
+  "[ \"\$(printf '%s\n' \"\$LSPATHS\" | grep -c \"^$LSREPO/\")\" -eq 3 ]"
+check "S304. and each one really is a readable file there" \
+  "[ -f '$LSREPO/cli.md' ] && [ -f '$LSREPO/web.md' ] && [ -f '$LSREPO/workflow.md' ]"
+check "S304. the whole successful output names LCARS's checklist source nowhere" \
+  "! printf '%s\n' \"\$LSOUT\" | qgrep -q 'skills/lcars-run/live-check'"
+
+# (3) CONTROL — the same extractor + the same predicate, over an output in
+# which the path IS the source path. If this says `no`, the assertion above is
+# measuring nothing and its green is a lie.
+LSFAKE="$(printf '%s\n' "$LSOUT" | sed "s|$LSREPO|$SRCLC|g")"
+LSFAKEPATHS="$(printf '%s\n' "$LSFAKE" | lc_paths)"
+check "S304. CONTROL: the extractor finds paths at all (3 of them)" \
+  "[ \"\$(printf '%s\n' \"\$LSFAKEPATHS\" | grep -c . )\" -eq 3 ]"
+check "S304. CONTROL: the predicate says YES when the path IS the source tree" \
+  "[ \"\$(lc_reaches_source \"\$LSFAKEPATHS\")\" = yes ]"
+check "S304. CONTROL: the output-wide grep also fires on a source-path output" \
+  "printf '%s\n' \"\$LSFAKE\" | qgrep -q 'skills/lcars-run/live-check'"
+
+# (2) THE COPY IS REAL, NOT A STUB OR A SUMMARY.
+check "S304. the local cli.md is byte-identical to the source checklist" \
+  "cmp -s '$LSREPO/cli.md' '$SRCLC/cli.md'"
+check "S304. so is web.md"      "cmp -s '$LSREPO/web.md'      '$SRCLC/web.md'"
+check "S304. so is workflow.md" "cmp -s '$LSREPO/workflow.md' '$SRCLC/workflow.md'"
+check "S304. README.md is staged with them (so the staged dir can explain itself)" \
+  "cmp -s '$LSREPO/README.md' '$SRCLC/README.md'"
+check "S304. the local copy is the FULL 313-line cli checklist, not an excerpt" \
+  "[ \"\$(wc -l <'$LSREPO/cli.md' | tr -d ' ')\" -eq \"\$(wc -l <'$SRCLC/cli.md' | tr -d ' ')\" ]"
+check "S304. it still PRINTS the checklist, so a seat with no file read is unharmed" \
+  "printf '%s' \"\$LSOUT\" | qgrep -qF 'host of every outbound call'"
+check "S304. CONTROL: a stub copy would fail the byte-identical check" \
+  "printf 'stub\n' >'$TMPROOT/lc-stub.md'; ! cmp -s '$TMPROOT/lc-stub.md' '$SRCLC/cli.md'"
+
+# (4) THE STALE COPY IS REFRESHED, NEVER USED AS-IS.
+check "S304. a stale copy from an older LCARS was REFRESHED, not trusted" \
+  "! qgrep -q 'STALE-FROM-AN-OLDER-LCARS' '$LSREPO/cli.md'"
+check "S304. CONTROL: the stale marker was genuinely there before the run" \
+  "qgrep -q 'STALE-FROM-AN-OLDER-LCARS' <<<'STALE-FROM-AN-OLDER-LCARS'"
+# and it is refreshed EVERY time, not once: re-stale it and run again.
+printf 'STALE-AGAIN\n' >"$LSREPO/cli.md"
+LSOUT2="$(ap "$RLS" live-check lcars-20261001-003 --type cli 2>&1)"
+ls_wt2="$(printf '%s\n' "$LSOUT2" | sed -n 's/^WORKTREE: //p' | head -1)"
+check "S304. and refreshed on EVERY run, not just the first" \
+  "cmp -s '$LSREPO/cli.md' '$SRCLC/cli.md'"
+
+# (3, second half) THE SOURCE IS READ-ONLY — it still exists where Number One
+# and lcars-run look for it, byte-for-byte as it was.
+check "S304. the SOURCE checklists are still at their own shared home" \
+  "[ -f '$SRCLC/cli.md' ] && [ -f '$SRCLC/web.md' ] && [ -f '$SRCLC/workflow.md' ]"
+check "S304. and the source cli.md is UNMODIFIED by the copy" \
+  "[ \"\$(cksum <'$SRCLC/cli.md')\" = '$SRC_CLI_SUM' ]"
+check "S304. source web.md unmodified" \
+  "[ \"\$(cksum <'$SRCLC/web.md')\" = '$SRC_WEB_SUM' ]"
+check "S304. source workflow.md unmodified" \
+  "[ \"\$(cksum <'$SRCLC/workflow.md')\" = '$SRC_WF_SUM' ]"
+
+# (5) LCARS_LIVE_CHECK_DIR STILL OVERRIDES THE **SOURCE** LOCATION.
+LCOVR="$TMPROOT/lc-override"
+mkdir -p "$LCOVR"
+printf '# OVERRIDE CHECKLIST\n\nOVERRIDE-MARKER-9f3\n' >"$LCOVR/cli.md"
+RLS2="$(new_repo)"
+ap "$RLS2" init --spec "$TMPROOT/spec.md" --scope M0 >/dev/null 2>&1
+new_mission "$RLS2" lcars-20261001-004 verify
+export LCARS_LIVE_CHECK_DIR="$LCOVR"
+LSOVR="$(ap "$RLS2" live-check lcars-20261001-004 --type cli 2>&1)"; lsovrc=$?
+unset LCARS_LIVE_CHECK_DIR
+ls_wt3="$(printf '%s\n' "$LSOVR" | sed -n 's/^WORKTREE: //p' | head -1)"
+LSOVRPATHS="$(printf '%s\n' "$LSOVR" | lc_paths)"
+check "S304. LCARS_LIVE_CHECK_DIR run exits 0" "[ $lsovrc -eq 0 ]"
+check "S304. the override is read AS THE SOURCE (its content reaches the seat)" \
+  "printf '%s' \"\$LSOVR\" | qgrep -qF 'OVERRIDE-MARKER-9f3'"
+check "S304. the override's content is what landed in the in-repo copy" \
+  "cmp -s '$RLS2/.git/lcars/live-check/cli.md' '$LCOVR/cli.md'"
+check "S304. the override does NOT move the handed-out path out of the repo" \
+  "[ \"\$(printf '%s\n' \"\$LSOVRPATHS\")\" = '$RLS2/.git/lcars/live-check/cli.md' ]"
+check "S304. CONTROL: without the override the real checklist is used, not the marker" \
+  "! printf '%s' \"\$LSOUT\" | qgrep -qF 'OVERRIDE-MARKER-9f3'"
+check "S304. a MISSING checklist in an override dir is still refused, loudly" \
+  "export LCARS_LIVE_CHECK_DIR='$LCOVR'; o=\"\$(ap '$RLS2' live-check lcars-20261001-004 --type web 2>&1)\"; r=\$?; unset LCARS_LIVE_CHECK_DIR; [ \$r -ne 0 ] && ! printf '%s' \"\$o\" | qgrep -q 'CHECKLIST:'"
+
+# The playbook is the other route back to the source path: a seat that reads
+# `skills/lcars-run/live-check/cli.md` out of the prose freezes exactly the same
+# way, having never run the command.
+check "S304. the playbook hands the seat NO source-tree checklist path" \
+  "! qgrep -q 'skills/lcars-run/live-check/' '$REPO_ROOT/skills/lcars-eeh/HOLOGRAM-COMMAND-MODE.md'"
+check "S304. the playbook names the in-repo copy instead" \
+  "qgrep -qF '.git/lcars/live-check/' '$REPO_ROOT/skills/lcars-eeh/HOLOGRAM-COMMAND-MODE.md'"
+check "S304. CONTROL: the playbook still has a § 6 live-check section to carry it" \
+  "qgrep -qF 'lcars-ech live-check' '$REPO_ROOT/skills/lcars-eeh/HOLOGRAM-COMMAND-MODE.md'"
+
+echo "-- S304 the bug TEMPLATE the seat can read --"
+
+# THE SAME DEFECT, ONE LINE FURTHER ON. `live-check`'s last line handed the seat
+#   (template: <abs>/skills/lcars-eeh/bug-prd.md)
+# — a path into LCARS's own installed source tree — at the exact moment the seat
+# has FOUND a bug and is reaching for the template to file it. A seat is trusted
+# only inside the repository it is building in, so that read raises the same
+# permission dialog that froze the Verify gate on 2026-10-17, and it freezes the
+# run at its single most expensive moment. The captain's stopping rule for a
+# measurement needs one filed bug carried to merged, so a seat that cannot reach
+# the template cannot satisfy it.
+
+# bp_path — the template path a run HANDED OUT, scraped from its own output.
+# Reads stdin. If this returns nothing the controls below go red, which is the
+# point: an extractor that finds no path proves nothing.
+bp_path() { sed -n 's/^A BUG:.*(template: \(.*\))$/\1/p'; }
+# bp_reaches_source — "yes" if the given path reaches into LCARS's own installed
+# source tree. THIS is the predicate the defect would trip.
+bp_reaches_source() {
+  if printf '%s\n' "$1" | qgrep -q 'skills/lcars-eeh/bug-prd.md'; then echo yes; else echo no; fi
+}
+
+BPPATH="$(printf '%s\n' "$LSOUT" | bp_path)"
+BPREPO="$RLS/.git/lcars/bug-prd.md"
+
+check "S304. live-check hands out exactly ONE bug-template path" \
+  "[ \"\$(printf '%s\n' \"\$BPPATH\" | grep -c . )\" -eq 1 ]"
+
+# (1) THE DEFECT ITSELF.
+check "S304. the bug-template path it hands out does NOT reach LCARS's source tree" \
+  "[ \"\$(bp_reaches_source \"\$BPPATH\")\" = no ]"
+check "S304. the bug-template path it hands out is INSIDE the repo's own .git/lcars" \
+  "[ \"\$BPPATH\" = '$BPREPO' ]"
+check "S304. and the path it named really is a readable file" \
+  "[ -f \"\$BPPATH\" ] && [ -r \"\$BPPATH\" ]"
+check "S304. the whole successful output names the bug template's SOURCE nowhere" \
+  "! printf '%s\n' \"\$LSOUT\" | qgrep -q 'skills/lcars-eeh/bug-prd.md'"
+
+# (5) CONTROLS — mandatory, and the same shape as the checklist half above.
+# First: the extractor matches something at all, so a green (1) is never a
+# vacuous zero about the wrong population.
+check "S304. CONTROL: the extractor finds a template path at all" \
+  "[ -n \"\$BPPATH\" ]"
+check "S304. CONTROL: the output really does carry an 'A BUG:' line to scrape" \
+  "printf '%s\n' \"\$LSOUT\" | qgrep -q '^A BUG:'"
+# Second: substitute the SOURCE path back into the real output and require the
+# same extractor + the same predicate to answer "yes". If this says `no`, the
+# assertion above is measuring nothing and its green is a lie.
+BPFAKE="$(printf '%s\n' "$LSOUT" | sed "s|$BPREPO|$SRCBP|g")"
+BPFAKEPATH="$(printf '%s\n' "$BPFAKE" | bp_path)"
+check "S304. CONTROL: the extractor still finds the path when it IS the source" \
+  "[ \"\$(printf '%s\n' \"\$BPFAKEPATH\" | grep -c . )\" -eq 1 ]"
+check "S304. CONTROL: the predicate says YES when the path IS the source tree" \
+  "[ \"\$(bp_reaches_source \"\$BPFAKEPATH\")\" = yes ]"
+check "S304. CONTROL: the output-wide grep also fires on a source-path output" \
+  "printf '%s\n' \"\$BPFAKE\" | qgrep -q 'skills/lcars-eeh/bug-prd.md'"
+
+# (2) THE COPY IS THE REAL TEMPLATE, NOT A STUB OR A SUMMARY.
+check "S304. the staged bug-prd.md is byte-identical to the source template" \
+  "cmp -s '$BPREPO' '$SRCBP'"
+check "S304. it is the FULL template, not an excerpt" \
+  "[ \"\$(wc -l <'$BPREPO' | tr -d ' ')\" -eq \"\$(wc -l <'$SRCBP' | tr -d ' ')\" ]"
+check "S304. the staged copy carries the mandatory AC #1 the validator reads" \
+  "qgrep -qF 'Observed live:' '$BPREPO'"
+check "S304. CONTROL: a stub copy would fail the byte-identical check" \
+  "printf 'stub\n' >'$TMPROOT/bp-stub.md'; ! cmp -s '$TMPROOT/bp-stub.md' '$SRCBP'"
+
+# (4) THE STALE STAGED COPY IS REFRESHED, NEVER TRUSTED-IF-PRESENT. Copy-if-
+# missing lets a repo staged by an older LCARS shadow a newer template for ever,
+# and a silently out-of-date bug template is a bug that gets re-filed.
+check "S304. a stale template from an older LCARS was REFRESHED, not trusted" \
+  "! qgrep -q 'STALE-BUG-PRD-FROM-AN-OLDER-LCARS' '$BPREPO'"
+check "S304. CONTROL: the stale marker was genuinely detectable before the run" \
+  "qgrep -q 'STALE-BUG-PRD' <<<'STALE-BUG-PRD-FROM-AN-OLDER-LCARS'"
+printf 'STALE-BUG-PRD-AGAIN\n' >"$BPREPO"
+BPOUT2="$(ap "$RLS" live-check lcars-20261001-003 --type cli 2>&1)"
+ls_wt4="$(printf '%s\n' "$BPOUT2" | sed -n 's/^WORKTREE: //p' | head -1)"
+check "S304. and refreshed on EVERY run, not just the first" \
+  "cmp -s '$BPREPO' '$SRCBP'"
+
+# (3) THE SOURCE IS READ-ONLY HERE — it is still where `lcars-eeh docs bug-prd`
+# and Number One look for it, byte-for-byte as it was.
+check "S304. the SOURCE template is still at its own location" "[ -f '$SRCBP' ]"
+check "S304. and the source template is UNMODIFIED by the copy" \
+  "[ \"\$(cksum <'$SRCBP')\" = '$SRC_BPRD_SUM' ]"
+
+# `file-bug`'s OWN refusals are the other moment the seat needs the template,
+# and they named the source path too. A refusal that freezes is worse than a
+# success that freezes: the seat is already mid-filing.
+BPFB1="$(ap "$RLS" file-bug --parent lcars-20261001-003 2>&1)"; bpfb1=$?
+check "S304. file-bug with no --prd still refuses" "[ $bpfb1 -ne 0 ]"
+check "S304. file-bug's no-PRD refusal names the in-repo template, not the source" \
+  "printf '%s\n' \"\$BPFB1\" | qgrep -qF '$BPREPO'"
+check "S304. file-bug's no-PRD refusal names LCARS's source tree nowhere" \
+  "! printf '%s\n' \"\$BPFB1\" | qgrep -q 'skills/lcars-eeh/bug-prd.md'"
+check "S304. CONTROL: that refusal does still point at a template at all" \
+  "printf '%s\n' \"\$BPFB1\" | qgrep -qiF 'template'"
+
+printf 'not a bug PRD at all\n' >"$TMPROOT/bp-junk.md"
+BPFB2="$(ap "$RLS" file-bug --parent lcars-20261001-003 --prd "$TMPROOT/bp-junk.md" 2>&1)"; bpfb2=$?
+check "S304. file-bug still refuses a PRD that is not evidence-first" "[ $bpfb2 -ne 0 ]"
+check "S304. that refusal names the in-repo template, not the source" \
+  "printf '%s\n' \"\$BPFB2\" | qgrep -qF '$BPREPO'"
+check "S304. that refusal names LCARS's source tree nowhere" \
+  "! printf '%s\n' \"\$BPFB2\" | qgrep -q 'skills/lcars-eeh/bug-prd.md'"
+check "S304. CONTROL: it still says nothing was filed" \
+  "printf '%s\n' \"\$BPFB2\" | qgrep -qF 'Nothing was filed'"
+
+# The playbook is the other route back: a seat that reads "bug-prd.md, beside
+# this file" out of § 6 goes hunting in the source tree, having never run the
+# command. § 6.1 was cured the same way for the checklists.
+check "S304. the playbook sends the seat at the in-repo bug template" \
+  "qgrep -qF '.git/lcars/bug-prd.md' '$REPO_ROOT/skills/lcars-eeh/HOLOGRAM-COMMAND-MODE.md'"
+check "S304. the playbook no longer says the template is 'beside this file'" \
+  "! qgrep -qF 'bug-prd.md\`, beside this file' '$REPO_ROOT/skills/lcars-eeh/HOLOGRAM-COMMAND-MODE.md'"
+check "S304. the playbook hands the seat NO source-tree bug-template path at all" \
+  "! qgrep -q 'skills/lcars-eeh/bug-prd' '$REPO_ROOT/skills/lcars-eeh/HOLOGRAM-COMMAND-MODE.md'"
+check "S304. CONTROL: the playbook still carries the bug-PRD contract it had" \
+  "qgrep -qF 'Observed live:' '$REPO_ROOT/skills/lcars-eeh/HOLOGRAM-COMMAND-MODE.md' && qgrep -qF 'round-trip' '$REPO_ROOT/skills/lcars-eeh/HOLOGRAM-COMMAND-MODE.md'"
+
+for w in "$ls_wt" "$ls_wt2" "$ls_wt3" "$ls_wt4"; do
+  [ -n "$w" ] || continue
+  git -C "$RLS"  worktree remove --force "$w" 2>/dev/null || true
+  git -C "$RLS2" worktree remove --force "$w" 2>/dev/null || true
+done
 
 # ==========================================================================
 # S234.2 workflow-run — the real entrypoint, exactly as CI runs it
@@ -2307,6 +2972,19 @@ check "no subcommand's output leaks a shell error (an unescaped backtick in a sa
   "! ap '$RPO' policy --table 2>&1 | qgrep -qiE 'command not found|No such file or directory'"
 check "the table's explanation keeps the word it is explaining" \
   "ap '$RPO' policy --table 2>&1 | qgrep -qF 'live check sends back a high'"
+# THE TABLE IS FILMED. The 2026.10.5 rename retired the old companion and driver
+# names, but this footer still printed the ENGINEERING hologram where it means the
+# COMMAND hologram, and spelled out the un-migrated ledger FILENAME, which still
+# carries the retired driver name. The file keeps its name (the on-disk state and
+# ~60 assertions depend on it); the prose stops broadcasting it.
+check "the table names the deciding hologram without an initialism a viewer must decode" \
+  "ap '$RPO' policy --table 2>&1 | qgrep -qF \"THE MERGE IS THE HOLOGRAM'S CALL\""
+check "the table no longer names the ENGINEERING hologram as the merge authority" \
+  "! ap '$RPO' policy --table 2>&1 | qgrep -qF \"THE MERGE IS THE EEH'S CALL\""
+check "the table prints no retired driver name (it is filmed)" \
+  "! ap '$RPO' policy --table 2>&1 | qgrep -qi 'autopilot'"
+check "the table still says every override is recorded with its evidence" \
+  "ap '$RPO' policy --table 2>&1 | qgrep -qi 'evidence'"
 check "no unescaped backtick inside any double-quoted \`say\` in the driver" \
   "! qgrep -qE 'say \"[^\"]*[^\\\\]\`' '$SCRIPT'"
 
@@ -2506,8 +3184,20 @@ check "HOLOGRAM-COMMAND-MODE.md does NOT point at the archive PRD the validator 
 
 check "HOLOGRAM-COMMAND-MODE.md's live-verification section is no longer an S234 STUB" \
   "! qgrep -qiE 'S234 — STUB|S234 - STUB' '$APM'"
-check "HOLOGRAM-COMMAND-MODE.md points at the shared checklists by path" \
-  "qgrep -qF 'lcars-run/live-check' '$APM'"
+# S304 INVERTED THIS ONE. It used to assert the playbook points at the SHARED
+# source path (`lcars-run/live-check`) — and that is precisely the instruction
+# that froze a measured unattended run on 2026-10-17: a seat is trusted inside
+# the repository it is building in, so a read of LCARS's installed source tree
+# stops it dead on a permission prompt nothing in the run can answer. The
+# command now stages the checklists into `.git/lcars/live-check/` and the prose
+# must send the seat THERE. The source home is unchanged and unmoved; only the
+# reader's route to it is.
+check "HOLOGRAM-COMMAND-MODE.md points the seat at the IN-REPO staged checklists" \
+  "qgrep -qF '.git/lcars/live-check/' '$APM'"
+check "HOLOGRAM-COMMAND-MODE.md hands the seat NO path into LCARS's own source tree" \
+  "! qgrep -qF 'lcars-run/live-check' '$APM'"
+check "CONTROL: the installed playbook is a real file with the live-check section in it" \
+  "[ -s '$APM' ] && qgrep -qF 'lcars-ech live-check' '$APM'"
 # S277: command-name literal ONLY. HOLOGRAM-COMMAND-MODE.md now names the on-PATH `lcars-ech <verb>` (a Copilot user has no ~/.claude/skills path). The asserted BEHAVIOUR is unchanged -- do not revert to `ech.sh`.
 check "HOLOGRAM-COMMAND-MODE.md names the live-check verb" \
   "qgrep -qF 'lcars-ech live-check' '$APM'"
@@ -2523,8 +3213,8 @@ check "HOLOGRAM-COMMAND-MODE.md carries the whole merge table: all four actions"
   "( for a in 'merge' 'follow-ups' 'send-back' 'override'; do qgrep -qF \"\$a\" '$APM' || exit 1; done )"
 check "HOLOGRAM-COMMAND-MODE.md says a LOW for infrastructure only is fixed, verified live, and OVERRIDDEN" \
   "qgrep -qiE 'infrastructure' '$APM' && qgrep -qF 'autopilot-overrides.jsonl' '$APM'"
-check "HOLOGRAM-COMMAND-MODE.md says THE MERGE IS THE EEH'S CALL — Number One recommends" \
-  "qgrep -qiE \"the EEH's call|the EEH decides\" '$APM' && qgrep -qi 'recommend' '$APM'"
+check "HOLOGRAM-COMMAND-MODE.md says THE MERGE IS THE HOLOGRAM'S CALL — Number One recommends" \
+  "qgrep -qiE \"the hologram's call|the hologram\" '$APM' && qgrep -qi 'recommend' '$APM'"
 check "HOLOGRAM-COMMAND-MODE.md says every override is recorded WITH its evidence path" \
   "qgrep -qiE 'evidence path' '$APM'"
 check "HOLOGRAM-COMMAND-MODE.md keeps the send-back loop: file-bug -> resolve-logs -> re-verify with different data -> respond -> land" \
@@ -2691,23 +3381,22 @@ cage_first() { printf '%s\n' "$1" | sed -n 1p; }
 
 # --- B1 + B2: ONE repo state, the two arms, different answers ---------------
 # Both repos are identical and fully provisioned (a testCommand in config.json
-# and a real origin), so the ONLY question outstanding is where the launch
-# copies go — which is exactly the question that must be asked, or defaulted
-# and SAID, rather than waited on.
+# and a real origin), so launch copies and Number One are the two outstanding
+# defaultable questions. Answer both rather than timing out on the new sixth row.
 PFA="$(new_repo)"
 PFB="$(new_repo)"
 printf 'M0 the CLI\n' >"$TMPROOT/pf-spec.md"
 
-pfa="$(ap_pty "$PFA" "" init --spec "$TMPROOT/pf-spec.md" --scope M0)"
+pfa="$(ap_pty "$PFA" "|" init --spec "$TMPROOT/pf-spec.md" --scope M0)"
 pfb="$(ap_caged 30 "$PFB" init --spec "$TMPROOT/pf-spec.md" --scope M0)"
 PFA_J="$PFA/.git/lcars/autopilot.json"
 PFB_J="$PFB/.git/lcars/autopilot.json"
 echo "    [terminal arm]   $(printf '%s' "$pfa" | sed -n '/PTYEXIT/p')"
 echo "    [no-terminal arm] $(cage_first "$pfb")"
 
-# B1 — a terminal is present, so it ASKS, once, with a recommended default.
+# B1 — a terminal is present, so it asks both with recommended defaults.
 check "B1 a terminal present: starting a run ASKS its setup question" \
-  "printf '%s' \"\$pfa\" | qgrep -q 'asked 1 question'"
+  "printf '%s' \"\$pfa\" | qgrep -q 'asked 2 question'"
 check "B1 the question carries a RECOMMENDED default" \
   "printf '%s' \"\$pfa\" | qgrep -q 'RECOMMENDED'"
 check "B1 the recommended default is the value it proposes to use" \
@@ -2717,7 +3406,9 @@ check "B1 return accepts it, and the answer is RECORDED, not re-derived later" \
 check "B1 'yes to all' is offered, so one keystroke answers the block" \
   "printf '%s' \"\$pfa\" | qgrep -qi 'yes'"
 check "B1 RIG CONTROL: the rig actually answered the prompt it was shown" \
-  "printf '%s' \"\$pfa\" | qgrep -q 'PTYPROMPTS 1 ANSWERED 1'"
+  "printf '%s' \"\$pfa\" | qgrep -q 'PTYPROMPTS 2 ANSWERED 2'"
+check "S315. the terminal's bare return also accepts Number One ON with the run's engine" \
+  "[ \"\$(jget '$PFA_J' 'd[\"numberOne\"][\"enabled\"]')\" = true ] && [ \"\$(jget '$PFA_J' 'd[\"numberOne\"][\"engine\"]')\" = copilot ]"
 check "B1 the terminal arm exits 0" \
   "printf '%s' \"\$pfa\" | qgrep -q 'PTYEXIT 0'"
 
@@ -2742,7 +3433,7 @@ check "B2 no terminal: the default it proceeded on is RECORDED all the same" \
 check "B2 CONTROL: the terminal arm did NOT take the no-terminal path" \
   "! printf '%s' \"\$pfa\" | qgrep -q 'NO TERMINAL'"
 check "B2 CONTROL: the two arms disagree about how many questions were asked" \
-  "printf '%s' \"\$pfa\" | qgrep -q 'asked 1 question' && printf '%s' \"\$pfb\" | qgrep -q 'asked 0 question'"
+  "printf '%s' \"\$pfa\" | qgrep -q 'asked 2 question' && printf '%s' \"\$pfb\" | qgrep -q 'asked 0 question'"
 
 # --- B4: the questions cover all three prerequisites -----------------------
 check "B4 covers where the launch copies go" \
@@ -2764,9 +3455,20 @@ check "B3 satisfied: a second run with a terminal asks NOTHING" \
   "printf '%s' \"\$pfa2\" | qgrep -q 'asked 0 question'"
 check "B3 satisfied: it says the recorded answer is why" \
   "printf '%s' \"\$pfa2\" | qgrep -qi 'already recorded'"
-check "B3 CONTROL: the FIRST run on that same repo did ask one" \
-  "printf '%s' \"\$pfa\" | qgrep -q 'asked 1 question'"
+check "B3 CONTROL: the FIRST run on that same repo did ask both" \
+  "printf '%s' \"\$pfa\" | qgrep -q 'asked 2 question'"
 check "B3 satisfied: exits 0" "printf '%s' \"\$pfa2\" | qgrep -q 'PTYEXIT 0'"
+
+# S315: an explicit OFF at the sixth row is also a durable, once-only answer.
+PFNO="$(new_repo)"
+pfno="$(ap_pty "$PFNO" "|OFF" init --spec "$TMPROOT/pf-spec.md" --scope M0)"
+check "S315. the preflight rig actually answered Number One OFF at its own prompt" \
+  "printf '%s' \"\$pfno\" | qgrep -q 'PTYPROMPTS 2 ANSWERED 2' && printf '%s' \"\$pfno\" | qgrep -q 'PTYEXIT 0'"
+check "S315. explicit Number One OFF is recorded, not replaced by the recommendation" \
+  "[ \"\$(jget '$PFNO/.git/lcars/autopilot.json' 'd[\"numberOne\"][\"enabled\"]')\" = false ]"
+pfno2="$(ap_pty "$PFNO" NONE preflight)"
+check "S315. an already-settled Number One OFF never asks again" \
+  "printf '%s' \"\$pfno2\" | qgrep -q 'asked 0 question' && printf '%s' \"\$pfno2\" | qgrep -q 'PTYEXIT 0'"
 
 # --- B2 (stdin closed, terminal still attached) ----------------------------
 # THE REGRESSION THIS PINS, MEASURED. The first cut of this detected a human by
@@ -2792,7 +3494,7 @@ check "B2-stdin: and it came back fast — no bounded read was entered at all" \
 # CONTROL: the SAME rig, the SAME repo, stdin left on the pty — it asks. The only
 # variable is fd 0, which is what makes this a measurement and not a tautology.
 PFS2="$(new_repo)"
-pfs2="$(ap_pty "$PFS2" "" init --spec "$TMPROOT/pf-spec.md" --scope M0)"
+pfs2="$(ap_pty "$PFS2" "yes" init --spec "$TMPROOT/pf-spec.md" --scope M0)"
 check "B2-stdin CONTROL: with stdin left on the terminal the same run DOES ask" \
   "printf '%s' \"\$pfs2\" | qgrep -q 'asked 1 question' && printf '%s' \"\$pfs2\" | qgrep -q 'PTYPROMPTS 1 ANSWERED 1'"
 
@@ -2996,7 +3698,7 @@ check "F1 it asked nothing (a background job cannot be answered)" \
 # THE LIVE CONTROL. The same driver, the same repo state, the same pty — in the
 # FOREGROUND. It asks. Two arms, one variable (the process group), two answers.
 PF1C="$(new_repo)"
-pf1c="$(ap_pty "$PF1C" "" init --spec "$TMPROOT/pf-spec.md" --scope M0)"
+pf1c="$(ap_pty "$PF1C" "yes" init --spec "$TMPROOT/pf-spec.md" --scope M0)"
 check "F1 CONTROL: in the FOREGROUND of a terminal the same run DOES ask" \
   "printf '%s' \"\$pf1c\" | qgrep -q 'asked 1 question' && printf '%s' \"\$pf1c\" | qgrep -q 'PTYPROMPTS 1 ANSWERED 1'"
 check "F1 CONTROL: and the foreground arm says nothing about a background job" \
@@ -3068,42 +3770,101 @@ check "F2b it says the probe outran its bound, rather than inventing a reason" \
 check "F2b and it leaves no orphan ls-remote behind (the bound kills the group)" \
   "[ \"\$(ps -eo command= | grep -c '[l]s-remote --exit-code origin' || true)\" = 0 ]"
 
-# --- F3: the environment the nights actually died on ----------------------
-# 1. COPILOT_ALLOW_ALL. This playbook's OPENING SECTION is about it: with it
-#    unset a measured EEH round was refused on every command, including
-#    read-only ones, with "Permission denied because no interactive user
-#    response was available", and nothing inside a blocked run can detect or
-#    recover from it. Three of the four dead nights are this one fact, and a
-#    grep of the whole init+preflight output for COPILOT_ALLOW_ALL, allow-all,
-#    permission and authenticat found ZERO mentions.
+# --- F3: the unattended permission is NOT a prerequisite -------------------
+# S303 MEASURED THE REQUIREMENT AWAY. For four nights this preflight STOPPED a
+# copilot run whose COPILOT_ALLOW_ALL was not exactly `true`, on the belief that
+# a run without that blanket trust is refused on every command. One S303 seat
+# then stripped the variable from every child call it made (`env -u
+# COPILOT_ALLOW_ALL`, 21 times) and the build still completed and merged: the
+# flag is NOT load-bearing for the work. Demanding it, meanwhile, cost three
+# seat models — a GPT seat refused on policy rather than rely on it, and a
+# Claude Sonnet seat was blocked by its own safety classifier for being told to
+# self-grant that authority and to launch a fully-trusted agent.
+#
+# THE NEW CONTRACT, one arm below per clause:
+#   * a seat WITHOUT the flag PROCEEDS — it is not a stop, and no question is
+#     recorded for the captain to answer;
+#   * nothing printed instructs anyone to export it or arrange that authority;
+#   * the flag is still HONOURED when the environment happens to carry it;
+#   * a question an OLDER version already recorded is WITHDRAWN, so a captain
+#     who ran the requiring build is not left holding a dead question.
+# Every arm keeps a CONTROL, because the only way this regresses is someone
+# re-introducing the stop, and a test that cannot go red would not see it.
 PF3="$(new_repo)"
 pf3="$(PF_ALLOW_ALL= ap_caged 40 "$PF3" init --spec "$TMPROOT/pf-spec.md" --scope M0)"
 echo "    [engine copilot, COPILOT_ALLOW_ALL unset] $(cage_first "$pf3")"
-check "F3a COPILOT_ALLOW_ALL unset on a copilot run is CAUGHT" \
+check "F3a COPILOT_ALLOW_ALL unset on a copilot run PROCEEDS — it is not a prerequisite" \
+  "cage_first \"\$pf3\" | qgrep -q 'EXIT 0' && printf '%s' \"\$pf3\" | qgrep -qF 'NOT a prerequisite'"
+check "F3a it is still NAMED, so a reader can see it was considered and dismissed" \
   "printf '%s' \"\$pf3\" | qgrep -q 'COPILOT_ALLOW_ALL'"
-check "F3a it STOPS deliberately rather than starting a run that is refused on every command" \
-  "cage_first \"\$pf3\" | qgrep -q 'EXIT 10' && printf '%s' \"\$pf3\" | qgrep -qi 'STOPPING'"
-check "F3a the stop names the exact command that fixes it, in the shell he launches from" \
-  "printf '%s' \"\$pf3\" | qgrep -qF 'export COPILOT_ALLOW_ALL=true'"
-check "F3a and it is RECORDED as a settleable question" \
-  "python3 -c 'import json,sys;d=json.load(open(sys.argv[1]));sys.exit(0 if [q for q in d[\"questions\"].values() if not q.get(\"answeredAt\") and \"COPILOT_ALLOW_ALL\" in q[\"what\"]] else 1)' '$PF3/.git/lcars/autopilot.json'"
-check "F3a it says what a blocked run looks like from outside (why nobody notices)" \
-  "printf '%s' \"\$pf3\" | qgrep -qi 'Permission denied'"
-# CONTROL: the same repo, the same command, the variable exported — it proceeds.
+check "F3a it does NOT instruct anyone to export it (nothing self-grants trust)" \
+  "! printf '%s' \"\$pf3\" | qgrep -qF 'export COPILOT_ALLOW_ALL'"
+check "F3a and NO question is recorded for the captain to answer" \
+  "python3 -c 'import json,sys;d=json.load(open(sys.argv[1]));sys.exit(1 if [q for q in d.get(\"questions\",{}).values() if not q.get(\"answeredAt\") and \"COPILOT_ALLOW_ALL\" in q.get(\"what\",\"\")] else 0)' '$PF3/.git/lcars/autopilot.json'"
+# CONTROL 1: a captain whose environment DOES carry it is told it is honoured,
+# and that arm proceeds too — the two arms now AGREE, which is the whole point.
 pf3c="$(ap_caged 40 "$PF3" preflight)"
-check "F3a CONTROL: with COPILOT_ALLOW_ALL=true exported the same run proceeds" \
-  "cage_first \"\$pf3c\" | qgrep -q 'EXIT 0' && printf '%s' \"\$pf3c\" | qgrep -qi 'not asking'"
-check "F3a CONTROL: the two arms disagree about whether this is a stop" \
-  "cage_first \"\$pf3\" | qgrep -q 'EXIT 10' && cage_first \"\$pf3c\" | qgrep -q 'EXIT 0'"
-# TRUTHY-BUT-WRONG is a FAILING value, and HOLOGRAM-COMMAND-MODE.md says so: `1`, `yes`, `on`
-# and `y` auto-approve TOOLS without trusting the working directory. It is the
-# hardest version of this to debug at 03:00 and the cheapest to catch here.
+check "F3a CONTROL: with COPILOT_ALLOW_ALL=true exported the same run also proceeds" \
+  "cage_first \"\$pf3c\" | qgrep -q 'EXIT 0' && printf '%s' \"\$pf3c\" | qgrep -qi 'honoured'"
+check "F3a CONTROL: the two arms AGREE — neither the presence nor the absence is a stop" \
+  "cage_first \"\$pf3\" | qgrep -q 'EXIT 0' && cage_first \"\$pf3c\" | qgrep -q 'EXIT 0'"
+# CONTROL 2, AND THIS ONE IS THE NON-VACUOUS GUARD. `EXIT 0` only means
+# something if this same preflight, this same harness, can still return EXIT 10
+# on a prerequisite that IS load-bearing. F2's unreachable-remote arm is that
+# proof: a run with nowhere to push still stops dead. If someone neutered
+# `pf_stop` rather than this one question, THIS is the check that goes red.
+check "F3a NOT VACUOUS: the same preflight still STOPS on a genuinely fatal gap" \
+  "cage_first \"\$pf2\" | qgrep -q 'EXIT 10' && printf '%s' \"\$pf2\" | qgrep -qi 'STOPPING'"
+# TRUTHY-BUT-WRONG used to be a FAILING value that stopped the run: `1`, `yes`,
+# `on` and `y` auto-approve TOOLS without trusting the working directory. The
+# distinction is still TRUE of copilot and still worth reporting — it is just
+# not a reason to refuse to start, because no spelling of it is required.
 PF3T="$(new_repo)"
 ap "$PF3T" init --spec "$TMPROOT/pf-spec.md" --scope M0 >/dev/null 2>&1
 pf3t="$(PF_ALLOW_ALL=1 ap_caged 40 "$PF3T" preflight)"
-check "F3b COPILOT_ALLOW_ALL=1 is NOT accepted (only the string true trusts the directory)" \
-  "cage_first \"\$pf3t\" | qgrep -q 'EXIT 10' && printf '%s' \"\$pf3t\" | qgrep -qF 'NOT the string'"
-# ENGINE-AWARE: a claude run is not affected, and says so. Third answer.
+check "F3b COPILOT_ALLOW_ALL=1 no longer refuses the run (no spelling is required)" \
+  "cage_first \"\$pf3t\" | qgrep -q 'EXIT 0'"
+check "F3b it still REPORTS the value it found rather than hiding it" \
+  "printf '%s' \"\$pf3t\" | qgrep -qF '\"1\"'"
+check "F3b CONTROL: and it does not demand the string true as a remedy" \
+  "! printf '%s' \"\$pf3t\" | qgrep -qF 'export COPILOT_ALLOW_ALL'"
+# MIGRATION: a captain who ran the REQUIRING build has the old question sitting
+# open in his inbox. Curing the requirement must retire it, or he is left
+# answering a question that is no longer true to unstick his own run — the
+# defect `pf_withdraw_say` exists to prevent. The `what` below is the literal
+# legacy ledger key, as it is written in the autopilot.json files on disk.
+PF3W="$(new_repo)"
+ap "$PF3W" init --spec "$TMPROOT/pf-spec.md" --scope M0 >/dev/null 2>&1
+python3 - "$PF3W/.git/lcars/autopilot.json" <<'PFW'
+import json, sys
+p = sys.argv[1]
+try:
+    d = json.load(open(p))
+except Exception:
+    d = {}
+qs = d.setdefault("questions", {})
+qs["q99"] = {
+    "id": "q99",
+    "mission": "-",
+    "what": "the engine has no unattended permission: COPILOT_ALLOW_ALL is not exactly `true`, so an unattended copilot run is refused on every command.",
+    "why": "recorded by the build that still required it",
+    "command": "export COPILOT_ALLOW_ALL=true",
+    "rollback": "nothing has run",
+    "raisedAt": "2026-10-13T00:00:00Z",
+}
+json.dump(d, open(p, "w"))
+PFW
+pf3w="$(PF_ALLOW_ALL= ap_caged 40 "$PF3W" preflight)"
+check "F3d MIGRATION: a question the requiring build recorded is WITHDRAWN" \
+  "printf '%s' \"\$pf3w\" | qgrep -qF 'WITHDRAWN [q99]'"
+check "F3d MIGRATION: and it is closed on the record, not just un-printed" \
+  "python3 -c 'import json,sys;d=json.load(open(sys.argv[1]));sys.exit(0 if d[\"questions\"][\"q99\"].get(\"answeredAt\") else 1)' '$PF3W/.git/lcars/autopilot.json'"
+check "F3d CONTROL: that arm really did start with the question OPEN (not vacuous)" \
+  "python3 -c 'import json,sys;d=json.load(open(sys.argv[1]));sys.exit(0 if \"q99\" in d[\"questions\"] else 1)' '$PF3W/.git/lcars/autopilot.json'"
+# ENGINE-AWARE: a claude run never had the variable in play, and still says so.
+# The engine distinction survives the cure — it is now about WHAT IS SAID
+# rather than about who stops, and the control pins that it is still a real
+# difference and not the same sentence twice.
 PF3E="$(new_repo)"
 python3 - "$PF3E/.git/lcars/config.json" <<'PFE'
 import json, sys
@@ -3113,10 +3874,10 @@ d["engine"] = "claude"
 json.dump(d, open(p, "w"))
 PFE
 pf3e="$(PF_ALLOW_ALL= ap_caged 40 "$PF3E" init --spec "$TMPROOT/pf-spec.md" --scope M0)"
-check "F3c engine-aware: a CLAUDE run is not stopped by a copilot variable" \
+check "F3c engine-aware: a CLAUDE run says the variable is a copilot fact" \
   "cage_first \"\$pf3e\" | qgrep -q 'EXIT 0' && printf '%s' \"\$pf3e\" | qgrep -qi 'engine is claude'"
-check "F3c CONTROL: the identical gap on a COPILOT run does stop" \
-  "cage_first \"\$pf3\" | qgrep -q 'EXIT 10'"
+check "F3c CONTROL: the COPILOT arm does NOT claim to be a claude run" \
+  "cage_first \"\$pf3\" | qgrep -q 'EXIT 0' && ! printf '%s' \"\$pf3\" | qgrep -qi 'engine is claude'"
 
 # 2. `gh auth status`. No authentication, no pull request — the same class and
 #    the same cost as having no remote, and a one-line check.
@@ -3546,8 +4307,24 @@ check "F13 CONTROL: the two refusals print DIFFERENT advice (neither in both)" \
   "! printf '%s' \"\$pf5u\" | qgrep -qi 'nothing to create' && ! printf '%s' \"\$pf5\" | qgrep -qi 'make it writable'"
 
 # --- F6: the playbook has to carry the same contract ----------------------
-check "F6 HOLOGRAM-COMMAND-MODE.md names COPILOT_ALLOW_ALL as something preflight CHECKS" \
-  "qgrep -q 'COPILOT_ALLOW_ALL' '$APM' && qgrep -qi 'preflight' '$APM'"
+# S303: THE PLAYBOOK MUST NOT TELL THE SEAT TO GRANT ITSELF AUTHORITY. Two of
+# the three seat models that failed S303 failed HERE, on the page rather than in
+# the code: a Claude Sonnet seat was blocked by its own safety classifier for
+# being instructed to export a blanket-trust variable ("Instruction Poisoning")
+# and to launch a fully-trusted agent ("Create Unsafe Agents"), and a GPT seat
+# refused on policy rather than rely on it. The page may still EXPLAIN the
+# variable — it is a real copilot fact, and one command route is refused even
+# with it — but it may not instruct anyone to arrange it.
+check "F6 HOLOGRAM-COMMAND-MODE.md does NOT instruct the seat to export COPILOT_ALLOW_ALL" \
+  "! qgrep -qF 'export COPILOT_ALLOW_ALL' '$APM'"
+check "F6 and it does not tell the seat to rely on blanket trust for an unattended run" \
+  "! qgrep -qi 'set .*COPILOT_ALLOW_ALL=true.*in the launching environment' '$APM'"
+check "F6 it says in so many words that no blanket trust is REQUIRED" \
+  "qgrep -qi 'does not require' '$APM' && qgrep -qi 'blanket trust' '$APM'"
+check "F6 CONTROL: the page was really read and still carries the setup section" \
+  "qgrep -q '^## Unattended Copilot setup:' '$APM' && qgrep -qi 'preflight' '$APM'"
+check "F6 CONTROL: it still EXPLAINS the variable, so the cure removed a demand not a fact" \
+  "qgrep -qF 'COPILOT_ALLOW_ALL' '$APM'"
 check "F6b HOLOGRAM-COMMAND-MODE.md says a deadline is not a refusal, and names both ways out" \
   "qgrep -qi 'deadline is not a refusal' '$APM' && qgrep -qF 'LCARS_ECH_PROBE_TIMEOUT=60' '$APM'"
 check "F6b it promises local-only costs ONE command, and names \`record localOnly\`" \
@@ -3694,6 +4471,2008 @@ TMPDIR="$TMPROOT/tmp" LCARS_ECH_CWD="$R301" STUB_LOG="$STUB_LOG" \
   python3 "$PTY301" bash "$SCRIPT" playbook >"$y301" 2>&1 || true
 check "S301-fix1. only the literal 1 is quiet (=yes does not silence it)" \
   "qgrep -q 'Emergency Command Hologram' '$y301'"
+
+# ==========================================================================
+# S305 — FIVE CURES TO THE EMERGENCY COMMAND HOLOGRAM
+# ==========================================================================
+echo "-- S305-1. the wait step has a way out --"
+# MEASURED, AND IT IS THE BIGGEST ITEM. `next` told the seat to wait and § 8
+# never said FOR HOW LONG, HOW TO RE-CHECK, or WHAT TO DO IF THE WAIT DOES NOT
+# END. Four of four seat models, across three model families, stopped dead
+# there. A seat that waits for ever is indistinguishable from a dead one.
+#
+# THE CURE IS CONSISTENT WITH § 5, not a contradiction of it: nothing here
+# polls a log and nothing wraps an LCARS verb in a timeout. The WAIT ITSELF is
+# bounded, and the bound is measured against a RECORDED timestamp
+# (`waitingSince`), not re-derived from prose.
+# TWO LIVE PIDS, NOT TWO BUSY LOOPS. `driver_live` is a `kill -0` on a RECORDED
+# pid, so a sleeping process is exactly as live as a spinning one — and the
+# older fixtures' `while :; do :; done` pair burns two cores for as long as the
+# section runs, which on a box also running a seat measurement is a tax on
+# somebody else's reading.
+s305w1=""; s305w2=""
+sleep 600 </dev/null >/dev/null 2>&1 &
+s305w1=$!; BG_PIDS="$BG_PIDS $s305w1"
+sleep 600 </dev/null >/dev/null 2>&1 &
+s305w2=$!; BG_PIDS="$BG_PIDS $s305w2"
+RW5="$(new_repo)"
+ap "$RW5" init --spec "$TMPROOT/spec.md" --scope M0,M1,M2 >/dev/null 2>&1
+new_mission "$RW5" lcars-w1 plan
+new_mission "$RW5" lcars-w2 plan
+ap "$RW5" record 'missions.M0.id' lcars-w1 >/dev/null 2>&1
+ap "$RW5" record 'missions.M1.id' lcars-w2 >/dev/null 2>&1
+ap "$RW5" record "drivers.lcars-w1.pid" "$s305w1" >/dev/null 2>&1
+ap "$RW5" record "drivers.lcars-w2.pid" "$s305w2" >/dev/null 2>&1
+APW5="$RW5/.git/lcars/autopilot.json"
+nw5="$(ap "$RW5" next 2>&1)"
+check "S305-1. two live drivers still → NEXT: wait (unchanged)" \
+  "printf '%s' \"\$nw5\" | qgrep -q '^NEXT: wait'"
+check "S305-1. the wait names a TIME LIMIT" \
+  "printf '%s' \"\$nw5\" | qgrep -q '^LIMIT: '"
+check "S305-1. the limit is a real number of minutes, not 'a while'" \
+  "printf '%s' \"\$nw5\" | qgrep -qE '^LIMIT: .*[0-9]+ ?min'"
+check "S305-1. the wait says HOW to re-check" \
+  "printf '%s' \"\$nw5\" | qgrep -q '^RE-CHECK: '"
+check "S305-1. the re-check is \`next\` again, never a log poll" \
+  "printf '%s' \"\$nw5\" | qgrep -qE '^RE-CHECK: .*(next|await)'"
+check "S305-1. the wait says what to do WHEN THE LIMIT PASSES" \
+  "printf '%s' \"\$nw5\" | qgrep -q '^IF THE LIMIT PASSES: '"
+check "S305-1. the expiry action names the \`stalled\` verb" \
+  "printf '%s\n' \"\$nw5\" | grep -A3 'IF THE LIMIT PASSES' | qgrep -q 'stalled'"
+check "S305-1. the expiry action ends at \`ask\` (§ 9), not at silence" \
+  "printf '%s\n' \"\$nw5\" | grep -A4 'IF THE LIMIT PASSES' | qgrep -q 'ask'"
+# RECORD, DON'T INFER: when the wait began is WRITTEN DOWN the first time it is
+# seen, so neither the seat nor the script has to work it out of a transcript.
+check "S305-1. the first wait RECORDS waitingSince" \
+  "[ -n \"\$(jget '$APW5' 'd.get(\"waitingSince\")')\" ]"
+ws5a="$(jget "$APW5" 'd.get("waitingSince")')"
+ap "$RW5" next >/dev/null 2>&1
+check "S305-1. a second wait does NOT restart the clock (the record is kept)" \
+  "[ \"\$(jget '$APW5' 'd.get(\"waitingSince\")')\" = \"$ws5a\" ]"
+
+# PAST THE LIMIT IT IS NO LONGER A WAIT. Back-date the recorded start instead
+# of sleeping: the limit is read off the record, which is exactly why it was
+# recorded.
+ap "$RW5" record waitingSince 1 >/dev/null 2>&1
+nw5x="$(ap "$RW5" next 2>&1)"
+check "S305-1. past the limit \`next\` SAYS the limit has passed" \
+  "printf '%s' \"\$nw5x\" | qgrep -qi 'the limit has passed'"
+check "S305-1. past the limit it names the ONE command to run now" \
+  "printf '%s' \"\$nw5x\" | qgrep -q 'stalled'"
+check "S305-1. past the limit it still prints exactly ONE action line" \
+  "[ \"\$(printf '%s\n' \"\$nw5x\" | grep -c '^NEXT: ')\" = 1 ]"
+
+# --- the bounded re-check verb --------------------------------------------
+# A seat with nothing else to do needs something it can BLOCK on that cannot
+# outlive its bound. `await` watches the recorded driver PROCESSES (§ 5's rule:
+# the process, never a clock, never a log) and returns the moment a slot frees.
+export LCARS_ECH_WAIT_LIMIT=2
+aw5="$(ap "$RW5" await 2>&1)"; rcaw5=$?
+unset LCARS_ECH_WAIT_LIMIT
+check "S305-1. \`await\` RETURNS (it is bounded, it cannot sit for ever)" \
+  "[ -n \"\$aw5\" ]"
+check "S305-1. \`await\` reports 124 when its bound passes with the slots full" \
+  "[ $rcaw5 -eq 124 ]"
+check "S305-1. the expired \`await\` names \`stalled\` as the next command" \
+  "printf '%s' \"\$aw5\" | qgrep -q 'stalled'"
+check "S305-1. the expired \`await\` says this is not the run failing" \
+  "printf '%s' \"\$aw5\" | qgrep -qi 'not a failure\|is not the run failing'"
+# CONTROL: with a slot free it comes straight back, successfully.
+kill -9 "$s305w1" "$s305w2" 2>/dev/null || true
+sleep 1
+aw5b="$(ap "$RW5" await 2>&1)"; rcaw5b=$?
+check "S305-1. CONTROL: with a slot free \`await\` returns 0 at once" \
+  "[ $rcaw5b -eq 0 ]"
+check "S305-1. CONTROL: and it says a slot is free" \
+  "printf '%s' \"\$aw5b\" | qgrep -qi 'slot'"
+# CONTROL: a repo that is NOT waiting prints none of the wait furniture, and
+# the recorded start is cleared so a later wait is timed from ITS own start.
+nw5c="$(ap "$RW5" next 2>&1)"
+check "S305-1. CONTROL: not waiting → no RE-CHECK furniture" \
+  "! printf '%s' \"\$nw5c\" | qgrep -q '^RE-CHECK: '"
+check "S305-1. CONTROL: not waiting → waitingSince is cleared" \
+  "[ -z \"\$(jget '$APW5' 'd.get(\"waitingSince\")')\" ]"
+
+echo "-- S305-2. heartbeat install fails FAST instead of hanging --"
+# REPORTED BY A SEAT, VERBATIM: "heartbeat install produced no output and
+# remained running until terminated; heartbeat status confirms not installed."
+# REPRODUCED on this box: `crontab -l` answers in 0.0s but the WRITE
+# (`crontab -` AND `crontab <file>`) never returns at all — so it is the write
+# itself, not an inherited-stdin read. Unattended, that is the whole night.
+HANGCRON="$STUBS/crontab-hangs"
+cat >"$HANGCRON" <<'SH'
+#!/usr/bin/env bash
+if [ "${1:-}" = "-l" ]; then cat "$CRONFILE"; exit 0; fi
+# the measured macOS behaviour: the READ answers, the WRITE never returns
+exec sleep 600
+SH
+chmod +x "$HANGCRON"
+RHB5="$(new_repo)"
+ap "$RHB5" init --spec "$TMPROOT/spec.md" --scope M0 >/dev/null 2>&1
+: >"$CRONFILE"
+hb5start="$(date +%s)"
+hb5="$(TMPDIR="$TMPROOT/tmp" LCARS_ECH_CWD="$RHB5" STUB_LOG="$STUB_LOG" LCARS_ECH_CRONTAB_TIMEOUT=3 \
+       LCARS_CRONTAB_BIN="$HANGCRON" bash "$SCRIPT" heartbeat install 2>&1 </dev/null)"; rchb5=$?
+hb5elapsed=$(( $(date +%s) - hb5start ))
+check "S305-2. install RETURNS against a crontab whose write never does" \
+  "[ $hb5elapsed -lt 30 ]"
+check "S305-2. it does not claim success"            "[ $rchb5 -ne 0 ]"
+check "S305-2. it is NOT a captain question (exit 10 is reserved)" \
+  "[ $rchb5 -ne 10 ]"
+check "S305-2. it SAYS something (the seat got no output at all)" \
+  "[ -n \"\$hb5\" ]"
+check "S305-2. it names crontab as what did not return" \
+  "printf '%s' \"\$hb5\" | qgrep -qi 'crontab'"
+check "S305-2. it says the heartbeat is OPTIONAL so the seat does not stop" \
+  "printf '%s' \"\$hb5\" | qgrep -qi 'optional'"
+check "S305-2. it names the one verb to run by hand instead" \
+  "printf '%s' \"\$hb5\" | qgrep -q 'stalled'"
+check "S305-2. it names the macOS cause it can actually be fixed by" \
+  "printf '%s' \"\$hb5\" | qgrep -qi 'full disk access'"
+# `remove` is the SAME write through the SAME door, and § 10 tells the seat to
+# run it at wrap-up.
+: >"$CRONFILE"
+rm5start="$(date +%s)"
+rm5="$(TMPDIR="$TMPROOT/tmp" LCARS_ECH_CWD="$RHB5" STUB_LOG="$STUB_LOG" LCARS_ECH_CRONTAB_TIMEOUT=3 \
+       LCARS_CRONTAB_BIN="$HANGCRON" bash "$SCRIPT" heartbeat remove 2>&1 </dev/null)"; rcrm5=$?
+rm5elapsed=$(( $(date +%s) - rm5start ))
+check "S305-2. remove RETURNS too"                   "[ $rm5elapsed -lt 30 ]"
+check "S305-2. remove does not claim success"        "[ $rcrm5 -ne 0 ]"
+check "S305-2. remove says what did not return"      "printf '%s' \"\$rm5\" | qgrep -qi 'crontab'"
+# CONTROL: the working crontab still installs, exits 0, and keeps one line.
+: >"$CRONFILE"
+hb5ok="$(ap "$RHB5" heartbeat install 2>&1)"; rchb5ok=$?
+check "S305-2. CONTROL: a crontab that WORKS still installs and exits 0" \
+  "[ $rchb5ok -eq 0 ] && qgrep -q 'LCARS-ECH' '$CRONFILE'"
+check "S305-2. CONTROL: and it still says it installed" \
+  "printf '%s' \"\$hb5ok\" | qgrep -qi 'installed'"
+ap "$RHB5" heartbeat remove >/dev/null 2>&1
+ap "$RHB5" watch stop >/dev/null 2>&1
+check "S305-2. CONTROL: a crontab that WORKS still removes the line" \
+  "! qgrep -q 'LCARS-ECH' '$CRONFILE'"
+
+echo "-- S305-3. the playbook says HOW to reach the Holodeck --"
+# HOLOGRAM-COMMAND-MODE.md named `holodeck_start` / `holodeck_say` /
+# `holodeck_end` as if they were callable verbs and carried ZERO lines on how
+# to call them, beside 42 concrete `lcars-ech` / `lcars-file` command lines —
+# so the omission was specific, not a house style. MEASURED: the strongest seat
+# reverse-engineered the HTTP routes itself (9 `api/holodeck` references in its
+# log); the weaker seats never found them and never reached the Holodeck.
+check "S305-3. the playbook names the holodeck START route" \
+  "qgrep -qF '/api/holodeck/start' '$REPO_ROOT/skills/lcars-eeh/HOLOGRAM-COMMAND-MODE.md'"
+check "S305-3. the playbook names the SAY route" \
+  "qgrep -qF '/say' '$REPO_ROOT/skills/lcars-eeh/HOLOGRAM-COMMAND-MODE.md'"
+check "S305-3. the playbook names the END route" \
+  "qgrep -qF '/end' '$REPO_ROOT/skills/lcars-eeh/HOLOGRAM-COMMAND-MODE.md'"
+check "S305-3. the playbook names the PROMOTE route (the hand-off)" \
+  "qgrep -qF '/promote' '$REPO_ROOT/skills/lcars-eeh/HOLOGRAM-COMMAND-MODE.md'"
+check "S305-3. the playbook says these are POSTs, not shell verbs" \
+  "qgrep -qF 'POST /api/holodeck/start' '$REPO_ROOT/skills/lcars-eeh/HOLOGRAM-COMMAND-MODE.md'"
+check "S305-3. it gives a CONCRETE command line, in the file's own style" \
+  "qgrep -qE 'curl .*api/holodeck/start' '$REPO_ROOT/skills/lcars-eeh/HOLOGRAM-COMMAND-MODE.md'"
+check "S305-3. it says how to start the daemon HEADLESS first" \
+  "qgrep -qF 'lcars-viewscreen' '$REPO_ROOT/skills/lcars-eeh/HOLOGRAM-COMMAND-MODE.md'"
+check "S305-3. it names the key the start response hands back" \
+  "qgrep -qF 'sessionId' '$REPO_ROOT/skills/lcars-eeh/HOLOGRAM-COMMAND-MODE.md'"
+check "S305-3. CONTROL: the old verb names are still there (nothing was lost)" \
+  "qgrep -qF 'holodeck_start' '$REPO_ROOT/skills/lcars-eeh/HOLOGRAM-COMMAND-MODE.md'"
+
+echo "-- S305-4. \`next\` withdraws a stale question, exactly as preflight does --"
+# PROVEN DIRECTLY: a repo set up by an OLDER build records a stop that the new
+# build has cured; `preflight` prints `WITHDRAWN [q1]` and `next` routed to
+# answer-pending anyway. `next` is the FIRST verb the playbook's loop tells a
+# seat to run, so an existing repo that takes this update and is then driven
+# normally meets a stop that no longer applies.
+Q305_DEAD='the engine has no unattended permission: COPILOT_ALLOW_ALL is not exactly `true`, so an unattended copilot run is refused on every command.'
+RN5="$(new_repo)"
+ap "$RN5" init --spec "$TMPROOT/spec.md" --scope M0 >/dev/null 2>&1
+APN5="$RN5/.git/lcars/autopilot.json"
+python3 - "$APN5" "$Q305_DEAD" <<'PY'
+import json, sys
+f, what = sys.argv[1], sys.argv[2]
+d = json.load(open(f))
+d["questions"] = {"q1": {"id": "q1", "mission": "-", "what": what,
+                         "why": "written by the build that REQUIRED it",
+                         "raisedAt": 1}}
+d["pending"] = {"id": "q1", "mission": "-", "what": what}
+json.dump(d, open(f, "w"), indent=2)
+PY
+nn5="$(ap "$RN5" next 2>&1)"
+check "S305-4. \`next\` no longer routes to answer-pending on the dead stop" \
+  "! printf '%s' \"\$nn5\" | qgrep -q '^NEXT: answer-pending'"
+check "S305-4. \`next\` SAYS it withdrew it (silence would be a second mystery)" \
+  "printf '%s' \"\$nn5\" | qgrep -q 'WITHDRAWN \[q1\]'"
+check "S305-4. the withdrawal is on the RECORD, not just in the output" \
+  "[ -n \"\$(jget '$APN5' 'd[\"questions\"][\"q1\"].get(\"withdrawnAt\")')\" ]"
+check "S305-4. and it is NOT recorded as the captain's own decision" \
+  "[ -n \"\$(jget '$APN5' 'd[\"questions\"][\"q1\"].get(\"answeredAt\")')\" ]"
+check "S305-4. the derived pending mirror is emptied with it" \
+  "[ -z \"\$(jget '$APN5' 'd.get(\"pending\",{}).get(\"id\")')\" ]"
+# ONE CODE PATH, NOT TWO. `preflight` and `next` must withdraw through the SAME
+# function, or they drift again: the proof is that preflight run against an
+# ALREADY-withdrawn record finds nothing left to retire and says nothing.
+pn5="$(ap "$RN5" preflight 2>&1)"
+check "S305-4. preflight finds nothing left to withdraw (one shared path)" \
+  "! printf '%s' \"\$pn5\" | qgrep -q 'WITHDRAWN \[q1\]'"
+# CONTROL: a question that is STILL TRUE must still park the run. Without this
+# the cure above is indistinguishable from `next` ignoring questions.
+RN5b="$(new_repo)"
+ap "$RN5b" init --spec "$TMPROOT/spec.md" --scope M0 >/dev/null 2>&1
+ap "$RN5b" ask "ship M0 as the CLI only?" --mission - \
+  --why "a product call only you can make" --command "-" --rollback "nothing" >/dev/null 2>&1
+nn5b="$(ap "$RN5b" next 2>&1)"
+check "S305-4. CONTROL: a LIVE question still routes to answer-pending" \
+  "printf '%s' \"\$nn5b\" | qgrep -q '^NEXT: answer-pending'"
+check "S305-4. CONTROL: and it is NOT withdrawn behind the captain's back" \
+  "! printf '%s' \"\$nn5b\" | qgrep -q 'WITHDRAWN'"
+
+echo "-- S305-5. no preflight error path reports a problem and exits 0 --"
+# S305 WAS ASKED TO CURE "preflight prints its error and exits 0" AND IT DID
+# NOT REPRODUCE: every error path measured exits 1 (a `die`) or 10 (a recorded
+# stop). This is the GUARD that keeps it that way — the class is real even
+# though this instance was not.
+RP5="$(new_repo)"
+ap "$RP5" init --spec "$TMPROOT/spec.md" --scope M0 >/dev/null 2>&1
+git -C "$RP5" remote remove origin >/dev/null 2>&1 || true
+pp5="$(ap "$RP5" preflight 2>&1)"; rcpp5=$?
+check "S305-5. a preflight that prints STOPPING does NOT exit 0" \
+  "printf '%s' \"\$pp5\" | qgrep -q 'STOPPING' && [ $rcpp5 -ne 0 ]"
+check "S305-5. and it exits 10, the recorded-question code" "[ $rcpp5 -eq 10 ]"
+# CONTROL: a preflight with nothing to report really does exit 0, so the guard
+# above is not passing because preflight never succeeds.
+RP5b="$(new_repo)"
+ap "$RP5b" init --spec "$TMPROOT/spec.md" --scope M0 >/dev/null 2>&1
+ap "$RP5b" record launchDir "$TMPROOT/tmp" >/dev/null 2>&1
+ap "$RP5b" record push.mode local-only >/dev/null 2>&1
+pp5b="$(ap "$RP5b" preflight 2>&1)"; rcpp5b=$?
+check "S305-5. CONTROL: a clean preflight exits 0" "[ $rcpp5b -eq 0 ]"
+check "S305-5. CONTROL: and prints no STOPPING line" \
+  "! printf '%s' \"\$pp5b\" | qgrep -q 'STOPPING'"
+
+# ==========================================================================
+# S305 FIX ROUND 1 — the five defects a fresh tester drove out from outside
+# ==========================================================================
+# R1-D1..D4 are all in ONE new block of HOLOGRAM-COMMAND-MODE.md: the block
+# added this session to say HOW to reach the Holodeck. The block WORKS — a seat
+# following it alone started a program and authored a real mockup — but four of
+# its documented calls were wrong, and the first one was fatal.
+#
+# THESE ARE NOT GREP TESTS. S305-3 above asserted that strings were present in
+# the file, and every one of those eight passed while the documented daemon
+# launch bound nothing at all. So the four below DRIVE THE REAL DAEMON with the
+# values the playbook teaches, extracted FROM the playbook, and assert the
+# daemon accepts them. A rule-exists test passes while the screen is grey.
+echo "-- S305-R1-D1. the DOCUMENTED daemon launch actually binds --"
+
+PB="$REPO_ROOT/skills/lcars-eeh/HOLOGRAM-COMMAND-MODE.md"
+
+# A free port, asked of the OS rather than guessed — the suite must not fight
+# the captain's own boards (two were live on this box while this was written).
+free_port() {
+  python3 - <<'PYFP'
+import socket
+s = socket.socket()
+s.bind(("127.0.0.1", 0))
+print(s.getsockname()[1])
+s.close()
+PYFP
+}
+
+# bound_within <port> <secs> — 0 as soon as something LISTENS there.
+bound_within() {
+  python3 - "$1" "$2" <<'PYBW'
+import socket, sys, time
+port, secs = int(sys.argv[1]), float(sys.argv[2])
+deadline = time.time() + secs
+while time.time() < deadline:
+    s = socket.socket(); s.settimeout(0.4)
+    try:
+        s.connect(("127.0.0.1", port)); sys.exit(0)
+    except Exception:
+        time.sleep(0.25)
+    finally:
+        s.close()
+sys.exit(1)
+PYBW
+}
+
+# THE LINE THE PLAYBOOK TEACHES, taken out of the playbook itself. The only
+# substitutions are the ones a test MUST make: the installed launcher name ->
+# this checkout's own script, the documented port -> a free one, and the
+# documented /tmp log -> one inside $TMPROOT. The env, the flags and the
+# backgrounding are the file's own words.
+VS_LINE="$(grep -F 'lcars-viewscreen' "$PB" | grep -F -- '--port' | head -1)"
+check "S305-R1-D1. the playbook still carries a daemon launch line at all" \
+  "[ -n \"\$VS_LINE\" ]"
+
+VSPORT="$(free_port)"
+VSLOG="$TMPROOT/vs-asdocumented.log"
+VSREPO="$(new_repo)"
+# ORDER MATTERS: the documented line says `lcars-viewscreen` TWICE — once as
+# the command and once inside `/tmp/lcars-viewscreen.log`. Rewrite the LOG
+# first, then the command name, FIRST OCCURRENCE ONLY, or the log path is
+# rewritten into nonsense and this test watches a file nothing ever writes.
+VS_CMD="${VS_LINE/\/tmp\/lcars-viewscreen.log/$VSLOG}"
+VS_CMD="${VS_CMD/lcars-viewscreen/bash $REPO_ROOT/skills/lcars-viewscreen/viewscreen.sh}"
+VS_CMD="${VS_CMD//8765/$VSPORT}"
+
+# CLAUDECODE=1 IS THE MEASUREMENT, not a convenience: the viewscreen's own
+# headless gate fires on it, and it is set in every seat this playbook is
+# written for. A test that unset it would be testing the one environment in
+# which the defect cannot happen.
+#
+# LCARS_HOLODECK_HANDOFF_CHECK=0 is this suite's spend fuse reaching the
+# daemon: `derive` is the one endpoint that may spawn a worker, and `off` means
+# no path through these tests can bill.
+run_documented_daemon() {
+  cd "$VSREPO" || return 1
+  CLAUDECODE=1 \
+  LCARS_HOLODECK_HANDOFF_CHECK=0 \
+  LCARS_SERVE_NO_OPEN=1 \
+  LCARS_VERSION_CHECK_BIN="$TMPROOT/no-such-version-check" \
+  eval "$1"
+  printf '%s' "$!" >"$TMPROOT/vs.pid"
+  cd "$REPO_ROOT" || return 1
+}
+
+run_documented_daemon "$VS_CMD"
+VSPID="$(cat "$TMPROOT/vs.pid" 2>/dev/null || true)"
+[ -n "${VSPID:-}" ] && BG_PIDS="$BG_PIDS $VSPID"
+if bound_within "$VSPORT" 25; then vsbound=1; else vsbound=0; fi
+check "S305-R1-D1. the command the playbook documents BINDS a port" \
+  "[ $vsbound -eq 1 ]"
+check "S305-R1-D1. its log exists and is not empty (a missing log passes vacuously)" \
+  "[ -s '$VSLOG' ]"
+check "S305-R1-D1. and it does not print the headless refusal" \
+  "[ -s '$VSLOG' ] && ! qgrep -q 'NOT started' '$VSLOG'"
+check "S305-R1-D1. the playbook names the bypass the gate requires" \
+  "qgrep -qF 'LCARS_VIEWSCREEN_ALLOW_AI' '$PB'"
+check "S305-R1-D1. and SAYS it is the viewscreen's own headless gate, not a hack" \
+  "qgrep -qiE 'own (headless )?gate|gate of its own|viewscreen.s own' '$PB'"
+
+# CONTROL — THE SAME LINE WITH THE BYPASS STRIPPED MUST FAIL. Without this the
+# test above cannot tell a cured playbook from a viewscreen that stopped
+# gating, which is exactly how this defect survived S305-3's eight green greps.
+VSPORT2="$(free_port)"
+VSLOG2="$TMPROOT/vs-nobypass.log"
+VS_CMD2="$(printf '%s' "$VS_CMD" | sed 's/LCARS_VIEWSCREEN_ALLOW_AI=1 //')"
+VS_CMD2="$(printf '%s' "$VS_CMD2" | sed "s#$VSLOG#$VSLOG2#; s#--port $VSPORT#--port $VSPORT2#")"
+run_documented_daemon "$VS_CMD2"
+VSPID2="$(cat "$TMPROOT/vs.pid" 2>/dev/null || true)"
+[ -n "${VSPID2:-}" ] && BG_PIDS="$BG_PIDS $VSPID2"
+if bound_within "$VSPORT2" 6; then vsbound2=1; else vsbound2=0; fi
+check "S305-R1-D1. CONTROL: strip the bypass and the very same line binds NOTHING" \
+  "[ $vsbound2 -eq 0 ]"
+check "S305-R1-D1. CONTROL: and it prints the gate's own refusal" \
+  "[ -s '$VSLOG2' ] && qgrep -q 'NOT started' '$VSLOG2'"
+
+echo "-- S305-R1-D2/D3/D4. the documented holodeck calls, against the real daemon --"
+# ONE ROOM ON DISK, no worker, no spend. `open` warm-restarts a program from
+# its room, and it is the one holodeck road that mints a session WITHOUT
+# spawning a turn — so D2 and D4 are measured against a LIVE daemon for free.
+HROOM=""
+if [ $vsbound -eq 1 ]; then
+  HSIDE="$(dirname "$VSREPO")/$(basename "$VSREPO")-holodeck"
+  HROOM="$HSIDE/m0-screens"
+  mkdir -p "$HROOM"
+  printf '# M0 screens\n\n## Turn 1 - captain\nmock up the two M0 screens\n' >"$HROOM/transcript.md"
+  printf '<!doctype html><title>M0</title><h1>M0</h1>\n' >"$HROOM/mockup.html"
+  printf '# M0 screens\n\n## WHAT IT MUST DO\nShow the two M0 screens.\n\n## Open questions\n- none\n' >"$HROOM/concept.md"
+fi
+
+# hpost <path> <json> -> body, then the http code on its own last line.
+hpost() { curl -s -m 20 -w '\n%{http_code}' -X POST \
+  "http://127.0.0.1:$VSPORT$1" -H 'Content-Type: application/json' -d "$2"; }
+hget()  { curl -s -m 20 -w '\n%{http_code}' "http://127.0.0.1:$VSPORT$1"; }
+hcode() { printf '%s' "$1" | tail -1; }
+hbody() { printf '%s' "$1" | sed '$d'; }
+hsid()  { hbody "$1" | python3 -c 'import json,sys
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    print(""); raise SystemExit
+print(((d.get("state") or d) or {}).get("sessionId") or "")' 2>/dev/null || true; }
+
+HSID=""
+if [ -n "$HROOM" ]; then
+  HOPEN="$(hpost /api/holodeck/open '{"room":"m0-screens"}')"
+  HSID="$(hsid "$HOPEN")"
+fi
+check "S305-R1-D2. a live holodeck session exists to measure against" \
+  "[ -n \"\$HSID\" ]"
+
+# THE SCOPE VALUE THE PLAYBOOK TEACHES, read out of the playbook's own promote
+# line and POSTed to the real daemon. It taught "M0" — the MILESTONE label —
+# and the daemon answers HTTP 400 "unknown build scope".
+# READ IT OFF THE CURL A SEAT WOULD COPY, not off the prose around it. The
+# first cut of this test grepped the first `"scope"` within three lines of
+# `/promote` and picked up the new block's own "{\"scope\":\"M0\"} is REFUSED"
+# sentence — i.e. it measured the explanation instead of the command.
+PB_SCOPE="$(python3 - "$PB" <<'PYSCOPE'
+import json, re, sys
+lines = open(sys.argv[1]).read().splitlines()
+for i, ln in enumerate(lines):
+    if not (ln.lstrip().startswith("curl") or ln.lstrip().startswith("-H")):
+        continue
+    if "/promote" not in "\n".join(lines[i:i + 3]):
+        continue
+    m = re.search(r"-d '(\{[^']*\})'", "\n".join(lines[i:i + 3]))
+    if m:
+        try:
+            print(json.loads(m.group(1)).get("scope", ""))
+        except ValueError:
+            print("")
+        break
+PYSCOPE
+)"
+check "S305-R1-D2. the playbook's promote example still declares a scope" \
+  "[ -n \"\$PB_SCOPE\" ]"
+HPROM=""
+if [ -n "$HSID" ] && [ -n "$PB_SCOPE" ]; then
+  HPROM="$(hpost "/api/holodeck/$HSID/promote" "{\"scope\":\"$PB_SCOPE\"}")"
+fi
+check "S305-R1-D2. the daemon ACCEPTS the scope the playbook documents" \
+  "[ \"\$(hcode \"\$HPROM\")\" = 200 ]"
+check "S305-R1-D2. and it answers with the Align brief, not an error" \
+  "hbody \"\$HPROM\" | qgrep -qF '\"brief\"'"
+# CONTROL: the value the playbook USED to teach must still be refused, or the
+# test above would pass against a daemon that validates nothing.
+HPROMBAD=""
+[ -n "$HSID" ] && HPROMBAD="$(hpost "/api/holodeck/$HSID/promote" '{"scope":"M0"}')"
+check "S305-R1-D2. CONTROL: a milestone label is still refused (400)" \
+  "[ \"\$(hcode \"\$HPROMBAD\")\" = 400 ]"
+check "S305-R1-D2. CONTROL: and the refusal names it as a build scope" \
+  "hbody \"\$HPROMBAD\" | qgrep -qF 'unknown build scope'"
+# BOTH LEGAL VALUES ARE NAMED, with what each one means — the playbook taught
+# one value and it was the wrong one, so naming the set is the cure.
+check "S305-R1-D2. the playbook names look+behaviour" \
+  "qgrep -qF 'look+behaviour' '$PB'"
+check "S305-R1-D2. the playbook names look-only" \
+  "qgrep -qF 'look-only' '$PB'"
+check "S305-R1-D2. and says what look-only means (a reskin, no functional change)" \
+  "qgrep -qiE 'reskin|no functional change' '$PB'"
+
+# D3 — `derive` RETURNS INSTANTLY with {"derive":{"state":"running"}} and the
+# playbook showed `promote` on the very next line. Completion IS observable on
+# the already-documented GET, which carries the same `derive` block.
+HSTATE=""
+[ -n "$HSID" ] && HSTATE="$(hget "/api/holodeck/$HSID")"
+check "S305-R1-D3. the GET the playbook names really carries the derive block" \
+  "hbody \"\$HSTATE\" | qgrep -qF '\"derive\"'"
+check "S305-R1-D3. and that block carries a state to poll on" \
+  "hbody \"\$HSTATE\" | qgrep -qF '\"state\"'"
+check "S305-R1-D3. the playbook says derive is ASYNCHRONOUS" \
+  "qgrep -qi 'asynchronous' '$PB'"
+check "S305-R1-D3. it names the two derive states a seat waits through" \
+  "qgrep -qF '\"state\": \"running\"' '$PB' && qgrep -qF '\"state\": \"done\"' '$PB'"
+# AND THE DOCUMENTED WAIT IS RUN. A bound you can only grep for is a bound
+# nobody has watched expire — and "a seat that waits forever is
+# indistinguishable from a dead one" is this whole session's theme. So the
+# poll snippet is EXTRACTED from the playbook, time-scaled (its own iteration
+# count and sleep, nothing else), pointed at the LIVE daemon — whose derive
+# state is `off` and will therefore NEVER say `done` — and must still RETURN.
+DPOLL="$TMPROOT/documented-poll.sh"
+python3 - "$PB" "$DPOLL" <<'PYPOLL'
+import re, sys
+src = open(sys.argv[1]).read()
+# The snippet is the fenced lines from the WAIT step up to the next numbered
+# step comment. Markers are the playbook's own numbering, not a test fixture.
+m = re.search(r"\n(# 4a\..*?)\n# 5\.", src, re.S)
+open(sys.argv[2], "w").write((m.group(1) if m else "") + "\n")
+PYPOLL
+check "S305-R1-D3. the playbook carries an extractable WAIT step (step 4a)" \
+  "[ -s '$DPOLL' ]"
+# Time-scale it: 3 tries, 1s apart. Nothing else about it is touched.
+if [ -s "$DPOLL" ]; then
+  python3 - "$DPOLL" "$VSPORT" "$HSID" <<'PYSCALE'
+import re, sys
+p, port, sid = sys.argv[1], sys.argv[2], sys.argv[3]
+s = open(p).read()
+s = re.sub(r"seq 1 \d+", "seq 1 3", s)
+s = re.sub(r"sleep \d+", "sleep 1", s)
+s = s.replace("8765", port).replace("<sessionId>", sid)
+open(p, "w").write(s)
+PYSCALE
+  dstart="$(date +%s)"
+  dout="$(bash "$DPOLL" 2>&1)"; drc=$?
+  delapsed=$(( $(date +%s) - dstart ))
+else
+  dout=""; drc=0; delapsed=9999
+fi
+check "S305-R1-D3. the documented wait RETURNS instead of hanging for ever" \
+  "[ $delapsed -lt 30 ]"
+check "S305-R1-D3. and when it gives up it SAYS so, naming the bound" \
+  "printf '%s' \"\$dout\" | qgrep -qi 'gave up\|give up\|did not finish'"
+# CONTROL: an UNBOUNDED wait is the one thing this session exists to remove, so
+# the documented poll must not be a `while true`.
+check "S305-R1-D3. CONTROL: the documented poll is not an infinite loop" \
+  "! qgrep -qF 'while true' '$PB'"
+
+# D4 — AFTER `end` THERE WAS NO DOCUMENTED WAY BACK IN. `end` is final for that
+# sessionId (the GET 404s for ever), and the refusal on re-starting the same
+# name tells the reader to click something in a program list, which a headless
+# seat does not have. `POST /api/holodeck/open` with the ROOM is the real road.
+HEND=""; HAFTER=""; HLIST=""; HREOPEN=""; HSID2=""
+if [ -n "$HSID" ]; then
+  HEND="$(hpost "/api/holodeck/$HSID/end" '{}')"
+  HAFTER="$(hget "/api/holodeck/$HSID")"
+  HLIST="$(hget /api/holodeck)"
+  HREOPEN="$(hpost /api/holodeck/open '{"room":"m0-screens"}')"
+  HSID2="$(hsid "$HREOPEN")"
+fi
+check "S305-R1-D4. end succeeds" "[ \"\$(hcode \"\$HEND\")\" = 200 ]"
+check "S305-R1-D4. CONTROL: that sessionId is DEAD afterwards (404)" \
+  "[ \"\$(hcode \"\$HAFTER\")\" = 404 ]"
+check "S305-R1-D4. the room and its program still read from the LIST route" \
+  "hbody \"\$HLIST\" | qgrep -qF 'm0-screens'"
+check "S305-R1-D4. the documented way back in WORKS headlessly (open by room)" \
+  "[ \"\$(hcode \"\$HREOPEN\")\" = 200 ]"
+check "S305-R1-D4. and it hands back a NEW sessionId, not the dead one" \
+  "[ -n \"\$HSID2\" ] && [ \"\$HSID2\" != \"\$HSID\" ]"
+check "S305-R1-D4. the playbook names the open route" \
+  "qgrep -qF '/api/holodeck/open' '$PB'"
+# STEP 7 IS ONLY USABLE IF THE SEAT CAN READ THE NEW sessionId OUT OF THE REPLY,
+# and every holodeck POST nests it: {"ok":true,"state":{"sessionId":...}}. The
+# playbook said "THE REPLY CARRIES sessionId", which reads as a top-level key.
+# MEASURED against the live daemon, below, not asserted.
+check "S305-R1-D4. the reply really does nest sessionId under state" \
+  "hbody \"\$HREOPEN\" | qgrep -qF '\"state\"' && hbody \"\$HREOPEN\" | python3 -c 'import json,sys; d=json.load(sys.stdin); raise SystemExit(0 if (d.get(\"state\") or {}).get(\"sessionId\") and not d.get(\"sessionId\") else 1)'"
+check "S305-R1-D4. and the playbook says to read .state.sessionId" \
+  "qgrep -qF '.state.sessionId' '$PB'"
+check "S305-R1-D4. it says the GET 404s once the program is ended" \
+  "qgrep -qF '404' '$PB'"
+check "S305-R1-D4. and it no longer claims that GET is one Program plus its transcript, full stop" \
+  "! qgrep -qF 'is one Program plus its transcript' '$PB'"
+
+echo "-- S305-R2-D6. the documented wait DEGRADES on a reply that is not JSON --"
+# THE SNIPPET IS RUN, NOT GREPPED. Round 1 gave step 4a a bound and proved it
+# returns; it left the PARSER naked. Two non-answers are normal on that GET and
+# NEITHER is "still working":
+#   * the daemon dies mid-wait   -> curl prints NOTHING, json.load raises, and
+#     the loop prints a Python traceback every 5s for the full ~450s bound
+#     (measured: ~90 tracebacks). That noise is exactly what made four of four
+#     live seats conclude the harness was broken and stop.
+#   * the session has been ended -> HTTP 404 {"error": "no such holodeck
+#     program: ..."}, which parses but carries no derive block, so the old
+#     snippet read it as "not done yet" and burnt the whole bound in silence.
+# Both are measured below against the SAME extracted snippet, and the two
+# round-1 behaviours (break on `done`, say so on expiry) are measured as
+# CONTROLS in the same breath.
+DPOLL_RAW="$TMPROOT/documented-poll-raw.sh"
+python3 - "$PB" "$DPOLL_RAW" <<'PYPOLL2'
+import re, sys
+src = open(sys.argv[1]).read()
+m = re.search(r"\n(# 4a\..*?)\n# 5\.", src, re.S)
+open(sys.argv[2], "w").write((m.group(1) if m else "") + "\n")
+PYPOLL2
+check "S305-R2-D6. the WAIT step is still extractable from the playbook" \
+  "[ -s '$DPOLL_RAW' ]"
+
+# mkpoll <out> <port> <sid> — the same snippet, time-scaled to 3 tries 1s
+# apart. Nothing else about it is touched.
+mkpoll() {
+  cp "$DPOLL_RAW" "$1"
+  python3 - "$1" "$2" "$3" <<'PYSCALE2'
+import re, sys
+p, port, sid = sys.argv[1], sys.argv[2], sys.argv[3]
+s = open(p).read()
+s = re.sub(r"seq 1 \d+", "seq 1 3", s)
+s = re.sub(r"sleep \d+", "sleep 1", s)
+s = s.replace("8765", port).replace("<sessionId>", sid)
+open(p, "w").write(s)
+PYSCALE2
+}
+# runpoll <script> [stub-body] — runs it, leaves output in $rpout and wall
+# seconds in $rpel. A stub body shadows `curl` ONLY (python3 stays real), which
+# is how a reply shape is served without a daemon per case.
+CURLSTUB="$TMPROOT/curl-stub"
+runpoll() {
+  local sc="$1" body="${2-}" pathpfx="" t0
+  if [ -n "$body" ]; then
+    rm -rf "$CURLSTUB"; mkdir -p "$CURLSTUB"
+    { echo '#!/usr/bin/env bash'; printf '%s\n' "$body"; } >"$CURLSTUB/curl"
+    chmod +x "$CURLSTUB/curl"
+    pathpfx="$CURLSTUB:"
+  fi
+  t0="$(date +%s)"
+  rpout="$(PATH="$pathpfx$PATH" bash "$sc" 2>&1)"
+  rpel=$(( $(date +%s) - t0 ))
+}
+
+# M1 — THE GET ANSWERS HTML. The defect, reproduced at its narrowest.
+PNJ="$TMPROOT/poll-nonjson.sh"; mkpoll "$PNJ" "$VSPORT" "deadbeef"
+runpoll "$PNJ" "printf '<!doctype html><title>404</title>not found\n'"
+echo "    [M1 non-JSON reply] ${rpel}s, output: $(printf '%s' "$rpout" | head -1)"
+check "S305-R2-D6. M1 a non-JSON reply prints NO Python traceback" \
+  "! printf '%s' \"\$rpout\" | qgrep -q 'Traceback'"
+check "S305-R2-D6. M1 and no JSONDecodeError" \
+  "! printf '%s' \"\$rpout\" | qgrep -q 'JSONDecodeError'"
+check "S305-R2-D6. M1 it says the daemon STOPPED ANSWERING, not 'still working'" \
+  "printf '%s' \"\$rpout\" | qgrep -qi 'stopped answering'"
+check "S305-R2-D6. M1 and it gives up AT ONCE instead of burning the bound" \
+  "[ $rpel -le 2 ]"
+
+# M2 — THE DAEMON IS GONE: curl prints nothing and exits non-zero. This is the
+# case a seat hits when the viewscreen dies mid-derive.
+PDD="$TMPROOT/poll-dead-daemon.sh"; mkpoll "$PDD" "$VSPORT" "deadbeef"
+runpoll "$PDD" "exit 7"
+echo "    [M2 dead daemon] ${rpel}s, output: $(printf '%s' "$rpout" | head -1)"
+check "S305-R2-D6. M2 a dead daemon prints NO Python traceback either" \
+  "! printf '%s' \"\$rpout\" | qgrep -q 'Traceback'"
+check "S305-R2-D6. M2 and it reads as the daemon having stopped answering" \
+  "printf '%s' \"\$rpout\" | qgrep -qi 'stopped answering'"
+check "S305-R2-D6. M2 and it returns at once" "[ $rpel -le 2 ]"
+
+# M3 — LIVE, AND THE SESSION IS THE ONE `end` KILLED IN D4. A real 404 whose
+# body IS valid JSON: the silent-burn half of the defect.
+PEND="$TMPROOT/poll-ended-session.sh"
+rpout=""; rpel=9999
+if [ -n "$HSID" ] && [ $vsbound -eq 1 ]; then
+  mkpoll "$PEND" "$VSPORT" "$HSID"
+  runpoll "$PEND"
+fi
+echo "    [M3 live daemon, ended session] ${rpel}s, output: $(printf '%s' "$rpout" | head -1)"
+check "S305-R2-D6. M3 an ended session is not mistaken for a derive in flight" \
+  "printf '%s' \"\$rpout\" | qgrep -qi 'stopped answering'"
+check "S305-R2-D6. M3 and it stops rather than polling a dead session out" \
+  "[ $rpel -le 2 ]"
+check "S305-R2-D6. M3 no traceback against the real 404" \
+  "! printf '%s' \"\$rpout\" | qgrep -q 'Traceback'"
+
+# CONTROL 1 — IT STILL BREAKS ON `done`, ON ITERATION ONE. Without this the
+# three above would pass against a snippet that gave up on everything.
+PDONE="$TMPROOT/poll-done.sh"; mkpoll "$PDONE" "$VSPORT" "deadbeef"
+runpoll "$PDONE" "printf '{\"derive\":{\"state\":\"done\"}}\n'"
+echo "    [CONTROL done] ${rpel}s, output: $(printf '%s' "$rpout" | head -1)"
+check "S305-R2-D6. CONTROL: \`done\` still breaks the loop on the first pass" \
+  "[ $rpel -le 1 ]"
+check "S305-R2-D6. CONTROL: and \`done\` prints no complaint of any kind" \
+  "[ -z \"\$rpout\" ]"
+
+# CONTROL 2 — A DERIVE THAT IS GENUINELY IN FLIGHT MUST STILL RUN TO THE BOUND
+# and still print the expiry guidance. This is the round-1 cure, re-measured:
+# the new no-answer road must not swallow the real wait.
+PRUN="$TMPROOT/poll-running.sh"; mkpoll "$PRUN" "$VSPORT" "deadbeef"
+runpoll "$PRUN" "printf '{\"derive\":{\"state\":\"running\"}}\n'"
+echo "    [CONTROL running] ${rpel}s, output: $(printf '%s' "$rpout" | head -1)"
+check "S305-R2-D6. CONTROL: a running derive is waited out to the bound" \
+  "[ $rpel -ge 2 ]"
+check "S305-R2-D6. CONTROL: and expiry still names the bound and says it gave up" \
+  "printf '%s' \"\$rpout\" | qgrep -qi 'gave up\|give up\|did not finish'"
+check "S305-R2-D6. CONTROL: and still offers promote-anyway or re-derive" \
+  "printf '%s' \"\$rpout\" | qgrep -qi 'promote' && printf '%s' \"\$rpout\" | qgrep -qi 'force'"
+check "S305-R2-D6. CONTROL: a running derive is NOT called a dead daemon" \
+  "! printf '%s' \"\$rpout\" | qgrep -qi 'stopped answering'"
+
+# Stop the daemon the moment the measurements are taken — a suite that leaks a
+# daemon corrupts every later reading (S208/S209).
+{ [ -n "${VSPID:-}" ] && kill "$VSPID" && wait "$VSPID"; } 2>/dev/null || true
+{ [ -n "${VSPID2:-}" ] && kill "$VSPID2" && wait "$VSPID2"; } 2>/dev/null || true
+
+echo "-- S305-R1-D5. a park on a PROBE-DEPENDENT question cannot read as a halt --"
+# MEASURED IN TWO REPOS. A repo init'd with no origin records "there is nowhere
+# to push"; add a WORKING origin and `next` — the FIRST verb the loop runs —
+# still prints `NEXT: answer-pending` on that dead question, because the
+# withdrawals that need a PROBE deliberately live in `preflight` (ech.sh's
+# "WHAT IS DELIBERATELY NOT HERE"). That choice is RIGHT: `next` is the hot
+# verb and must not reach the network. The defect is that the CONSEQUENCE is
+# invisible, and four of four live models have stalled by reading a wait as a
+# halt.
+Q_R1_PROBE='there is nowhere to push: this repo has no origin remote, so nothing can be pushed and no pull request can be opened.'
+RR1="$(new_repo)"      # new_repo already carries a working local bare origin
+ap "$RR1" init --spec "$TMPROOT/spec.md" --scope M0 >/dev/null 2>&1
+APR1="$RR1/.git/lcars/autopilot.json"
+python3 - "$APR1" "$Q_R1_PROBE" <<'PYR1'
+import json, sys
+f, what = sys.argv[1], sys.argv[2]
+d = json.load(open(f))
+d["questions"] = {"q1": {"id": "q1", "mission": "-", "what": what,
+                         "why": "recorded before the remote was added",
+                         "raisedAt": 1}}
+d["pending"] = {"id": "q1", "mission": "-", "what": what}
+json.dump(d, open(f, "w"), indent=2)
+PYR1
+# A GIT THAT LOGS EVERY CALL, so "no network probe in `next`" is INSPECTED
+# rather than assumed. It forwards to the real git, so the run is otherwise
+# unchanged.
+GITSPY="$TMPROOT/gitspy"; mkdir -p "$GITSPY"
+GITSPY_LOG="$TMPROOT/git-calls.log"; : >"$GITSPY_LOG"
+REALGIT="$(command -v git)"
+cat >"$GITSPY/git" <<SHSPY
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >>"$GITSPY_LOG"
+exec "$REALGIT" "\$@"
+SHSPY
+chmod +x "$GITSPY/git"
+nr1="$(PATH="$GITSPY:$PATH" ap "$RR1" next 2>&1)"
+check "S305-R1-D5. it still parks (the design is NOT reversed)" \
+  "printf '%s' \"\$nr1\" | qgrep -q '^NEXT: answer-pending'"
+check "S305-R1-D5. \`next\` still runs NO network probe" \
+  "! qgrep -q 'ls-remote' '$GITSPY_LOG'"
+check "S305-R1-D5. it says the question MAY ALREADY BE DEAD" \
+  "printf '%s' \"\$nr1\" | qgrep -qi 'may already be dead'"
+check "S305-R1-D5. it names preflight as the verb that settles it" \
+  "printf '%s' \"\$nr1\" | qgrep -q 'preflight'"
+check "S305-R1-D5. it says to run preflight BEFORE treating this as a stop" \
+  "printf '%s' \"\$nr1\" | qgrep -qi 'before you treat this as a stop'"
+check "S305-R1-D5. it says plainly that this is NOT a halt" \
+  "printf '%s' \"\$nr1\" | qgrep -qi 'not a halt'"
+check "S305-R1-D5. and it names the question it is talking about" \
+  "printf '%s' \"\$nr1\" | qgrep -q 'q1'"
+# AND THE PROBE REALLY DOES SETTLE IT — the claim the new block makes has to be
+# true, or it sends the seat somewhere useless.
+pr1="$(ap "$RR1" preflight 2>&1)"
+check "S305-R1-D5. preflight does withdraw it, exactly as the new block claims" \
+  "printf '%s' \"\$pr1\" | qgrep -q 'WITHDRAWN \[q1\]'"
+nr1b="$(ap "$RR1" next 2>&1)"
+check "S305-R1-D5. and the next \`next\` has moved on to real work" \
+  "! printf '%s' \"\$nr1b\" | qgrep -q '^NEXT: answer-pending'"
+# CONTROL — A GENUINELY OPEN QUESTION MUST STILL READ AS GENUINELY OPEN. If the
+# maybe-dead block printed under every park it would be noise, and the captain's
+# own product call would read as something a probe could clear.
+RR1b="$(new_repo)"
+ap "$RR1b" init --spec "$TMPROOT/spec.md" --scope M0 >/dev/null 2>&1
+ap "$RR1b" ask "ship M0 as the CLI only?" --mission - \
+  --why "a product call only you can make" --command "-" --rollback "nothing" >/dev/null 2>&1
+nr1c="$(ap "$RR1b" next 2>&1)"
+check "S305-R1-D5. CONTROL: the captain's own question still parks" \
+  "printf '%s' \"\$nr1c\" | qgrep -q '^NEXT: answer-pending'"
+check "S305-R1-D5. CONTROL: and it is NOT dressed up as maybe-dead" \
+  "! printf '%s' \"\$nr1c\" | qgrep -qi 'may already be dead'"
+
+echo "-- S305-R3-D7. the scratch the SEAT makes stays inside the repo --"
+# MEASURED LIVE, 2026-10-18. A Copilot seat with a SCOPED grant (product repo +
+# LCARS source + the Holodeck sidecar, nothing else) stalled twice on
+# `Allow path access / This action may read or write the following paths
+# outside the paths currently allowed for this session.` — at 09:23 and again
+# at 09:37, each needing a human keypress. An unattended run dies at the first.
+#
+# LCARS IS NOT AT FAULT: `ech.sh live-check` takes its worktree and throwaway
+# HOME from the recorded `launchDir`, and on that run both landed in
+# `$PWD/.git/lcars/tmp/`. The culprit was scratch the SEAT created itself —
+# `/tmp/home2-XXXX` (a SECOND throwaway HOME) and `/tmp/good.json` — because
+# the live-check checklist's item 4 ("Two actors — two HOMEs") says to make a
+# second HOME and never says WHERE.
+#
+# WHAT IS MEASURED HERE, and what is not. This is NOT a grep for a sentence.
+# The playbook's cure carries a concrete, copyable command block; the test
+# EXTRACTS that block, RUNS its placeholder-free lines in a throwaway repo from
+# the repository root, and asks of the directory it really created: does this
+# resolve INSIDE the repo? The same extractor and the same predicate are then
+# turned on the two paths the live seat actually used, which must come back
+# OUTSIDE — so a predicate that answered "inside" to everything cannot read as
+# a pass. What it does NOT establish: that a live model obeys the instruction.
+# No test here can; the honest claim is that the shape the playbook hands a
+# reader is one that resolves in-repo, and that the shape it replaces does not.
+APMSRC="$REPO_ROOT/skills/lcars-eeh/HOLOGRAM-COMMAND-MODE.md"
+
+# scratch_block — the fenced bash block the cure hands the reader, scraped out
+# of the playbook by its anchor. Empty output makes every control below red,
+# which is the point.
+scratch_block() {
+  awk '
+    /^\*\*Everything you make yourself goes inside the repository/ {f=1}
+    f && /^```bash$/ {g=1; next}
+    g && /^```$/ {exit}
+    g {print}
+  ' "$APMSRC"
+}
+# The lines a test can execute verbatim: the ones with no <placeholder> in them.
+scratch_exec() { scratch_block | grep -v '<'; }
+
+# inside_repo <repo> <path> -> yes|no. Resolves symlinks on BOTH sides (macOS
+# /tmp is a symlink to /private/tmp, and a test that forgot that would call
+# every /tmp path "inside" nothing).
+inside_repo() {
+  local r p d
+  r="$(cd "$1" 2>/dev/null && pwd -P)" || { echo no; return; }
+  p="$2"
+  case "$p" in /*) ;; *) p="$1/$p" ;; esac
+  if [ -d "$p" ]; then
+    p="$(cd "$p" && pwd -P)"
+  else
+    d="$(cd "$(dirname "$p")" 2>/dev/null && pwd -P)" || { echo no; return; }
+    p="$d/$(basename "$p")"
+  fi
+  case "$p/" in "$r"/*) echo yes ;; *) echo no ;; esac
+}
+
+SB="$(scratch_block)"
+SX="$(scratch_exec)"
+
+check "S305-R3-D7. the cure hands the reader an extractable command block" \
+  "[ -n \"\$SB\" ]"
+check "S305-R3-D7. and that block has lines runnable as-is (no placeholders)" \
+  "[ -n \"\$SX\" ] && printf '%s' \"\$SX\" | qgrep -q 'mktemp'"
+
+# RUN IT. A throwaway git repo, cwd at its root, exactly as a seat would.
+RSC="$TMPROOT/scratch-repo"; mkdir -p "$RSC"; ( cd "$RSC" && git init -q . )
+H2VAL="$( cd "$RSC" && eval "$SX
+printf '%s' \"\$H2\"" 2>"$TMPROOT/scratch-err.txt" )"; h2rc=$?
+echo "    [extracted block] H2=$H2VAL (exit $h2rc)"
+
+check "S305-R3-D7. the block the playbook teaches RUNS clean from the repo root" \
+  "[ $h2rc -eq 0 ] && [ -n \"\$H2VAL\" ]"
+check "S305-R3-D7. and it really created a directory" "[ -d \"\$H2VAL\" ]"
+# (1) THE DEFECT ITSELF — the second HOME the seat makes resolves in-repo.
+check "S305-R3-D7. the second throwaway HOME it produces is INSIDE the repo" \
+  "[ -n \"\$H2VAL\" ] && [ \"\$(inside_repo \"\$RSC\" \"\$H2VAL\")\" = yes ]"
+check "S305-R3-D7. and specifically under .git/lcars/tmp/" \
+  "[ \"\$(inside_repo \"\$RSC/.git/lcars/tmp\" \"\$H2VAL\")\" = yes ]"
+check "S305-R3-D7. it is a real HOME a CLI could be pointed at (writable dir)" \
+  "( HOME=\"\$H2VAL\" sh -c 'printf x >\"\$HOME/.probe\"' ) && [ -f \"\$H2VAL/.probe\" ]"
+
+# (2) POSITIVE CONTROL — the SAME predicate on the two paths the live seat
+# really used. If these came back `yes` the assertions above would be measuring
+# nothing at all.
+check "S305-R3-D7. CONTROL: /tmp/home2-XXXX (measured 09:23) is judged OUTSIDE" \
+  "[ \"\$(inside_repo \"\$RSC\" /tmp/home2-XXXX)\" = no ]"
+check "S305-R3-D7. CONTROL: /tmp/good.json (measured 09:37) is judged OUTSIDE" \
+  "[ \"\$(inside_repo \"\$RSC\" /tmp/good.json)\" = no ]"
+check "S305-R3-D7. CONTROL: a bare mktemp -d (no template) is judged OUTSIDE" \
+  "[ \"\$(inside_repo \"\$RSC\" \"\$(mktemp -d)\")\" = no ]"
+# (3) ANTI-VACUITY — the same extracted block with the in-repo prefix rewritten
+# back to the natural /tmp shape must FAIL the same predicate. This proves the
+# green above comes from the playbook's wording and not from the harness.
+SXTMP="$(printf '%s\n' "$SX" | sed 's|\$PWD/\.git/lcars/tmp|/tmp|g; s|\.git/lcars/tmp|/tmp|g')"
+H2TMP="$( cd "$RSC" && eval "$SXTMP
+printf '%s' \"\$H2\"" 2>/dev/null )"
+check "S305-R3-D7. CONTROL: the /tmp rewrite of the same block still runs" \
+  "[ -n \"\$H2TMP\" ] && [ -d \"\$H2TMP\" ]"
+check "S305-R3-D7. CONTROL: and THAT one is judged OUTSIDE the repo" \
+  "[ \"\$(inside_repo \"\$RSC\" \"\$H2TMP\")\" = no ]"
+rm -rf "$H2TMP" 2>/dev/null || true
+
+# (4) COVERAGE — the cure has to be reachable by the seat that needs it: in the
+# live-check section (§ 6), and naming the second-actor case the checklist
+# cannot be edited to fix.
+sec6="$(awk '/^## 6\. The Verify gate/{f=1} f&&/^## 6a\./{exit} f' "$APMSRC")"
+check "S305-R3-D7. the cure sits inside § 6, the live-check section" \
+  "printf '%s' \"\$sec6\" | qgrep -qF 'Everything you make yourself goes inside the repository'"
+check "S305-R3-D7. it names the second-actor item the checklist leaves blank" \
+  "printf '%s' \"\$sec6\" | qgrep -qF '<throwaway-home-2>'"
+check "S305-R3-D7. it says WHY — a write outside the grant stops the run" \
+  "printf '%s' \"\$sec6\" | qgrep -qi 'Allow path access'"
+
+# ───────────────────────────────────────────────────────────────────────────────
+# S305-R4-D8 — A DESIGN IS HANDED OVER BY `promote`, NEVER BY HAND
+#
+# MEASURED on a live Claude/Opus seat. It authored a real design in the
+# Holodeck (program `m1-board`, four turns, concept.md + mockup.html both on
+# disk), and then did `promote`'s job itself: it wrote the design into the
+# mission's own prd.md, referenced the sidecar files by absolute path, and
+# reproduced by hand the boilerplate promote injects (the whole "How to read
+# the attached mockup" block, look-versus-behaviour precedence, escalate on
+# disagreement). The BUILD was right — the mockup's colours are in the shipped
+# code and a control colour absent from the mockup is nowhere. The RECORD was
+# never written: no `Sent to Align:` header line, the room never marked handed
+# over or read-only, nothing linking the mission to the program, the viewscreen
+# unable to draw the connection. A successful hand-off became indistinguishable
+# from no hand-off at all. The playbook already handed the seat the promote
+# command (step 5); it simply chose not to use it, so the cure is a
+# PROHIBITION WITH ITS REASON, not a better explanation.
+#
+# WHAT IS MEASURED HERE, and what is not. Three independent facets, not one
+# sentence: (a) the rule is REACHABLE — it sits inside the same `##` section
+# the promote call sits in, sliced by section boundaries rather than line
+# numbers, and it comes BEFORE the promote curl inside that section, so a seat
+# reading top-down meets it before it could act; (b) its CLAIMS CHECK OUT
+# against the product, read-only — the route it names is really dispatched by
+# the daemon, and the record it says goes missing is really the one promote
+# writes; (c) CONTROLS — the same predicate on the sections that do NOT carry
+# this rule comes back `no`, the merge precedent's predicate discriminates the
+# other way, and § 4 with the new lines stripped out goes red again, so the
+# green cannot be coming from text that was already there.
+# WHAT IT DOES NOT ESTABLISH: that a live model obeys. No test here can — only
+# the seats can measure that. The honest claim is that the prohibition, its
+# replacement call and its reason are present, reachable before the act, and
+# truthful about the product.
+HOCM="$REPO_ROOT/skills/lcars-eeh/HOLOGRAM-COMMAND-MODE.md"
+SRVPY="$REPO_ROOT/web/lcars_serve/server.py"
+ACTPY="$REPO_ROOT/web/lcars_serve/actions.py"
+
+# section <start-regex> <stop-regex> — one `##` slice of the playbook.
+hocm_section() { awk -v s="$1" -v e="$2" '$0 ~ s {f=1} f && $0 ~ e {exit} f' "$HOCM"; }
+
+# has_handoff_rule <text> -> yes|no. All three facets or it is not the rule:
+# the thing `promote` does that nothing else does (it COPIES the design into the
+# Mission's own `attachments/` — S305-R6-D10's rewrite), the call that does it,
+# and the record that goes missing without it. The first facet was the
+# prohibition's own sentence until R6; it is now the consequence that sentence
+# left out, because the prohibition was measured not to work.
+has_handoff_rule() {
+  local t="$1"
+  printf '%s\n' "$t" | qgrep -qF 'attachments/' || { echo no; return; }
+  printf '%s\n' "$t" | qgrep -qF '/promote' || { echo no; return; }
+  printf '%s\n' "$t" | qgrep -qiF 'Sent to Align' || { echo no; return; }
+  echo yes
+}
+
+# THE RULE'S OWN PASSAGE, sliced by its NEIGHBOURS and not by its own words: it
+# is whatever sits between the end of the which-path paragraph and the start of
+# the curl walkthrough. That boundary is what makes the facet checks below
+# non-tautological — the slice is defined by text the rule does not own, so a
+# rewrite that drops a facet goes red instead of moving the goalposts.
+hocm_rule_block() {
+  awk '/State which path you took/ {f=1; next} /HOW TO CALL IT/ {exit} f' "${1:-$HOCM}"
+}
+# has_merge_rule <text> -> yes|no. The precedent this rule is written to match,
+# used here only as a discriminator for the slicer.
+has_merge_rule() {
+  if printf '%s\n' "$1" | qgrep -qiF 'You never merge by hand'; then echo yes; else echo no; fi
+}
+
+S4="$(hocm_section '^## 4\. File a milestone' '^## 4a\.')"
+S6="$(hocm_section '^## 6\. The Verify gate' '^## 6a\.')"
+S7="$(hocm_section '^## 7\. Land it' '^## 8\.')"
+
+check "S305-R4-D8. the slicer really slices (§ 4 is non-empty)" "[ -n \"\$S4\" ]"
+check "S305-R4-D8. § 4 is the section that carries the promote call" \
+  "printf '%s\n' \"\$S4\" | qgrep -qE 'curl .*api/holodeck/.*/promote'"
+
+# (1) THE DEFECT ITSELF — the rule exists, in that same section.
+check "S305-R4-D8. the hand-off prohibition sits in § 4, with promote" \
+  "[ \"\$(has_handoff_rule \"\$S4\")\" = yes ]"
+
+# ORDERING: a seat reading § 4 top-down meets the rule BEFORE the promote line.
+RULE_LN="$(printf '%s\n' "$S4" | grep -nF 'attachments/' | head -1 | cut -d: -f1)"
+PROM_LN="$(printf '%s\n' "$S4" | grep -nE 'curl .*api/holodeck/.*/promote' | head -1 | cut -d: -f1)"
+echo "    [§ 4 line offsets] rule=${RULE_LN:-none} promote-curl=${PROM_LN:-none}"
+check "S305-R4-D8. and it is read BEFORE the promote call, not after it" \
+  "[ -n \"\$RULE_LN\" ] && [ -n \"\$PROM_LN\" ] && [ \"\$RULE_LN\" -lt \"\$PROM_LN\" ]"
+
+# It must say WHAT TO CALL (the route, not a vague 'use the surface') and WHY --
+# and it must say so IN THE RULE. Asserting these of § 4 as a whole would be
+# vacuous: step 5's own comment already names the route. So the rule's own
+# paragraph is cut out (the contiguous non-blank run around the prohibition)
+# and the three questions are put to THAT.
+RULEPARA="$(hocm_rule_block)"
+check "S305-R4-D8. the rule block is extractable from its neighbours" \
+  "[ -n \"\$RULEPARA\" ]"
+check "S305-R4-D8. the RULE itself names the route the playbook documents" \
+  "printf '%s\n' \"\$RULEPARA\" | qgrep -qF '/api/holodeck/<sessionId>/promote'"
+check "S305-R4-D8. the RULE pre-empts the rationalisation: a faithful brief is NOT equivalent" \
+  "printf '%s\n' \"\$RULEPARA\" | qgrep -qiF 'equivalent'"
+check "S305-R4-D8. the RULE gives the reason: right build, NO RECORD left behind" \
+  "printf '%s\n' \"\$RULEPARA\" | qgrep -qiE 'indistinguishable from no hand-?off'"
+check "S305-R4-D8. the RULE names the record that went missing" \
+  "printf '%s\n' \"\$RULEPARA\" | qgrep -qiF 'Sent to Align'"
+check "S305-R4-D8. CONTROL: the merge precedent's paragraph is a DIFFERENT paragraph" \
+  "printf '%s\n' \"\$RULEPARA\" | qgrep -qivF 'You never merge by hand'"
+
+# (2) ITS CLAIMS CHECK OUT AGAINST THE PRODUCT (read-only cross-check). A rule
+# that pointed at a route the daemon does not serve, or blamed a record promote
+# does not write, would be reachable and still wrong.
+check "S305-R4-D8. CROSS-CHECK: the promote route it names is really dispatched" \
+  "qgrep -qF 'promote' '$SRVPY' && qgrep -qE 'parts\[1\] == \"promote\"' '$SRVPY'"
+check "S305-R4-D8. CROSS-CHECK: the missing record is really the one promote writes" \
+  "qgrep -qF '_Sent to Align: mission' '$ACTPY'"
+check "S305-R4-D8. CROSS-CHECK: and that same line is what marks the room READ-ONLY" \
+  "qgrep -qF 'over and is READ-ONLY' '$ACTPY'"
+
+# (3) CONTROLS — the predicate can come back `no`, and the slicer discriminates.
+check "S305-R4-D8. CONTROL: § 6 (the Verify gate) does NOT carry this rule" \
+  "[ \"\$(has_handoff_rule \"\$S6\")\" = no ]"
+check "S305-R4-D8. CONTROL: § 7 (Land it) does NOT carry it either" \
+  "[ \"\$(has_handoff_rule \"\$S7\")\" = no ]"
+check "S305-R4-D8. CONTROL: the merge precedent IS in § 7 (the slicer is real)" \
+  "[ \"\$(has_merge_rule \"\$S7\")\" = yes ]"
+check "S305-R4-D8. CONTROL: and the merge precedent is NOT in § 4" \
+  "[ \"\$(has_merge_rule \"\$S4\")\" = no ]"
+
+# (4) ANTI-VACUITY — strip the added rule out of § 4 and the predicate must go
+# red. This is what proves the green above comes from the new text and not from
+# something § 4 already said.
+S4_STRIPPED="$(printf '%s\n' "$S4" | grep -viE 'attachments/|indistinguishable from no hand-?off')"
+check "S305-R4-D8. CONTROL: § 4 with the prohibition stripped out fails the predicate" \
+  "[ \"\$(has_handoff_rule \"\$S4_STRIPPED\")\" = no ]"
+check "S305-R4-D8. CONTROL: and the strip left the rest of § 4 intact" \
+  "printf '%s\n' \"\$S4_STRIPPED\" | qgrep -qE 'curl .*api/holodeck/.*/promote'"
+
+# ───────────────────────────────────────────────────────────────────────────────
+# S305-R5-D9 — THE SCRATCH DIRECTORY IS IN THE LAUNCH GRANT, NOT ONLY IN A RULE
+#
+# MEASURED LIVE, 2026-10-18, back to back, same code, same hour. A Copilot seat
+# on `claude-opus-5.5` took ONE permission stall (the unavoidable folder-trust
+# prompt at startup). A Copilot seat on `gpt-6.1-sol` — Copilot's DEFAULT, and
+# what a stranger gets — took SIX in one hour. Every one of the six was the seat
+# writing its OWN scratch to /tmp (`/tmp/lcars-suite-r2.txt`,
+# `/tmp/lcars-cli-r2.txt`, both real files on disk, both outside the scoped
+# grant), and every one froze the run on a dialog nobody was awake to answer.
+#
+# § 6.1's in-repo-scratch rule (S305-R3-D7, above) already existed on that run.
+# The strong model obeyed it; the default model did not. A file-location rule
+# enforced by INSTRUCTION is model-bound by nature; one enforced by LAUNCH-TIME
+# CONFIGURATION is not. So the playbook's documented launch grant now names the
+# system temp directory as well, for both CLIs the mode supports.
+#
+# WHAT IS MEASURED HERE, and what is not. Not a grep for a sentence: the
+# documented launch block is EXTRACTED, its backslash continuations joined, and
+# its `--add-dir` values PARSED OUT as argv tokens, then the scratch token is
+# EVALUATED and the resolved directory compared against this host's real system
+# temp dir (`pwd -P` on both sides, so the /tmp -> /private/tmp symlink cannot
+# fool it) and against a throwaway repo, which it must be OUTSIDE of — if it
+# resolved in-repo the grant would be redundant and the assertion vacuous.
+# Controls: the same predicate on the same block with the scratch grant stripped
+# must come back `no`; on § 6.1's scratch block, which is not a launch grant at
+# all, `no`; and the blanket switches must be ABSENT from the launch line,
+# because the whole point is that this stays scoped.
+# WHAT IT DOES NOT ESTABLISH: that any model stalls less. Only a seat can
+# measure that, and the six-versus-one above is that measurement, not this test.
+# It also cannot establish that a reader launches with the line as written, nor
+# that the grant covers whatever path a future model invents — only that the
+# launch line the playbook hands a stranger names the temp directory alongside
+# the repo and the sidecar, is still scoped, and keeps § 6.1 beside it.
+
+SETUP_SEC="$(hocm_section '^## Unattended Copilot setup' '^## Unattended Copilot commands')"
+check "S305-R5-D9. the setup section slices non-empty" "[ -n \"\$SETUP_SEC\" ]"
+check "S305-R5-D9. and it is the section that argues COPILOT_ALLOW_ALL is not required" \
+  "printf '%s\n' \"\$SETUP_SEC\" | qgrep -qF 'COPILOT_ALLOW_ALL'"
+
+# fence_bash <text>      -> the first fenced ```bash block inside that text.
+fence_bash() { printf '%s\n' "$1" | awk '/^```bash$/{g=1;next} g&&/^```$/{exit} g{print}'; }
+# join_cont <text>       -> comments dropped, backslash continuations joined, so
+#                           each command becomes ONE logical line (real argv).
+join_cont() {
+  printf '%s\n' "$1" | sed 's/[[:space:]]*#.*$//' | awk '
+    { line = $0
+      sub(/^[[:space:]]+/, "", line)
+      if (buf != "") buf = buf " " line; else buf = line
+      if (buf ~ /\\$/) { sub(/[[:space:]]*\\$/, "", buf); next }
+      if (buf != "") print buf
+      buf = ""
+    }'
+}
+# add_dirs <text> <cli>  -> every --add-dir VALUE on that cli's launch line.
+add_dirs() {
+  join_cont "$(fence_bash "$1")" | grep -E "^$2([[:space:]]|$)" \
+    | tr ' ' '\n' | awk 'p=="--add-dir" && $0!=""{print} {p=$0}'
+}
+TMP_REAL="$(cd /tmp && pwd -P)"
+TMPDIR_REAL="$(cd "${TMPDIR:-/tmp}" && pwd -P)"
+echo "    [this host] /tmp -> $TMP_REAL ; \$TMPDIR -> $TMPDIR_REAL"
+# names_scratch <text> <cli> -> yes|no. A grant token that really resolves to
+# this host's system temp directory. Placeholder tokens are skipped, not
+# guessed at.
+names_scratch() {
+  local tok p
+  while IFS= read -r tok; do
+    case "$tok" in *'<'*|'') continue ;; esac
+    p="$(eval "printf '%s' $tok" 2>/dev/null)" || continue
+    [ -d "$p" ] || continue
+    p="$(cd "$p" && pwd -P)"
+    { [ "$p" = "$TMP_REAL" ] || [ "$p" = "$TMPDIR_REAL" ]; } && { echo yes; return; }
+  done <<EOF2
+$(add_dirs "$1" "$2")
+EOF2
+  echo no
+}
+
+COP_DIRS="$(add_dirs "$SETUP_SEC" copilot)"
+CLA_DIRS="$(add_dirs "$SETUP_SEC" claude)"
+echo "    [copilot grant] $(printf '%s' "$COP_DIRS" | tr '\n' ' ')"
+echo "    [claude grant ] $(printf '%s' "$CLA_DIRS" | tr '\n' ' ')"
+
+# (1) THE CHANGE ITSELF — a concrete launch grant, for both CLIs, naming repo,
+# sidecar and scratch.
+check "S305-R5-D9. the setup section hands the reader a runnable launch block" \
+  "[ -n \"\$(fence_bash \"\$SETUP_SEC\")\" ]"
+check "S305-R5-D9. the copilot launch line is scoped with --allow-all-tools" \
+  "join_cont \"\$(fence_bash \"\$SETUP_SEC\")\" | qgrep -qE '^copilot .*--allow-all-tools'"
+check "S305-R5-D9. the copilot grant names the product repo" \
+  "printf '%s\n' \"\$COP_DIRS\" | qgrep -qF '<product-repo>'"
+check "S305-R5-D9. the copilot grant names the Holodeck sidecar" \
+  "printf '%s\n' \"\$COP_DIRS\" | qgrep -qF '<holodeck-sidecar>'"
+check "S305-R5-D9. the copilot grant names the system temp directory, resolved" \
+  "[ \"\$(names_scratch \"\$SETUP_SEC\" copilot)\" = yes ]"
+# S305-R7-D11 widened the grant to six NAMED directories (the system toolchain
+# joined repo/sidecar/scratch), S305-R8-D12 added a SEVENTH (the launch
+# checkout's own sibling directory) and S305-R9-D13 an EIGHTH (the on-PATH
+# launcher directory install.sh writes to). The intent asserted here is
+# unchanged -- an ENUMERATED set, never a sweep -- so the count moved and the
+# exact set is asserted in R7-D11, R8-D12 and R9-D13 below. S306 added a NINTH
+# -- the directory the resolved headless BROWSER lives in, because § 6.1 requires
+# driving a real one and the grant named none (measured 2026-10-19: a seat was
+# refused Chrome, then asked again for Chromium) -- and a TENTH, `/dev`, after a
+# second seat froze on `/dev/null)` (same day; see S306-8 in the eeh suite).
+# Do not revert to 3.
+check "S305-R5-D9. and it is NAMED directories, not a widened sweep" \
+  "[ \"\$(printf '%s\n' \"\$COP_DIRS\" | grep -c .)\" -eq 10 ]"
+check "S305-R5-D9. the claude launch line names the sidecar (its cwd is the repo)" \
+  "printf '%s\n' \"\$CLA_DIRS\" | qgrep -qF '<holodeck-sidecar>'"
+check "S305-R5-D9. the claude launch line names the system temp directory too" \
+  "[ \"\$(names_scratch \"\$SETUP_SEC\" claude)\" = yes ]"
+check "S305-R5-D9. and the claude line does NOT re-name the repo (cwd already)" \
+  "! printf '%s\n' \"\$CLA_DIRS\" | qgrep -qF '<product-repo>'"
+
+# The grant has to be WIDER than the repo or it would change nothing: the
+# resolved scratch dir must land OUTSIDE a real repo. (inside_repo and $RSC come
+# from S305-R3-D7 above — same predicate, reused deliberately.)
+# The scratch grant is the first LITERAL path token: placeholders (`<...>`) are
+# skipped as before, and since S305-R8-D12 so are shell-variable tokens
+# (`"$LAUNCH_ROOT"`), which resolve only inside that round's throwaway repo.
+SCR_TOK="$(printf '%s\n' "$COP_DIRS" | grep -v '<' | grep -v '[$]' | head -1)"
+SCR_RES="$(eval "printf '%s' $SCR_TOK" 2>/dev/null)"
+echo "    [scratch token] $SCR_TOK -> $SCR_RES"
+check "S305-R5-D9. the scratch grant resolves to a real directory" "[ -d \"\$SCR_RES\" ]"
+check "S305-R5-D9. and it is OUTSIDE the repo — so the grant is not redundant" \
+  "[ \"\$(inside_repo \"\$RSC\" \"\$SCR_RES\")\" = no ]"
+
+# (2) STILL SCOPED — the blanket switches stay absent from the launch line.
+GRANT_LINES="$(join_cont "$(fence_bash "$SETUP_SEC")")"
+check "S305-R5-D9. the launch line carries NO --allow-all-paths" \
+  "! printf '%s\n' \"\$GRANT_LINES\" | qgrep -qF -- '--allow-all-paths'"
+check "S305-R5-D9. the launch line carries NO COPILOT_ALLOW_ALL=true" \
+  "! printf '%s\n' \"\$GRANT_LINES\" | qgrep -qF 'COPILOT_ALLOW_ALL=true'"
+check "S305-R5-D9. the launch line carries NO --dangerously-skip-permissions" \
+  "! printf '%s\n' \"\$GRANT_LINES\" | qgrep -qF -- '--dangerously-skip-permissions'"
+
+# (3) THE REASON TRAVELS WITH IT — a grant without its cost gets undone by a
+# reader who does not know what it bought. These three ARE content assertions,
+# and are claimed as nothing more.
+check "S305-R5-D9. the section carries the measurement: six stalls against one" \
+  "printf '%s\n' \"\$SETUP_SEC\" | qgrep -qiE 'six' && printf '%s\n' \"\$SETUP_SEC\" | qgrep -qF 'gpt-6.1-sol'"
+check "S305-R5-D9. it says the difference was the MODEL, same code same hour" \
+  "printf '%s\n' \"\$SETUP_SEC\" | qgrep -qiF 'same hour'"
+check "S305-R5-D9. it names the trade honestly: /tmp is world-writable" \
+  "printf '%s\n' \"\$SETUP_SEC\" | qgrep -qiF 'world-writable'"
+check "S305-R5-D9. and it points at § 6.1, which stays" \
+  "printf '%s\n' \"\$SETUP_SEC\" | qgrep -qF '6.1'"
+
+# (4) § 6.1 IS NOT WEAKENED — belt and braces, so the grant is the backstop and
+# the instruction is still the hygiene.
+check "S305-R5-D9. § 6.1 still tells the seat never to use /tmp" \
+  "printf '%s\n' \"\$S6\" | qgrep -qiF 'So never' && printf '%s\n' \"\$S6\" | qgrep -qiF 'never a bare'"
+check "S305-R5-D9. § 6.1's in-repo scratch block is still extractable and runnable" \
+  "[ -n \"\$(scratch_block)\" ] && printf '%s' \"\$(scratch_exec)\" | qgrep -q 'mktemp'"
+
+# (5) CONTROLS — the predicate can fail.
+SETUP_STRIPPED="$(printf '%s\n' "$SETUP_SEC" | grep -vF -- '--add-dir /tmp')"
+check "S305-R5-D9. CONTROL: the strip really removed lines" \
+  "[ \"\$(printf '%s\n' \"\$SETUP_STRIPPED\" | wc -l)\" -lt \"\$(printf '%s\n' \"\$SETUP_SEC\" | wc -l)\" ]"
+check "S305-R5-D9. CONTROL: with the scratch grant stripped, copilot fails the predicate" \
+  "[ \"\$(names_scratch \"\$SETUP_STRIPPED\" copilot)\" = no ]"
+check "S305-R5-D9. CONTROL: and so does claude" \
+  "[ \"\$(names_scratch \"\$SETUP_STRIPPED\" claude)\" = no ]"
+check "S305-R5-D9. CONTROL: but the stripped block still names the repo — only the scratch went" \
+  "printf '%s\n' \"\$(add_dirs \"\$SETUP_STRIPPED\" copilot)\" | qgrep -qF '<product-repo>'"
+check "S305-R5-D9. CONTROL: § 6.1's section is not a launch grant and fails the predicate" \
+  "[ \"\$(names_scratch \"\$S6\" copilot)\" = no ]"
+check "S305-R5-D9. CONTROL: § 7 (Land it) carries no launch grant either" \
+  "[ \"\$(names_scratch \"\$S7\" copilot)\" = no ]"
+
+# ───────────────────────────────────────────────────────────────────────────────
+# S305-R6-D10 — THE HAND-OFF RULE LEADS WITH THE DURABLE COPY, NOT THE RECORD
+#
+# WHY IT WAS REWRITTEN. R4-D8 put the rule in the file as a PROHIBITION whose
+# reason was bookkeeping — a missing `Sent to Align:` line, a room not marked
+# read-only, a connection the viewscreen cannot draw. MEASURED since it
+# shipped, three seats in a row ignored it: `claude`/Opus drew the design then
+# wrote the brief itself referencing the sidecar by absolute path;
+# `copilot`/`gpt-6.1-sol` drew it, abandoned it and never filed a mission at
+# all; `claude`/Sonnet drew it, hand-wrote the brief against `concept.md` and
+# `mockup.html` by path, and built the work. A seat shipping working software
+# weighs a missing label as small and proceeds — so the wording was giving it
+# the WEAK reason.
+#
+# THE STRONG REASON, measured the same day and absent from R4's wording:
+# `promote` threads the program's `mockup.html` + `concept.md` down the
+# `--attach` road, and `file.sh` COPIES each one into the Mission's own
+# `attachments/attachment-NN.<ext>` and lists it in `prd.md` (which is the
+# GitHub issue body) by RELATIVE path. The Mission OWNS the design. A
+# hand-written brief copies nothing and leaves the Mission borrowing a file
+# outside the product tree.
+#
+# WHAT THIS MEASURES: that the rewritten passage (a) names that copy and the
+# route that makes it, (b) puts the copy AHEAD of the bookkeeping inside the
+# passage, so the headline is the engineering consequence, (c) names what is
+# lost by hand and keeps the three-seat measurement that forced the rewrite,
+# and (d) is TRUE of the product — asserted against file.sh and actions.py
+# read-only, not against this brief. Controls: the PRE-CHANGE passage at HEAD
+# fails the predicate, the sections that never carried the rule fail it, and
+# stripping the new lines turns it red.
+# WHAT IT DOES NOT ESTABLISH: that a live seat now calls `promote`. Three seats
+# ignored the last wording and no grep can tell whether this one lands — only
+# the next seats can. "Leads with" is also measured as TEXT ORDER within the
+# passage, which is a proxy for emphasis, not emphasis itself.
+FILESH="$REPO_ROOT/skills/lcars-file/file.sh"
+RULEBLK="$(hocm_rule_block)"
+
+check "S305-R6-D10. the rule block is non-empty and sits before the promote curl" \
+  "[ -n \"\$RULEBLK\" ] && [ \"\$(grep -nF 'attachments/' '$HOCM' | head -1 | cut -d: -f1)\" -lt \"\$(grep -nE 'curl .*api/holodeck/.*/promote' '$HOCM' | head -1 | cut -d: -f1)\" ]"
+
+# (a) THE DURABLE COPY, named, with the route that makes it.
+check "S305-R6-D10. it names the Mission's own attachments/ dir" \
+  "printf '%s\n' \"\$RULEBLK\" | qgrep -qF \"attachments/\""
+check "S305-R6-D10. it names the two files that ride (mockup.html, concept.md)" \
+  "printf '%s\n' \"\$RULEBLK\" | qgrep -qF 'mockup.html' && printf '%s\n' \"\$RULEBLK\" | qgrep -qF 'concept.md'"
+check "S305-R6-D10. it says the Mission OWNS a copy / keeps it if the sidecar goes" \
+  "printf '%s\n' \"\$RULEBLK\" | qgrep -qiE 'copies|copy' && printf '%s\n' \"\$RULEBLK\" | qgrep -qiF 'sidecar'"
+
+# (b) POSITIVE LEAD, AND THE COPY AHEAD OF THE BOOKKEEPING. The passage used to
+# open 'You never hand a design over by hand'; the captain's correction was that
+# a prohibition does not sell the reader on what it gains. So: the FIRST line
+# names the call, and does not open with 'never'.
+LEAD="$(printf '%s\n' "$RULEBLK" | grep -v '^[[:space:]]*$' | head -1)"
+echo "    [rule lead] ${LEAD}"
+check "S305-R6-D10. the LEAD line names promote (a positive instruction)" \
+  "printf '%s\n' \"\$LEAD\" | qgrep -qF 'promote'"
+check "S305-R6-D10. the LEAD line does not open as a prohibition" \
+  "printf '%s\n' \"\$LEAD\" | qgrep -qivE 'never|do not|don.t'"
+COPY_LN="$(printf '%s\n' "$RULEBLK" | grep -nF 'attachments/' | head -1 | cut -d: -f1)"
+BOOK_LN="$(printf '%s\n' "$RULEBLK" | grep -niF 'Sent to Align' | head -1 | cut -d: -f1)"
+echo "    [rule offsets] attachments=${COPY_LN:-none} Sent-to-Align=${BOOK_LN:-none}"
+check "S305-R6-D10. the durable copy comes BEFORE the bookkeeping in the passage" \
+  "[ -n \"\$COPY_LN\" ] && [ -n \"\$BOOK_LN\" ] && [ \"\$COPY_LN\" -lt \"\$BOOK_LN\" ]"
+
+# (c) WHAT IS LOST BY HAND, and the measurement that forced the rewrite.
+check "S305-R6-D10. it says a hand-written brief copies NOTHING" \
+  "printf '%s\n' \"\$RULEBLK\" | qgrep -qiE 'copies nothing|copies NOTHING'"
+check "S305-R6-D10. it says the brief then depends on a file outside the repo" \
+  "printf '%s\n' \"\$RULEBLK\" | qgrep -qiE 'outside the (product tree|repo)'"
+check "S305-R6-D10. it says the design can be lost SILENTLY" \
+  "printf '%s\n' \"\$RULEBLK\" | qgrep -qiF 'silently'"
+check "S305-R6-D10. it keeps the measurement: three seats ignored the last wording" \
+  "printf '%s\n' \"\$RULEBLK\" | qgrep -qiE 'three seats'"
+check "S305-R6-D10. it still pre-empts 'a faithful brief is equivalent'" \
+  "printf '%s\n' \"\$RULEBLK\" | qgrep -qiF 'equivalent'"
+check "S305-R6-D10. it is still tight — the passage is under 30 lines" \
+  "[ \"\$(printf '%s\n' \"\$RULEBLK\" | wc -l | tr -d ' ')\" -lt 30 ]"
+
+# (d) CROSS-CHECK AGAINST THE PRODUCT, read-only. The claim the rule now leads
+# with is an implementation claim, so it is asserted of the implementation.
+check "S305-R6-D10. CROSS-CHECK: promote's hand-off set really is mockup.html + concept.md" \
+  "qgrep -qF '_HANDOFF_FILES = (\"mockup.html\", _CONCEPT)' '$ACTPY' && qgrep -qF '_CONCEPT = \"concept.md\"' '$ACTPY'"
+check "S305-R6-D10. CROSS-CHECK: those files ride the --attach road into filing" \
+  "qgrep -qF 'args += [\"--attach\", p]' '$ACTPY'"
+check "S305-R6-D10. CROSS-CHECK: file.sh COPIES each --attach into attachments/attachment-NN" \
+  "qgrep -qF 'attachments/attachment-%02d' '$FILESH' && qgrep -qF 'cp \"\$asrc\" \"\$MISSION_DIR/\$arel\"' '$FILESH'"
+check "S305-R6-D10. CROSS-CHECK: and lists them in prd.md, the issue body, by relative path" \
+  "qgrep -qF 'lcars_attach_prd_section \"\${ATTACH_RELS[@]}\" >>\"\$MISSION_DIR/prd.md\"' '$FILESH'"
+
+# (e) CONTROLS. The predicate must be falsifiable, and it must have been FALSE
+# before this change — that is what proves it is not a grep for text already
+# present. HEAD's copy of the playbook is the pre-change text.
+# S305-R7-D11: PINNED. This read HEAD, which was the pre-change commit while R6
+# was being written and stopped being it the moment R6 landed -- the control then
+# fails for the wrong reason. 7548ee4 is R6's real parent and stays pre-change.
+HOCM_PREV="$TMPROOT/hocm-prev.md"
+( cd "$REPO_ROOT" && git show 7548ee4:skills/lcars-eeh/HOLOGRAM-COMMAND-MODE.md ) >"$HOCM_PREV" 2>/dev/null || :
+check "S305-R6-D10. CONTROL: the pre-change playbook is readable at 7548ee4" \
+  "[ -s \"\$HOCM_PREV\" ]"
+check "S305-R6-D10. CONTROL: the PRE-CHANGE passage FAILS the predicate" \
+  "[ \"\$(has_handoff_rule \"\$(hocm_rule_block \"\$HOCM_PREV\")\")\" = no ]"
+check "S305-R6-D10. CONTROL: and the pre-change passage was non-empty (a real slice)" \
+  "[ -n \"\$(hocm_rule_block \"\$HOCM_PREV\")\" ]"
+RULEBLK_STRIPPED="$(printf '%s\n' "$RULEBLK" | grep -viE 'attachments/|copies nothing|three seats')"
+check "S305-R6-D10. CONTROL: strip the new claims and the predicate goes red" \
+  "[ \"\$(has_handoff_rule \"\$RULEBLK_STRIPPED\")\" = no ]"
+check "S305-R6-D10. CONTROL: § 6, which never carried this rule, fails it" \
+  "[ \"\$(has_handoff_rule \"\$S6\")\" = no ]"
+
+# ───────────────────────────────────────────────────────────────────────────────
+# S305-R7-D11 — THE LAUNCH GRANT NAMES THE SYSTEM TOOLCHAIN TOO
+#
+# MEASURED LIVE, 2026-10-18. A Copilot seat on `gpt-6-luna` STALLED asking
+# permission to use `/usr/bin/time` — a standard system binary — because the
+# documented grant named the product repo, the Holodeck sidecar, the LCARS
+# source and /tmp, but not the directories ordinary system commands live in.
+# That freezes an unattended run on a dialog nobody is awake to answer. R5-D9
+# fixed the same class for the seat's own scratch; this is the same fix for the
+# tools it runs. The grant is the PRODUCT half: a stranger who launches the
+# hologram from this playbook has to get the grant the measurement rig gets, or
+# the measurement passes green and the shipped product still stalls.
+#
+# WHAT IS MEASURED HERE, and what is not. Not a grep for a sentence this session
+# wrote: the documented launch block is EXTRACTED, its backslash continuations
+# joined, its `--add-dir` values PARSED OUT as argv tokens, each token EVALUATED
+# and RESOLVED with `pwd -P`, and the resolved set compared against this host's
+# real /usr/bin, /bin and /usr/sbin — for BOTH CLIs the mode supports. The
+# blanket switches must still be ABSENT, and $HOME must NOT be among the
+# resolved grants (nor any directory containing it), because that is the line
+# the passage says it does not cross. Controls: the PRE-CHANGE block at HEAD
+# must FAIL the predicate and must be a real, non-empty slice; stripping the new
+# grant lines must turn it red; and sections that carry no launch grant fail it.
+# WHAT IT DOES NOT ESTABLISH: that any seat stalls less — only a live seat can
+# measure that, and the /usr/bin/time stall above is that measurement, not this
+# test. It cannot establish that a reader launches with the line as written, nor
+# that the grant covers whatever binary a future model reaches for. The prose
+# assertions in (3) are content checks and are claimed as nothing more; they say
+# the justification is present, not that it convinces anyone.
+
+# hocm_sec_f <file> <start-re> <end-re> — hocm_section against an ARBITRARY file,
+# so the pre-change playbook can be sliced the same way as the live one.
+hocm_sec_f() { awk -v s="$2" -v e="$3" '$0 ~ s {f=1} f && $0 ~ e {exit} f' "$1"; }
+
+TC_REAL=""
+for d in /usr/bin /bin /usr/sbin; do TC_REAL="$TC_REAL $(cd "$d" && pwd -P)"; done
+HOME_REAL="$(cd "$HOME" && pwd -P)"
+echo "    [this host] toolchain ->$TC_REAL ; \$HOME -> $HOME_REAL"
+
+# resolved_dirs <text> <cli> — every --add-dir value on that cli's launch line
+# that is a real directory, resolved through symlinks. Placeholders are skipped.
+resolved_dirs() {
+  local tok p
+  while IFS= read -r tok; do
+    case "$tok" in *'<'*|'') continue ;; esac
+    p="$(eval "printf '%s' $tok" 2>/dev/null)" || continue
+    [ -d "$p" ] || continue
+    ( cd "$p" && pwd -P )
+  done <<EOF7
+$(add_dirs "$1" "$2")
+EOF7
+}
+# names_toolchain <text> <cli> -> yes|no. ALL THREE system dirs must be granted.
+names_toolchain() {
+  local got; got="$(resolved_dirs "$1" "$2")"
+  local d
+  for d in $TC_REAL; do
+    printf '%s\n' "$got" | qgrep -qxF "$d" || { echo no; return; }
+  done
+  echo yes
+}
+# grants_home <text> <cli> -> yes|no. True if $HOME, or any directory that
+# CONTAINS it, is among the resolved grants.
+grants_home() {
+  local got d; got="$(resolved_dirs "$1" "$2")"
+  while IFS= read -r d; do
+    [ -n "$d" ] || continue
+    case "$HOME_REAL/" in "$d"/*) echo yes; return ;; esac
+  done <<EOF8
+$got
+EOF8
+  echo no
+}
+
+# TC_PARA — the NEW justification passage only, sliced out of the setup section.
+# The prose assertions below run against THIS, not the whole section, so a phrase
+# the section already carried (e.g. the skills/plugins/MCP/hooks reasoning) cannot
+# make a check pass by accident. That is exactly how a vacuous assertion gets in.
+TC_PARA="$(printf '%s\n' "$SETUP_SEC" | awk '/\*\*Why the system toolchain is in there/{f=1} f && /^\*\*. 6\.1 stays either way/{exit} f')"
+# TC_FLAT — the same passage with its line breaks folded. Markdown wraps prose at
+# column ~80, so a phrase like "not a barrier" is split across two lines and a
+# per-line grep would miss text that is genuinely there. The claim is about the
+# passage's WORDS, not its line breaks, so the multi-word checks use this.
+TC_FLAT="$(printf '%s\n' "$TC_PARA" | tr '\n' ' ' | tr -s ' ')"
+echo "    [justification slice] $(printf '%s\n' "$TC_PARA" | grep -c .) non-blank lines, $(printf '%s' "$TC_FLAT" | wc -c | tr -d ' ') chars folded"
+# The POSITIVE CONTROL's baseline. PINNED to the commit this change was built on,
+# NOT to HEAD: HEAD ceases to be "pre-change" the instant this lands, which is
+# precisely how R6-D10's HEAD-based control went stale (see its note).
+HOCM_BASE_SHA="380fb3f"
+HOCM_PREV7="$TMPROOT/hocm-prev-r7.md"
+( cd "$REPO_ROOT" && git show "$HOCM_BASE_SHA:skills/lcars-eeh/HOLOGRAM-COMMAND-MODE.md" ) >"$HOCM_PREV7" 2>/dev/null || :
+SETUP_PREV="$(hocm_sec_f "$HOCM_PREV7" '^## Unattended Copilot setup' '^## Unattended Copilot commands')"
+echo "    [copilot resolved] $(resolved_dirs "$SETUP_SEC" copilot | tr '\n' ' ')"
+echo "    [claude  resolved] $(resolved_dirs "$SETUP_SEC" claude  | tr '\n' ' ')"
+
+# (1) THE CHANGE ITSELF — the toolchain is granted, for both CLIs, by resolved path.
+check "S305-R7-D11. the copilot grant names the system toolchain, resolved" \
+  "[ \"\$(names_toolchain \"\$SETUP_SEC\" copilot)\" = yes ]"
+check "S305-R7-D11. the claude grant names the system toolchain too" \
+  "[ \"\$(names_toolchain \"\$SETUP_SEC\" claude)\" = yes ]"
+# The count is 10: S305-R8-D12 added the launch checkout's sibling directory,
+# S305-R9-D13 the launcher directory on PATH, S306 the resolved browser's
+# directory (§ 6.1 requires a real headless browser and the grant named none;
+# measured 2026-10-19) and then `/dev`, the device directory every shell
+# redirect touches (a second seat froze on the path `/dev/null)`, same day).
+check "S305-R7-D11. the copilot grant is still an ENUMERATED set, not a sweep" \
+  "[ \"\$(printf '%s\n' \"\$COP_DIRS\" | grep -c .)\" -eq 10 ] && printf '%s\n' \"\$COP_DIRS\" | qgrep -qF '<product-repo>'"
+
+# (2) THE LINE NOT CROSSED — $HOME stays out, and the blanket switches stay out.
+check "S305-R7-D11. \$HOME is NOT granted to copilot" \
+  "[ \"\$(grants_home \"\$SETUP_SEC\" copilot)\" = no ]"
+check "S305-R7-D11. \$HOME is NOT granted to claude" \
+  "[ \"\$(grants_home \"\$SETUP_SEC\" claude)\" = no ]"
+check "S305-R7-D11. no grant token is \$HOME or /Users/<user> textually either" \
+  "! printf '%s\n' \"\$COP_DIRS\" \"\$CLA_DIRS\" | qgrep -qE '^(\\\$HOME|~|/Users/[^/]+)/?$'"
+check "S305-R7-D11. the launch line still carries NO blanket switch" \
+  "! printf '%s\n' \"\$GRANT_LINES\" | qgrep -qE -- '--allow-all-paths|COPILOT_ALLOW_ALL=true|--dangerously-skip-permissions'"
+
+# (3) THE JUSTIFICATION TRAVELS WITH IT — a widened grant with no reason gets
+# reverted by the next reader. Content assertions, claimed as nothing more.
+check "S305-R7-D11. the justification slice is non-empty (a real slice)" \
+  "[ -n \"\$TC_PARA\" ] && [ \"\$(printf '%s\n' \"\$TC_PARA\" | grep -c .)\" -ge 10 ]"
+check "S305-R7-D11. it names the measured stall that forced it (/usr/bin/time)" \
+  "printf '%s\n' \"\$TC_PARA\" | qgrep -qF '/usr/bin/time'"
+check "S305-R7-D11. it says the toolchain dirs are root-owned and not writable" \
+  "printf '%s\n' \"\$TC_FLAT\" | qgrep -qiF 'root' && printf '%s\n' \"\$TC_FLAT\" | qgrep -qiE 'not writable|non-writable'"
+check "S305-R7-D11. it cites System Integrity Protection as the second level" \
+  "printf '%s\n' \"\$TC_PARA\" | qgrep -qiF 'System Integrity Protection'"
+check "S305-R7-D11. it says the grant adds no CAPABILITY, only removes a prompt" \
+  "printf '%s\n' \"\$TC_FLAT\" | qgrep -qiE 'adds no capability' && printf '%s\n' \"\$TC_FLAT\" | qgrep -qiE 'not a barrier'"
+# This phrase ALREADY existed in the section (the COPILOT_ALLOW_ALL explanation),
+# so asserting it section-wide would be vacuous -- it passed before the change.
+# Asserted against TC_PARA it means the new passage ECHOES the section's own
+# reasoning instead of inventing a parallel argument, which is the actual ask.
+check "S305-R7-D11. the new passage reuses the section's OWN trust reasoning" \
+  "printf '%s\n' \"\$TC_FLAT\" | qgrep -qiF 'skills, plugins, MCP servers and hooks'"
+check "S305-R7-D11. CONTROL: that phrase pre-dates the change (so section-wide would be vacuous)" \
+  "printf '%s\n' \"\$SETUP_PREV\" | tr '\n' ' ' | tr -s ' ' | qgrep -qiF 'skills, plugins, MCP servers and hooks'"
+check "S305-R7-D11. it says a launch flag is scoped to the run and persists nothing" \
+  "printf '%s\n' \"\$TC_PARA\" | qgrep -qiF 'launch flag' && printf '%s\n' \"\$TC_PARA\" | qgrep -qiF 'persists nothing'"
+check "S305-R7-D11. it states PROMINENTLY that \$HOME stays ungranted" \
+  "printf '%s\n' \"\$TC_FLAT\" | qgrep -qiE 'HOME. (stays|remains) ungranted'"
+check "S305-R7-D11. and says why: user-writable, credentials, loadable configuration" \
+  "printf '%s\n' \"\$TC_PARA\" | qgrep -qiF 'user-writable' && printf '%s\n' \"\$TC_PARA\" | qgrep -qiF 'credentials'"
+check "S305-R7-D11. it says the two are DIFFERENT KINDS of grant" \
+  "printf '%s\n' \"\$TC_FLAT\" | qgrep -qiE 'different kinds of grant'"
+
+# (4) CONTROLS — the predicate is falsifiable, and it was FALSE before this change.
+check "S305-R7-D11. CONTROL: the pre-change playbook is readable at $HOCM_BASE_SHA" \
+  "[ -s \"\$HOCM_PREV7\" ]"
+check "S305-R7-D11. CONTROL: the pre-change setup section is a real, non-empty slice" \
+  "[ -n \"\$SETUP_PREV\" ] && [ -n \"\$(add_dirs \"\$SETUP_PREV\" copilot)\" ]"
+check "S305-R7-D11. CONTROL: the PRE-CHANGE copilot grant FAILS the predicate" \
+  "[ \"\$(names_toolchain \"\$SETUP_PREV\" copilot)\" = no ]"
+check "S305-R7-D11. CONTROL: and so does the pre-change claude grant" \
+  "[ \"\$(names_toolchain \"\$SETUP_PREV\" claude)\" = no ]"
+check "S305-R7-D11. CONTROL: but the pre-change block DID name the scratch dir (slice is sound)" \
+  "[ \"\$(names_scratch \"\$SETUP_PREV\" copilot)\" = yes ]"
+SETUP_TC_STRIPPED="$(printf '%s\n' "$SETUP_SEC" | grep -vE -- '--add-dir (/usr/bin|/bin|/usr/sbin)')"
+check "S305-R7-D11. CONTROL: strip the toolchain lines and copilot goes red" \
+  "[ \"\$(names_toolchain \"\$SETUP_TC_STRIPPED\" copilot)\" = no ]"
+check "S305-R7-D11. CONTROL: and claude goes red too" \
+  "[ \"\$(names_toolchain \"\$SETUP_TC_STRIPPED\" claude)\" = no ]"
+check "S305-R7-D11. CONTROL: the strip left the repo and scratch grants standing" \
+  "printf '%s\n' \"\$(add_dirs \"\$SETUP_TC_STRIPPED\" copilot)\" | qgrep -qF '<product-repo>' && [ \"\$(names_scratch \"\$SETUP_TC_STRIPPED\" copilot)\" = yes ]"
+check "S305-R7-D11. CONTROL: § 6.1 is not a launch grant and fails the predicate" \
+  "[ \"\$(names_toolchain \"\$S6\" copilot)\" = no ]"
+check "S305-R7-D11. CONTROL: § 7 (Land it) carries no launch grant either" \
+  "[ \"\$(names_toolchain \"\$S7\" copilot)\" = no ]"
+
+# ==========================================================================
+# S305-R8-D12 — THE LAUNCH CHECKOUT'S DIRECTORY IS GRANTED BY NAME
+#               (one named sibling, never the parent, never in-repo)
+#
+# MEASURED LIVE, 2026-10-18. A Copilot seat on `gpt-6-luna` STALLED FIVE TIMES
+# IN TWENTY-ONE MINUTES, and FOUR of the five were ONE cause — the seat blocked
+# READING ITS OWN DEPLOYED CODE. The dialog named
+# `.lcars-launch/<repo>/<mission>/jot/cli.py`, `store.py`, `README.md`.
+# ROOT CAUSE, in the product: `skills/lcars-launch/launch.sh` defaults
+# LAUNCH_ROOT to `$(dirname "$REPO_TOP")/.lcars-launch/$(basename "$REPO_TOP")`
+# — a SIBLING of the repo, which no unattended seat is granted. This is the
+# THIRD instance of one pattern (Holodeck sidecar, the seat's scratch, now the
+# launch checkout): LCARS deliberately places things BESIDE the repo to keep the
+# product tree clean, and the scoped grant does not reach them.
+#
+# THE CURE IS THE SAME SHAPE AS THE SIDECAR'S: grant that ONE NAMED DIRECTORY,
+# `<repo-parent>/.lcars-launch`, and leave the checkout where launch.sh puts it.
+# AN EARLIER ATTEMPT AT THIS DEFECT (commit 646b51d, reverted) instead exported
+# $LCARS_LAUNCH_ROOT to move the checkout IN-REPO. That was wrong: `.lcars-launch`
+# at the repo root is not gitignored (no .gitignore in the fixture repos, and
+# nothing in skills/lcars-launch adds one), so it dropped an UNTRACKED DIRECTORY
+# at the top of the product tree that a bulk `git add` could commit — exactly the
+# repo pollution launch.sh's own comment says it keeps the checkout outside to
+# avoid ("Outside is the only safe shape"). This round reverts that and grants
+# the sibling instead.
+#
+# WHAT IS MEASURED HERE, and what is not. NOT a grep for a sentence this session
+# wrote. The `--add-dir` VALUES are parsed out of the documented command block as
+# real argv tokens (continuations joined, comments dropped), the setup lines that
+# precede the CLI invocations are EVALUATED, and the product's own `LAUNCH_ROOT=`
+# expression is EXTRACTED FROM `launch.sh` (never copied here, so a change there
+# cannot leave this test asserting a fossil) and evaluated too — all inside a
+# throwaway `git init` repo under `mktemp -d`. The predicate then demands a
+# granted directory that CONTAINS the path launch.sh really deploys to while
+# being (a) NOT inside the repo, (b) NOT the parent itself, and (c) a direct
+# child of the parent — i.e. one named sibling. Both sides are resolved with
+# `pwd -P`, because on macOS `/tmp` is a symlink to `/private/tmp` and a textual
+# prefix test would be fooled by it.
+# CONTROLS: the PRE-CHANGE playbook, PINNED to the literal commit 646b51d (NOT
+# to HEAD — a HEAD-pinned control in this suite went stale the moment its own
+# change landed), must FAIL the predicate; granting the BARE PARENT must be
+# caught as wrong; stripping the new token must go red; a hand-written sibling
+# grant must be caught as right (positive control); the blanket switches must
+# stay absent and $HOME must stay ungranted.
+# WHAT IT DOES NOT ESTABLISH: that any seat stalls less. Only a live seat can
+# measure that, and the five stalls above ARE that measurement, not this test.
+# It does not exercise `lcars launch` end to end, does not prove a reader
+# launches with the line as written, and cannot know what path a future model
+# invents. The prose checks in (5) are content checks and are claimed as nothing
+# more.
+
+# THE PRODUCT's own resolution expression, read out of launch.sh (READ-ONLY).
+LR_SRC="$REPO_ROOT/skills/lcars-launch/launch.sh"
+LR_EXPR="$(grep -m1 '^LAUNCH_ROOT=' "$LR_SRC")"
+echo "    [product expr] $LR_EXPR"
+
+# fence_pre <text> -> the fenced block's SETUP lines: everything before the first
+# CLI invocation. These are what a reader runs before launching, so they are what
+# the token resolution below must have evaluated.
+fence_pre() { fence_bash "$1" | awk '/^(copilot|claude)([[:space:]]|$)/{exit} {print}'; }
+
+# A throwaway repo, created once and reused by every case below.
+R8REPO="$TMPROOT/r8-repo"
+mkdir -p "$R8REPO"
+( cd "$R8REPO" && git init -q . && git config user.email t@t && git config user.name t ) >/dev/null 2>&1
+R8REAL="$( cd "$R8REPO" && pwd -P )"
+R8PARENT="$( dirname "$R8REAL" )"
+echo "    [throwaway repo] $R8REPO -> $R8REAL (parent $R8PARENT)"
+
+# lr_default -> where launch.sh ACTUALLY deploys in that repo with no override,
+# using the product's own expression. This is the path the grant has to cover.
+lr_default() {
+  ( cd "$R8REPO" 2>/dev/null || exit 1
+    unset LCARS_LAUNCH_ROOT
+    GIT_BIN=git
+    REPO_TOP="$(git rev-parse --show-toplevel 2>/dev/null)" || exit 1
+    REPO_TOP="$( cd "$REPO_TOP" && pwd -P )" || exit 1
+    eval "$LR_EXPR" || exit 1
+    mkdir -p "$LAUNCH_ROOT" 2>/dev/null || exit 1
+    ( cd "$LAUNCH_ROOT" && pwd -P ) )
+}
+R8_DEPLOY="$(lr_default)"
+echo "    [launch.sh deploys to] ${R8_DEPLOY:-<unresolved>}"
+
+# granted_dirs <text> <cli> -> each --add-dir token RESOLVED inside the throwaway
+# repo, AFTER the block's own setup lines have been evaluated there. Placeholder
+# tokens (`<product-repo>`, `<holodeck-sidecar>`) are skipped, not guessed at.
+granted_dirs() {
+  local pre toks
+  pre="$(fence_pre "$1")"
+  toks="$(add_dirs "$1" "$2")"
+  ( cd "$R8REPO" 2>/dev/null || exit 0
+    unset LCARS_LAUNCH_ROOT LAUNCH_ROOT
+    eval "$pre" >/dev/null 2>&1 || :
+    while IFS= read -r tok; do
+      case "$tok" in *'<'*|'') continue ;; esac
+      p="$(eval "printf '%s' $tok" 2>/dev/null)" || continue
+      [ -n "$p" ] && [ -d "$p" ] || continue
+      ( cd "$p" && pwd -P )
+    done <<EOFR8
+$toks
+EOFR8
+  )
+}
+# grants_launch_root <text> <cli> -> yes|no. Yes iff some granted directory
+# CONTAINS the deploy path launch.sh really uses, while being neither inside the
+# repo nor the parent itself, and is a DIRECT CHILD of the parent — one named
+# sibling. That conjunction is the whole claim of this round.
+grants_launch_root() {
+  local d
+  while IFS= read -r d; do
+    [ -n "$d" ] || continue
+    case "$R8_DEPLOY/" in "$d"/*) ;; *) continue ;; esac
+    case "$d/" in "$R8REAL"/*) continue ;; esac
+    [ "$d" = "$R8PARENT" ] && continue
+    [ "$( dirname "$d" )" = "$R8PARENT" ] || continue
+    echo yes; return
+  done <<EOFR8B
+$(granted_dirs "$1" "$2")
+EOFR8B
+  echo no
+}
+
+R8_COP="$(granted_dirs "$SETUP_SEC" copilot)"
+R8_CLA="$(granted_dirs "$SETUP_SEC" claude)"
+echo "    [copilot resolved, r8] $(printf '%s' "$R8_COP" | tr '\n' ' ')"
+echo "    [claude  resolved, r8] $(printf '%s' "$R8_CLA" | tr '\n' ' ')"
+
+# (1) THE CHANGE ITSELF — the launch root is granted, for BOTH CLIs, behaviourally.
+check "S305-R8-D12. the product's LAUNCH_ROOT expression was found in launch.sh" \
+  "printf '%s' \"\$LR_EXPR\" | qgrep -qF 'LCARS_LAUNCH_ROOT:-'"
+check "S305-R8-D12. launch.sh's own default deploy path resolves (the defect is reproducible)" \
+  "[ -n \"\$R8_DEPLOY\" ]"
+check "S305-R8-D12. CONTROL: and that default is OUTSIDE the repo — the measured shape" \
+  "case \"\$R8_DEPLOY/\" in \"\$R8REAL\"/*) false ;; *) true ;; esac"
+check "S305-R8-D12. BEHAVIOUR: the copilot grant covers the launch checkout" \
+  "[ \"\$(grants_launch_root \"\$SETUP_SEC\" copilot)\" = yes ]"
+check "S305-R8-D12. BEHAVIOUR: and so does the claude grant" \
+  "[ \"\$(grants_launch_root \"\$SETUP_SEC\" claude)\" = yes ]"
+
+# (2) IT IS ONE NAMED SIBLING, NOT THE PARENT, NOT IN-REPO. Each limb of the
+#     predicate is asserted on its own so a pass cannot hide a wrong shape.
+# launch_dir_of <resolved-dir-list> -> the first granted directory that CONTAINS
+# the deploy path, or empty. A function, not an inline pipeline: a `case` pattern
+# inside a nested command substitution does not survive this suite's quoting.
+launch_dir_of() {
+  local d
+  while IFS= read -r d; do
+    [ -n "$d" ] || continue
+    case "$R8_DEPLOY/" in "$d"/*) echo "$d"; return ;; esac
+  done <<EOFR8C
+$1
+EOFR8C
+}
+R8_GRANTED_LR="$(launch_dir_of "$R8_COP")"
+echo "    [granted launch dir] ${R8_GRANTED_LR:-<none>}"
+check "S305-R8-D12. the granted launch directory is NOT inside the repo" \
+  "[ -n \"\$R8_GRANTED_LR\" ] && case \"\$R8_GRANTED_LR/\" in \"\$R8REAL\"/*) false ;; *) true ;; esac"
+check "S305-R8-D12. it is NOT the repo's PARENT itself (no sibling repo is exposed)" \
+  "[ -n \"\$R8_GRANTED_LR\" ] && [ \"\$R8_GRANTED_LR\" != \"\$R8PARENT\" ]"
+check "S305-R8-D12. it IS a direct child of the parent — one named sibling" \
+  "[ -n \"\$R8_GRANTED_LR\" ] && [ \"\$(dirname \"\$R8_GRANTED_LR\")\" = \"\$R8PARENT\" ]"
+check "S305-R8-D12. it carries launch.sh's own directory name (.lcars-launch)" \
+  "[ \"\$(basename \"\${R8_GRANTED_LR:-x}\")\" = '.lcars-launch' ]"
+check "S305-R8-D12. the playbook no longer moves the checkout IN-REPO (no \$LCARS_LAUNCH_ROOT export)" \
+  "! printf '%s\n' \"\$SETUP_SEC\" | qgrep -qE '^[[:space:]]*export[[:space:]]+LCARS_LAUNCH_ROOT='"
+check "S305-R8-D12. nothing in the block sets \$LCARS_LAUNCH_ROOT at all (launch.sh's default stands)" \
+  "! printf '%s\n' \"\$(fence_bash \"\$SETUP_SEC\")\" | qgrep -qF 'LCARS_LAUNCH_ROOT'"
+
+# (3) THE DIRECTORY MAY NOT EXIST YET, and a grant for a missing directory is not
+#     a grant — the same thing the sidecar's own grant has to do. Behavioural: run
+#     the documented setup lines in a repo where nothing pre-created it.
+R8FRESH_PARENT="$TMPROOT/r8-fresh"
+R8REPO2="$R8FRESH_PARENT/r8-repo-fresh"
+mkdir -p "$R8REPO2"
+( cd "$R8REPO2" && git init -q . && git config user.email t@t && git config user.name t ) >/dev/null 2>&1
+R8FRESH_PARENT="$( cd "$R8FRESH_PARENT" && pwd -P )"
+R8_PRE="$(fence_pre "$SETUP_SEC")"
+R8FRESH_BEFORE="$(ls -A "$R8FRESH_PARENT" | grep -c . )"
+( cd "$R8REPO2" && unset LCARS_LAUNCH_ROOT LAUNCH_ROOT && eval "$R8_PRE" ) >/dev/null 2>&1 || :
+R8FRESH_LR="$R8FRESH_PARENT/.lcars-launch"
+echo "    [fresh parent] $R8FRESH_PARENT had $R8FRESH_BEFORE entries before; .lcars-launch now: $( [ -d "$R8FRESH_LR" ] && echo yes || echo no )"
+check "S305-R8-D12. the documented setup lines CREATE the launch directory (mkdir -p)" \
+  "printf '%s\n' \"\$R8_PRE\" | qgrep -qE '^[[:space:]]*mkdir[[:space:]]+-p'"
+check "S305-R8-D12. CONTROL: the fresh parent did NOT already hold it (1 entry, the repo)" \
+  "[ \"\$R8FRESH_BEFORE\" -eq 1 ]"
+check "S305-R8-D12. BEHAVIOUR: run in a fresh repo, they really make it exist" \
+  "[ -d \"\$R8FRESH_LR\" ]"
+
+# (4) THE CONTROLS — the predicate is falsifiable in every direction.
+# PINNED to the literal pre-change commit, NOT HEAD: HEAD stops being
+# "pre-change" the instant this lands, which is how R6-D10's control went stale.
+HOCM_BASE_SHA8="646b51d"
+HOCM_PREV8="$TMPROOT/hocm-prev-r8.md"
+( cd "$REPO_ROOT" && git show "$HOCM_BASE_SHA8:skills/lcars-eeh/HOLOGRAM-COMMAND-MODE.md" ) >"$HOCM_PREV8" 2>/dev/null || :
+SETUP_PREV8="$(hocm_sec_f "$HOCM_PREV8" '^## Unattended Copilot setup' '^## Unattended Copilot commands')"
+check "S305-R8-D12. CONTROL: the pre-change playbook is readable at $HOCM_BASE_SHA8" \
+  "[ -s \"\$HOCM_PREV8\" ]"
+check "S305-R8-D12. CONTROL: the pre-change setup section is a real, non-empty slice" \
+  "[ -n \"\$SETUP_PREV8\" ] && [ -n \"\$(add_dirs \"\$SETUP_PREV8\" copilot)\" ]"
+check "S305-R8-D12. CONTROL: the pre-change playbook FAILS the predicate (copilot)" \
+  "[ \"\$(grants_launch_root \"\$SETUP_PREV8\" copilot)\" = no ]"
+check "S305-R8-D12. CONTROL: and FAILS it for claude too" \
+  "[ \"\$(grants_launch_root \"\$SETUP_PREV8\" claude)\" = no ]"
+check "S305-R8-D12. CONTROL: the pre-change playbook is the one that moved it IN-REPO" \
+  "printf '%s\n' \"\$SETUP_PREV8\" | qgrep -qE '^[[:space:]]*export[[:space:]]+LCARS_LAUNCH_ROOT='"
+# Strip the new token and the live playbook must go red.
+R8_STRIPPED="$(printf '%s\n' "$SETUP_SEC" | grep -v 'LAUNCH_ROOT')"
+check "S305-R8-D12. CONTROL: strip the launch-root lines and copilot goes red" \
+  "[ \"\$(grants_launch_root \"\$R8_STRIPPED\" copilot)\" = no ]"
+check "S305-R8-D12. CONTROL: and claude goes red too" \
+  "[ \"\$(grants_launch_root \"\$R8_STRIPPED\" claude)\" = no ]"
+check "S305-R8-D12. CONTROL: the strip left the rest of the grant standing (slice is sound)" \
+  "[ -n \"\$(add_dirs \"\$R8_STRIPPED\" copilot)\" ] && printf '%s\n' \"\$(add_dirs \"\$R8_STRIPPED\" copilot)\" | qgrep -qF '<product-repo>'"
+# Granting the BARE PARENT is the wrong cure and the predicate must say so.
+R8_FAKE_PARENT="\`\`\`bash
+LAUNCH_ROOT=\"\$(dirname \"\$(git rev-parse --show-toplevel)\")\"
+copilot --allow-all-tools --add-dir \"\$LAUNCH_ROOT\"
+\`\`\`"
+check "S305-R8-D12. CONTROL: granting the BARE PARENT is caught as wrong" \
+  "[ \"\$(grants_launch_root \"\$R8_FAKE_PARENT\" copilot)\" = no ]"
+check "S305-R8-D12. CONTROL: and the parent really does resolve (the control is not vacuous)" \
+  "printf '%s\n' \"\$(granted_dirs \"\$R8_FAKE_PARENT\" copilot)\" | qgrep -qxF \"\$R8PARENT\""
+# An IN-REPO grant is the reverted cure's shape and must also be caught.
+R8_FAKE_INREPO="\`\`\`bash
+LAUNCH_ROOT=\"\$(git rev-parse --show-toplevel)/.lcars-launch\"
+mkdir -p \"\$LAUNCH_ROOT\"
+copilot --allow-all-tools --add-dir \"\$LAUNCH_ROOT\"
+\`\`\`"
+check "S305-R8-D12. CONTROL: an IN-REPO launch root is caught as wrong (the reverted cure)" \
+  "[ \"\$(grants_launch_root \"\$R8_FAKE_INREPO\" copilot)\" = no ]"
+# POSITIVE CONTROL: a hand-written sibling grant must be caught as RIGHT, so a
+# `no` cannot be the predicate simply never saying `yes`.
+R8_FAKE_OK="\`\`\`bash
+LAUNCH_ROOT=\"\$(dirname \"\$(git rev-parse --show-toplevel)\")/.lcars-launch\"
+mkdir -p \"\$LAUNCH_ROOT\"
+copilot --allow-all-tools --add-dir \"\$LAUNCH_ROOT\"
+\`\`\`"
+check "S305-R8-D12. CONTROL: a hand-written SIBLING grant is caught as right" \
+  "[ \"\$(grants_launch_root \"\$R8_FAKE_OK\" copilot)\" = yes ]"
+check "S305-R8-D12. CONTROL: lcars-launch itself is UNTOUCHED by this cure" \
+  "[ \"\$(cd \"\$REPO_ROOT\" && git show \"\$HOCM_BASE_SHA8:skills/lcars-launch/launch.sh\" | grep -m1 '^LAUNCH_ROOT=')\" = \"\$LR_EXPR\" ]"
+# The line this does NOT cross, re-asserted against the WIDER resolution above
+# (R7's helper skips the launch token because it leaves the setup lines
+# unevaluated; this one does not).
+check "S305-R8-D12. \$HOME is still NOT granted, nor any directory containing it" \
+  "! printf '%s\n' \"\$R8_COP\" \"\$R8_CLA\" | while IFS= read -r d; do [ -n \"\$d\" ] || continue; case \"\$HOME_REAL/\" in \"\$d\"/*) echo hit ;; esac; done | qgrep -q hit"
+check "S305-R8-D12. the grant block still carries NO blanket switch" \
+  "! printf '%s\n' \"\$(fence_bash \"\$SETUP_SEC\")\" | qgrep -qE -- '--allow-all-paths|COPILOT_ALLOW_ALL=true|--dangerously-skip-permissions'"
+# Counts moved to 8/7 in S305-R9-D13 (the launcher directory), to 9/8 in S306
+# (the resolved browser directory § 6.1 needs) and to 10/9 in S306's fifth-stall
+# round (`/dev`). An enumerated set, as before -- the number is the enumeration,
+# not a sweep.
+check "S305-R8-D12. the grant is still an ENUMERATED set: copilot 10, claude 9" \
+  "[ \"\$(add_dirs \"\$SETUP_SEC\" copilot | grep -c .)\" -eq 10 ] && [ \"\$(add_dirs \"\$SETUP_SEC\" claude | grep -c .)\" -eq 9 ]"
+
+# (5) THE JUSTIFICATION TRAVELS WITH IT. Content checks, claimed as nothing more.
+#     Sliced by its NEIGHBOURS -- it starts after the 6.1-stays paragraph and
+#     runs to the end of the section -- so these cannot pass on text the
+#     section already carried.
+LR_PARA="$(printf '%s\n' "$SETUP_SEC" | awk '/^\*\*Why the launch checkout/{f=1} f')"
+LR_FLAT="$(printf '%s\n' "$LR_PARA" | tr '\n' ' ' | tr -s ' ')"
+echo "    [launch-root slice] $(printf '%s\n' "$LR_PARA" | grep -c .) non-blank lines"
+check "S305-R8-D12. the justification slice is non-empty (a real slice)" \
+  "[ -n \"\$LR_PARA\" ] && [ \"\$(printf '%s\n' \"\$LR_PARA\" | grep -c .)\" -ge 10 ]"
+check "S305-R8-D12. CONTROL: that slice did NOT exist pre-change" \
+  "[ -z \"\$(printf '%s\n' \"\$SETUP_PREV8\" | awk '/^\*\*Why the launch checkout/{f=1} f')\" ]"
+check "S305-R8-D12. it carries the measurement: five stalls in twenty-one minutes" \
+  "printf '%s\n' \"\$LR_FLAT\" | qgrep -qiF 'five times' && printf '%s\n' \"\$LR_FLAT\" | qgrep -qiF 'twenty-one minutes'"
+check "S305-R8-D12. it names the model the stalls were measured on" \
+  "printf '%s\n' \"\$LR_FLAT\" | qgrep -qF 'gpt-6-luna'"
+check "S305-R8-D12. it says four of the five were this one cause" \
+  "printf '%s\n' \"\$LR_FLAT\" | qgrep -qiE 'four of the five'"
+check "S305-R8-D12. it says the seat was blocked on its OWN DEPLOYED code" \
+  "printf '%s\n' \"\$LR_FLAT\" | qgrep -qiE 'own deployed code|own deployed files'"
+check "S305-R8-D12. it says this is ONE NAMED directory, not the parent" \
+  "printf '%s\n' \"\$LR_FLAT\" | qgrep -qiE 'one named director'"
+check "S305-R8-D12. and says what naming the parent would cost: every sibling repository" \
+  "printf '%s\n' \"\$LR_FLAT\" | qgrep -qiE 'every sibling repositor'"
+check "S305-R8-D12. it says the checkout STAYS OUTSIDE and the product tree stays clean" \
+  "printf '%s\n' \"\$LR_FLAT\" | qgrep -qiE 'outside' && printf '%s\n' \"\$LR_FLAT\" | qgrep -qiE 'product tree'"
+check "S305-R8-D12. it points at the SIDECAR as the same shape of cure" \
+  "printf '%s\n' \"\$LR_FLAT\" | qgrep -qiF 'sidecar'"
+check "S305-R8-D12. it calls this the THIRD instance of one pattern" \
+  "printf '%s\n' \"\$LR_FLAT\" | qgrep -qiE 'third instance'"
+check "S305-R8-D12. and it points back at the in-repo scratch rule by name" \
+  "printf '%s\n' \"\$LR_FLAT\" | qgrep -qE '6\\.1'"
+check "S305-R8-D12. it warns the directory may not exist yet and must be created first" \
+  "printf '%s\n' \"\$LR_FLAT\" | qgrep -qiE 'may not exist' && printf '%s\n' \"\$LR_FLAT\" | qgrep -qiE 'is not a grant|create it first|created before'"
+
+# ==========================================================================
+# S305-R9-D13 — THE LAUNCHER DIRECTORY install.sh WRITES TO IS GRANTED BY NAME
+#               (one named child of $HOME; $HOME itself still refused)
+#
+# MEASURED, and the measurement REVERSED an earlier call. `install.sh` puts the
+# `lcars-ech` / `lcars-eeh` launchers on PATH in its bin destination
+# ($LCARS_BIN_DEST, default ~/.local/bin) and a seat drives the whole round
+# through them. Across EIGHT runs that cost exactly ONE stall, and that one was
+# a seat GLOB-LISTING the directory to see what was installed — a browse, not
+# blocked work; INVOKING the launchers through PATH never prompted at all,
+# 27-103 invocations per seat. So it was deliberately left out of the grant.
+# 2026-10-19 reversed that. Read out of the seats' own logs, ANSI stripped and
+# dialog boxes counted by their BODY text (inside the box, never near it --
+# paths near a box have produced false findings today):
+#   * seat copilot-sol-cured, the single earlier stall: the box body is
+#     `/Users/<user>/.local/bin/lcars*` -- A GLOB. That is the browse we waived.
+#   * seat copilot-luna-4 (`gpt-6-luna`, the clean run): the box body is
+#     `/Users/<user>/.local/bin/lcars-ech` -- THE LAUNCHER FILE ITSELF, no glob,
+#     the command the seat runs. It froze the run until it was answered.
+# HONEST COUNT: ONE such box is in that log as read at 00:41, the run still
+# live. The brief that ordered this change reported two back to back at
+# 00:31/00:32; the second is NOT in the log and is claimed neither here nor in
+# the playbook. One is enough -- the waiver was conditional on the stall not
+# BLOCKING, and a glob listing does not block while the launcher file does.
+#
+# WHAT IS MEASURED HERE, and what is not. NOT a grep for a sentence this session
+# wrote. The documented launch block's `--add-dir` values are parsed out as real
+# argv tokens (comments dropped, continuations joined), the block's own setup
+# lines are EVALUATED first so a variable token resolves the way a reader's
+# shell would, each token is resolved with `pwd -P`, and the resolved set must
+# contain the launcher directory EXACTLY -- for BOTH CLIs. Exactly, not by
+# containment: granting $HOME would "cover" ~/.local/bin and must NOT pass. The
+# two $HOME claims are kept apart deliberately and do not contradict: nothing
+# granted may EQUAL $HOME (nor contain it), while the launcher directory being
+# UNDER $HOME is the expected shape and is asserted positively.
+# CONTROLS: the PRE-CHANGE playbook, PINNED to the literal commit 9fb9e0a (not
+# HEAD -- a HEAD-pinned control in this suite went stale the moment its own
+# change landed), must FAIL the predicate for both CLIs while still passing the
+# older toolchain predicate, so the slice is sound; stripping the new token must
+# go red; a block granting $HOME ITSELF must be caught as wrong (and must not
+# satisfy this predicate by covering it); and a hand-written launcher grant must
+# be caught as RIGHT, so a `no` cannot be the predicate simply never saying yes.
+# WHAT IT DOES NOT ESTABLISH: that any seat stalls less -- only a live seat can
+# measure that, and the two back-to-back stalls above ARE that measurement, not
+# this test. It does not run a CLI, does not prove a reader launches with the
+# line as written, and it is HOST-DEPENDENT: if this host had no launcher
+# directory the predicate could only answer `no`, so its existence is asserted
+# first rather than assumed. The prose checks in (6) are content checks and are
+# claimed as nothing more.
+
+# THE REAL LAUNCHER DIRECTORY on this host, taken from install.sh's OWN variable
+# and its own default. Never a hardcoded /Users/<name>: a seat failed today by
+# guessing a username from a GitHub login.
+LAUNCHER_DEFAULT="$(sed -n 's/^[[:space:]]*DEFAULT_BIN_DEST="\(.*\)"$/\1/p' "$REPO_ROOT/install.sh" | grep -F '.local/bin' | head -1)"
+[ -n "$LAUNCHER_DEFAULT" ] || LAUNCHER_DEFAULT='$HOME/.local/bin'
+LAUNCHER_CAND="${LCARS_BIN_DEST:-}"
+[ -n "$LAUNCHER_CAND" ] || LAUNCHER_CAND="$(eval "printf '%s' \"$LAUNCHER_DEFAULT\"")"
+LAUNCHER_REAL=""
+[ -d "$LAUNCHER_CAND" ] && LAUNCHER_REAL="$( cd "$LAUNCHER_CAND" && pwd -P )"
+echo "    [install.sh default] ${LAUNCHER_DEFAULT:-<unread>} ; [this host] launcher dir -> ${LAUNCHER_REAL:-<absent>}"
+
+# grants_launcher <text> <cli> -> yes|no. Yes iff some --add-dir token, resolved
+# AFTER the block's own setup lines have been evaluated, is EXACTLY the launcher
+# directory. granted_dirs (R8-D12) does that evaluation; reused deliberately.
+grants_launcher() {
+  local d
+  [ -n "$LAUNCHER_REAL" ] || { echo no; return; }
+  while IFS= read -r d; do
+    [ -n "$d" ] || continue
+    [ "$d" = "$LAUNCHER_REAL" ] && { echo yes; return; }
+  done <<EOFR9
+$(granted_dirs "$1" "$2")
+EOFR9
+  echo no
+}
+# grants_home_itself <text> <cli> -> yes|no. Yes iff a granted directory IS
+# $HOME. Distinct from grants_home (R7-D11), which asks whether a granted
+# directory CONTAINS $HOME.
+grants_home_itself() {
+  local d
+  while IFS= read -r d; do
+    [ -n "$d" ] || continue
+    [ "$d" = "$HOME_REAL" ] && { echo yes; return; }
+  done <<EOFR9B
+$(granted_dirs "$1" "$2")
+EOFR9B
+  echo no
+}
+
+# (0) THE TEST IS NOT VACUOUS ON THIS HOST.
+check "S305-R9-D13. install.sh's own bin-dest default was read out of install.sh" \
+  "printf '%s' \"\$LAUNCHER_DEFAULT\" | qgrep -qF '.local/bin'"
+check "S305-R9-D13. the launcher directory exists on this host (predicate can answer yes)" \
+  "[ -n \"\$LAUNCHER_REAL\" ]"
+check "S305-R9-D13. and it really holds a launcher install.sh wrote" \
+  "[ -f \"\$LAUNCHER_REAL/lcars-ech\" ] || [ -f \"\$LAUNCHER_REAL/lcars-eeh\" ]"
+
+# (1) THE CHANGE ITSELF — granted, for BOTH CLIs, by resolved path.
+check "S305-R9-D13. BEHAVIOUR: the copilot grant names the launcher directory, resolved" \
+  "[ \"\$(grants_launcher \"\$SETUP_SEC\" copilot)\" = yes ]"
+check "S305-R9-D13. BEHAVIOUR: and so does the claude grant" \
+  "[ \"\$(grants_launcher \"\$SETUP_SEC\" claude)\" = yes ]"
+
+# (2) THE SHAPE: a named CHILD of $HOME, which is not the same thing as $HOME.
+#     Asserted positively so it cannot be read as contradicting (3).
+check "S305-R9-D13. the launcher directory IS under \$HOME — expected, and fine" \
+  "case \"\$LAUNCHER_REAL/\" in \"\$HOME_REAL\"/*) true ;; *) false ;; esac"
+check "S305-R9-D13. and it is NOT \$HOME itself" \
+  "[ \"\$LAUNCHER_REAL\" != \"\$HOME_REAL\" ]"
+
+# (3) THE LINE STILL NOT CROSSED — nothing granted IS $HOME, nothing CONTAINS it.
+check "S305-R9-D13. no granted directory IS \$HOME (copilot)" \
+  "[ \"\$(grants_home_itself \"\$SETUP_SEC\" copilot)\" = no ]"
+check "S305-R9-D13. no granted directory IS \$HOME (claude)" \
+  "[ \"\$(grants_home_itself \"\$SETUP_SEC\" claude)\" = no ]"
+check "S305-R9-D13. and none CONTAINS \$HOME either (R7-D11's predicate, re-run)" \
+  "[ \"\$(grants_home \"\$SETUP_SEC\" copilot)\" = no ] && [ \"\$(grants_home \"\$SETUP_SEC\" claude)\" = no ]"
+check "S305-R9-D13. the \$HOME-stays-ungranted sentence SURVIVED this change" \
+  "printf '%s\n' \"\$SETUP_SEC\" | tr '\n' ' ' | tr -s ' ' | qgrep -qiE 'HOME. (stays|remains) ungranted'"
+check "S305-R9-D13. no grant token hardcodes a user's home path" \
+  "! printf '%s\n' \"\$COP_DIRS\" \"\$CLA_DIRS\" | qgrep -qE '^\"?/(Users|home)/[^/\$]'"
+
+# (4) STILL SCOPED — the blanket switches stay absent.
+check "S305-R9-D13. the grant block still carries NO blanket switch" \
+  "! printf '%s\n' \"\$(fence_bash \"\$SETUP_SEC\")\" | qgrep -qE -- '--allow-all-paths|COPILOT_ALLOW_ALL=true|--dangerously-skip-permissions'"
+check "S305-R9-D13. the grant is still an ENUMERATED set: copilot 10, claude 9" \
+  "[ \"\$(add_dirs \"\$SETUP_SEC\" copilot | grep -c .)\" -eq 10 ] && [ \"\$(add_dirs \"\$SETUP_SEC\" claude | grep -c .)\" -eq 9 ]"
+
+# (5) CONTROLS — falsifiable in every direction.
+HOCM_BASE_SHA9="9fb9e0a"
+HOCM_PREV9="$TMPROOT/hocm-prev-r9.md"
+( cd "$REPO_ROOT" && git show "$HOCM_BASE_SHA9:skills/lcars-eeh/HOLOGRAM-COMMAND-MODE.md" ) >"$HOCM_PREV9" 2>/dev/null || :
+SETUP_PREV9="$(hocm_sec_f "$HOCM_PREV9" '^## Unattended Copilot setup' '^## Unattended Copilot commands')"
+check "S305-R9-D13. CONTROL: the pre-change playbook is readable at $HOCM_BASE_SHA9" \
+  "[ -s \"\$HOCM_PREV9\" ]"
+check "S305-R9-D13. CONTROL: the pre-change setup section is a real, non-empty slice" \
+  "[ -n \"\$SETUP_PREV9\" ] && [ -n \"\$(add_dirs \"\$SETUP_PREV9\" copilot)\" ]"
+check "S305-R9-D13. CONTROL: the PRE-CHANGE playbook FAILS the predicate (copilot)" \
+  "[ \"\$(grants_launcher \"\$SETUP_PREV9\" copilot)\" = no ]"
+check "S305-R9-D13. CONTROL: and FAILS it for claude too" \
+  "[ \"\$(grants_launcher \"\$SETUP_PREV9\" claude)\" = no ]"
+check "S305-R9-D13. CONTROL: but the pre-change block DID name the toolchain (slice is sound)" \
+  "[ \"\$(names_toolchain \"\$SETUP_PREV9\" copilot)\" = yes ]"
+R9_STRIPPED="$(printf '%s\n' "$SETUP_SEC" | grep -v 'LAUNCHER_DIR')"
+check "S305-R9-D13. CONTROL: the strip really removed lines" \
+  "[ \"\$(printf '%s\n' \"\$R9_STRIPPED\" | wc -l)\" -lt \"\$(printf '%s\n' \"\$SETUP_SEC\" | wc -l)\" ]"
+check "S305-R9-D13. CONTROL: strip the new token and copilot goes red" \
+  "[ \"\$(grants_launcher \"\$R9_STRIPPED\" copilot)\" = no ]"
+check "S305-R9-D13. CONTROL: and claude goes red too" \
+  "[ \"\$(grants_launcher \"\$R9_STRIPPED\" claude)\" = no ]"
+check "S305-R9-D13. CONTROL: the strip left the rest of the grant standing" \
+  "printf '%s\n' \"\$(add_dirs \"\$R9_STRIPPED\" copilot)\" | qgrep -qF '<product-repo>' && [ \"\$(names_toolchain \"\$R9_STRIPPED\" copilot)\" = yes ]"
+# A token that is $HOME ITSELF is the wrong grant and must be caught -- both as
+# a $HOME grant, and as NOT satisfying this predicate by merely covering it.
+R9_FAKE_HOME="\`\`\`bash
+copilot --allow-all-tools --add-dir \"\$HOME\"
+\`\`\`"
+check "S305-R9-D13. CONTROL: a token that is \$HOME itself is caught as a \$HOME grant" \
+  "[ \"\$(grants_home_itself \"\$R9_FAKE_HOME\" copilot)\" = yes ]"
+check "S305-R9-D13. CONTROL: and granting \$HOME does NOT satisfy this predicate by covering it" \
+  "[ \"\$(grants_launcher \"\$R9_FAKE_HOME\" copilot)\" = no ]"
+check "S305-R9-D13. CONTROL: R7-D11's containment predicate catches it too (not vacuous)" \
+  "[ \"\$(grants_home \"\$R9_FAKE_HOME\" copilot)\" = yes ]"
+# POSITIVE CONTROL: a hand-written launcher grant is caught as RIGHT.
+R9_FAKE_OK="\`\`\`bash
+LAUNCHER_DIR=\"\${LCARS_BIN_DEST:-\$HOME/.local/bin}\"
+copilot --allow-all-tools --add-dir \"\$LAUNCHER_DIR\"
+\`\`\`"
+check "S305-R9-D13. CONTROL: a hand-written launcher grant is caught as right" \
+  "[ \"\$(grants_launcher \"\$R9_FAKE_OK\" copilot)\" = yes ]"
+check "S305-R9-D13. CONTROL: and it is not a \$HOME grant" \
+  "[ \"\$(grants_home_itself \"\$R9_FAKE_OK\" copilot)\" = no ] && [ \"\$(grants_home \"\$R9_FAKE_OK\" copilot)\" = no ]"
+check "S305-R9-D13. CONTROL: § 6.1 is not a launch grant and fails the predicate" \
+  "[ \"\$(grants_launcher \"\$S6\" copilot)\" = no ]"
+check "S305-R9-D13. CONTROL: § 7 (Land it) carries no launch grant either" \
+  "[ \"\$(grants_launcher \"\$S7\" copilot)\" = no ]"
+
+# (6) THE JUSTIFICATION TRAVELS WITH IT — sliced to the NEW passage only, which
+#     starts after R8-D12's "third instance" paragraph, so a phrase the section
+#     already carried (e.g. "user-writable", "launch flag") cannot pass by
+#     accident. Content checks, claimed as nothing more.
+LD_PARA="$(printf '%s\n' "$SETUP_SEC" | awk '/^\*\*Why the launcher directory/{f=1} f')"
+LD_FLAT="$(printf '%s\n' "$LD_PARA" | tr '\n' ' ' | tr -s ' ')"
+echo "    [launcher slice] $(printf '%s\n' "$LD_PARA" | grep -c .) non-blank lines"
+check "S305-R9-D13. the justification slice is non-empty (a real slice)" \
+  "[ -n \"\$LD_PARA\" ] && [ \"\$(printf '%s\n' \"\$LD_PARA\" | grep -c .)\" -ge 10 ]"
+check "S305-R9-D13. CONTROL: that slice did NOT exist pre-change" \
+  "[ -z \"\$(printf '%s\n' \"\$SETUP_PREV9\" | awk '/^\*\*Why the launcher directory/{f=1} f')\" ]"
+check "S305-R9-D13. it carries the measurement that was there before: one stall across eight runs" \
+  "printf '%s\n' \"\$LD_FLAT\" | qgrep -qiF 'eight' && printf '%s\n' \"\$LD_FLAT\" | qgrep -qiE 'one stall|exactly .*one'"
+check "S305-R9-D13. and says that one was a BROWSE, not blocked work" \
+  "printf '%s\n' \"\$LD_FLAT\" | qgrep -qiE 'listing|browse'"
+# What CHANGED the call. The claim asserted is the one the log supports: the
+# dialog named the launcher FILE, not a glob, and it BLOCKED. "Two back to back"
+# is deliberately NOT asserted -- only one such box is in the seat's log, and a
+# test must not demand prose the evidence does not carry.
+check "S305-R9-D13. it carries what CHANGED the call: a BLOCKING stall, not a browse" \
+  "printf '%s\n' \"\$LD_FLAT\" | qgrep -qiE 'froze the run|blocked the run' && printf '%s\n' \"\$LD_FLAT\" | qgrep -qiF 'no glob'"
+check "S305-R9-D13. and that the dialog named the LAUNCHER FILE itself" \
+  "printf '%s\n' \"\$LD_FLAT\" | qgrep -qiE 'launcher file' && printf '%s\n' \"\$LD_FLAT\" | qgrep -qF 'lcars-ech'"
+check "S305-R9-D13. it names the model the stalls were measured on" \
+  "printf '%s\n' \"\$LD_FLAT\" | qgrep -qF 'gpt-6-luna'"
+check "S305-R9-D13. it says this is the directory install.sh itself writes to" \
+  "printf '%s\n' \"\$LD_FLAT\" | qgrep -qF 'install.sh' && printf '%s\n' \"\$LD_FLAT\" | qgrep -qF 'LCARS_BIN_DEST'"
+check "S305-R9-D13. it states the trade: this directory IS user-writable" \
+  "printf '%s\n' \"\$LD_FLAT\" | qgrep -qiF 'user-writable'"
+check "S305-R9-D13. and says plainly that it is WEAKER than the toolchain's argument" \
+  "printf '%s\n' \"\$LD_FLAT\" | qgrep -qiE 'weaker' && printf '%s\n' \"\$LD_FLAT\" | qgrep -qiF '/usr/bin'"
+check "S305-R9-D13. it does not BORROW the toolchain reasoning — it says that fails here" \
+  "printf '%s\n' \"\$LD_FLAT\" | qgrep -qiE 'fails here|do not borrow'"
+check "S305-R9-D13. the mitigations are named: the reader's own dir, deliberately installed" \
+  "printf '%s\n' \"\$LD_FLAT\" | qgrep -qiE \"reader.s .*own\" && printf '%s\n' \"\$LD_FLAT\" | qgrep -qiF 'deliberately'"
+check "S305-R9-D13. and that it is a launch flag that persists nothing" \
+  "printf '%s\n' \"\$LD_FLAT\" | qgrep -qiF 'launch flag' && printf '%s\n' \"\$LD_FLAT\" | qgrep -qiF 'persists nothing'"
+check "S305-R9-D13. it re-states that \$HOME is still refused, and why a child is not its parent" \
+  "printf '%s\n' \"\$LD_FLAT\" | qgrep -qiE 'HOME. is still refused' && printf '%s\n' \"\$LD_FLAT\" | qgrep -qiE 'not its parent'"
+check "S305-R9-D13. it is still ONE NAMED directory, said so" \
+  "printf '%s\n' \"\$LD_FLAT\" | qgrep -qiE 'one named director'"
+
+echo "-- S315. scoped grants, refusal locks, and preflight authority --"
+for grant_case in \
+  test_04_ungranted_reapprove_stops_once_with_four_fields \
+  test_05_mission_scope_records_authority_but_refuses_another_mission \
+  test_06a_hand_rolled_gh_pr_merge_is_never_grantable \
+  test_06b_permission_classifier_refusal_has_no_second_route \
+  test_06c_lcars_merits_refusal_is_not_overridden_by_a_grant \
+  test_02_03_07_granted_reapprove_runs_ledgers_and_never_reasks \
+  test_02b_granted_command_executes_in_the_target_checkout \
+  test_08_number_one_preflight_recommends_on_once_without_a_tty \
+  test_08b_number_one_applies_to_the_target_checkout \
+  test_09_merge_policy_and_landing_agree_that_a_grant_acts \
+  test_once_grant_is_consumed_even_across_new_seats \
+  test_run_grant_can_act_for_two_missions_but_not_a_new_run \
+  test_granted_refusal_is_ledgered_without_retry_or_false_merge \
+  test_number_one_cannot_replace_own_live_evidence_for_a_grant \
+  test_legacy_boolean_is_not_a_grant \
+  test_grant_does_not_clear_an_unrecognised_gate \
+  test_invalid_grants_do_not_change_authority \
+  test_number_one_off_and_failed_application_are_persisted
+do
+  check "S315. $grant_case" "python3 '$DIR/lib/lcars-ech-grants.test.py' 'Grants.$grant_case'"
+done
+
+echo "-- S316. continuity, independent guard, and controlled evidence --"
+for continuity_case in \
+  test_verify_gives_executable_move_and_continuation \
+  test_watch_stays_on_free_slot_and_exits_for_human \
+  test_watch_wakes_on_failed_mission_even_with_full_slots \
+  test_watch_suppresses_failed_wake_while_drive_lock_is_live \
+  test_watch_wakes_on_stale_failure_fields_outside_failed_stage \
+  test_managed_watch_outlives_injected_old_bound_on_monotonic_clock \
+  test_watch_identity_survives_equivalent_paths \
+  test_watch_status_does_not_invent_a_running_guard \
+  test_watch_stop_refuses_unconfirmed_termination \
+  test_no_verb_kills_by_broad_pattern \
+  test_refused_heartbeat_starts_timerless_fallback \
+  test_immediate_heartbeat_refusal_starts_timerless_fallback \
+  test_playbook_names_the_written_watch_log \
+  test_live_check_pairs_every_target_and_refuses_uncontrolled_green \
+  test_numbered_control_enumeration_and_board_rules_have_teeth
+do
+  check "S316. $continuity_case" "PYTHONDONTWRITEBYTECODE=1 python3 '$DIR/lib/lcars-ech-continuity.test.py' 'Continuity.$continuity_case'"
+done
 
 echo
 echo "=== lcars-ech: $pass passed, $fail failed ==="

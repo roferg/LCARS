@@ -1423,6 +1423,279 @@ check "S295 vision: an explicit missing idea file is not silently replaced" \
   "[ '$rcVision' -eq 1 ] && grep -qF 'idea file not found: missing-idea.md' '$repoVision/vision-error.txt'"
 
 # ==========================================================================
+# S309 — THE REPO RECORDS THE ENGINE, AND THE MODEL SEED READS IT
+# ==========================================================================
+# MEASURED on the 21–22 Oct 2026 hands-off run: the run was started
+# `lcars-ech init --engine copilot`, which RECORDED `engine: copilot` in
+# .git/lcars/autopilot.json — and `lcars init` still wrote
+# `"model": "claude-sonnet"` into config.json, because the seed was a
+# hardcoded constant that never looked at the engine. The two live missions
+# were safe ONLY because their own state.json pinned workerBin: copilot. Any
+# mission filed without an explicit engine would have run on Claude and billed
+# a captain who had asked for Copilot-only. That is a COST SURPRISE.
+#
+# THE FACT IS RECORDED, SO IT IS READ — never re-guessed. BOTH engines are
+# installed in this fixture on purpose: `lcars_default_engine` would answer
+# `claude` by historical precedence, so the ONLY thing that can make this
+# repo come out copilot is the autopilot record itself.
+repoRec="$(new_repo)"
+make_claude_stub "$repoRec/claude"; make_copilot_stub "$repoRec/copilot"
+make_gh_stub "$repoRec/gh"
+export GH_LOG="$repoRec/gh.log"; : >"$GH_LOG"
+export GH_EXISTING="$repoRec/existing"; : >"$GH_EXISTING"
+mkdir -p "$repoRec/.git/lcars"
+printf '{\n  "spec": "SPEC.md",\n  "scope": [],\n  "engine": "copilot"\n}\n' \
+  >"$repoRec/.git/lcars/autopilot.json"
+rcRec=0
+(
+  cd "$repoRec"
+  LCARS_CLAUDE_BIN="$repoRec/claude" LCARS_COPILOT_BIN="$repoRec/copilot" \
+  LCARS_GH_BIN="$repoRec/gh" bash "$SCRIPT" >out.txt 2>&1
+) || rcRec=$?
+check "S309-1: init succeeds on a repo whose run engine is recorded" \
+  "[ '$rcRec' -eq 0 ]"
+check "S309-1: a run recorded as copilot NEVER seeds a claude model" \
+  "! qgrep -q '\"model\": *\"claude-sonnet\"' '$repoRec/.git/lcars/config.json'"
+check "S309-1: it seeds the model copilot actually runs" \
+  "qgrep -q '\"model\": *\"claude-opus-5.5\"' '$repoRec/.git/lcars/config.json'"
+check "S309-1: and it RECORDS the engine as this repo's pin, so no mission re-guesses it" \
+  "qgrep -q '\"workerBin\": *\"copilot\"' '$repoRec/.git/lcars/config.json'"
+check "S309-1: config.json is still valid JSON" \
+  "python3 -c 'import json,sys; json.load(open(sys.argv[1]))' '$repoRec/.git/lcars/config.json'"
+check "S309-1: a recorded engine is not a guess, so nothing is announced as chosen" \
+  "! qgrep -qi 'NO ENGINE RECORDED' '$repoRec/out.txt'"
+
+# A recorded engine that is NOT installed is SKIPPED, never obeyed — the same
+# rule the config pin already follows. The repo falls back to what is here.
+repoRecGone="$(new_repo)"
+make_claude_stub "$repoRecGone/claude"; make_gh_stub "$repoRecGone/gh"
+export GH_LOG="$repoRecGone/gh.log"; : >"$GH_LOG"
+export GH_EXISTING="$repoRecGone/existing"; : >"$GH_EXISTING"
+mkdir -p "$repoRecGone/.git/lcars"
+printf '{\n  "engine": "copilot"\n}\n' >"$repoRecGone/.git/lcars/autopilot.json"
+(
+  cd "$repoRecGone"
+  LCARS_CLAUDE_BIN="$repoRecGone/claude" \
+  LCARS_COPILOT_BIN="$repoRecGone/no-copilot-here" \
+  LCARS_GH_BIN="$repoRecGone/gh" bash "$SCRIPT" >out.txt 2>&1
+)
+check "S309-1: a recorded engine that is not installed cannot pin the repo" \
+  "! qgrep -q 'workerBin' '$repoRecGone/.git/lcars/config.json'"
+check "S309-1: …and the model falls back to the engine that IS here" \
+  "qgrep -q '\"model\": *\"claude-sonnet\"' '$repoRecGone/.git/lcars/config.json'"
+
+# --- S309 fix round 1, D2: AND IT SAYS SO, instead of denying the record ----
+# MEASURED on the shipped fix: with `{"engine":"copilot"}` on disk and copilot
+# NOT on this PATH, init printed
+#
+#   ◇ NO ENGINE RECORDED — model seeded as "claude-sonnet" for claude:
+#     claude is the only engine installed here, and nothing records which engine
+#     this repo runs on.
+#
+# The second clause is FALSE. The record was read, discarded as unavailable, and
+# then denied. Skipping an unavailable pin is correct and documented; SAYING
+# NOTHING WAS RECORDED is not — and this is the one moment the captain most
+# needs telling, because on an unattended leg with a trimmed PATH the record
+# that would have saved him the bill is thrown away and the readout claims there
+# never was one. `lcars update --engine` already had the right sentence for this
+# exact situation; init now carries its shape.
+check "S309-D2: a record that exists is NEVER reported as no record" \
+  "! qgrep -qi 'NO ENGINE RECORDED' '$repoRecGone/out.txt'"
+check "S309-D2: it says the RECORDED ENGINE IS NOT INSTALLED" \
+  "qgrep -qi 'RECORDED ENGINE NOT INSTALLED' '$repoRecGone/out.txt'"
+check "S309-D2: …names the engine that was recorded" \
+  "qgrep -qF \"names 'copilot'\" '$repoRecGone/out.txt'"
+check "S309-D2: …says it is not on this machine, and the record still stands" \
+  "qgrep -qF 'is not on this machine' '$repoRecGone/out.txt' \
+     && qgrep -qF 'The record stands and was NOT obeyed' '$repoRecGone/out.txt'"
+check "S309-D2: …names what was seeded INSTEAD, and for which engine" \
+  "qgrep -qF 'model seeded as \"claude-sonnet\" for claude' '$repoRecGone/out.txt'"
+check "S309-D2: …and names the verb that corrects the record" \
+  "qgrep -qF 'lcars update --engine' '$repoRecGone/out.txt'"
+
+# --- S309 fix round 2, D16: A GARBAGE RECORD IS NOT A MISSING INSTALL -------
+# MEASURED on the fix-round-1 shipment: with `{"engine":"gpt5"}` on disk — a
+# name LCARS does not drive at all — init printed the D2 sentence above:
+#
+#   ◇ RECORDED ENGINE NOT INSTALLED — model seeded as "claude-sonnet" for claude:
+#     this repo's run record names 'gpt5', but 'gpt5' is not on this machine
+#     (looked for '').
+#     … Install gpt5, or record the engine this repo should run on: …
+#
+# Three things wrong in one note. `(looked for '')` is empty because there is no
+# binary to look for. "Install gpt5" sends the captain to install something that
+# does not exist. And the real fault — gpt5 is not an engine LCARS drives — is
+# never said, so the one diagnosis that would end the loop is missing.
+# `lcars update --engine gpt5` already had the right sentence; init now carries
+# it. The NAME is validated before the "not installed here" branch is chosen.
+repoRecJunk="$(new_repo)"
+make_claude_stub "$repoRecJunk/claude"; make_gh_stub "$repoRecJunk/gh"
+export GH_LOG="$repoRecJunk/gh.log"; : >"$GH_LOG"
+export GH_EXISTING="$repoRecJunk/existing"; : >"$GH_EXISTING"
+mkdir -p "$repoRecJunk/.git/lcars"
+printf '{\n  "engine": "gpt5"\n}\n' >"$repoRecJunk/.git/lcars/autopilot.json"
+rcRecJunk=0
+(
+  cd "$repoRecJunk"
+  LCARS_CLAUDE_BIN="$repoRecJunk/claude" \
+  LCARS_COPILOT_BIN="$repoRecJunk/no-copilot-here" \
+  LCARS_GH_BIN="$repoRecJunk/gh" bash "$SCRIPT" >out.txt 2>&1
+) || rcRecJunk=$?
+check "S309-D16: an unrecognised recorded engine is a READOUT, not a refusal" \
+  "[ '$rcRecJunk' -eq 0 ]"
+check "S309-D16: it says the record is not an engine LCARS DRIVES" \
+  "qgrep -qF \"'gpt5' is not an engine LCARS drives\" '$repoRecJunk/out.txt'"
+check "S309-D16: …and names the engines it does drive" \
+  "qgrep -qF 'it knows claude and copilot' '$repoRecJunk/out.txt'"
+check "S309-D16: …it never reports looking for a binary that cannot exist" \
+  "! qgrep -qF \"looked for ''\" '$repoRecJunk/out.txt'"
+check "S309-D16: …and never tells the captain to install a thing that is not real" \
+  "! qgrep -qi 'install gpt5' '$repoRecJunk/out.txt'"
+check "S309-D16: …it is NOT diagnosed as a missing install" \
+  "! qgrep -qi 'RECORDED ENGINE NOT INSTALLED' '$repoRecJunk/out.txt' \
+     && ! qgrep -qF 'is not on this machine' '$repoRecJunk/out.txt'"
+check "S309-D16: …nor denied, the way a no-record repo is described" \
+  "! qgrep -qi 'NO ENGINE RECORDED' '$repoRecJunk/out.txt'"
+check "S309-D16: …it still names the verb that corrects the record" \
+  "qgrep -qF 'lcars update --engine' '$repoRecJunk/out.txt'"
+check "S309-D16: …and still seeds the model for the engine that IS here" \
+  "qgrep -qF 'model seeded as \"claude-sonnet\" for claude' '$repoRecJunk/out.txt' \
+     && qgrep -q '\"model\": *\"claude-sonnet\"' '$repoRecJunk/.git/lcars/config.json'"
+check "S309-D16: …a name LCARS cannot drive never pins the repo" \
+  "! qgrep -q 'workerBin' '$repoRecJunk/.git/lcars/config.json'"
+check "S309-D16: …config.json is still valid JSON" \
+  "python3 -c 'import json,sys; json.load(open(sys.argv[1]))' '$repoRecJunk/.git/lcars/config.json'"
+# The RECOGNISED-but-absent record keeps its own, correct sentence — the two
+# facts are different and stay different.
+check "S309-D16: a RECOGNISED engine that is absent still reads as NOT INSTALLED" \
+  "qgrep -qi 'RECORDED ENGINE NOT INSTALLED' '$repoRecGone/out.txt' \
+     && qgrep -qF \"looked for '$repoRecGone/no-copilot-here'\" '$repoRecGone/out.txt'"
+
+# --- S309 fix round 1, D4: AN INCOHERENT PAIR IS NAMED, NOT LEFT SILENT ----
+# MEASURED: an existing config carrying `model: claude-sonnet`, plus an
+# autopilot record of `copilot` with copilot installed, came out of init as
+# `model='claude-sonnet' workerBin='copilot'` at rc 0 with NOTHING said. Both
+# halves are individually right — the pin is recorded, and a model the captain
+# already recorded is never clobbered — but the PAIR is incoherent and nothing
+# named it or pointed at the verb that aligns it. One accurate line; NOT a
+# refusal (the blast radius is `xo`'s cfg_model, not run.sh's resolver, which
+# reads modelAliases/stages instead).
+repoMix="$(new_repo)"
+make_claude_stub "$repoMix/claude"; make_copilot_stub "$repoMix/copilot"
+make_gh_stub "$repoMix/gh"
+export GH_LOG="$repoMix/gh.log"; : >"$GH_LOG"
+export GH_EXISTING="$repoMix/existing"; : >"$GH_EXISTING"
+# First init on a claude-only laptop: seeds model claude-sonnet, no pin.
+(
+  cd "$repoMix"
+  LCARS_CLAUDE_BIN="$repoMix/claude" \
+  LCARS_COPILOT_BIN="$repoMix/no-copilot-here" \
+  LCARS_GH_BIN="$repoMix/gh" bash "$SCRIPT" >out1.txt 2>&1
+)
+check "S309-D4: the fixture starts with model claude-sonnet and NO pin" \
+  "qgrep -q '\"model\": *\"claude-sonnet\"' '$repoMix/.git/lcars/config.json' \
+     && ! qgrep -q 'workerBin' '$repoMix/.git/lcars/config.json'"
+# Now a run records copilot, and copilot IS installed. init pins copilot and
+# keeps his model — and must say that the two no longer agree.
+printf '{\n  "engine": "copilot"\n}\n' >"$repoMix/.git/lcars/autopilot.json"
+rcMix=0
+(
+  cd "$repoMix"
+  LCARS_CLAUDE_BIN="$repoMix/claude" LCARS_COPILOT_BIN="$repoMix/copilot" \
+  LCARS_GH_BIN="$repoMix/gh" bash "$SCRIPT" >out2.txt 2>&1
+) || rcMix=$?
+check "S309-D4: init still succeeds (one line, never a refusal)" "[ '$rcMix' -eq 0 ]"
+check "S309-D4: the captain's recorded model is NOT clobbered" \
+  "qgrep -q '\"model\": *\"claude-sonnet\"' '$repoMix/.git/lcars/config.json'"
+check "S309-D4: the engine pin IS recorded" \
+  "qgrep -q '\"workerBin\": *\"copilot\"' '$repoMix/.git/lcars/config.json'"
+check "S309-D4: and the incoherent pair is NAMED, not left silent" \
+  "qgrep -qi 'ENGINE AND MODEL DISAGREE' '$repoMix/out2.txt'"
+check "S309-D4: …naming both halves of the pair it left" \
+  "qgrep -qF 'engine recorded as \"copilot\"' '$repoMix/out2.txt' \
+     && qgrep -qF 'model left as \"claude-sonnet\"' '$repoMix/out2.txt'"
+check "S309-D4: …and the verb that aligns them" \
+  "qgrep -qF 'lcars update --engine copilot' '$repoMix/out2.txt' \
+     && qgrep -qF 'lcars update --model' '$repoMix/out2.txt'"
+check "S309-D4: config.json is still valid JSON" \
+  "python3 -c 'import json,sys; json.load(open(sys.argv[1]))' '$repoMix/.git/lcars/config.json'"
+# A COHERENT pair says nothing: init must not nag a repo whose model already
+# matches the engine it pins.
+repoFit="$(new_repo)"
+make_claude_stub "$repoFit/claude"; make_copilot_stub "$repoFit/copilot"
+make_gh_stub "$repoFit/gh"
+export GH_LOG="$repoFit/gh.log"; : >"$GH_LOG"
+export GH_EXISTING="$repoFit/existing"; : >"$GH_EXISTING"
+mkdir -p "$repoFit/.git/lcars"
+printf '{\n  "engine": "copilot"\n}\n' >"$repoFit/.git/lcars/autopilot.json"
+(
+  cd "$repoFit"
+  LCARS_CLAUDE_BIN="$repoFit/claude" LCARS_COPILOT_BIN="$repoFit/copilot" \
+  LCARS_GH_BIN="$repoFit/gh" bash "$SCRIPT" >out1.txt 2>&1
+  LCARS_CLAUDE_BIN="$repoFit/claude" LCARS_COPILOT_BIN="$repoFit/copilot" \
+  LCARS_GH_BIN="$repoFit/gh" bash "$SCRIPT" >out2.txt 2>&1
+)
+check "S309-D4: a coherent engine/model pair is never announced" \
+  "! qgrep -qi 'ENGINE AND MODEL DISAGREE' '$repoFit/out1.txt' \
+     && ! qgrep -qi 'ENGINE AND MODEL DISAGREE' '$repoFit/out2.txt'"
+
+# S309-2 — WITH NO RECORD IT SAYS WHICH IT PICKED AND WHY. Both engines are
+# installed and nothing records which one this run uses, so the seed is a
+# CHOICE: init must name it, name the reason, and name the verb that corrects
+# it, rather than defaulting in silence.
+repoSay="$(new_repo)"
+make_claude_stub "$repoSay/claude"; make_copilot_stub "$repoSay/copilot"
+make_gh_stub "$repoSay/gh"
+export GH_LOG="$repoSay/gh.log"; : >"$GH_LOG"
+export GH_EXISTING="$repoSay/existing"; : >"$GH_EXISTING"
+(
+  cd "$repoSay"
+  LCARS_CLAUDE_BIN="$repoSay/claude" LCARS_COPILOT_BIN="$repoSay/copilot" \
+  LCARS_GH_BIN="$repoSay/gh" bash "$SCRIPT" >out.txt 2>&1
+)
+check "S309-2: with no recorded engine init SAYS it had no record" \
+  "qgrep -qi 'NO ENGINE RECORDED' '$repoSay/out.txt'"
+check "S309-2: …names the engine it chose" \
+  "qgrep -q 'claude' '$repoSay/out.txt'"
+check "S309-2: …names WHY it chose it" \
+  "qgrep -qi \"nothing records which engine this repo runs on\" '$repoSay/out.txt'"
+check "S309-2: …and names the verb that corrects it" \
+  "qgrep -qF 'lcars update --engine' '$repoSay/out.txt'"
+check "S309-2: with BOTH engines and no record, claude is still the answer" \
+  "qgrep -q '\"model\": *\"claude-sonnet\"' '$repoSay/.git/lcars/config.json'"
+check "S309-2: …and the config is still left UNPINNED (config gets no say it never had)" \
+  "! qgrep -q 'workerBin' '$repoSay/.git/lcars/config.json'"
+
+# A SECOND `lcars init` over a config that already carries a model is not
+# choosing anything — the merge preserves the captain's value — so it must not
+# announce a choice it did not make.
+(
+  cd "$repoSay"
+  LCARS_CLAUDE_BIN="$repoSay/claude" LCARS_COPILOT_BIN="$repoSay/copilot" \
+  LCARS_GH_BIN="$repoSay/gh" bash "$SCRIPT" >out2.txt 2>&1
+)
+check "S309-2: a re-init over an existing model announces no choice" \
+  "! qgrep -qi 'NO ENGINE RECORDED' '$repoSay/out2.txt'"
+
+# S309-6 — THE REGRESSION LOCK ON THE CAPTAIN'S RULING. `numberOne.enabled`
+# stays FALSE after a fresh init (the ECH asks at preflight instead), and the
+# block stays on ONE LINE because several readers depend on that.
+repoN1="$(new_repo)"
+make_claude_stub "$repoN1/claude"; make_gh_stub "$repoN1/gh"
+export GH_LOG="$repoN1/gh.log"; : >"$GH_LOG"
+export GH_EXISTING="$repoN1/existing"; : >"$GH_EXISTING"
+( cd "$repoN1" && LCARS_CLAUDE_BIN="$repoN1/claude" LCARS_GH_BIN="$repoN1/gh" \
+    bash "$SCRIPT" >out.txt 2>&1 )
+check "S309-6: numberOne.enabled is FALSE after a fresh init" \
+  "python3 -c 'import json,sys; c=json.load(open(sys.argv[1])); assert c[\"numberOne\"][\"enabled\"] is False' '$repoN1/.git/lcars/config.json'"
+check "S309-6: and numberOne is still on ONE line" \
+  "[ \"\$(qgrep -c '\"numberOne\"' '$repoN1/.git/lcars/config.json')\" = 1 ] && qgrep -q '\"numberOne\": *{\"enabled\": false}' '$repoN1/.git/lcars/config.json'"
+# …and it stays false on the recorded-copilot path too: this session changes the
+# MODEL seeding, never the switch.
+check "S309-6: a recorded-engine init leaves numberOne.enabled false as well" \
+  "python3 -c 'import json,sys; c=json.load(open(sys.argv[1])); assert c[\"numberOne\"][\"enabled\"] is False' '$repoRec/.git/lcars/config.json'"
+
+# ==========================================================================
 echo
 printf 'lcars init: %d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

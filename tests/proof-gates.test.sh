@@ -30,6 +30,7 @@
 # Zero tokens: real git + real node/go/cargo runners on tiny fixtures (rust/go
 # skip-with-notice when the runner is absent). NOT the heavy lcars-run.test.sh.
 set -u
+export LCARS_WORKER_BIN=copilot
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SCRIPT="${LCARS_RUN_SCRIPT:-$REPO_ROOT/skills/lcars-run/run.sh}"
@@ -116,7 +117,7 @@ EV() { echo "$1/.git/lcars/missions/m-001/events.jsonl"; }
 
 ff_gate() { # repo parent-sha [env-pairs...] → sets FFRC + OUT
   local repo="$1" parent="$2"; shift 2
-  OUT="$( cd "$repo" && env LCARS_GH_BIN=true LCARS_GIT_BIN=git "$@" \
+  OUT="$( cd "$repo" && env LCARS_WORKER_BIN=copilot LCARS_GH_BIN=true LCARS_GIT_BIN=git "$@" \
           bash "$SCRIPT" flip-flop-gate-test --mission m-001 --ticket t-001 --sha "$parent" 2>&1 )"
   FFRC="$(printf '%s\n' "$OUT" | sed -n 's/^FFRC=//p' | tail -1)"
 }
@@ -3773,11 +3774,285 @@ else bad "T4c/d. the captured buffer does not name pkg.add — they prove nothin
 # files. This reads the product source: both flip-flop legs must hand
 # proof_zero_collected the ticket's $rels.
 if [ "$(grep -c 'proof_zero_collected "\$PROOF_LEG_OUT" "\$rels"' "$SCRIPT")" = 1 ] \
-   && [ "$(grep -c 'proof_zero_collected "\$par_out" "\$rels"' "$SCRIPT")" = 1 ]; then
+   && [ "$(grep -c 'proof_zero_collected "\$par_zero_out" "\$rels"' "$SCRIPT")" = 1 ]; then
   ok "T5. both flip-flop legs plumb the ticket's declared test files into the zero-collect check"
 else bad "T5. a flip-flop leg still asks the UNATTRIBUTED zero-collect question"; fi
 
 # ==========================================================================
+# S328. Participation: a called shared helper counts, an executable orphan does not.
+# Real Python discovery in a flat tests/ tree, through the public gate hook.
+echo "== S328. Runtime participation in declared Python test files =="
+new_participation_repo() { # files|ancestor
+  local repo; repo="$(mktemp -d "$TMPROOT/s328py.XXXX")"
+  ( cd "$repo" && git init -q && git config user.email t@t && git config user.name t )
+  mkdir -p "$repo/tests"
+  printf '__pycache__/\n' > "$repo/.gitignore"
+  printf 'def multiply(a, b):\n    return a + b\n' > "$repo/calc.py"
+  if [ "$1" = files ] || [ "${2:-}" = helper ]; then
+    printf 'import math\n\ndef expected():\n    return math.prod([2, 3])\n' > "$repo/tests/support.py"
+  fi
+  if [ "$1" = files ]; then
+    printf 'import unittest\n\nclass Sibling(unittest.TestCase):\n    def test_existing(self):\n        self.assertEqual(2 + 2, 4)\n' > "$repo/tests/test_sibling.py"
+    cp "$repo/tests/test_sibling.py" "$repo/tests/test_other.py"
+  fi
+  ( cd "$repo" && git add -A && git commit -qm parent )
+  scaffold_mission "$repo"
+  echo "$repo"
+}
+S328_CMD='python3 -m unittest discover -s "$LCARS_TESTS_DIR"'
+for layout in files ancestor; do
+  repo="$(new_participation_repo "$layout" helper)"
+  P="$(head_sha "$repo")"
+  cat > "$repo/tests/test_ticket.py" <<'PY'
+import unittest
+import importlib
+from calc import multiply
+
+class Ticket(unittest.TestCase):
+    pass
+
+def check(self):
+    # Resolve the module name at runtime, without an import statement.
+    helper = importlib.import_module("sup" + "port")
+    for _ in range(11):
+        self.assertEqual(multiply(2, 3), helper.expected())
+
+for i in range(14):
+    setattr(Ticket, "test_product_%02d" % i, check)
+PY
+  printf 'import math\n\ndef expected():\n    return math.prod([3, 2])\n' > "$repo/tests/support.py"
+  printf 'def multiply(a, b):\n    return a * b\n' > "$repo/calc.py"
+  commit_all "$repo"
+  ff_gate "$repo" "$P" LCARS_TEST_CMD="$S328_CMD"
+  ffj="$(TD "$repo")/flip-flop.json"
+  if [ "$FFRC" = 0 ] && [ "$(ff_field "$ffj" 'd["gate"]["scopeKind"]')" = "$layout" ]; then
+    ok "S328a ($layout). shared zero-test helper used by 14 passing tests PASSES"
+  else bad "S328a ($layout). honest helper bounced (FFRC=$FFRC): $OUT"; fi
+  if ff_field "$ffj" 'd["declaredRan"]["each"]' | grep -q 'tests/support.py=called'; then
+    ok "S328b ($layout). runtime call evidence is recorded for the shared helper"
+  else bad "S328b ($layout). missing runtime participation evidence: $(ff_field "$ffj" 'd["declaredRan"]')"; fi
+  if [ "$FFRC" = 0 ]; then
+    replay="$(ff_field "$ffj" 'd["tip"]["cmd"]')"
+    if ( bash -c "$replay" ) > "$repo/replay.log" 2>&1; then
+      ok "S328b ($layout). recorded observed command replays after evidence cleanup"
+    else bad "S328b ($layout). recorded command could not replay: $(cat "$repo/replay.log")"; fi
+  fi
+  no_scratch_left "$repo" || bad "S328 ($layout). parent scratch leaked"
+  branch="$(git -C "$repo" branch --show-current)"
+  printf '{"id":"m-001","type":"feature","stage":"implement","branch":"%s"}\n' "$branch" \
+    > "$repo/.git/lcars/missions/m-001/state.json"
+  ( cd "$repo" && shasum -a 256 tests/support.py tests/test_ticket.py ) \
+    > "$(TD "$repo")/proof-tests.sha256"
+  pc_out="$( cd "$repo" && env LCARS_WORKER_BIN=copilot LCARS_GH_BIN=true \
+    LCARS_TEST_CMD="$S328_CMD" bash "$SCRIPT" post-commit-gate-test \
+      --mission m-001 --ticket t-001 2>&1 )"
+  if printf '%s\n' "$pc_out" | grep -q '^PCRC=0$'; then
+    ok "S328 D3 ($layout). called executable helper passes POST-COMMIT too"
+  else bad "S328 D3 ($layout). honest helper bounced POST-COMMIT: $pc_out"; fi
+done
+
+# Most important guard: a nonempty test file that stopped collecting, not used
+# by the passing file, must STILL be inconclusive in both accounting lanes.
+for defect in D1 D2; do
+  repo="$(new_participation_repo ancestor)"
+  if [ "$defect" = D1 ]; then
+    printf 'import unittest\n\nclass DormantTests(unittest.TestCase):\n    def test_existing(self):\n        self.assertEqual(2 + 3, 5)\n' > "$repo/tests/test_dormant.py"
+    unused=tests/test_dormant.py
+    module=test_dormant
+  else
+    printf 'import math\n\nSENTINEL = 41\n\ndef operands():\n    return 2, 3\n' > "$repo/tests/support.py"
+    unused=tests/support.py
+    module=support
+  fi
+  commit_all "$repo"
+  P="$(head_sha "$repo")"
+  if [ "$defect" = D1 ]; then
+    printf 'class DormantExample:\n    def test_existing(self):\n        self.assertEqual(2 + 3, 5)\n' > "$repo/$unused"
+  else
+    printf 'import math\n\nSENTINEL = 42\n\ndef operands():\n    return 2, 3\n' > "$repo/$unused"
+  fi
+  printf 'import unittest\nimport %s\nfrom calc import multiply\n\nclass Ticket(unittest.TestCase):\n    def test_product(self):\n        self.assertEqual(multiply(2, 3), 6)\n' "$module" > "$repo/tests/test_ticket.py"
+  printf 'def multiply(a, b):\n    return a * b\n' > "$repo/calc.py"
+  commit_all "$repo"
+  ff_gate "$repo" "$P" LCARS_TEST_CMD="$S328_CMD"
+  ffj="$(TD "$repo")/flip-flop.json"
+  if [ "$FFRC" = 2 ] && [ "$(ff_field "$ffj" 'd["verdict"]')" = inconclusive ] \
+     && ff_field "$ffj" 'd["declaredRan"]["unaccounted"]' | grep -q "$unused"; then
+    ok "S328 $defect. imported-but-unused executable file cannot earn a false green"
+  else bad "S328 $defect. FALSE GREEN for $unused (FFRC=$FFRC): $OUT"; fi
+  branch="$(git -C "$repo" branch --show-current)"
+  printf '{"id":"m-001","type":"feature","stage":"implement","branch":"%s"}\n' "$branch" \
+    > "$repo/.git/lcars/missions/m-001/state.json"
+  ( cd "$repo" && shasum -a 256 "$unused" tests/test_ticket.py ) \
+    > "$(TD "$repo")/proof-tests.sha256"
+  pc_out="$( cd "$repo" && env LCARS_WORKER_BIN=copilot LCARS_GH_BIN=true \
+    LCARS_TEST_CMD="$S328_CMD" bash "$SCRIPT" post-commit-gate-test \
+      --mission m-001 --ticket t-001 2>&1 )"
+  if printf '%s\n' "$pc_out" | grep -q '^PCRC=6$'; then
+    ok "S328 $defect. POST-COMMIT independently refuses imported-but-unused code"
+  else bad "S328 $defect. POST-COMMIT false green: $pc_out"; fi
+done
+
+# Calls caused only by an import do not count, even when the import is inside
+# a test. Instantiating a class with no Python __init__ does count.
+for usage in import-body instantiate class-fixture; do
+  repo="$(new_participation_repo ancestor)"
+  P="$(head_sha "$repo")"
+  printf 'SENTINEL = 42\n\nclass Operands:\n    value = 6\n\ndef value():\n    return 6\n\nVALUE = value()\n' > "$repo/tests/support.py"
+  if [ "$usage" = import-body ]; then
+    printf 'import unittest\nfrom calc import multiply\n\nclass Ticket(unittest.TestCase):\n    def test_product(self):\n        import support\n        self.assertEqual(multiply(2, 3), 6)\n' > "$repo/tests/test_ticket.py"
+  elif [ "$usage" = instantiate ]; then
+    printf 'import unittest\nimport support\nfrom calc import multiply\n\nclass Ticket(unittest.TestCase):\n    def test_product(self):\n        self.assertEqual(multiply(2, 3), support.Operands().value)\n' > "$repo/tests/test_ticket.py"
+  else
+    printf 'import unittest\nimport support\nfrom calc import multiply\n\nclass Ticket(unittest.TestCase):\n    @classmethod\n    def setUpClass(cls):\n        cls.expected = support.value()\n    def test_product(self):\n        self.assertEqual(multiply(2, 3), self.expected)\n' > "$repo/tests/test_ticket.py"
+  fi
+  printf 'def multiply(a, b):\n    return a * b\n' > "$repo/calc.py"
+  commit_all "$repo"
+  ff_gate "$repo" "$P" LCARS_TEST_CMD="$S328_CMD"
+  ffj="$(TD "$repo")/flip-flop.json"
+  if [ "$usage" = import-body ] && [ "$FFRC" = 2 ]; then
+    ok "S328 ($usage). import-time function calls earn no participation"
+  elif [ "$usage" != import-body ] && [ "$FFRC" = 0 ] \
+     && ff_field "$ffj" 'd["declaredRan"]["each"]' | grep -q 'tests/support.py=called'; then
+    ok "S328 ($usage). actual class or fixture calls count as participation"
+  else bad "S328 ($usage). wrong runtime-call verdict (FFRC=$FFRC): $OUT"; fi
+done
+
+for layout in files ancestor; do
+  repo="$(new_participation_repo "$layout")"
+  P="$(head_sha "$repo")"
+  printf 'import unittest\nfrom calc import multiply\n\nclass Ticket(unittest.TestCase):\n    def test_product(self):\n        self.assertEqual(multiply(2, 3), 6)\n' > "$repo/tests/test_ticket.py"
+  printf 'import unittest\n\nclass NoLongerCollected:\n    def test_broken(self):\n        assert False\n' > "$repo/tests/test_rotted.py"
+  printf 'def multiply(a, b):\n    return a * b\n' > "$repo/calc.py"
+  commit_all "$repo"
+  ff_gate "$repo" "$P" LCARS_TEST_CMD="$S328_CMD"
+  ffj="$(TD "$repo")/flip-flop.json"
+  if [ "$FFRC" = 2 ] && [ "$(ff_field "$ffj" 'd["verdict"]')" = inconclusive ] \
+     && [ "$(ff_field "$ffj" 'd["gate"]["scopeKind"]')" = "$layout" ] \
+     && ff_field "$ffj" 'd["declaredRan"]["unaccounted"]' | grep -q 'tests/test_rotted.py'; then
+    ok "S328c ($layout). unimported, uncollected test remains INCONCLUSIVE"
+  else bad "S328c ($layout). REGRESSION: orphan test was not refused (FFRC=$FFRC): $OUT"; fi
+done
+
+# Literal-only helpers are inert even when from-import binds assertion input
+# before a test runs; this is exclusion, not runtime participation credit.
+for layout in files ancestor; do
+  repo="$(new_participation_repo "$layout")"
+  P="$(head_sha "$repo")"
+  printf '"""Shared constant expected values for tests."""\n\nSENTINEL = 6\n' > "$repo/tests/support.py"
+  printf 'import unittest\nfrom calc import multiply\nfrom support import SENTINEL\n\nclass Ticket(unittest.TestCase):\n    def test_product(self):\n        self.assertEqual(multiply(2, 3), SENTINEL)\n' > "$repo/tests/test_ticket.py"
+  printf 'def multiply(a, b):\n    return a * b\n' > "$repo/calc.py"
+  commit_all "$repo"
+  ff_gate "$repo" "$P" LCARS_TEST_CMD="$S328_CMD"
+  ffj="$(TD "$repo")/flip-flop.json"
+  if [ "$FFRC" = 0 ] \
+     && ff_field "$ffj" 'd["declaredRan"]["excluded"]' | grep -q tests/support.py; then
+    ok "S328 F2 ($layout). literal constant genuinely used in an assertion is excluded and PASSES"
+  else bad "S328 F2 ($layout). constant helper bounced (FFRC=$FFRC): $OUT"; fi
+done
+
+# Container literals are inert; anything requiring evaluation or defining
+# collection behavior must stay accountable, even alongside a used constant.
+for shape in literals call class import comprehension conditional loop try decorated annotation attribute unpacking hook; do
+  repo="$(new_participation_repo ancestor)"
+  P="$(head_sha "$repo")"
+  printf '"""Expected product."""\nSENTINEL = 6\n' > "$repo/tests/support.py"
+  case "$shape" in
+    literals) printf 'VALUES = ("text", -2, +3.5, 1j, True, None, [1, {"key": (False, {2, 3})}])\n' ;;
+    call) printf 'def compute():\n    return 6\nX = compute()\n' ;;
+    class) printf 'class Behavior:\n    pass\n' ;;
+    import) printf 'import math\n' ;;
+    comprehension) printf 'X = [n for n in (1, 2)]\n' ;;
+    conditional) printf 'if True:\n    X = 6\n' ;;
+    loop) printf 'for X in (6,):\n    pass\n' ;;
+    try) printf 'try:\n    X = 6\nexcept Exception:\n    pass\n' ;;
+    decorated) printf 'def identity(fn):\n    return fn\n@identity\ndef behavior():\n    pass\n' ;;
+    annotation) printf 'X: int = 6\n' ;;
+    attribute) printf 'def behavior():\n    pass\nbehavior.value = 6\n' ;;
+    unpacking) printf 'X, Y = (1, 2)\n' ;;
+    hook) printf 'load_tests = None\n' ;;
+  esac >> "$repo/tests/support.py"
+  printf 'import unittest\nfrom calc import multiply\nfrom support import SENTINEL\n\nclass Ticket(unittest.TestCase):\n    def test_product(self):\n        self.assertEqual(multiply(2, 3), SENTINEL)\n' > "$repo/tests/test_ticket.py"
+  printf 'def multiply(a, b):\n    return a * b\n' > "$repo/calc.py"
+  commit_all "$repo"
+  ff_gate "$repo" "$P" LCARS_TEST_CMD="$S328_CMD"
+  ffj="$(TD "$repo")/flip-flop.json"
+  if [ "$shape" = literals ] && [ "$FFRC" = 0 ] \
+     && ff_field "$ffj" 'd["declaredRan"]["excluded"]' | grep -q tests/support.py; then
+    ok "S328 F2 ($shape). recursive literal containers retain inert exclusion"
+  elif [ "$shape" != literals ] && [ "$FFRC" = 2 ] \
+     && ff_field "$ffj" 'd["declaredRan"]["unaccounted"]' | grep -q tests/support.py \
+     && [ "$(ff_field "$ffj" 'd["declaredRan"]["excluded"]')" = '[]' ]; then
+    ok "S328 F2 ($shape). constants with executable or unsupported content stay accountable"
+  else bad "S328 F2 ($shape). wrong inert-source boundary (FFRC=$FFRC): $OUT"; fi
+done
+
+# Restore the independent inert-source exclusion for plain undecorated functions.
+# Also guard a real TestCase whose filename directory discovery never selects:
+# a successful direct-file probe must not credit its own imports to the leg.
+for orphan in test_inert.py undiscovered.py; do
+  repo="$(new_participation_repo ancestor)"
+  P="$(head_sha "$repo")"
+  printf 'import unittest\nfrom calc import multiply\n\nclass Ticket(unittest.TestCase):\n    def test_product(self):\n        self.assertEqual(multiply(2, 3), 6)\n' > "$repo/tests/test_ticket.py"
+  if [ "$orphan" = test_inert.py ]; then
+    printf 'def test_lost_collection():\n    assert False\n' > "$repo/tests/$orphan"
+  else
+    printf 'import unittest\n\nclass Hidden(unittest.TestCase):\n    def test_hidden(self):\n        self.assertTrue(True)\n' > "$repo/tests/$orphan"
+  fi
+  printf 'def multiply(a, b):\n    return a * b\n' > "$repo/calc.py"
+  commit_all "$repo"
+  ff_gate "$repo" "$P" LCARS_TEST_CMD="$S328_CMD"
+  ffj="$(TD "$repo")/flip-flop.json"
+  if [ "$orphan" = test_inert.py ] && [ "$FFRC" = 0 ] \
+     && ff_field "$ffj" 'd["declaredRan"]["excluded"]' | grep -q "$orphan"; then
+    ok "S328 D4. inert source plus direct zero-test load retains its exclusion"
+  elif [ "$orphan" = undiscovered.py ] && [ "$FFRC" = 2 ] \
+     && ff_field "$ffj" 'd["declaredRan"]["unaccounted"]' | grep -q "$orphan"; then
+    ok "S328c ($orphan). no exemption or probe-only self-credit for an unused file"
+  else bad "S328c ($orphan). REGRESSION: unused file was credited (FFRC=$FFRC): $OUT"; fi
+done
+
+repo="$(new_participation_repo files)"
+P="$(head_sha "$repo")"
+printf 'import unittest\nfrom calc import multiply\n\nclass Ticket(unittest.TestCase):\n    def test_product(self):\n        self.assertEqual(multiply(2, 3), 6)\n' > "$repo/tests/test_ticket.py"
+printf 'def multiply(a, b):\n    return a * b\n' > "$repo/calc.py"
+commit_all "$repo"
+ff_gate "$repo" "$P" LCARS_TEST_CMD="$S328_CMD"
+if [ "$FFRC" = 0 ]; then ok "S328d. normal Python ticket in the same flat tree is unaffected"
+else bad "S328d. normal Python ticket bounced (FFRC=$FFRC): $OUT"; fi
+
+# Node must build a real deliverable, not just emit a runner-shaped summary.
+repo="$(new_js_repo)"
+mkdir -p "$repo/scripts"
+cat > "$repo/scripts/build.js" <<'JS'
+const fs = require('node:fs');
+const vm = require('node:vm');
+const source = fs.readFileSync('src/calc.js', 'utf8');
+const compiled = new vm.Script(source, { filename: 'dist/calc.js' });
+fs.mkdirSync('dist', { recursive: true });
+fs.writeFileSync('dist/calc.js', source);
+fs.writeFileSync('dist/calc.jsc', compiled.createCachedData());
+JS
+printf 'dist/\n' > "$repo/.gitignore"
+commit_all "$repo"
+P="$(head_sha "$repo")"
+write_honest_js_tip "$repo"
+ff_gate "$repo" "$P" LCARS_TEST_CMD='node scripts/build.js && node --test "$LCARS_TESTS_DIR"'
+if [ "$FFRC" = 0 ] && [ -s "$repo/dist/calc.jsc" ] \
+   && ( cd "$repo" && node -e '
+const fs = require("node:fs"), vm = require("node:vm");
+const compiled = new vm.Script(fs.readFileSync("dist/calc.js", "utf8"), {
+  filename: "dist/calc.js", cachedData: fs.readFileSync("dist/calc.jsc")
+});
+const context = { exports: {} };
+compiled.runInNewContext(context);
+if (compiled.cachedDataRejected || context.exports.mul(2, 3) !== 6) process.exit(1);
+' ); then
+  ok "S328e. Node happy path builds a usable artifact and PASSES the real gate"
+else bad "S328e. Node build/gate regressed (FFRC=$FFRC): $OUT"; fi
+
+# ==========================================================================
+echo
 # U. S193 FIX ROUND 2 — A `harness = false` TARGET OWNS NO SCOREBOARD
 #
 # Fix round 1 attributes each cargo scoreboard to the target that owns the
@@ -3799,7 +4074,6 @@ else bad "T5. a flip-flop leg still asks the UNATTRIBUTED zero-collect question"
 # Cargo.toml files carry no `harness` key at all, and for those the behaviour must
 # be BYTE-IDENTICAL to fix round 1. U0 is that proof and it runs first.
 # ==========================================================================
-echo
 echo "== U. S193 fix-2: a harness=false target owns no scoreboard =="
 
 zc_at() { # declared-test-relpaths  crate-root   (runner output on stdin) → rc 0 = ZERO
@@ -4009,7 +4283,7 @@ fi
 # Fail-closed attribution is only worth anything if the call sites hand over the
 # facts. This reads the product source.
 if [ "$(grep -c 'proof_zero_collected "\$PROOF_LEG_OUT" "\$rels" "\$wt"' "$SCRIPT")" = 1 ] \
-   && [ "$(grep -c 'proof_zero_collected "\$par_out" "\$rels" "\$wt"' "$SCRIPT")" = 1 ]; then
+   && [ "$(grep -c 'proof_zero_collected "\$par_zero_out" "\$rels" "\$wt"' "$SCRIPT")" = 1 ]; then
   ok "U8. both flip-flop legs plumb the ticket's declared files AND the crate root"
 else bad "U8. a flip-flop leg still asks the zero-collect question without a crate root"; fi
 

@@ -26,8 +26,8 @@ Deliver the ticket's acceptance criteria with tests proving them:
   `tests/` dir, `*_test.go` beside the package, `tests/*.rs` — whatever this
   repo already does. Look at where its existing tests live and match them. Your
   tests ride into the PR alongside your code.
-- **Run the suite freely** — you have shell access; iterate until the ticket's
-  tests are green. Report your iteration count honestly in `attempts` (it is
+- **Iterate freely on your declared tests** — you have shell access; keep going
+  until they are green. Report your iteration count honestly in `attempts` (it is
   informational — there is no cap; the harness bounds you by sessions, not
   iterations).
 - Test **behaviour through public interfaces only** — no internal mocks of the
@@ -41,6 +41,10 @@ Deliver the ticket's acceptance criteria with tests proving them:
 ## The PROOF CONTRACT — read this, the harness WILL check it
 
 After you finish, the harness verifies your work mechanically. Know the gates:
+
+NEVER revert, stash, check out or back up files to test the parent yourself —
+the harness does that, and your tree must stay exactly as you intend to commit it.
+Run only the tests you declared, NEVER the whole suite.
 
 1. **Flip-flop**: your new/changed tests must be **GREEN on your finished tree**
    and **RED on the parent commit** (the tree as it stood before your ticket).

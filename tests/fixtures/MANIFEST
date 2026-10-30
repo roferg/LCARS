@@ -43,6 +43,7 @@
 100644 tests/fixtures/decisions/measured-prd.md
 100644 tests/fixtures/decisions/no-questions-prd.md
 100644 tests/fixtures/lcars-state-writer-last.py
+100644 tests/fixtures/mkflatrepo.sh
 100644 tests/fixtures/plan-mockup/bypass-buried-marker.json
 100644 tests/fixtures/plan-mockup/bypass-junk-anchor.json
 100644 tests/fixtures/plan-mockup/bypass-suffix.json
@@ -88,6 +89,9 @@
 100644 tests/fixtures/s188-issue-body/laneC-complete-create.body
 100644 tests/fixtures/s188-issue-body/laneD-prd-adr-est.body
 100644 tests/fixtures/s188-issue-body/laneD-prd-only.body
+100644 tests/fixtures/s313-live-plan/README.md
+100644 tests/fixtures/s313-live-plan/folded-plan.json
+100644 tests/fixtures/s313-live-plan/standalone-lock-plan.json
 100644 tests/fixtures/usage/claude-output-json.json
 100644 tests/fixtures/usage/claude-transcript.jsonl
 100644 tests/fixtures/usage/copilot-events-2.jsonl

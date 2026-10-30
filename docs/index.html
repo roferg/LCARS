@@ -1,6 +1,6 @@
 <!DOCTYPE html>
-<!-- lcars-docs-src: README.md sha256:d1347325e43dbbed41a401da8ac037a8fc50b2e818e1b22782101e8222d1710a -->
-<!-- lcars-docs-src: vision.md sha256:47e72d57920148ce26dfd168416acb81b20d517ca26f7da8c5df81e029bb02ba -->
+<!-- lcars-docs-src: README.md sha256:e702be60f5fa2e4ad4b8d73deb0e0c776cc73eef7acde4f5c3a2d25b00a460d6 -->
+<!-- lcars-docs-src: vision.md sha256:d8976e9cfab2a421744d4b0bd76e30a734d4c4e82ce0d0e85813e4b453a05035 -->
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
@@ -85,28 +85,35 @@
         <figcaption>The <strong>viewscreen</strong> on a busy board: every stage column populated, cost and difficulty pills on each card, a red AWAITING YOU gate, and a Done column mixing local and forge cards.</figcaption>
       </figure>
 
-      <p>LCARS is a harness that sits on top of an AI coding CLI —
-      <strong>Claude Code</strong> or the <strong>GitHub Copilot CLI</strong> —
-      and runs a whole piece of work end to end. An idea goes in; it is sharpened
-      into a spec, researched, planned, broken into small tickets, built
-      test-first, and handed back to you as a branch and a pull request. It runs
-      unattended between those two points and interrupts you only when a real
-      decision is needed. <strong>You keep the decisions. It keeps the
-      typing.</strong></p>
+      <p>LCARS works with <strong>Claude Code</strong> or the
+      <strong>GitHub Copilot CLI</strong> and runs a whole piece of work end to
+      end. An idea goes in; it is sharpened into a spec, researched, planned,
+      broken into small tickets, built test-first, and handed back to you as a
+      branch and a pull request. It runs unattended between those two points and
+      interrupts you only when a real decision is needed. <strong>You keep the
+      decisions. It keeps the typing.</strong></p>
+
+      <p><strong>How hands-on you are is your choice.</strong> Answer every gate
+      yourself and nothing moves without you. Or hand the work to the
+      <strong>Emergency Command Hologram</strong> — a seat that stands in for
+      you, answers the gates, looks at the built product in a real browser,
+      files what it finds, and drives the whole thing while you are somewhere
+      else. You can take any step back whenever you want it.</p>
 
       <p>It installs once and works in <strong>any</strong> repo, leaving
       <strong>zero</strong> files in your working tree. The board above — the
       <strong>viewscreen</strong> — is the usual way to drive it, and everything
       on it is also a terminal command. <strong>The project does not have to
-      exist yet:</strong> point LCARS at an empty folder and it recommends a
+      exist yet.</strong> point LCARS at an empty folder and it recommends a
       stack, builds a running skeleton with a real test system, and proves one
       thin slice end to end before any feature work starts.</p>
 
       <div class="lcars-alert blue">
-        <div><strong>Read more:</strong> <a href="https://github.com/roferg/LCARS/blob/main/vision.md">vision.md</a> is
-        the long-form design and the story of how it got here ·
+        <div><strong>Read more</strong> — <a href="https://github.com/roferg/LCARS/blob/main/vision.md">vision.md</a> is
+        the story — why this was started, how the idea changed over a year,
+        what is still rough, and where it goes next ·
         <a href="https://github.com/roferg/LCARS/blob/main/CONTEXT.md">CONTEXT.md</a> is the glossary ·
-        <a href="vision.html">vision.html</a> is the vision in LCARS livery.</div>
+        <a href="vision.html">vision.html</a> is that story in LCARS livery.</div>
       </div>
     </section>
 
@@ -116,10 +123,13 @@
          ═══════════════════════════════════════════════════ -->
     <section id="pipeline">
       <h2>What it does</h2>
-      <p>Each piece of work is a <strong>Mission</strong>: one human intent, on
-      its own branch, mirrored as a GitHub issue, moving through eight Stages as
-      a card on the board. Many Missions run at once and merge one at a time,
-      when you say so.</p>
+      <p>LCARS is laid out like a small factory, and its words are the
+      factory's. A <strong>Mission</strong> is a <strong>work order</strong>:
+      one human intent, admitted at one end, on its own branch and mirrored as
+      a GitHub issue. The eight <strong>Stages</strong> are the stations it
+      passes through, and the <strong>board</strong> is the floor — every work
+      order showing at the station it is standing at. Several are on the line at
+      once; they merge one at a time, when you say so.</p>
 
       <div class="diagram-wrap">
         <div class="diagram-label">The eight stages — with the loops back to you</div>
@@ -156,26 +166,29 @@ flowchart LR
       finding changes <em>what</em> gets built, not <em>how</em>.</p>
 
       <h3><span class="stage-num">4</span>Plan <span class="lcars-status active" style="margin-left:8px">auto</span></h3>
-      <p>The plan becomes small tickets, each one a vertical slice owning a
-      single behaviour.</p>
+      <p>The plan is cut into <strong>tickets</strong> — the parts the line
+      actually builds, each a vertical slice owning a single behaviour.</p>
 
       <h3><span class="stage-num">5</span>Plan Review <span class="lcars-status active" style="margin-left:8px">auto</span></h3>
-      <p>A fresh reviewer with no memory of the planning audits every ticket for
-      size, coupling and testability, and sends bad ones back.</p>
+      <p>Incoming inspection on the cut: a fresh reviewer with no memory of
+      the planning audits every ticket for size, coupling and testability, and
+      sends bad ones back.</p>
 
       <h3><span class="stage-num">6</span>Schedule <span class="lcars-status active" style="margin-left:8px">auto</span></h3>
-      <p>Tickets are ordered into waves by their dependencies, and each becomes a
+      <p>Tickets are ordered by their dependencies into <strong>waves</strong>
+      — the batches the floor can run side by side — and each becomes a
       sub-issue under the Mission.</p>
 
       <h3><span class="stage-num">7</span>Implement <span class="lcars-status active" style="margin-left:8px">auto</span></h3>
-      <p>One test-first worker per ticket, checked afterwards by machine: its new
-      tests must fail before its change and pass after it, any edit to an
-      existing test must be declared with a reason, and the whole suite must stay
-      green.</p>
+      <p>One test-first worker per ticket, one bench each, checked afterwards
+      by machine: its new tests must fail before its change and pass after it,
+      any edit to an existing test must be declared with a reason, and the whole
+      suite must stay green.</p>
 
       <h3><span class="stage-num">8</span>Verify <span class="lcars-status warning" style="margin-left:8px">you</span></h3>
-      <p>You read the diff, run the app, and either approve — which merges the
-      pull request already open — or send it back with a note.</p>
+      <p>Final inspection, and the last station you staff. You read the diff,
+      run the app, and either approve — which merges the pull request already
+      open — or send it back with a note.</p>
     </section>
 
 
@@ -189,7 +202,7 @@ flowchart LR
         <div class="lcars-panel-header">You need</div>
         <div class="lcars-panel-body">
           <ul>
-            <li><strong>One AI coding CLI</strong> — Claude Code
+            <li><strong>Claude Code or the GitHub Copilot CLI</strong> — Claude Code
             <strong>or</strong> the GitHub Copilot CLI. LCARS detects which ones
             are installed and uses one of them. Both installed is fine; you pick
             per Mission.</li>
@@ -366,7 +379,7 @@ lcars init          # one-time: per-repo state + the GitHub labels</pre>
             <li><code>lcars resolve-logs</code> — drive those bugs to <strong>one</strong> re-verify gate, not one each.</li>
             <li><code>lcars pause</code> / <code>lcars resume</code> — stop at the next safe boundary, and go again.</li>
             <li><code>lcars adopt &lt;issue&gt;</code> — take a Mission over on this machine from its issue alone.</li>
-            <li><code>lcars xo</code> — engage or stand down Number One, and read his report.</li>
+            <li><code>lcars xo</code> — engage or stand down Number One, and read its report.</li>
             <li><code>lcars-eeh</code> / <code>lcars-ech</code> — the ride-along, and handing it the loop.</li>
             <li><code>lcars update</code> / <code>lcars version</code> — absorb a <code>git pull</code>, and say where you are.</li>
           </ul>
@@ -404,14 +417,14 @@ lcars init          # one-time: per-repo state + the GitHub labels</pre>
       </figure>
 
       <h3>Number One</h3>
-      <p>A first officer who works your gates for you. He takes the stages parked
+      <p>A first officer that works your gates for you. It takes the stages parked
       for an answer and the look at Verify, grades what was built against what
       you asked for, and hands control back with a report — including a plain
-      count of what he could <strong>not</strong> check. He never writes code and
+      count of what it could <strong>not</strong> check. It never writes code and
       never merges.</p>
       <figure class="screenshot">
-        <img src="assets/number-one-report.png" alt="The First Officer's Report: everything Number One has looked at, grouped by mission, with the ones he is handing back to you beside his verdicts and the entries you can open." />
-        <figcaption>The First Officer's Report: what he looked at, what he decided, and what he is handing back to you.</figcaption>
+        <img src="assets/number-one-report.png" alt="The First Officer's Report, everything Number One has looked at, grouped by mission, with the ones it is handing back to you beside its verdicts and the entries you can open." />
+        <figcaption>The First Officer's Report — what it looked at, what it decided, and what it is handing back to you.</figcaption>
       </figure>
 
       <h3>Run the app, from the board</h3>
@@ -438,21 +451,19 @@ lcars init          # one-time: per-repo state + the GitHub labels</pre>
       </figure>
 
       <h3>The ECH — handing over the loop</h3>
-      <p>A <strong>software factory</strong> is the shape this pipeline already
-      has: signals in, triaged into planned changes, built, tested, reviewed, out
-      as merged pull requests. The ECH is what lets you hand the
-      <em>running</em> of it over. You give it a goal, it holds one alignment
-      round with you to agree what to build, and then it works milestone after
-      milestone, coming back only when it genuinely needs you.</p>
+      <p>Normally you run the floor: you write the work orders, answer what
+      the line asks, and take final inspection. The ECH is what lets you hand
+      the <em>running</em> of it over. You give it a goal, it holds one
+      alignment round with you to agree what to build, and then it works
+      milestone after milestone — writing its own work orders, clearing its own
+      gates — coming back only when it genuinely needs you.</p>
 
-      <p>The hard part of running a factory is not making the change — it is
-      <strong>believing</strong> it. Producing a change is the cheap half now;
-      verifying one you did not write is the expensive half, and that cost does
-      not fall because the suite came back green. So the ECH does not ask to be
-      trusted: it <em>uses</em> what it built, records what it saw, files what it
-      finds with a reproduction quoting the real output, re-proves each fix on
-      deliberately different data, writes down every decision it made alone, and
-      says so plainly when a check found nothing.</p>
+      <p>A shift nobody watched is worth only the evidence it left behind, so
+      the ECH does not ask to be trusted: it <em>uses</em> what it built,
+      records what it saw, files what it finds with a reproduction quoting the
+      real output, re-proves each fix on deliberately different data, writes
+      down every decision it made alone, and says so plainly when a check found
+      nothing.</p>
 
       <div class="lcars-alert amber">
         <div>On the run that proved it, across one night, it built a working
@@ -608,8 +619,8 @@ lcars init          # one-time: per-repo state + the GitHub labels</pre>
       <div class="lcars-alert amber">
         <div><strong>What is honestly rough today.</strong> The Copilot path
         works but has far fewer miles on it than the Claude one, so you may hit
-        edges there first. Number One grades what he can reach and tells you what
-        he could not — useful, but not a code review. Multi-person support is real
+        edges there first. Number One grades what it can reach and tells you what
+        it could not — useful, but not a code review. Multi-person support is real
         — identity, ownership, the per-person lock, taking a Mission over — but
         has only run against one GitHub account, and two people acting in the same
         instant is not handled yet. The suite is slow enough to be a gate rather

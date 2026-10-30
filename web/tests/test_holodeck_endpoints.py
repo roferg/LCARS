@@ -19,7 +19,7 @@ engines, 2026-08-04), not guesses:
                        --available-tools view,grep,glob,create,edit
                        --allow-all-tools --no-ask-user --disable-builtin-mcps
                        --no-custom-instructions --add-dir <sidecar>
-                       --model claude-opus-4.8  cwd = the program dir
+                       --model claude-opus-5.5  cwd = the program dir
   either  grounding READ-ONLY tools, NO write tool at all, NO --add-dir of the
                     target repo, cwd = the target repo; the DAEMON writes basis.md.
 
@@ -417,7 +417,7 @@ class DesignPostureTest(HolodeckBase):
                     os.path.realpath(g).startswith(
                         os.path.realpath(self._sidecar())), g)
             self.assertEqual(self._flag_value(argv, "--model"),
-                             "claude-opus-4.8")
+                             "claude-opus-5.5")
 
     def test_unknown_session_and_bad_mode_are_refused(self):
         st, body = self._post_raw("/api/holodeck/nope/say", {"text": "hi"})
@@ -4370,6 +4370,173 @@ class HandoffRequirementsTest(HandoffBase):
         self.assertIn("remember what I ran last time", text)
 
 
+class HandoffPlanGateTest(HandoffBase):
+    """The daemon's actual HTTP payload is read by run.sh, not a test parser."""
+
+    ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    CONCEPT = "# Palette\n\n## Open questions\n\n- " + HandoffBase.Q1 + "\n"
+
+    def _generated_prd(self, answered=False):
+        sid = self._program()
+        status, promo = self._promote(sid)
+        self.assertEqual(status, 200, promo)
+        questions = promo["state"]["questions"]
+        answers = {q["id"]: "Only board verbs." for q in questions} if answered else {}
+        self._post("/api/park", {"idea": "Build the palette", "holodeck": sid,
+                                 "holodeckAnswers": answers})
+        idea = self._filed()[0]["files"]["--idea"]
+        self.prd = os.path.join(self.tmp, "prd.md")
+        fx.write(self.prd, "# Mission: Palette\n\n**Type:** feature\n\n"
+                 "## Goal\n\n" + idea + "\n\n## Acceptance Criteria\n\n"
+                 "- Cmd-K opens the palette.\n\n## Out of Scope\n\n"
+                 "- Other controls.\n\n## Constraints\n\n- Reuse the router.\n")
+        return idea
+
+    def _gate(self, command="open-questions-test"):
+        env = dict(os.environ, LCARS_ATT_TEST_DIR=self.tmp, LCARS_VERSION_CHECK="0")
+        return subprocess.run(
+            ["bash", os.path.join(self.ROOT, "skills/lcars-run/run.sh"), command],
+            cwd=self.repo, env=env, text=True, capture_output=True, timeout=30)
+
+    def test_answered_handoff_is_resolved_by_real_plan_gate(self):
+        idea = self._generated_prd(answered=True)
+        result = self._gate()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, "")
+        self.assertIn("- RESOLVED with the captain: " + self.Q1
+                      + " — DECIDED: Only board verbs.", idea)
+
+    def test_unanswered_handoff_reaches_real_plan_prompt(self):
+        self._generated_prd()
+        result = self._gate()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, self.Q1 + "\n")
+        prompt = self._gate("plan-open-questions-block-test")
+        self.assertEqual(prompt.returncode, 0, prompt.stderr)
+        self.assertIn(self.Q1, prompt.stdout)
+
+    def test_question_guidance_is_prose_but_undeclared_bullets_are_refused(self):
+        self._generated_prd(answered=True)
+        with open(self.prd) as fh:
+            prd = fh.read()
+        questions, guidance = prd.split("## Design question guidance\n", 1)
+        self.assertIn("## Open questions from the design session\n", questions)
+        self.assertIn("- RESOLVED with the captain: " + self.Q1, questions)
+        self.assertNotIn("These were raised while the design was being drawn.", questions)
+        self.assertIn("These were raised while the design was being drawn.", guidance)
+        result = self._gate()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, "")
+        open_block = self.actions._handoff_questions_block(self.CONCEPT, {})
+        fx.write(self.prd, open_block)
+        unanswered = self._gate()
+        self.assertEqual(unanswered.returncode, 0, unanswered.stderr)
+        self.assertEqual(unanswered.stdout, self.Q1 + "\n")
+        fx.write(self.prd, prd.replace(
+            "## Open questions from the design session\n",
+            "## Open questions from the design session\n\n"
+            "Read each question before spending a human gate.\n"))
+        result = self._gate()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, "")
+        fx.write(self.prd, prd.replace("- RESOLVED", "- UNDECLARED"))
+        malformed = self._gate()
+        self.assertNotEqual(malformed.returncode, 0)
+        self.assertIn("0 of 1 bullet entries declare themselves", malformed.stderr)
+
+    def _handoff_reaches_plan(self, answered):
+        def command(argv, env=None):
+            return subprocess.run(argv, cwd=self.repo, env=env, text=True,
+                                  capture_output=True, timeout=60)
+
+        for args in (["init", "-q", "-b", "main"],
+                     ["config", "user.name", "Test"],
+                     ["config", "user.email", "test@example.invalid"],
+                     ["add", "board.css"], ["commit", "-qm", "Fixture"]):
+            result = command(["git"] + args)
+            self.assertEqual(result.returncode, 0, result.stderr)
+        fx.write_json(os.path.join(self.repo, ".git/lcars/config.json"),
+                      {"testCommand": "true", "workerBin": "copilot",
+                       "numberOne": {"enabled": False}})
+        gh = os.path.join(self.bindir, "gh")
+        fx.write(gh, "#!/bin/sh\n"
+                 "if [ \"$1 $2\" = 'issue create' ]; then\n"
+                 " echo https://github.com/owner/repo/issues/42\nfi\n")
+        os.chmod(gh, 0o755)
+        estimator = os.path.join(self.bindir, "estimate.sh")
+        fx.write(estimator, "#!/bin/sh\nexit 0\n")
+        worker = os.path.join(self.bindir, "copilot")
+        plan_prompt = os.path.join(self.tmp, "plan-prompt.txt")
+        fx.write(worker, "#!" + sys.executable + "\n" + '''
+import os, pathlib, sys
+out = pathlib.Path(os.environ["LCARS_WORK_OUT"])
+role = os.environ["LCARS_WORKER_ROLE"]
+if role == "research-questions":
+    (out / "questions.txt").write_text("")
+elif role == "context-pack":
+    (out / "context-pack.md").write_text("# Context pack\\n\\nUse board.css.\\n")
+elif role == "validate":
+    (out / "validated-plan.md").write_text(
+        "# Validated Plan: Palette\\n\\n## Synthesis\\n\\nAdd a palette.\\n\\n"
+        "## Decisions\\n\\nUse the existing router.\\n\\n## Rationale\\n\\n"
+        "Keep routing consistent.\\n")
+elif role == "plan":
+    pathlib.Path(os.environ["S314_PLAN_PROMPT"]).write_text(
+        sys.argv[sys.argv.index("-p") + 1])
+''')
+        os.chmod(worker, 0o755)
+        env = dict(os.environ, PATH=self.bindir + os.pathsep + os.environ["PATH"],
+                   LCARS_GH_BIN=gh, LCARS_RUN_BIN=estimator,
+                   LCARS_VERSION_CHECK="0", LCARS_WORKER_BIN=worker,
+                   LCARS_WORKER_CLI="copilot", LCARS_WORKER_HANG_SECS="0",
+                   LCARS_WORKER_TRIES="1", S314_PLAN_PROMPT=plan_prompt)
+        file_script = os.path.join(self.ROOT, "skills/lcars-file/file.sh")
+        run_script = os.path.join(self.ROOT, "skills/lcars-run/run.sh")
+        self.actions.scripts["file"] = file_script
+        with unittest.mock.patch.dict(os.environ, env):
+            sid = self._program()
+            status, promo = self._promote(sid)
+            self.assertEqual(status, 200, promo)
+            answers = {q["id"]: "Only board verbs."
+                       for q in promo["state"]["questions"]} if answered else {}
+            _, body = self._post("/api/park", {
+                "idea": "Build the palette", "holodeck": sid, "engine": "copilot",
+                "holodeckAnswers": answers})
+        mid = body["state"]["holodeck"]["missionId"]
+        self.assertTrue(mid, body)
+        mission = os.path.join(self.repo, ".git/lcars/missions", mid)
+        with open(os.path.join(mission, "idea.md")) as fh:
+            idea = fh.read()
+        prd = os.path.join(self.tmp, "aligned.md")
+        fx.write(prd, "# Mission: Palette\n\n**Type:** feature\n\n"
+                 "## Goal\n\n" + idea + "\n\n## Acceptance Criteria\n\n"
+                 "- Cmd-K opens the palette.\n\n## Out of Scope\n\n"
+                 "- Other controls.\n\n## Constraints\n\n- Reuse the router.\n")
+        filed = command(["bash", file_script, "--complete", mid, "--prd", prd], env)
+        self.assertEqual(filed.returncode, 0, filed.stdout + filed.stderr)
+        for stage in ("research", "validate"):
+            result = command(["bash", run_script, stage, "--mission", mid], env)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        planned = command(["bash", run_script, "plan", "--mission", mid], env)
+        self.assertTrue(os.path.exists(plan_prompt), planned.stdout + planned.stderr)
+        with open(plan_prompt) as fh:
+            prompt = fh.read()
+        if answered:
+            self.assertNotIn("The brief left these questions OPEN", prompt)
+        else:
+            self.assertIn(self.Q1, prompt)
+            self.assertIn("The brief left these questions OPEN", prompt)
+        # Stop at the agreed seam: the fixture planner intentionally writes no plan.
+        self.assertNotEqual(planned.returncode, 0)
+        self.assertIn("Plan worker produced a plan.json", planned.stderr)
+
+    def test_answered_http_handoff_reaches_real_plan_worker(self):
+        self._handoff_reaches_plan(answered=True)
+
+    def test_unanswered_http_handoff_reaches_real_plan_worker(self):
+        self._handoff_reaches_plan(answered=False)
+
+
 class HandoffOpenQuestionsTest(HandoffBase):
     """A2 — the questions the product asked itself must reach the captain."""
 
@@ -4390,12 +4557,7 @@ class HandoffOpenQuestionsTest(HandoffBase):
         self.assertIn(self.Q2, text)
         low = text.lower()
         self.assertIn("open question", low)
-        # S169 fix round 2 — the marker is `NO ANSWER RECORDED`, not `STILL
-        # OPEN`. What this test is FOR is unchanged: an unanswered question must
-        # arrive marked, and must not read as a decision. What changed is that
-        # the mark states the daemon's one fact instead of asserting the
-        # question is undecided — see `_handoff_questions_block`, and
-        # `S169FalseStillOpenTest` below for the measurement that forced it.
+        self.assertIn("- STILL OPEN: " + self.Q1, text)
         self.assertIn("no answer recorded", low)
         self.assertIn("never settle one yourself", low)
 
@@ -4409,8 +4571,8 @@ class HandoffOpenQuestionsTest(HandoffBase):
         self.assertIn("Only board verbs.", text)
         # …and it is attributed to HIM, not left to read as the product's own
         # decision — which is the whole failure being cured.
-        answered = text.split(self.Q1, 1)[1].split(self.Q2, 1)[0]
-        self.assertIn("captain", answered.lower())
+        self.assertIn("- RESOLVED with the captain: " + self.Q1
+                      + " — DECIDED: Only board verbs.", text)
         # the OTHER question is untouched and still open.
         self.assertIn(self.Q2, text)
 
@@ -4423,10 +4585,10 @@ class HandoffOpenQuestionsTest(HandoffBase):
         self._post("/api/park", {"idea": "go", "holodeck": sid,
                                  "holodeckAnswers": {qid: "Only board verbs."}})
         text = self._filed()[0]["files"]["--idea"]
-        first = text.split(self.Q1, 1)[1].split(self.Q2, 1)[0]
-        second = text.split(self.Q2, 1)[1]
-        self.assertNotIn("NO ANSWER RECORDED", first.upper())
-        self.assertIn("NO ANSWER RECORDED", second.upper())
+        self.assertIn("- RESOLVED with the captain: " + self.Q1
+                      + " — DECIDED: Only board verbs.", text)
+        self.assertIn("- STILL OPEN: " + self.Q2, text)
+        self.assertNotIn("- STILL OPEN: " + self.Q1, text)
 
     def test_a_blank_answer_is_treated_as_NO_ANSWER(self):
         sid = self._program()
@@ -4435,8 +4597,7 @@ class HandoffOpenQuestionsTest(HandoffBase):
         self._post("/api/park", {"idea": "go", "holodeck": sid,
                                  "holodeckAnswers": {qid: "   "}})
         text = self._filed()[0]["files"]["--idea"]
-        first = text.split(self.Q1, 1)[1].split(self.Q2, 1)[0]
-        self.assertIn("NO ANSWER RECORDED", first.upper())
+        self.assertIn("- STILL OPEN: " + self.Q1, text)
 
     def test_an_answer_for_a_question_that_does_not_exist_is_ignored(self):
         """The ids are the DAEMON's, re-derived from the concept doc it reads

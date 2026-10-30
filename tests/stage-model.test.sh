@@ -17,8 +17,8 @@
 # Per-CLI alias map (logical tier → that CLI's flag string), config-overridable
 # via config.json modelAliases.<cli>.<tier>:
 #   claude  → { sonnet: "sonnet",            opus: "opus" }
-#   copilot → { sonnet: "claude-opus-4.8",   opus: "claude-opus-4.8" }
-# S78: copilot is OPUS-SAFE by default — BOTH tiers map to claude-opus-4.8
+#   copilot → { sonnet: "claude-opus-5.5",   opus: "claude-opus-5.5" }
+# S78: copilot is OPUS-SAFE by default — BOTH tiers map to claude-opus-5.5
 # (its create-tool can't overwrite on a non-opus tier → Implement breaks). Still
 # config-overridable via modelAliases.copilot.<tier>.
 #
@@ -163,14 +163,14 @@ check "4.argv global workerModel reaches spawned plan argv" \
 # === Behavior 5: copilot active ⇒ OPUS-SAFE — every tier resolves to opus ======
 # S78: copilot is opus-safe BY DEFAULT (copilot's create-tool can't overwrite on
 # a non-opus tier → Implement breaks), so BOTH the opus AND the sonnet tier map
-# to claude-opus-4.8. Claude keeps its dynamic per-stage mix (sonnet→sonnet).
+# to claude-opus-5.5. Claude keeps its dynamic per-stage mix (sonnet→sonnet).
 r5="$(make_repo '{}' "$EST")"
-check "5a. copilot opus tier → claude-opus-4.8 (resolve-stage-model)" \
-  "[ \"\$(rsm \"$r5\" research COPILOT_RUN_APP=1 LCARS_WORKER_CLI=copilot | sm_model)\" = 'claude-opus-4.8' ]"
+check "5a. copilot opus tier → claude-opus-5.5 (resolve-stage-model)" \
+  "[ \"\$(rsm \"$r5\" research COPILOT_RUN_APP=1 LCARS_WORKER_CLI=copilot | sm_model)\" = 'claude-opus-5.5' ]"
 # S78 opus-safe default: the copilot Sonnet tier now ALSO resolves to
-# claude-opus-4.8. validate is tier 'sonnet' in $EST, so it maps to opus.
-check "5b. copilot sonnet tier → claude-opus-4.8 (opus-safe default)" \
-  "[ \"\$(rsm \"$r5\" validate COPILOT_RUN_APP=1 LCARS_WORKER_CLI=copilot | sm_model)\" = 'claude-opus-4.8' ]"
+# claude-opus-5.5. validate is tier 'sonnet' in $EST, so it maps to opus.
+check "5b. copilot sonnet tier → claude-opus-5.5 (opus-safe default)" \
+  "[ \"\$(rsm \"$r5\" validate COPILOT_RUN_APP=1 LCARS_WORKER_CLI=copilot | sm_model)\" = 'claude-opus-5.5' ]"
 
 # === Bonus: config stages.<key>.model (precedence c) translates per tier =======
 r6="$(make_repo '{"stages":{"plan":{"model":"opus"}}}')"   # no estimate.json
@@ -263,10 +263,10 @@ check "13. reasoning stage under env implementation override falls to estimate (
   "[ \"\$(rsm \"$r13\" validate CLAUDECODE=1 LCARS_MODEL_OVERRIDE=implementation:opus | sm_model)\" = 'sonnet' ]"
 
 # --- Behavior 14: copilot adapter emits the right --model under an override ---
-# S78 opus-safe: opus → claude-opus-4.8 ; sonnet → claude-opus-4.8 (both tiers).
+# S78 opus-safe: opus → claude-opus-5.5 ; sonnet → claude-opus-5.5 (both tiers).
 r14="$(make_repo '{}' "$EST")"; set_override "$r14" all opus
-check "14a. copilot all:opus override ⇒ claude-opus-4.8 (resolve-stage-model)" \
-  "[ \"\$(rsm \"$r14\" implement COPILOT_RUN_APP=1 LCARS_WORKER_CLI=copilot | sm_model)\" = 'claude-opus-4.8' ]"
+check "14a. copilot all:opus override ⇒ claude-opus-5.5 (resolve-stage-model)" \
+  "[ \"\$(rsm \"$r14\" implement COPILOT_RUN_APP=1 LCARS_WORKER_CLI=copilot | sm_model)\" = 'claude-opus-5.5' ]"
 # Spawn the REAL chokepoint as copilot (a dedicated invocation — the shared
 # spawn_argv helper force-pins claude, so we drive worker_spawn directly here with
 # LCARS_WORKER_CLI=copilot so the copilot adapter's --model lands in the argv).
@@ -281,13 +281,13 @@ spawn_argv_copilot() { # repo role override
       bash "$RUN" spawn-stage --mission M58 "$role" >/dev/null 2>&1 )
   cat "$argv" 2>/dev/null
 }
-check "14b. copilot all:opus override reaches spawned argv as claude-opus-4.8" \
-  "[ \"\$(spawn_argv_copilot \"$r14\" implement-tdd all:opus | model_of)\" = 'claude-opus-4.8' ]"
+check "14b. copilot all:opus override reaches spawned argv as claude-opus-5.5" \
+  "[ \"\$(spawn_argv_copilot \"$r14\" implement-tdd all:opus | model_of)\" = 'claude-opus-5.5' ]"
 r14b="$(make_repo '{}' "$EST")"
-# S78 opus-safe default: the sonnet tier of an override maps to claude-opus-4.8
+# S78 opus-safe default: the sonnet tier of an override maps to claude-opus-5.5
 # under copilot too (per-engine alias mapping of the override tier).
-check "14c. copilot env reasoning:sonnet override ⇒ claude-opus-4.8 (opus-safe)" \
-  "[ \"\$(rsm \"$r14b\" plan COPILOT_RUN_APP=1 LCARS_WORKER_CLI=copilot LCARS_MODEL_OVERRIDE=reasoning:sonnet | sm_model)\" = 'claude-opus-4.8' ]"
+check "14c. copilot env reasoning:sonnet override ⇒ claude-opus-5.5 (opus-safe)" \
+  "[ \"\$(rsm \"$r14b\" plan COPILOT_RUN_APP=1 LCARS_WORKER_CLI=copilot LCARS_MODEL_OVERRIDE=reasoning:sonnet | sm_model)\" = 'claude-opus-5.5' ]"
 
 # --- Behavior 15: infra (context-pack) is NEVER touched by an override --------
 # It short-circuits to the global/legacy value, exactly like the estimate path.
@@ -314,17 +314,17 @@ EST_SONNET='{"models":{"research":"opus","validate":"sonnet","plan":"sonnet","pl
 
 # 17.1 — same estimate, both engines: copilot opus-safe, claude keeps tiers.
 r17="$(make_repo '{}' "$EST_SONNET")"
-check "17.1a copilot sonnet-tier stage → claude-opus-4.8 (opus-safe off one estimate)" \
-  "[ \"\$(rsm \"$r17\" implement COPILOT_RUN_APP=1 LCARS_WORKER_CLI=copilot | sm_model)\" = 'claude-opus-4.8' ]"
+check "17.1a copilot sonnet-tier stage → claude-opus-5.5 (opus-safe off one estimate)" \
+  "[ \"\$(rsm \"$r17\" implement COPILOT_RUN_APP=1 LCARS_WORKER_CLI=copilot | sm_model)\" = 'claude-opus-5.5' ]"
 check "17.1b SAME estimate on claude → sonnet (dynamic per-stage mix preserved)" \
   "[ \"\$(rsm \"$r17\" implement CLAUDECODE=1 | sm_model)\" = 'sonnet' ]"
-check "17.1c copilot opus-tier stage → claude-opus-4.8 (research)" \
-  "[ \"\$(rsm \"$r17\" research COPILOT_RUN_APP=1 LCARS_WORKER_CLI=copilot | sm_model)\" = 'claude-opus-4.8' ]"
+check "17.1c copilot opus-tier stage → claude-opus-5.5 (research)" \
+  "[ \"\$(rsm \"$r17\" research COPILOT_RUN_APP=1 LCARS_WORKER_CLI=copilot | sm_model)\" = 'claude-opus-5.5' ]"
 
 # 17.2 — opus-safe is the DEFAULT: a freshly-inited config ({}, NO modelAliases).
 r17b="$(make_repo '{}' "$EST_SONNET")"   # config is bare {}
 check "17.2 copilot opus-safe with NO modelAliases configured (the default)" \
-  "[ \"\$(rsm \"$r17b\" validate COPILOT_RUN_APP=1 LCARS_WORKER_CLI=copilot | sm_model)\" = 'claude-opus-4.8' ]"
+  "[ \"\$(rsm \"$r17b\" validate COPILOT_RUN_APP=1 LCARS_WORKER_CLI=copilot | sm_model)\" = 'claude-opus-5.5' ]"
 
 # 17.3 — config override STILL wins: modelAliases.copilot.sonnet beats the default.
 r17c="$(make_repo '{"modelAliases":{"copilot":{"sonnet":"claude-sonnet-4.6"}}}' "$EST_SONNET")"
@@ -333,8 +333,8 @@ check "17.3 modelAliases.copilot.sonnet override wins over opus-safe default" \
 
 # 17.4 — captain override all:sonnet: copilot still opus-safe, claude → sonnet.
 r17d="$(make_repo '{}' "$EST_SONNET")"; set_override "$r17d" all sonnet
-check "17.4a copilot all:sonnet override ⇒ claude-opus-4.8 (opus-safe of the tier)" \
-  "[ \"\$(rsm \"$r17d\" implement COPILOT_RUN_APP=1 LCARS_WORKER_CLI=copilot | sm_model)\" = 'claude-opus-4.8' ]"
+check "17.4a copilot all:sonnet override ⇒ claude-opus-5.5 (opus-safe of the tier)" \
+  "[ \"\$(rsm \"$r17d\" implement COPILOT_RUN_APP=1 LCARS_WORKER_CLI=copilot | sm_model)\" = 'claude-opus-5.5' ]"
 check "17.4b claude all:sonnet override ⇒ sonnet (per-engine alias of the tier)" \
   "[ \"\$(rsm \"$r17d\" implement CLAUDECODE=1 | sm_model)\" = 'sonnet' ]"
 
@@ -353,8 +353,8 @@ check "17.4b claude all:sonnet override ⇒ sonnet (per-engine alias of the tier
 # yields nothing a write-contract stage takes the active CLI's write-capable
 # alias. Empty for claude (its default model has Write) => argv byte-identical.
 r18="$(make_repo '{}')"   # bare config, NO estimate, NO override — the live case
-check "18a. copilot context-pack argv CARRIES --model claude-opus-4.8 (write floor)" \
-  "[ \"\$(spawn_argv_copilot \"$r18\" context-pack '' | model_of)\" = 'claude-opus-4.8' ]"
+check "18a. copilot context-pack argv CARRIES --model claude-opus-5.5 (write floor)" \
+  "[ \"\$(spawn_argv_copilot \"$r18\" context-pack '' | model_of)\" = 'claude-opus-5.5' ]"
 check "18b. claude context-pack argv still carries NO --model (floor is empty there)" \
   "[ -z \"\$(spawn_argv \"$r18\" context-pack CLAUDECODE=1 | grep -x -- --model)\" ]"
 # The floor is the SAME alias map S78 owns, so it stays config-overridable.
@@ -374,7 +374,7 @@ check "18e. env LCARS_WORKER_MODEL pin still beats the floor" \
 # floor (not the ladder) is what supplies the value.
 r18d="$(make_repo '{"stages":{"infra":{"model":"sonnet"}},"modelAliases":{"copilot":{"sonnet":"claude-sonnet-4.6"}}}' "$EST")"
 check "18f. stages.infra.model is STILL ignored (infra off the ladder; floor wins)" \
-  "[ \"\$(rsm \"$r18d\" infra COPILOT_RUN_APP=1 LCARS_WORKER_CLI=copilot | sm_model)\" = 'claude-opus-4.8' ]"
+  "[ \"\$(rsm \"$r18d\" infra COPILOT_RUN_APP=1 LCARS_WORKER_CLI=copilot | sm_model)\" = 'claude-opus-5.5' ]"
 check "18g. and estimate.json still cannot escalate infra on claude (7a, restated)" \
   "[ -z \"\$(rsm \"$r18d\" infra CLAUDECODE=1 | sm_model)\" ]"
 
@@ -391,11 +391,11 @@ check "18g. and estimate.json still cannot escalate infra on claude (7a, restate
 # The captain's ruling (2026-09-11): a copilot Number One resolves through the
 # S194 write floor like every other copilot worker — write_capable_alias →
 # alias_for_tier copilot opus → modelAliases.copilot.opus, default
-# claude-opus-4.8. `numberOne.model` in config may override it; LCARS_WORKER_MODEL
+# claude-opus-5.5. `numberOne.model` in config may override it; LCARS_WORKER_MODEL
 # outranks both. Claude is untouched (its floor is empty on purpose).
 r19="$(make_repo '{}')"
-check "19a. copilot numberOne ⇒ the write floor's opus alias (claude-opus-4.8)" \
-  "[ \"\$(rsm \"$r19\" numberOne COPILOT_RUN_APP=1 LCARS_WORKER_CLI=copilot | sm_model)\" = 'claude-opus-4.8' ]"
+check "19a. copilot numberOne ⇒ the write floor's opus alias (claude-opus-5.5)" \
+  "[ \"\$(rsm \"$r19\" numberOne COPILOT_RUN_APP=1 LCARS_WORKER_CLI=copilot | sm_model)\" = 'claude-opus-5.5' ]"
 check "19b. claude numberOne ⇒ NO --model (claude's floor is empty; argv unchanged)" \
   "[ -z \"\$(rsm \"$r19\" numberOne CLAUDECODE=1 | sm_model)\" ]"
 
@@ -410,7 +410,7 @@ r19c="$(make_repo '{"numberOne": {"enabled": true, "engine": "copilot", "model":
 check "19d. config numberOne.model overrides the floor, verbatim" \
   "[ \"\$(rsm \"$r19c\" numberOne COPILOT_RUN_APP=1 LCARS_WORKER_CLI=copilot | sm_model)\" = 'claude-haiku-4.5' ]"
 check "19e. …and it touches NO other stage (research still resolves the floor)" \
-  "[ \"\$(rsm \"$r19c\" research COPILOT_RUN_APP=1 LCARS_WORKER_CLI=copilot | sm_model)\" = 'claude-opus-4.8' ]"
+  "[ \"\$(rsm \"$r19c\" research COPILOT_RUN_APP=1 LCARS_WORKER_CLI=copilot | sm_model)\" = 'claude-opus-5.5' ]"
 check "19f. LCARS_WORKER_MODEL outranks numberOne.model" \
   "[ \"\$(rsm \"$r19c\" numberOne COPILOT_RUN_APP=1 LCARS_WORKER_CLI=copilot LCARS_WORKER_MODEL=pinned-by-env | sm_model)\" = 'pinned-by-env' ]"
 
@@ -421,9 +421,9 @@ r19d="$(make_repo '{"modelAliases":{"copilot":{"sonnet":"claude-sonnet-4.6"}}}')
 check "19g. all:sonnet override reaches numberOne" \
   "[ \"\$(rsm \"$r19d\" numberOne COPILOT_RUN_APP=1 LCARS_WORKER_CLI=copilot LCARS_MODEL_OVERRIDE=all:sonnet | sm_model)\" = 'claude-sonnet-4.6' ]"
 check "19h. reasoning:sonnet does NOT (numberOne is not a reasoning STAGE)" \
-  "[ \"\$(rsm \"$r19d\" numberOne COPILOT_RUN_APP=1 LCARS_WORKER_CLI=copilot LCARS_MODEL_OVERRIDE=reasoning:sonnet | sm_model)\" = 'claude-opus-4.8' ]"
+  "[ \"\$(rsm \"$r19d\" numberOne COPILOT_RUN_APP=1 LCARS_WORKER_CLI=copilot LCARS_MODEL_OVERRIDE=reasoning:sonnet | sm_model)\" = 'claude-opus-5.5' ]"
 check "19i. implementation:sonnet does NOT either" \
-  "[ \"\$(rsm \"$r19d\" numberOne COPILOT_RUN_APP=1 LCARS_WORKER_CLI=copilot LCARS_MODEL_OVERRIDE=implementation:sonnet | sm_model)\" = 'claude-opus-4.8' ]"
+  "[ \"\$(rsm \"$r19d\" numberOne COPILOT_RUN_APP=1 LCARS_WORKER_CLI=copilot LCARS_MODEL_OVERRIDE=implementation:sonnet | sm_model)\" = 'claude-opus-5.5' ]"
 
 # THE KEY ITSELF, through the REAL spawn chokepoint: worker_spawn maps the env
 # ROLE `number-one` → the stage key → the model → the adapter argv. A missing map
@@ -436,6 +436,101 @@ check "19j. spawn-stage number-one reaches the numberOne key end-to-end" \
   "[ \"\$(spawn_argv \"$r19e\" number-one CLAUDECODE=1 | model_of)\" = 'pinned-by-config' ]"
 check "19k. …and an UNMAPPED role still resolves nothing (the key is what did it)" \
   "[ -z \"\$(spawn_argv \"$r19e\" plan CLAUDECODE=1 | model_of)\" ]"
+
+# === Behavior 20 (2026-10-16) — THE RETIRED-MODEL GUARD =======================
+# GitHub RETIRED `claude-opus-4.8` from Copilot. It is not a degraded model, it
+# is GONE — the CLI refuses the flag outright:
+#     $ copilot --model claude-opus-4.8 -p 'reply with exactly: OK'
+#     Error: Model "claude-opus-4.8" from --model flag is not available.   (exit 1)
+# Every copilot cold worker therefore ran against a model that does not exist.
+# A read-only role (Research, Plan, launch) was handed no file-writing tool,
+# saved nothing, and reported success — which is what killed a live run at
+# Research, 3/3.
+#
+# S78's POLICY IS UNCHANGED by this guard: copilot stays OPUS-SAFE by default,
+# BOTH logical tiers resolving to the SAME opus model. Only the NAME moved
+# 4.8 → 5.5. Re-tiering copilot's sonnet arm onto a real sonnet model would be a
+# policy change, not a rename, and is deliberately NOT done here.
+#
+# The retired name is listed so the pin cannot silently rot back to it.
+COPILOT_PIN='claude-opus-5.5'
+RETIRED_MODELS='claude-opus-4.8'
+
+r20="$(make_repo '{}' "$EST")"
+check "20a. copilot opus tier → the LIVE pin ($COPILOT_PIN)" \
+  "[ \"\$(rsm \"$r20\" research COPILOT_RUN_APP=1 LCARS_WORKER_CLI=copilot | sm_model)\" = '$COPILOT_PIN' ]"
+check "20b. copilot sonnet tier → the SAME live pin (opus-safe policy intact)" \
+  "[ \"\$(rsm \"$r20\" validate COPILOT_RUN_APP=1 LCARS_WORKER_CLI=copilot | sm_model)\" = '$COPILOT_PIN' ]"
+check "20c. the copilot write floor (no estimate at all) → the live pin" \
+  "[ \"\$(rsm \"$(make_repo '{}')\" research COPILOT_RUN_APP=1 LCARS_WORKER_CLI=copilot | sm_model)\" = '$COPILOT_PIN' ]"
+check "20d. …and it reaches the REAL spawned copilot argv" \
+  "[ \"\$(spawn_argv_copilot \"$r20\" implement-tdd '' | model_of)\" = '$COPILOT_PIN' ]"
+
+# No copilot resolution anywhere may name a RETIRED model. This is the guard
+# that fails the day a pin rots, not just the day someone edits this file.
+for k in research validate plan planReview implement infra numberOne; do
+  m20="$(rsm "$r20" "$k" COPILOT_RUN_APP=1 LCARS_WORKER_CLI=copilot | sm_model)"
+  check "20e.$k copilot resolves no RETIRED model (got '${m20:-<empty>}')" \
+    "case ' $RETIRED_MODELS ' in *\" \$(printf %s \"$m20\") \"*) false ;; *) true ;; esac"
+done
+
+# The retired name must not survive as a live DEFAULT anywhere in the product's
+# copilot arms. Comments and recorded measurements keep it (they were true when
+# written); an executable fallback must not.
+check "20f. run.sh alias_for_tier's copilot arm names no retired model" \
+  "! sed -n '/^alias_for_tier()/,/^}/p' '$RUN' | grep -v '^ *#' | grep -qF 'claude-opus-4.8'"
+check "20g. launch.sh's copilot write-floor fallback names no retired model" \
+  "! sed -n '/^launch_worker_model()/,/^}/p' '$REPO_ROOT/skills/lcars-launch/launch.sh' | grep -v '^ *#' | grep -qF 'claude-opus-4.8'"
+
+# --- THE CLAUDE-ENGINE GUARD -------------------------------------------------
+# The owner's instruction for this fix was "don't fuck with Claude engine runs".
+# These assertions are that instruction, executable. Claude's arm of every
+# resolver must be BYTE-IDENTICAL to what it was before the copilot rename: the
+# two engines are classified through separate arms and neither learns about the
+# other.
+r20c="$(make_repo '{}' "$EST")"
+check "20h. CLAUDE GUARD: opus tier → 'opus' (not a copilot model name)" \
+  "[ \"\$(rsm \"$r20c\" research CLAUDECODE=1 | sm_model)\" = 'opus' ]"
+check "20i. CLAUDE GUARD: sonnet tier → 'sonnet'" \
+  "[ \"\$(rsm \"$r20c\" validate CLAUDECODE=1 | sm_model)\" = 'sonnet' ]"
+check "20j. CLAUDE GUARD: no estimate ⇒ STILL no --model at all (legacy argv)" \
+  "[ -z \"\$(rsm \"$(make_repo '{}')\" research CLAUDECODE=1 | sm_model)\" ]"
+check "20k. CLAUDE GUARD: the write floor stays EMPTY on claude (infra)" \
+  "[ -z \"\$(rsm \"$(make_repo '{}')\" infra CLAUDECODE=1 | sm_model)\" ]"
+check "20l. CLAUDE GUARD: spawned claude argv carries 'opus', never a copilot id" \
+  "[ \"\$(spawn_argv \"$r20c\" implement-tdd CLAUDECODE=1 | model_of)\" = 'opus' ]"
+
+# --- THE LIVE PROBE (opt-in: LCARS_LIVE_MODEL_PROBE=1) ------------------------
+# Offline assertions can only prove the pin is the STRING we meant. Only the real
+# binary can prove that string is a model GitHub still serves — which is the
+# whole defect. Opt-in because it costs a real (employer-paid) Copilot call.
+#
+# IT CARRIES ITS OWN CONTROLS, in both directions:
+#   * known-BAD control — the retired name MUST come back unavailable. A probe
+#     that always answers "available" fails here.
+#   * the pin itself MUST come back available. A probe that always answers
+#     "unavailable" fails there.
+# Both must hold, so the probe cannot pass while broken.
+if [ "${LCARS_LIVE_MODEL_PROBE:-0}" = "1" ]; then
+  COPILOT_BIN="${LCARS_COPILOT_BIN:-/opt/homebrew/bin/copilot}"
+  # → prints "available" / "unavailable" / "noprobe"
+  probe_model() { # model
+    local out
+    out="$(python3 "$REPO_ROOT/tests/lib/cage.py" 120 "$COPILOT_BIN" \
+             --model "$1" -p 'reply with exactly: OK' 2>&1)" || true
+    case "$out" in
+      *"is not available"*) printf 'unavailable' ;;
+      *OK*)                 printf 'available' ;;
+      *)                    printf 'noprobe' ;;
+    esac
+  }
+  check "20m. LIVE known-BAD control: the retired claude-opus-4.8 is UNAVAILABLE" \
+    "[ \"\$(probe_model claude-opus-4.8)\" = 'unavailable' ]"
+  check "20n. LIVE: the copilot pin $COPILOT_PIN IS available on the real CLI" \
+    "[ \"\$(probe_model '$COPILOT_PIN')\" = 'available' ]"
+else
+  echo "  SKIP 20m/20n live model probe (set LCARS_LIVE_MODEL_PROBE=1)"
+fi
 
 echo "stage-model: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

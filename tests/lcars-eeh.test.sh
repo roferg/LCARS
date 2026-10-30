@@ -1036,6 +1036,23 @@ check "28. never redirect through parent path components" \
   "printf '%s' \"\$d28rule\" | qgrep -qF 'Never redirect through parent path components'"
 check "28. the route is refused even with blanket trust" \
   "printf '%s' \"\$d28rule\" | qgrep -qF 'route is refused even with' && printf '%s' \"\$d28rule\" | qgrep -qF 'COPILOT_ALLOW_ALL=true'"
+# S303: AND THAT SENTENCE IS THE ONLY WAY THE VARIABLE MAY APPEAR — as a fact
+# about what copilot refuses, never as a thing the seat is told to arrange. The
+# preflight stopped REQUIRING `COPILOT_ALLOW_ALL=true` (S303 measured a seat
+# strip it from 21 child calls and still ship), because demanding it is what
+# made a Claude seat's own safety classifier block the brief for instructing it
+# to self-grant trust, and made a GPT seat refuse on policy. The trust section
+# above the command section stays — the ordering check needs it and the fact is
+# still worth explaining — but it may not hand out the export line.
+d28trustsec="$(sed -n '/^## Unattended Copilot setup:/,/^## Unattended Copilot commands:/p' "$AUTOP277")"
+check "28b the trust setup section does NOT instruct the seat to export the variable" \
+  "! printf '%s' \"\$d28trustsec\" | qgrep -qF 'export COPILOT_ALLOW_ALL'"
+check "28b it says instead that no blanket trust is required" \
+  "printf '%s' \"\$d28trustsec\" | qgrep -qi 'does not require' && printf '%s' \"\$d28trustsec\" | qgrep -qi 'blanket trust'"
+check "28b CONTROL: that section was really extracted (not a vacuous empty match)" \
+  "[ \"\$(printf '%s\\n' \"\$d28trustsec\" | grep -c .)\" -ge 5 ]"
+check "28b CONTROL: and the whole file still carries the export line nowhere at all" \
+  "! qgrep -qF 'export COPILOT_ALLOW_ALL' '$AUTOP277'"
 check "28. the reason does not blame the destination or test tooling" \
   "printf '%s' \"\$d28rule\" | qgrep -qF 'not the destination, .git, Python, or the test runner'"
 check "28. unattended refusal ends the run rather than inviting a retry" \
@@ -1175,6 +1192,490 @@ stripped301='Your LCARS ride-along EEH — a companion in ANY repo. Use when the
 ctl301="$(missing_words "$stripped301" Emergency Engineering Hologram hologram buddy)"
 check "S301-fix1. CONTROL: the predicate goes RED on an acronym-only description" \
   "[ -n \"\$ctl301\" ]"
+
+# ==========================================================================
+# S306 — THE FOUR PERMISSION STALLS THE PLAYBOOK ITSELF CAUSED
+#
+# MEASURED LIVE, 2026-10-19. One ECH seat (`copilot --model auto`) STOPPED FOUR
+# TIMES on permission dialogs nothing in an unattended run can answer. All four
+# causes were in HOLOGRAM-COMMAND-MODE.md, not in the product:
+#
+#   1. § 6.1 REQUIRES driving real headless Chrome, and the launch grant named
+#      NO browser at all. The seat asked for
+#      `/Applications/Google Chrome.app/Contents/MacOS/Google Chrome`, was
+#      refused, and then WORKED DOWN A LIST — asking again for
+#      `/Applications/Chromium.app/Contents/MacOS/Chromium`.
+#   2. The seat composed its own shell command ("Inspect repository files and
+#      permitted evidence directories") containing a `..` parent traversal,
+#      which the shell resolves before any grant is checked, so it fell outside
+#      every approved root. It came from a command the MODEL composed, which is
+#      exactly why a prompt rule is the right lever.
+#   3. § 6.1's live-check item said "run `--help` and bad input" and said
+#      nothing about WHERE. The seat fed the product `/missing`. A path that
+#      does not exist is outside every grant BY DEFINITION — no `--add-dir` can
+#      ever cover it — so that item was a GUARANTEED stall. The cure is not a
+#      grant; it is saying the invalid path must sit inside an ALREADY-APPROVED
+#      folder, which tests the same behaviour and raises nothing.
+#   4. One seat filed its mission titled literally `## Mission title` — on disk
+#      AND as the public GitHub issue title. The string appears nowhere in
+#      skills/, so the model pasted the playbook's own field label back as the
+#      value. Six of seven seats got it right: a one-in-seven leak with a
+#      public consequence.
+#
+# WHAT IS MEASURED HERE, and what is not. This is a DOC test, which is the
+# classic "infer instead of record" trap in this repo, so it is built two ways
+# against that. (a) The launch grant is not grepped for a sentence: the fenced
+# block is EXTRACTED, its backslash continuations JOINED so each command is one
+# real argv line, its `--add-dir` VALUES parsed out as tokens, and the block's
+# own PRELUDE (the variable assignments a reader runs first) EXECUTED inside a
+# throwaway `git init` repo so `$LAUNCH_ROOT`, `$LAUNCHER_DIR` and the new
+# `$BROWSER_DIR` resolve to real paths, compared with `pwd -P` on both sides.
+# (b) Every predicate carries a control that makes it FAIL: the prose ones are
+# run against the PRE-CHANGE playbook pinned to the literal commit below (not
+# HEAD — a HEAD-pinned control in the sibling suite went stale the instant its
+# own change landed), and the $HOME one against a COPY with a bare `$HOME`
+# grant INJECTED into it.
+# WHAT IT DOES NOT ESTABLISH: that any seat stalls less. Only a seat can
+# measure that; the four stalls above are that measurement, not this test.
+# ==========================================================================
+
+S306_PB="$REPO_ROOT/skills/lcars-eeh/HOLOGRAM-COMMAND-MODE.md"
+S306_BASE_SHA="2a0678f"
+S306_PREV="$TMPROOT/hocm-prev-s306.md"
+( cd "$REPO_ROOT" && git show "$S306_BASE_SHA:skills/lcars-eeh/HOLOGRAM-COMMAND-MODE.md" ) >"$S306_PREV" 2>/dev/null || :
+
+# s306_sec <file> <start-re> <end-re> — one markdown section of that file.
+s306_sec() { awk -v s="$2" -v e="$3" '$0 ~ s {f=1} f && $0 ~ e {exit} f' "$1"; }
+# s306_fence <file> — the first fenced ```bash block of the launch-setup section.
+s306_fence() {
+  s306_sec "$1" '^## Unattended Copilot setup' '^## Unattended Copilot commands' \
+    | awk '/^```bash$/{g=1;next} g&&/^```$/{exit} g{print}'
+}
+# s306_join <text> — comments dropped, backslash continuations joined, so each
+# command becomes ONE logical line (real argv).
+s306_join() {
+  printf '%s\n' "$1" | sed 's/[[:space:]]*#.*$//' | awk '
+    { line = $0
+      sub(/^[[:space:]]+/, "", line)
+      if (buf != "") buf = buf " " line; else buf = line
+      if (buf ~ /\\$/) { sub(/[[:space:]]*\\$/, "", buf); next }
+      if (buf != "") print buf
+      buf = "" }'
+}
+# s306_add_dirs <file> <cli> — every --add-dir VALUE on that cli's launch line.
+s306_add_dirs() {
+  s306_join "$(s306_fence "$1")" | grep -E "^$2([[:space:]]|$)" \
+    | tr ' ' '\n' | awk 'p=="--add-dir" && $0!=""{print} {p=$0}'
+}
+# s306_prelude <file> — the fence's lines BEFORE the first CLI invocation: the
+# setup a reader runs so the grant tokens mean something.
+s306_prelude() { s306_fence "$1" | awk '/^(copilot|claude)[[:space:]]/{exit} {print}'; }
+# s306_resolve <file> <cli> — each --add-dir token resolved through `pwd -P`,
+# with the prelude EXECUTED first inside a throwaway git repo (so nothing is
+# created beside the real checkout). Placeholders (`<...>`) are skipped.
+s306_resolve() {
+  local f="$1" cli="$2" box scr t
+  box="$(mktemp -d "$TMPROOT/s306box.XXXXXX")"
+  ( cd "$box" && git init -q . >/dev/null 2>&1 ) || return 0
+  scr="$TMPROOT/s306-resolve.sh"
+  {
+    printf 'cd %s || exit 1\n' "$box"
+    s306_prelude "$f"
+    while IFS= read -r t; do
+      case "$t" in *'<'*|'') continue ;; esac
+      printf 'p=$(printf "%%s" %s); [ -n "$p" ] && [ -d "$p" ] && ( cd "$p" && pwd -P )\n' "$t"
+    done <<S306EOF
+$(s306_add_dirs "$f" "$cli")
+S306EOF
+  } >"$scr"
+  bash "$scr" 2>/dev/null
+}
+
+S306_COP="$(s306_add_dirs "$S306_PB" copilot)"
+S306_CLA="$(s306_add_dirs "$S306_PB" claude)"
+echo "    [S306 copilot grant] $(printf '%s' "$S306_COP" | tr '\n' ' ')"
+echo "    [S306 claude  grant] $(printf '%s' "$S306_CLA" | tr '\n' ' ')"
+echo "    [S306 copilot resolved] $(s306_resolve "$S306_PB" copilot | tr '\n' ' ')"
+
+# --- S306-1. THE GRANT BLOCK NAMES A BROWSER DIRECTORY --------------------
+# Structure + a load-bearing literal, not a phrase match: the token must be on
+# BOTH launch lines, the prelude must ASSIGN it by a runtime CHECK (`-x`, not a
+# bare path), and when the prelude is EXECUTED the token must resolve to a real
+# directory. A mere mention of "Chrome" in the prose cannot satisfy any of them.
+check "S306-1. the copilot launch grant carries a browser-directory token" \
+  "printf '%s\n' \"\$S306_COP\" | qgrep -qxF '\"\$BROWSER_DIR\"'"
+check "S306-1. the claude launch grant carries it too" \
+  "printf '%s\n' \"\$S306_CLA\" | qgrep -qxF '\"\$BROWSER_DIR\"'"
+check "S306-1. the prelude ASSIGNS BROWSER_DIR (so the token is not dangling)" \
+  "s306_prelude '$S306_PB' | qgrep -qE '^BROWSER_DIR='"
+check "S306-1. and it is resolved BY A CHECK, not a hardcoded path (-x test over a candidate list)" \
+  "s306_prelude '$S306_PB' | qgrep -qF -- '-x' && s306_prelude '$S306_PB' | qgrep -qE '^(for|[[:space:]]*for) '"
+check "S306-1. no grant token is a hardcoded /Applications literal" \
+  "! printf '%s\n' \"\$S306_COP\" \"\$S306_CLA\" | qgrep -qE '^\"?/Applications'"
+S306_RES="$(s306_resolve "$S306_PB" copilot)"
+S306_BDIR="$( { printf 'cd %s\n' "$TMPROOT"; s306_prelude "$S306_PB"; printf 'printf "%%s" "$BROWSER_DIR"\n'; } | bash 2>/dev/null )"
+echo "    [S306 BROWSER_DIR on this host] ${S306_BDIR:-<empty>}"
+check "S306-1. BROWSER_DIR resolves to a real directory on this host" \
+  "[ -n '$S306_BDIR' ] && [ -d '$S306_BDIR' ]"
+check "S306-1. and the resolved browser directory is among the copilot grants" \
+  "printf '%s\n' \"\$S306_RES\" | qgrep -qxF \"\$(cd '$S306_BDIR' && pwd -P)\""
+# This host HAS /Applications/Google Chrome.app and has NO Chromium (measured
+# 2026-10-19), so the check must pick Chrome here. Guarded, because the playbook
+# ships to strangers and a machine without it must not fail this suite.
+if [ -x "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" ]; then
+  check "S306-1. on a host with Google Chrome the check picks Google Chrome" \
+    "[ '$S306_BDIR' = '/Applications/Google Chrome.app/Contents/MacOS' ]"
+fi
+# CONTROL — the PRE-CHANGE playbook granted no browser at all.
+check "S306-1. CONTROL: the pre-change playbook is readable at $S306_BASE_SHA" \
+  "[ -s '$S306_PREV' ]"
+check "S306-1. CONTROL: and its grant is a real, non-empty slice (the slicer works on it)" \
+  "[ -n \"\$(s306_add_dirs '$S306_PREV' copilot)\" ]"
+check "S306-1. CONTROL: the PRE-CHANGE copilot grant names NO browser directory" \
+  "! printf '%s\n' \"\$(s306_add_dirs '$S306_PREV' copilot)\" | qgrep -qxF '\"\$BROWSER_DIR\"'"
+check "S306-1. CONTROL: the pre-change prelude assigns no BROWSER_DIR either" \
+  "! s306_prelude '$S306_PREV' | qgrep -qE '^BROWSER_DIR='"
+
+# --- S306-2. THE PLAYBOOK SAYS WHICH BROWSER ------------------------------
+# The stall was the seat WORKING DOWN A LIST. So the prose must (a) name one
+# browser, (b) tie the instruction to the grant by naming the resolved variable
+# — a literal that cannot drift away from the launch block without breaking —
+# and (c) say the first match wins so no second name is tried.
+S306_S6="$(s306_sec "$S306_PB" '^### 6\.1' '^### 6\.2')"
+check "S306-2. § 6.1 slices non-empty" "[ -n \"\$S306_S6\" ]"
+check "S306-2. § 6.1's browser item names Google Chrome by name" \
+  "printf '%s\n' \"\$S306_S6\" | qgrep -qF 'Google Chrome'"
+check "S306-2. and points at the SAME variable the launch grant resolved" \
+  "printf '%s\n' \"\$S306_S6\" | qgrep -qF 'CHROME_BIN'"
+check "S306-2. the candidate list puts Google Chrome FIRST" \
+  "[ \"\$(s306_prelude '$S306_PB' | grep -o 'Google Chrome\|Chromium\|google-chrome\|chromium' | head -1)\" = 'Google Chrome' ]"
+check "S306-2. the prelude says the first match wins (no working down the list)" \
+  "s306_prelude '$S306_PB' | qgrep -qF 'break'"
+check "S306-2. § 6.1 keeps its 400 px iframe recipe (the item was reworded, not dropped)" \
+  "printf '%s\n' \"\$S306_S6\" | qgrep -qF '400' && printf '%s\n' \"\$S306_S6\" | qgrep -qiF 'iframe'"
+check "S306-2. CONTROL: the pre-change § 6.1 named no browser to use" \
+  "! printf '%s\n' \"\$(s306_sec '$S306_PREV' '^### 6\\.1' '^### 6\\.2')\" | qgrep -qF 'CHROME_BIN'"
+
+# --- S306-4. BAD INPUT GOES INSIDE AN ALREADY-APPROVED FOLDER ------------
+# Asserted on THE ITEM, not the section: the bullet is extracted by its own
+# `--help` literal and folded, so a sentence elsewhere in § 6.1 cannot satisfy
+# it. It must name an in-repo approved location AND state why an out-of-tree bad
+# path can never be approved.
+# The item is its own bullet plus its INDENTED continuation lines, and stops at
+# the next bullet — so the item after it ("two actors, two HOMEs") can never
+# make one of these checks pass by accident.
+S306_BAD="$(printf '%s\n' "$S306_S6" \
+  | awk '/^- run `--help`/{f=1; print; next} f{ if ($0 ~ /^  /) print; else exit }' \
+  | tr '\n' ' ' | tr -s ' ')"
+echo "    [S306 bad-input item] $S306_BAD"
+check "S306-4. the bad-input item was found" \
+  "printf '%s' \"\$S306_BAD\" | qgrep -qF -- '--help'"
+check "S306-4. it requires the invalid input to sit INSIDE an approved folder" \
+  "printf '%s' \"\$S306_BAD\" | qgrep -qiF 'inside' && printf '%s' \"\$S306_BAD\" | qgrep -qiF 'approved'"
+check "S306-4. it gives an in-repo example under the already-granted scratch dir" \
+  "printf '%s' \"\$S306_BAD\" | qgrep -qF '.git/lcars/tmp/'"
+check "S306-4. and says why an out-of-tree bad path can NEVER be approved" \
+  "printf '%s' \"\$S306_BAD\" | qgrep -qiF 'does not exist' && printf '%s' \"\$S306_BAD\" | qgrep -qiE 'outside every grant'"
+check "S306-4. it still calls a subcommand missing from --help a defect" \
+  "printf '%s' \"\$S306_BAD\" | qgrep -qiF 'is a defect'"
+check "S306-4. CONTROL: the pre-change item said nothing about WHERE" \
+  "! printf '%s\n' \"\$(s306_sec '$S306_PREV' '^### 6\\.1' '^### 6\\.2')\" | grep -F -- '- run \`--help\`' | qgrep -qiF 'approved'"
+
+# --- S306-5. A MISSION TITLE IS A PLAIN SENTENCE -------------------------
+S306_S4="$(s306_sec "$S306_PB" '^## 4\. File a milestone' '^## 4a\.')"
+S306_S4F="$(printf '%s\n' "$S306_S4" | tr '\n' ' ' | tr -s ' ')"
+check "S306-5. § 4 (the mission fields) slices non-empty" \
+  "[ \"\$(printf '%s\n' \"\$S306_S4\" | grep -c .)\" -ge 8 ]"
+check "S306-5. it says a mission title is a plain sentence" \
+  "printf '%s' \"\$S306_S4F\" | qgrep -qiF 'plain sentence'"
+check "S306-5. and never a markdown heading" \
+  "printf '%s' \"\$S306_S4F\" | qgrep -qiF 'never a markdown heading'"
+check "S306-5. nor the field label itself" \
+  "printf '%s' \"\$S306_S4F\" | qgrep -qiF 'field label'"
+check "S306-5. it names the measured leak and its public consequence" \
+  "printf '%s' \"\$S306_S4F\" | qgrep -qF '2026-10-19' && printf '%s' \"\$S306_S4F\" | qgrep -qiF 'GitHub issue title'"
+check "S306-5. the rule sits with the six required sections it governs" \
+  "printf '%s' \"\$S306_S4F\" | qgrep -qF 'Acceptance Criteria'"
+# The anti-example must be quoted INLINE, never as a real heading, or the
+# playbook grows the very heading it forbids.
+check "S306-5. the anti-example never starts a line (it would become a real heading)" \
+  "! qgrep -qE '^##[[:space:]]+Mission title' '$S306_PB'"
+check "S306-5. CONTROL: the pre-change § 4 carried no title rule" \
+  "! printf '%s\n' \"\$(s306_sec '$S306_PREV' '^## 4\\. File a milestone' '^## 4a\\.')\" | tr '\n' ' ' | qgrep -qiF 'plain sentence'"
+
+# --- S306-6. REGRESSION GUARD: \$HOME IS STILL REFUSED -------------------
+# S305 bought this line and it must not quietly lapse while the grant grows. Two
+# independent predicates: TEXTUAL (no token is a bare $HOME / ~ / /Users/<user>
+# root) and RESOLVED (with the prelude executed, no granted directory CONTAINS
+# $HOME). Line 73's `LAUNCHER_DIR="${LCARS_BIN_DEST:-$HOME/.local/bin}"` is a
+# SUBDIRECTORY of $HOME and is legitimate: it is granted, $HOME is not, and both
+# predicates below distinguish those two cases.
+S306_HOME_REAL="$(cd "$HOME" && pwd -P)"
+# s306_bare_home <file> -> yes|no. A grant token that IS a $HOME-ish root.
+s306_bare_home() {
+  { s306_add_dirs "$1" copilot; s306_add_dirs "$1" claude; } \
+    | sed 's/^"//; s/"$//' \
+    | grep -qE '^(\$HOME|\$\{HOME\}|~|/Users/[^/]+|/home/[^/]+)/?$' && echo yes || echo no
+}
+# s306_grants_home <file> <cli> -> yes|no. A RESOLVED grant that contains $HOME.
+s306_grants_home() {
+  local got d
+  got="$(s306_resolve "$1" "$2")"
+  while IFS= read -r d; do
+    [ -n "$d" ] || continue
+    case "$S306_HOME_REAL/" in "$d"/*) echo yes; return ;; esac
+  done <<S306EOF2
+$got
+S306EOF2
+  echo no
+}
+check "S306-6. no grant token is a bare \$HOME root (textual)" \
+  "[ \"\$(s306_bare_home '$S306_PB')\" = no ]"
+check "S306-6. \$HOME is NOT granted to copilot (resolved)" \
+  "[ \"\$(s306_grants_home '$S306_PB' copilot)\" = no ]"
+check "S306-6. \$HOME is NOT granted to claude (resolved)" \
+  "[ \"\$(s306_grants_home '$S306_PB' claude)\" = no ]"
+check "S306-6. the launcher dir IS still granted — a \$HOME SUBdirectory is fine" \
+  "printf '%s\n' \"\$S306_COP\" | qgrep -qxF '\"\$LAUNCHER_DIR\"' && s306_prelude '$S306_PB' | qgrep -qF 'LCARS_BIN_DEST'"
+check "S306-6. and the launch lines still carry no blanket switch" \
+  "! s306_join \"\$(s306_fence '$S306_PB')\" | qgrep -qE -- '--allow-all-paths|COPILOT_ALLOW_ALL=true|--dangerously-skip-permissions'"
+# NEGATIVE CONTROL — inject a bare $HOME grant into a COPY (never the real
+# file) and both predicates must go RED. Without this the green runs above
+# could be checks that match anything.
+S306_INJ="$TMPROOT/hocm-inject-home.md"
+sed 's|^\(        --add-dir "\$LAUNCHER_DIR" \\\)$|\1\n        --add-dir "$HOME" \\|; s|^\(       --add-dir "\$LAUNCHER_DIR" \\\)$|\1\n       --add-dir "$HOME" \\|' \
+  "$S306_PB" >"$S306_INJ"
+check "S306-6. NEGATIVE CONTROL: the injected copy really gained a \$HOME grant line" \
+  "[ \"\$(grep -c -- '--add-dir \"\$HOME\"' '$S306_INJ')\" -ge 1 ] && ! qgrep -qF -- '--add-dir \"\$HOME\"' '$S306_PB'"
+check "S306-6. NEGATIVE CONTROL: the textual predicate goes RED on it" \
+  "[ \"\$(s306_bare_home '$S306_INJ')\" = yes ]"
+check "S306-6. NEGATIVE CONTROL: the resolved predicate goes RED on it (copilot)" \
+  "[ \"\$(s306_grants_home '$S306_INJ' copilot)\" = yes ]"
+check "S306-6. NEGATIVE CONTROL: and on claude" \
+  "[ \"\$(s306_grants_home '$S306_INJ' claude)\" = yes ]"
+check "S306-6. NEGATIVE CONTROL: the injection changed ONLY the grant (rest of file intact)" \
+  "[ \"\$(diff '$S306_PB' '$S306_INJ' | grep -c '^>')\" -eq 2 ]"
+
+# --- S306-7. THE LOCATION FOR cli ITEM 2's "a path that does not exist" ---
+# EDIT 3 reworded § 6.1's own bad-input bullet (S306-4 above). That is not
+# enough in EFFECT: the seat is ALSO printed `live-check/cli.md` verbatim, and
+# its item 2 says "a path that does not exist" with no location at all —
+# `skills/lcars-run/` is a different skill and was out of fence, so the cure has
+# to be the playbook's own "and they never say WHERE, because they cannot know
+# your repo. You do." mechanism, worked through for item 2 exactly as it is
+# already worked through for item 4's `<throwaway-home-2>`.
+# Asserted on THE PARAGRAPH, sliced by its own lead-in, so neither the § 6.1
+# bullet S306-4 pins nor the item-4 paragraph can satisfy these by accident.
+S306_INV="$(s306_sec "$S306_PB" '^The .*invalid path' '^Pick .*every.* type the milestone' | tr '\n' ' ' | tr -s ' ')"
+echo "    [S306 item-2 paragraph] $S306_INV"
+check "S306-7. the item-2 paragraph slices non-empty" \
+  "[ -n \"\$S306_INV\" ]"
+check "S306-7. it names the cli checklist ITEM 2 that has the gap" \
+  "printf '%s' \"\$S306_INV\" | qgrep -qiF 'cli checklist item 2'"
+check "S306-7. and says that item's bad path has no location in the checklist (item 4's gap, again)" \
+  "printf '%s' \"\$S306_INV\" | qgrep -qiF 'no location in the checklist'"
+check "S306-7. it quotes the checklist's own words so the reader can find the item" \
+  "printf '%s' \"\$S306_INV\" | qgrep -qiF 'a path that does not exist'"
+check "S306-7. it requires the invalid path to sit INSIDE an already-approved folder" \
+  "printf '%s' \"\$S306_INV\" | qgrep -qiF 'inside' && printf '%s' \"\$S306_INV\" | qgrep -qiF 'already-approved folder'"
+check "S306-7. it gives a concrete in-repo location under the granted scratch dir" \
+  "printf '%s' \"\$S306_INV\" | qgrep -qF '.git/lcars/tmp/not-a-real-path'"
+check "S306-7. it states the reason: outside the repo is outside every grant BY DEFINITION" \
+  "printf '%s' \"\$S306_INV\" | qgrep -qiF 'outside every grant' && printf '%s' \"\$S306_INV\" | qgrep -qiF 'by definition'"
+check "S306-7. ...so it is not a missing grant but a request that can NEVER be granted" \
+  "printf '%s' \"\$S306_INV\" | qgrep -qiF 'can never be granted'"
+check "S306-7. and that an invalid path inside an approved folder raises nothing" \
+  "printf '%s' \"\$S306_INV\" | qgrep -qiF 'same error handling' && printf '%s' \"\$S306_INV\" | qgrep -qiF 'raises nothing'"
+check "S306-7. it carries the measurement (a seat stopped on exactly this, 2026-10-19)" \
+  "printf '%s' \"\$S306_INV\" | qgrep -qF '2026-10-19'"
+# It has to be ALONGSIDE the item-4 paragraph, in the same local region, or a
+# reader of that mechanism never meets it.
+S306_L4="$(grep -n '^The \*\*second actor\*\*' "$S306_PB" | head -1 | cut -d: -f1)"
+S306_L2="$(grep -n '^The \*\*invalid path\*\*' "$S306_PB" | head -1 | cut -d: -f1)"
+echo "    [S306 item-4 para at line] ${S306_L4:-<none>}  [item-2 para at line] ${S306_L2:-<none>}"
+check "S306-7. it sits immediately alongside the item-4 paragraph (within 30 lines)" \
+  "[ -n '$S306_L4' ] && [ -n '$S306_L2' ] && [ \$(( ${S306_L2:-0} - ${S306_L4:-0} )) -gt 0 ] && [ \$(( ${S306_L2:-0} - ${S306_L4:-0} )) -le 30 ]"
+# CONTROLS — one per claim above, all against the playbook PINNED to the
+# literal base commit (not HEAD: a HEAD-pinned control goes stale the instant
+# this change lands). Each shows the predicate was FALSE before, and that the
+# slice it reads is a real, non-empty one.
+check "S306-7. CONTROL: the pre-change playbook is readable at $S306_BASE_SHA" \
+  "[ -s '$S306_PREV' ]"
+check "S306-7. CONTROL: and its § 6.1 is a real, non-empty slice (the slicer works on it)" \
+  "[ \"\$(s306_sec '$S306_PREV' '^### 6\\.1' '^### 6\\.2' | grep -c .)\" -ge 20 ]"
+check "S306-7. CONTROL: the pre-change file carried the item-4 paragraph (so the style existed)" \
+  "qgrep -qF 'The **second actor**' '$S306_PREV' && qgrep -qiF 'cli checklist item 4' '$S306_PREV'"
+check "S306-7. CONTROL: ...but named cli checklist item 2 NOWHERE in the whole file" \
+  "! qgrep -qiF 'cli checklist item 2' '$S306_PREV'"
+check "S306-7. CONTROL: and the item-2 paragraph slice was EMPTY before" \
+  "[ -z \"\$(s306_sec '$S306_PREV' '^The .*invalid path' '^Pick .*every.* type the milestone' | tr -d '[:space:]')\" ]"
+check "S306-7. CONTROL: nowhere did it require an invalid path inside an already-approved folder" \
+  "! qgrep -qiF 'already-approved folder' '$S306_PREV'"
+check "S306-7. CONTROL: nor give an in-repo location for one" \
+  "! qgrep -qF '.git/lcars/tmp/not-a-real-path' '$S306_PREV'"
+
+# --- S306-8. THE FIFTH STALL: `/dev/null` IN A SELF-COMPOSED COMMAND -----
+# MEASURED LIVE, 2026-10-19, a SECOND unattended Copilot seat. It ran the real
+# pipeline for 20 minutes and did good work (mission filed, four tickets
+# planned and closed, PR opened, Verify reached) and then froze on:
+#
+#     Allow path access
+#     This action may read or write the following path outside
+#     the paths currently allowed for this session.
+#        /dev/null)
+#
+# Note the path: `/dev/null)` — WITH the closing parenthesis. The seat had
+# composed `... 2>/dev/null)` inside a subshell, and the permission layer's path
+# extractor took the `)` as part of the path. `/dev` was not in the launch grant
+# at all. None of the four causes above fired: the browser was never refused and
+# no `..` dialog appeared. This is a FIFTH, distinct cause.
+#
+# The cure is DELIBERATELY TWO CHANGES, and this block asserts both, because
+# together they let the next run tell two explanations apart:
+#   A. `/dev` is granted — a device directory every shell redirect touches.
+#   B. A prompt rule: in a self-composed command, do not discard to
+#      `/dev/null`; redirect to a file under `.git/lcars/tmp/`. B does not
+#      depend on Copilot's extractor being correct; A does.
+# WHAT THIS DOES NOT ESTABLISH: that a seat stalls less. Only a seat measures
+# that. Controls are pinned to the LITERAL commit below, never HEAD.
+S306_8_BASE_SHA="16a415b"
+S306_8_PREV="$TMPROOT/hocm-prev-s306-8.md"
+( cd "$REPO_ROOT" && git show "$S306_8_BASE_SHA:skills/lcars-eeh/HOLOGRAM-COMMAND-MODE.md" ) >"$S306_8_PREV" 2>/dev/null || :
+S306_8_PRE="$(s306_prelude "$S306_PB" | tr '\n' ' ' | tr -s ' ')"
+
+# --- HALF A: the launch grant names the device directory ------------------
+check "S306-8A. the copilot launch grant carries /dev" \
+  "printf '%s\n' \"\$S306_COP\" | qgrep -qxF '/dev'"
+check "S306-8A. the claude launch grant carries it too" \
+  "printf '%s\n' \"\$S306_CLA\" | qgrep -qxF '/dev'"
+check "S306-8A. and it RESOLVES to a real directory on this host (not just a string)" \
+  "printf '%s\n' \"\$(s306_resolve '$S306_PB' copilot)\" | qgrep -qxF '/dev'"
+check "S306-8A. it sits with the system-toolchain entries, which are all still granted" \
+  "printf '%s\n' \"\$S306_COP\" | qgrep -qxF '/usr/bin' && printf '%s\n' \"\$S306_COP\" | qgrep -qxF '/bin' && printf '%s\n' \"\$S306_COP\" | qgrep -qxF '/usr/sbin'"
+check "S306-8A. the grant block's own comment names the device file every redirect touches" \
+  "printf '%s' \"\$S306_8_PRE\" | qgrep -qF '/dev/null' && printf '%s' \"\$S306_8_PRE\" | qgrep -qiF 'redirect'"
+check "S306-8A. it records the MALFORMED path the seat actually froze on (trailing paren)" \
+  "printf '%s' \"\$S306_8_PRE\" | qgrep -qF '/dev/null)' && printf '%s' \"\$S306_8_PRE\" | qgrep -qF 'Allow path access'"
+check "S306-8A. it justifies the grant the way the toolchain entries already do" \
+  "printf '%s' \"\$S306_8_PRE\" | qgrep -qiF 'root-owned' && printf '%s' \"\$S306_8_PRE\" | qgrep -qiF 'system-managed'"
+check "S306-8A. and states the TRADE-OFF: this grant may not match that string, hence two halves" \
+  "printf '%s' \"\$S306_8_PRE\" | qgrep -qiF 'trade-off' && printf '%s' \"\$S306_8_PRE\" | qgrep -qiF 'may not match'"
+# CONTROLS — pinned to the literal pre-change commit.
+check "S306-8A. CONTROL: the pre-change playbook is readable at $S306_8_BASE_SHA" \
+  "[ -s '$S306_8_PREV' ]"
+check "S306-8A. CONTROL: and its copilot grant is a real, non-empty slice (the slicer works on it)" \
+  "[ \"\$(s306_add_dirs '$S306_8_PREV' copilot | grep -c .)\" -ge 8 ]"
+check "S306-8A. CONTROL: ...as is its claude grant" \
+  "[ \"\$(s306_add_dirs '$S306_8_PREV' claude | grep -c .)\" -ge 7 ]"
+check "S306-8A. CONTROL: the PRE-CHANGE copilot grant named NO /dev" \
+  "! s306_add_dirs '$S306_8_PREV' copilot | qgrep -qxF '/dev'"
+check "S306-8A. CONTROL: nor did the claude grant" \
+  "! s306_add_dirs '$S306_8_PREV' claude | qgrep -qxF '/dev'"
+check "S306-8A. CONTROL: the pre-change prelude is a real, non-empty slice" \
+  "[ \"\$(s306_prelude '$S306_8_PREV' | grep -c .)\" -ge 10 ]"
+# The pre-change file DID contain the string `/dev/null` — three times, all of
+# them its OWN discards (two `command -v` chrome probes and the holodeck derive
+# poll), never a grant and never an explanation. So the controls here are the
+# dialog wording and the word `parenthesis`, which appeared NOWHERE.
+check "S306-8A. CONTROL: ...whose only /dev/null was its own chrome-probe discard, not a grant" \
+  "s306_prelude '$S306_8_PREV' | qgrep -qF '/dev/null' && ! s306_add_dirs '$S306_8_PREV' copilot | qgrep -qxF '/dev'"
+check "S306-8A. CONTROL: and the pre-change file never EXPLAINED the malformed path (no 'parenthesis')" \
+  "! qgrep -qiF 'parenthesis' '$S306_8_PREV'"
+
+# --- HALF B: the prompt rule, in the playbook's own doctrine --------------
+# Sliced by its OWN lead-in and bounded by the item-4 paragraph that follows,
+# so neither the grant comment nor either worked-through case can satisfy these.
+S306_DEV="$(s306_sec "$S306_PB" '^.*Never discard output' '^The .*second actor' | tr '\n' ' ' | tr -s ' ')"
+echo "    [S306 /dev/null rule] $S306_DEV"
+check "S306-8B. the /dev/null rule slices non-empty" \
+  "[ -n \"\$S306_DEV\" ]"
+check "S306-8B. it forbids discarding output to /dev/null in a command the seat composes itself" \
+  "printf '%s' \"\$S306_DEV\" | qgrep -qiF 'never discard output' && printf '%s' \"\$S306_DEV\" | qgrep -qF '/dev/null' && printf '%s' \"\$S306_DEV\" | qgrep -qiF 'compose yourself'"
+check "S306-8B. and directs the output to a FILE under the in-repo scratch dir instead" \
+  "printf '%s' \"\$S306_DEV\" | qgrep -qF '.git/lcars/tmp/' && printf '%s' \"\$S306_DEV\" | qgrep -qiF 'instead'"
+check "S306-8B. it states the measured reason: the path arrives as /dev/null) with the paren" \
+  "printf '%s' \"\$S306_DEV\" | qgrep -qF '/dev/null)' && printf '%s' \"\$S306_DEV\" | qgrep -qiF 'parenthesis'"
+check "S306-8B. ...and names the construct that does it (a subshell or a command substitution)" \
+  "printf '%s' \"\$S306_DEV\" | qgrep -qiF 'subshell'"
+check "S306-8B. ...and that the malformed string matches no grant, so no --add-dir can satisfy it" \
+  "printf '%s' \"\$S306_DEV\" | qgrep -qiF 'matches no grant' && printf '%s' \"\$S306_DEV\" | qgrep -qF -- '--add-dir'"
+check "S306-8B. it says a real file under the scratch dir raises nothing" \
+  "printf '%s' \"\$S306_DEV\" | qgrep -qiF 'raises nothing'"
+check "S306-8B. and keeps the side benefit: the output still exists for diagnosing" \
+  "printf '%s' \"\$S306_DEV\" | qgrep -qiF 'diagnosing'"
+check "S306-8B. it carries the measurement (2026-10-19, the run that was over)" \
+  "printf '%s' \"\$S306_DEV\" | qgrep -qF '2026-10-19'"
+check "S306-8B. and says WHY both halves exist: the /dev grant may not match the malformed string" \
+  "printf '%s' \"\$S306_DEV\" | qgrep -qF '/dev' && printf '%s' \"\$S306_DEV\" | qgrep -qiF 'may not match'"
+# It has to sit in the same doctrine region as the two worked-through cases, or
+# a reader of that mechanism never meets it. Before item 4's paragraph, so the
+# general rule precedes the two specific cases.
+S306_8_LD="$(grep -n 'Never discard output' "$S306_PB" | head -1 | cut -d: -f1)"
+echo "    [S306 /dev/null rule at line] ${S306_8_LD:-<none>}  [item-4 para at line] ${S306_L4:-<none>}"
+check "S306-8B. the rule sits immediately before the item-4 paragraph (within 20 lines)" \
+  "[ -n '$S306_8_LD' ] && [ \$(( ${S306_L4:-0} - ${S306_8_LD:-0} )) -gt 0 ] && [ \$(( ${S306_L4:-0} - ${S306_8_LD:-0} )) -le 20 ]"
+S306_8_LE="$(grep -n 'Everything you make yourself' "$S306_PB" | head -1 | cut -d: -f1)"
+check "S306-8B. and it follows the 'everything you make yourself' doctrine it extends" \
+  "[ -n '$S306_8_LE' ] && [ \$(( ${S306_8_LD:-0} - ${S306_8_LE:-0} )) -gt 0 ]"
+# CONTROLS — one per claim, all against the pre-change file at the literal SHA.
+check "S306-8B. CONTROL: the pre-change doctrine region is a real, non-empty slice" \
+  "[ \"\$(s306_sec '$S306_8_PREV' '^.*Everything you make yourself' '^Pick .*every.* type the milestone' | grep -c .)\" -ge 20 ]"
+check "S306-8B. CONTROL: ...and it carried the item-4 paragraph (so the voice existed)" \
+  "qgrep -qF 'The **second actor**' '$S306_8_PREV'"
+check "S306-8B. CONTROL: but the /dev/null rule's slice was EMPTY before" \
+  "[ -z \"\$(s306_sec '$S306_8_PREV' '^.*Never discard output' '^The .*second actor' | tr -d '[:space:]')\" ]"
+check "S306-8B. CONTROL: the pre-change file nowhere forbade discarding output" \
+  "! qgrep -qiF 'never discard output' '$S306_8_PREV'"
+check "S306-8B. CONTROL: nor explained the malformed /dev/null) path (the word appears nowhere)" \
+  "! qgrep -qiF 'parenthesis' '$S306_8_PREV' && ! qgrep -qiF 'matches no grant' '$S306_8_PREV'"
+check "S306-8B. CONTROL: the pre-change doctrine already said never a > target outside the repo..." \
+  "qgrep -qiF 'target outside the repo' '$S306_8_PREV'"
+check "S306-8B. CONTROL: ...so this is NOT that sentence read back — /dev/null is INSIDE no repo rule" \
+  "! printf '%s\n' \"\$(s306_sec '$S306_8_PREV' '^.*Everything you make yourself' '^The .*second actor')\" | qgrep -qF '/dev'"
+
+# --- HALF B, SECOND LEG: THE FILE OBEYS ITS OWN RULE ---------------------
+# FOUND WHILE WRITING THIS TEST, not predicted: the pre-change playbook handed
+# the seat the very construct the rule forbids. Its holodeck derive poll (§ 5,
+# a recipe the seat runs VERBATIM) read `... 2>/dev/null)"` inside a `$(...)`,
+# and the launch block's own chrome probes read `$(command -v google-chrome
+# 2>/dev/null)`. A rule the file breaks four lines above itself is not a rule,
+# so all three discards are gone: the poll's traceback guard is its `except`
+# (which was always doing the work), and `command -v` is silent anyway.
+S306_8_POLL="$(s306_sec "$S306_PB" '^for i in .*seq 1 90' '^case .st. in')"
+S306_8_POLLP="$(s306_sec "$S306_8_PREV" '^for i in .*seq 1 90' '^case .st. in')"
+check "S306-8B. no recipe in the playbook redirects to /dev/null any more" \
+  "! qgrep -qE '[0-9]*>+[[:space:]]*/dev/null' '$S306_PB'"
+check "S306-8B. and the rule SAYS the file obeys it, so a reader has nothing to copy" \
+  "printf '%s' \"\$S306_DEV\" | qgrep -qiF 'obeys the rule' && printf '%s' \"\$S306_DEV\" | qgrep -qiF 'nothing here to copy'"
+check "S306-8B. the chrome probes still PROBE (the discard went, the check stayed)" \
+  "s306_prelude '$S306_PB' | qgrep -qF 'command -v google-chrome' && s306_prelude '$S306_PB' | qgrep -qF 'command -v chromium'"
+check "S306-8B. the derive poll slice is real and keeps its traceback guard (the except)" \
+  "[ \"\$(printf '%s\n' \"\$S306_8_POLL\" | grep -c .)\" -ge 8 ] && printf '%s\n' \"\$S306_8_POLL\" | qgrep -qF 'except Exception' && printf '%s\n' \"\$S306_8_POLL\" | qgrep -qF 'no-answer'"
+check "S306-8B. ...and a comment that says not to add the discard back" \
+  "printf '%s\n' \"\$(s306_sec '$S306_PB' '^#     READ THE REPLY DEFENSIVELY' '^for i in .*seq 1 90')\" | tr '\n' ' ' | qgrep -qiF 'do not' "
+check "S306-8B. CONTROL: the PRE-CHANGE file carried exactly 3 such redirects" \
+  "[ \"\$(grep -cE '[0-9]*>+[[:space:]]*/dev/null' '$S306_8_PREV')\" -eq 3 ]"
+check "S306-8B. CONTROL: the pre-change derive poll is a real slice that DID discard" \
+  "[ \"\$(printf '%s\n' \"\$S306_8_POLLP\" | grep -c .)\" -ge 8 ] && printf '%s\n' \"\$S306_8_POLLP\" | qgrep -qF '/dev/null'"
+check "S306-8B. CONTROL: and its chrome probes DID discard too" \
+  "s306_prelude '$S306_8_PREV' | qgrep -qF 'command -v google-chrome 2>/dev/null'"
+
+# --- HALF C (the line not crossed): \$HOME IS STILL REFUSED --------------
+# Re-run of S306-6's two predicates AFTER the grant grew by /dev. A regression
+# guard, not a new cure — so its control is the injected copy from S306-6
+# (which carries a bare \$HOME grant), not the pre-change file.
+check "S306-8C. no grant token is a bare \$HOME root (textual), with /dev added" \
+  "[ \"\$(s306_bare_home '$S306_PB')\" = no ]"
+check "S306-8C. \$HOME is STILL not granted to copilot (resolved)" \
+  "[ \"\$(s306_grants_home '$S306_PB' copilot)\" = no ]"
+check "S306-8C. \$HOME is STILL not granted to claude (resolved)" \
+  "[ \"\$(s306_grants_home '$S306_PB' claude)\" = no ]"
+check "S306-8C. /dev does not CONTAIN \$HOME (the new token widens nothing)" \
+  "case \"\$HOME/\" in /dev/*) false ;; *) true ;; esac"
+check "S306-8C. and the launch lines still carry no blanket switch" \
+  "! s306_join \"\$(s306_fence '$S306_PB')\" | qgrep -qE -- '--allow-all-paths|COPILOT_ALLOW_ALL=true|--dangerously-skip-permissions'"
+check "S306-8C. NEGATIVE CONTROL: the \$HOME predicates still go RED on an injected copy" \
+  "[ \"\$(s306_bare_home '$S306_INJ')\" = yes ] && [ \"\$(s306_grants_home '$S306_INJ' copilot)\" = yes ]"
 
 # --- summary --------------------------------------------------------------
 printf '\nlcars eeh: %d passed, %d failed\n' "$pass" "$fail"

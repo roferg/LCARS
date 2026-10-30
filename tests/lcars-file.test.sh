@@ -1332,6 +1332,68 @@ EOF
 check "16f. …and a PRD that CARRIES them completes the mission" \
   "[ -f '$MQ/prd.md' ] && cat '$MQ/state.json' | qgrep -q '\"stage\": \"align\"' && ! cat '$MQ/state.json' | qgrep -q '\"prdPending\": true'"
 
+# S314: duplicate question sections must fail before a mission is minted.
+repoDup="$(new_repo)"; make_gh_stub "$repoDup/gh"
+export GH_LOG="$repoDup/gh.log"; : >"$GH_LOG"
+write_prd "$repoDup/prd.md"
+cat >>"$repoDup/prd.md" <<'EOF'
+
+## Open questions from the design session
+
+- STILL OPEN: What makes a KPI "carried"?
+- STILL OPEN: What do Preview and View actually do?
+
+## Open questions from the design session
+
+- RESOLVED with the captain: What makes a KPI "carried"? — DECIDED: month only.
+EOF
+printf '%s' "$BRIEF_2SEC" >"$repoDup/concept.md"
+dupLines="$(grep -n '^## Open questions from the design session' "$repoDup/prd.md" | cut -d: -f1)"
+rcDup=0
+( cd "$repoDup" && LCARS_GH_BIN="$repoDup/gh" bash "$SCRIPT" \
+    --prd "$repoDup/prd.md" --attach "$repoDup/concept.md" >out.txt 2>&1 ) || rcDup=$?
+rcDupBare=0
+( cd "$repoDup" && LCARS_GH_BIN="$repoDup/gh" bash "$SCRIPT" \
+    --prd "$repoDup/prd.md" >bare.txt 2>&1 ) || rcDupBare=$?
+check "S314 duplicate headings: filing refuses and names BOTH line numbers before minting" \
+  "[ '$rcDup' -eq 3 ] && [ '$rcDupBare' -eq 3 ] && grep -qi 'duplicate' '$repoDup/out.txt' && \
+   grep -q 'line $(printf '%s\n' "$dupLines" | head -1)' '$repoDup/out.txt' && \
+   grep -q 'line $(printf '%s\n' "$dupLines" | tail -1)' '$repoDup/out.txt' && \
+   ! grep -q 'issue create' '$GH_LOG'"
+
+# S314: an actual refused paraphrase must explain the matching rule on retries.
+repoWords="$(new_repo)"; make_gh_stub "$repoWords/gh"
+export GH_LOG="$repoWords/gh.log"; : >"$GH_LOG"
+printf '%s' "$BRIEF_2SEC" >"$repoWords/concept.md"
+write_prd "$repoWords/prd.md"
+cat >>"$repoWords/prd.md" <<'EOF'
+
+## Open questions from the design session
+
+- STILL OPEN: Which KPI counts as carried over?
+- RESOLVED with the captain: Preview opens a draft, View opens the published version.
+EOF
+rcWords1=0; rcWords2=0
+( cd "$repoWords" && LCARS_GH_BIN="$repoWords/gh" bash "$SCRIPT" \
+    --prd "$repoWords/prd.md" --attach "$repoWords/concept.md" >first.txt 2>&1 ) || rcWords1=$?
+( cd "$repoWords" && LCARS_GH_BIN="$repoWords/gh" bash "$SCRIPT" \
+    --prd "$repoWords/prd.md" --attach "$repoWords/concept.md" >second.txt 2>&1 ) || rcWords2=$?
+check "S314 verbatim rule: refused paraphrase shows the matching rule and a correct line" \
+  "[ '$rcWords1' -eq 3 ] && [ '$rcWords2' -eq 3 ] && \
+   grep -q 'VERBATIM' '$repoWords/first.txt' && \
+   grep -qF -- '- STILL OPEN: What do Preview and View actually do?' '$repoWords/first.txt'"
+check "S314 verbatim retry: SECOND refusal names attempt 2 and is not byte-identical" \
+  "[ '$rcWords2' -eq 3 ] && \
+   ! cmp -s '$repoWords/first.txt' '$repoWords/second.txt' && \
+   grep -q 'attempt 2' '$repoWords/second.txt'"
+sed 's/STILL OPEN: Which KPI counts as carried over?/RESOLVED with the captain: Carried means prior month./' \
+  "$repoWords/prd.md" >"$repoWords/resolved.md"
+rcResolved=0
+( cd "$repoWords" && LCARS_GH_BIN="$repoWords/gh" bash "$SCRIPT" \
+    --prd "$repoWords/resolved.md" --attach "$repoWords/concept.md" >resolved.txt 2>&1 ) || rcResolved=$?
+check "S314 control: declared RESOLVED paraphrases remain accepted (gate judgment unchanged)" \
+  "[ '$rcResolved' -eq 0 ]"
+
 # 16g. A parked mission with NO brief is untouched — the gate stays a no-op.
 repoQ2="$(new_repo)"; make_gh_stub "$repoQ2/gh"
 export GH_LOG="$repoQ2/gh.log"; : >"$GH_LOG"
