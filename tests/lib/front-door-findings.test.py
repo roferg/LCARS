@@ -11,7 +11,7 @@ from unittest.mock import patch
 from urllib.error import HTTPError
 
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]  # tests/lib/<file> -> repo root
 RUN = ROOT / "skills/lcars-run/run.sh"
 ECH = ROOT / "skills/lcars-eeh/ech.sh"
 QUESTION = "Should the palette also open from a mission card?"

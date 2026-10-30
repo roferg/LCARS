@@ -7,7 +7,7 @@ import tempfile
 import unittest
 
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]  # tests/lib/<file> -> repo root
 SCRIPT = Path(os.environ.get("LCARS_ECH_SCRIPT", ROOT / "skills/lcars-eeh/ech.sh"))
 PLAYBOOK = ROOT / "skills/lcars-eeh/HOLOGRAM-COMMAND-MODE.md"
 

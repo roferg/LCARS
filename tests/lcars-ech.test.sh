@@ -6450,7 +6450,7 @@ for grant_case in \
   test_invalid_grants_do_not_change_authority \
   test_number_one_off_and_failed_application_are_persisted
 do
-  check "S315. $grant_case" "python3 '$DIR/lcars-ech-grants.test.py' 'Grants.$grant_case'"
+  check "S315. $grant_case" "python3 '$DIR/lib/lcars-ech-grants.test.py' 'Grants.$grant_case'"
 done
 
 echo "-- S316. continuity, independent guard, and controlled evidence --"
@@ -6471,7 +6471,7 @@ for continuity_case in \
   test_live_check_pairs_every_target_and_refuses_uncontrolled_green \
   test_numbered_control_enumeration_and_board_rules_have_teeth
 do
-  check "S316. $continuity_case" "PYTHONDONTWRITEBYTECODE=1 python3 '$DIR/lcars-ech-continuity.test.py' 'Continuity.$continuity_case'"
+  check "S316. $continuity_case" "PYTHONDONTWRITEBYTECODE=1 python3 '$DIR/lib/lcars-ech-continuity.test.py' 'Continuity.$continuity_case'"
 done
 
 echo
