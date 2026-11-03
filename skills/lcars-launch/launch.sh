@@ -1158,8 +1158,23 @@ fi
 # --stop. The perl `exec` preserves the backgrounded pid. Same trick the
 # viewscreen daemon + run.sh watchdog use. We wrap in `sh -c` to cd into the app
 # directory first; `exec` keeps the pid so PID == PGID == the app.
+#
+# WHY `exec env` AND NOT BARE `exec` (measured 2026-10-30). `exec` takes its
+# FIRST operand as the command NAME, and assignment-prefix recognition only
+# applies to words BEFORE the first non-assignment word — `exec` itself is that
+# word. So a perfectly ordinary discovered command of the shape
+# `PORT=8080 npm start` died as `sh: line 0: exec: PORT=8080: not found`: the
+# assignment was read as the program. `env` is the POSIX tool whose whole job is
+# to apply `VAR=value` prefixes and then exec what follows, and it execs in
+# place, so PID == PGID == the app still holds — the one property this line
+# exists to guarantee. With no assignments present `env` is a transparent
+# pass-through, so the common case is unchanged.
+#
+# This is the same correction the port-adaptation path above already makes
+# (`if assignment_count: args.insert(0, "env")`); it simply never ran when the
+# configured port was FREE, which is why every launch of this shape failed.
 perl -e 'use POSIX qw(setsid); eval { setsid(); }; exec @ARGV' -- \
-  sh -c "cd '$LAUNCH_CWD' && exec $CMD" >"$LOG" 2>&1 &
+  sh -c "cd '$LAUNCH_CWD' && exec env $CMD" >"$LOG" 2>&1 &
 PID=$!
 PGID="$PID"
 
