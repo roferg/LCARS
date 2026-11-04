@@ -352,3 +352,5 @@ changed over a year, what is still rough, and where it is going.
 ## License
 
 MIT — see [`LICENSE`](LICENSE).
+
+<!-- throwaway: proving the required-check gate refuses a red PR; this branch is deleted immediately after -->
