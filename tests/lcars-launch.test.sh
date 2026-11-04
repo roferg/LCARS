@@ -407,6 +407,42 @@ check "3g. instant death → status=failed (not running)" "[ \"\$(json_field \"$
 check "3h. instant death → a plain-English 'exited immediately' message" \
   "printf '%s' \"\$OUT3b\" | grep -qi 'exited immediately'"
 
+# 3i–3k. A DISCOVERED COMMAND CARRYING A LEADING `VAR=value` ASSIGNMENT.
+# Measured 2026-10-30 on a live build: discovery correctly derived
+# `PORT=8080 npm start`, and the spawn died with
+#   sh: line 0: exec: PORT=8080: not found
+# because `exec` takes its FIRST operand as the command name, so the assignment
+# prefix was read as the program. The port-adaptation path already knew this —
+# it re-heads such a command with `env` — but that path only runs when the port
+# is occupied, so on a FREE port the raw command reached `exec` unguarded and
+# every launch of this shape failed. The cost was not the launch: it blinded
+# Number One on every visible mission, which then reported `surfaces: 0` and
+# scored screens it had never seen.
+# The assertion is deliberately end-to-end: the app must come up AND the
+# assignment must actually reach its environment, so a fix that merely stops
+# the crash without applying the variable cannot pass.
+R3c="$(make_repo m3c)"
+SENTINEL3C="$TMPROOT/m3c-env.txt"
+APP3C="$TMPROOT/app3c.sh"
+cat >"$APP3C" <<EOF
+#!/usr/bin/env bash
+printf '%s' "\${LCARS_T3C_GREETING:-UNSET}" > "$SENTINEL3C"
+perl -e 'select(undef,undef,undef,30)'
+EOF
+chmod +x "$APP3C"
+W3C="$(claude_stub_path)"
+make_ready_worker "$W3C" "LCARS_T3C_GREETING=applied $APP3C" "assignment-prefixed app" "" "lcars launch m3c --stop"
+OUT3C="$( cd "$R3c" && LCARS_WORKER_BIN="$W3C" LCARS_LAUNCH_SETTLE=0.6 bash "$LAUNCH_SH" m3c 2>&1 )"; RC3C=$?
+LJ3C="$R3c/.git/lcars/missions/m3c/launch.json"
+PID3C="$(json_num "$LJ3C" pid)"; [ -n "$PID3C" ] && LAUNCHED_PIDS+=("$PID3C")
+check "3i. a leading VAR=value assignment launches instead of 'exec: VAR=value: not found'" \
+  "[ \"$RC3C\" = 0 ] && [ \"\$(json_field \"$LJ3C\" status)\" = running ]"
+check "3j. the spawn log carries no exec-not-found error" \
+  "! printf '%s' \"\$OUT3C\" | grep -qi 'exec:.*not found'"
+check "3k. the assignment actually reaches the app's environment" \
+  "[ \"\$(cat \"$SENTINEL3C\" 2>/dev/null)\" = applied ]"
+( cd "$R3c" && LCARS_WORKER_BIN="$W3C" bash "$LAUNCH_SH" m3c --stop >/dev/null 2>&1 )
+
 # =====================================================================
 # 4. --stop kills the process GROUP (child dies too), prunes the worktree;
 #    a subsequent launch works again (idempotent).

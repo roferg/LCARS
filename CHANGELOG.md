@@ -4,6 +4,30 @@ All notable changes to LCARS are recorded here, newest first. The version
 scheme is `YYYY.M.N` (calendar year, month with no leading zero, per-month
 counter). Every PR into `main` bumps `VERSION` and adds its entry here.
 
+## 2026.11.1 — 2026-11-03
+
+### launch an app whose command carries a leading `VAR=value` (S296 L1)
+
+A discovered start command of the ordinary shape `PORT=8080 npm start` never
+launched. It died as `sh: line 0: exec: PORT=8080: not found`, because `exec`
+takes its FIRST operand as the command name and assignment-prefix recognition
+only applies to words before the first non-assignment word — `exec` itself is
+that word, so the assignment was read as the program.
+
+The port-adaptation path already knew this and re-heads such a command with
+`env`, but that path only runs when the configured port is OCCUPIED. On a FREE
+port the raw command reached `exec` unguarded, so every launch of this shape
+failed. The spawn line now goes through `env`, which applies the assignments and
+execs in place, so `PID == PGID == the app` — the one property that line exists
+to guarantee — still holds. With no assignments present `env` is a transparent
+pass-through and the common case is unchanged.
+
+The cost was not the launch. It blinded Number One on every visible Mission,
+which then reported `surfaces: 0` and scored screens it had never seen.
+
+Proven end to end: the app must come up AND the assignment must actually reach
+its environment, so a fix that merely stops the crash cannot pass.
+
 ## 2026.10.6 — 2026-10-30
 
 The open-source round. Twenty-plus sessions of fixes found by driving real
