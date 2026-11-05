@@ -3289,9 +3289,11 @@ implement_nav_block() { # ticket-id
 
 # Each Stage runs only when the Mission is parked at the stage that feeds it,
 # so we never relabel or overwrite a mission mid-flight. Research runs on
-# `align`; Validate runs on `validate`.
+# `align` or its in-flight `research` resume pointer; Validate runs on `validate`.
 require_stage() { # wanted-stage
   local stage; stage="$(json_str "$STATE" stage)"
+  # Research's in-flight resume pointer feeds the same gate/save as Align.
+  [ "$1" = align ] && [ "$stage" = research ] && return 0
   [ "$stage" = "$1" ] || die "mission is at stage '${stage:-unknown}', not '$1' — this Stage only runs on a mission parked at '$1'."
 }
 
@@ -17307,6 +17309,9 @@ selfheal_merge_base() { # branch base
   (
     # Subshell-owned variables survive an early exit until its cleanup trap.
     branch="$1"; base="$2"; wt=""
+    base_ref="refs/heads/$base"
+    "$GIT_BIN" rev-parse --verify -q "$base_ref" >/dev/null 2>&1 ||
+      base_ref="refs/remotes/$base"
     acquire_replay_lock
     trap 'if [ -n "$wt" ]; then
       "$GIT_BIN" worktree remove --force "$wt" >/dev/null 2>&1 ||
@@ -17331,7 +17336,7 @@ selfheal_merge_base() { # branch base
       exit 1
     fi
     tip="$("$GIT_BIN" rev-parse --verify "refs/heads/$branch")" || exit 1
-    basesha="$("$GIT_BIN" rev-parse --verify "refs/heads/$base")" || exit 1
+    basesha="$("$GIT_BIN" rev-parse --verify "$base_ref")" || exit 1
     wt="$(mktemp -d "$MISSION_DIR/reanchor.XXXXXX")" || exit 1
     "$GIT_BIN" worktree add -q --detach "$wt" "$tip" || exit 1
     if ! out="$(merge_base_in_worktree "$wt" "$basesha" 2>&1)"; then
@@ -17347,11 +17352,11 @@ selfheal_merge_base() { # branch base
     wt=""
     _lcars_base_worktree_of "$branch"
     if [ -n "$LCARS_MB_WT" ] ||
-       [ "$("$GIT_BIN" rev-parse "refs/heads/$base")" != "$basesha" ]; then
+       [ "$("$GIT_BIN" rev-parse "$base_ref")" != "$basesha" ]; then
       printf 'Recovery refused: branch checkout or base changed during the merge; retry after it settles.\n'
       exit 1
     fi
-    "$GIT_BIN" update-ref -m "lcars: merge $base into $branch for self-heal" \
+    "$GIT_BIN" update-ref --no-deref -m "lcars: merge $base into $branch for self-heal" \
       "refs/heads/$branch" "$merged" "$tip" || {
         printf 'Recovery refused: mission tip changed during the merge; no commits were replaced.\n'; exit 1;
       }
@@ -25460,6 +25465,7 @@ drive_emit_base_stale() { # stage-at-drive-start
 }
 
 # The whole re-check, in caller order. Runs ONCE per drive.
+# Returns 1 only when working-branch recovery parked an awaiting-human gate.
 drive_base_recheck() {
   drive_load_base_lib || return 0
   local base branch stage
@@ -25476,8 +25482,8 @@ drive_base_recheck() {
   # `lcars/<id>` and tells it to IGNORE the ambient checkout — so fast-forwarding
   # only the base leaves every Stage reasoning about the filing-time tree, which is
   # the whole failure S159 exists to close. The drive therefore advances the
-  # mission branch too, but ONLY when that is LOSSLESS (no commits of its own);
-  # one commit of its own and it is left alone with the loud ⚠ block and a rebase.
+  # mission branch too, but fast-forwards ONLY when it has no commits of its own.
+  # Working branches use the existing detached merge recovery instead.
   #
   # NOT for a `child-base` Mission: a logged bug's base is its parent's branch,
   # LCARS takes no position on it, and the parent's branch is never moved.
@@ -25491,6 +25497,47 @@ drive_base_recheck() {
   if [ "${LCARS_BASE_VERDICT:-}" != "child-base" ] \
      && [ "${LCARS_BASE_BLOCKER:-}" != "operation-in-progress" ]; then
     lcars_base_advance_mission_branch "$branch" "$base" || true
+    # The lossless startup helper only measures local heads. A recorded
+    # remote-tracking base still belongs to the same detached merge recovery.
+    if [ "$stage" != implement ] && [ -z "${LCARS_MB_BEHIND:-}" ] \
+       && "$GIT_BIN" rev-parse --verify -q "refs/remotes/$base" >/dev/null 2>&1; then
+      LCARS_MB_BEHIND="$(_lcars_base_count "refs/heads/$branch" "refs/remotes/$base")"
+      LCARS_MB_AHEAD="$(_lcars_base_count "refs/remotes/$base" "refs/heads/$branch")"
+      case "${LCARS_MB_BEHIND:-0}:${LCARS_MB_AHEAD:-0}" in
+        *[!0-9:]*|0:*|*:0) : ;;
+        *) LCARS_MB_MOVE=refused ;;
+      esac
+    fi
+    if [ "$stage" != implement ] && [ "${LCARS_MB_MOVE:-}" = refused ] \
+       && [ "${LCARS_MB_AHEAD:-0}" -gt 0 ] && [ "${LCARS_MB_BEHIND:-0}" -gt 0 ]; then
+      local recovery
+      if recovery="$(selfheal_merge_base "$branch" "$base" 2>&1)"; then
+        LCARS_MB_MOVE=""
+        printf "  RECOVERY — merged '%s' into '%s'; continuing %s on the merged tip.\n" "$base" "$branch" "$stage"
+        emit_event selfheal_reanchor "$stage" \
+          "merged '$base' into '$branch' before $stage; continuing on the merged tip" \
+          "tip=$(selfheal_branch_tip "$branch")" || :
+      else
+        local recovery_rc=$?
+        [ -n "$recovery" ] || recovery="Recovery refused: recovery exited with status $recovery_rc; mission commits are untouched. Inspect the repository before retrying."
+        LCARS_MB_REASON="$recovery"
+        local question
+        question="$(printf '%s' "$recovery" | tr '\n' ' ') Resolve the recovery blocker, then re-drive; do not rebase or force the mission branch."
+        printf '%s\n' "$recovery" >"$MISSION_DIR/recovery-diagnosis.txt"
+        printf '%s\n' "$question" >"$MISSION_DIR/recovery-question.txt"
+        write_pending "$MISSION_DIR/recovery-question.txt" "$stage"
+        lcars_state_set "$STATE" awaitingHuman true
+        lcars_state_set_string "$STATE" pendingQuestion "$question"
+        lcars_state_refusal_die "lcars run"
+        gh_relabel "lcars:$stage lcars:awaiting-human" ""
+        drive_persist_base_freshness "$branch"
+        drive_emit_base_stale "$stage"
+        emit_event selfheal_refused "$stage" "$question" || :
+        emit_event gate "$stage" "base recovery needs a human; no Stage worker was dispatched" || :
+        printf '%s\n' "$recovery"
+        return 1
+      fi
+    fi
     lcars_base_branch_note_drive "$branch" "$base" || true
   fi
   # Persisted AFTER the advance, so `missionBranchAtBase` records what the branch
@@ -26620,8 +26667,11 @@ cmd_drive() {
   # here: after the driver lock (so two drives can never fetch/fast-forward the
   # same base at once) and BEFORE the stage loop (so it is once per drive, not
   # once per Stage, and so the first Stage worker is spawned into the tree it
-  # produced). It never blocks — see drive_base_recheck.
-  drive_base_recheck
+  # produced). A refused working-branch recovery parks before any worker runs.
+  if ! drive_base_recheck; then
+    drive_halt_awaiting "$(json_str "$STATE" stage)"
+    return 0
+  fi
 
   # S312 — UNDECLARED DRIFT, HERE, NOT TWENTY MINUTES FROM NOW. Same slot, same
   # two reasons as the base re-check above (after the lock, once per drive,
@@ -26705,7 +26755,7 @@ cmd_drive() {
     # `--step` calls). align with no feedback.md is a freshly-filed Mission → Research.
     local action
     case "$stage" in
-      align)       action="research" ;;
+      align|research) action="research" ;;
       validate)    action="validate" ;;
       plan)        action="plan" ;;
       plan-review) action="plan-review" ;;

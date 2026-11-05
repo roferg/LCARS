@@ -149,7 +149,7 @@ about last night's tree.
 
 The check runs once per drive, after the driver lock and *before* any Stage
 worker is spawned, through the same `ensure_base_current` guard `lcars file`
-uses. It **never blocks the drive** and it holds the captain's clone sacred: it
+uses. The freshness verdict **never blocks the drive** and the check holds the captain's clone sacred: it
 may fast-forward the base only when that branch is checked out and the tree is
 clean, and it never resets, forces, stashes, cleans, rebases, or checks anything
 out. What it does, it prints:
@@ -161,7 +161,9 @@ out. What it does, it prints:
 | `⚠ BASE FRESHNESS …` | the base is behind and LCARS could **not** fix it (dirty tree, diverged, …) — the block names why, and the exact command that clears it |
 | `⊘ base lcars/<id> is a Mission branch …` | the base is another Mission's branch (a logged bug's parent), so there is nothing to bring down from origin and nothing was touched |
 | `✓ MISSION BRANCH — lcars/<id> fast-forwarded N commit(s) onto main.` | the Mission's own branch carried no commits of its own, so the drive brought it onto the refreshed base too |
-| `⚠ MISSION BRANCH …` | the Mission's branch is behind and the drive did **not** move it — it carries commits of its own (forcing it would destroy them), or its checkout is dirty, or a local file would be overwritten. The block names which, and the one command that clears it |
+| `⚠ MISSION BRANCH …` | the lossless fast-forward was refused (for example, a dirty checkout or a local file would be overwritten). The block names the blocker and remedy |
+| `RECOVERY — merged …` | a working Mission was behind its base; the existing detached merge recovery preserved its commits and the Stage continues on the merged tip |
+| `Recovery refused …` / `Recovery merge failed …` | recovery could not publish safely; the Mission parks awaiting-human before any Stage worker runs, with the diagnosis in `pending.json` and `recovery-diagnosis.txt` |
 
 **Why the Mission branch matters more than the base.** Every read-only Stage is
 pinned to `lcars/<id>` and told to ignore the ambient checkout, so bringing only
@@ -182,6 +184,15 @@ gate then judge the merged state. A dirty tree, an operation in progress, a
 Mission branch checked out elsewhere, or a failed/conflicting merge stops
 recovery for a human without spending a repair round. The startup helper's
 refusal to force-move committed work and Verify's stage restriction are unchanged.
+
+**Drive-level reach (S348).** Before non-Implement Stages, the drive calls that
+same recovery when the lossless helper refuses a behind-base branch carrying
+work. Local branch bases and recorded `origin/main` bases are supported. Recovery
+events name the actual starting Stage, never a substituted `implement`.
+Implement retains its existing self-heal flow and re-test gates. A Mission
+parked at `research` resumes the same Research gate/save flow as `align`.
+Recovery's one-shot `--no-deref` compare-and-swap, both-tip ancestry checks and
+worktree cleanup remain mandatory; it never retries or force-publishes.
 
 The verdict is recorded on the Mission as `state.json.baseFreshness`
 (`verdict` ∈ `current | updated | stale | unknown | child-base`, plus `reason`,

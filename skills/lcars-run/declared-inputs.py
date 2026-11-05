@@ -120,7 +120,7 @@ def main():
         else:
             commit = call("commit-tree", tree, "-p", old, "-m",
                           "ticket zero: land declared inputs")
-            call("update-ref", f"refs/heads/{branch}", commit, old)
+            call("update-ref", "--no-deref", f"refs/heads/{branch}", commit, old)
         Path(mission, "ticket-zero.json").write_text(
             json.dumps({"commit": commit, "paths": paths}, indent=2) + "\n")
         print(f"  Ticket zero: committed {len(paths)} declared input(s) on {branch} @ {commit}.")

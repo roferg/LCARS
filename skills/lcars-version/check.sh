@@ -33,7 +33,7 @@
 # prints a one-line reason and CONTINUES.
 #
 # Usage:  check.sh [ask|warn|report|update]   (default: warn — the safe one)
-#   ask     interactive: prompt to update (default ENTER = No)
+#   ask     terminal: prompt to update; otherwise report default No without reading
 #   warn    headless: one human line per verdict, no prompt, no stdin
 #   report  machine-readable KEY=VALUE verdict lines (the viewscreen daemon reads
 #           these into meta.version); cache/throttle-identical to warn
@@ -57,6 +57,8 @@
 set -uo pipefail
 
 MODE="${1:-warn}"
+ASK_INTERACTIVE=0
+[ -t 0 ] && ASK_INTERACTIVE=1
 
 # --- global kill switch: zero output, ZERO git calls ----------------------
 [ "${LCARS_VERSION_CHECK:-1}" = "0" ] && exit 0
@@ -102,9 +104,11 @@ say() { printf '%s\n' "$1"; }
 # fires on EOF, and an absent-but-inherited terminal is not EOF. Measured: a
 # background `lcars file` sat 44 min inside this read, stopped, not slow.
 #
-# read_reply gets the operator's answer WITHOUT ever blocking forever. Any answer
+# ASK mode checks stdin up front and never calls read_reply for non-terminal
+# input: it reports No instead of printing a question nobody can answer.
+# read_reply gets a terminal operator's answer WITHOUT ever blocking forever. Any answer
 # that ARRIVES — typed at a real terminal, or piped/scripted in — is echoed
-# verbatim on stdout and obeyed. When nobody can answer it echoes "" (the [y/N]
+# verbatim on stdout and obeyed. When a terminal never answers it echoes "" (the [y/N]
 # default = No) and explains on stderr, so an unattended run takes the documented
 # safe default and continues.
 #
@@ -365,6 +369,19 @@ fi
 # DRIFT is informational even here (the repair, `lcars release`, is manual — S130).
 [ "$DRIFT" = 1 ] && \
   say "⚠ LCARS main has unversioned changes — see \`lcars release\`."
+
+if [ "$ASK_INTERACTIVE" = 0 ]; then
+  if [ "$SOURCE_BEHIND" = 1 ]; then
+    say "LCARS $REMOTE AVAILABLE — non-interactive stdin; taking the default (No). Holding at $RUNNING. Run \`lcars\` interactively to update."
+  elif [ "$REPO_STALE" = 1 ]; then
+    if [ "$REPO_PREDATES" = 1 ]; then
+      say "LCARS REPO PREDATES VERSIONING — non-interactive stdin; taking the default (No). Holding this repo at unstamped. Run \`lcars update\`."
+    else
+      say "LCARS REPO STAMP $STAMPED BEHIND RUNNING $RUNNING — non-interactive stdin; taking the default (No). Holding this repo at $STAMPED. Run \`lcars update\`."
+    fi
+  fi
+  exit 0
+fi
 
 if [ "$SOURCE_BEHIND" = 1 ]; then
   # The full update also restamps this repo, so it subsumes any REPO_STALE.

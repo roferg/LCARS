@@ -80,10 +80,64 @@ def tracked():
     binary = subprocess.run(["git", "cat-file", "blob", "lcars/m-001:src/source.png"],
                             cwd=repo, check=True, stdout=subprocess.PIPE).stdout
     assert binary == png
-    assert "ticket zero" in run(["git", "log", "-1", "--format=%s", "lcars/m-001"], cwd=repo).stdout.lower()
+    subject = run(["git", "log", "-1", "--format=%s", "lcars/m-001"], cwd=repo).stdout.strip()
+    assert subject == "ticket zero: land declared inputs", subject
     assert run(["git", "branch", "--show-current"], cwd=repo).stdout.strip() == "main"
     print(f"git cat-file blob lcars/m-001:src/calc.js = {blob!r}; commit {tip}")
     print(f"git cat-file blob lcars/m-001:src/source.png = {binary!r}; binary bytes preserved")
+    print(f"Commit subject: {subject}")
+
+
+def symbolic_mission_ref():
+    repo, m, env = fixture("symbolic-ref", ["src/calc.js"])
+    run(["git", "branch", "decoy"], cwd=repo)
+    run(["git", "symbolic-ref", "refs/heads/lcars/m-001", "refs/heads/decoy"], cwd=repo)
+    before = run(["git", "rev-parse", "refs/heads/decoy"], cwd=repo).stdout.strip()
+    expected = "exports.add = () => 348;\n"
+    (repo / "src/calc.js").write_text(expected)
+    out = schedule(repo, env, good=False)
+    decoy = run(["git", "rev-parse", "refs/heads/decoy"], cwd=repo).stdout.strip()
+    assert decoy == before, f"Symbolic mission publication moved decoy: {before} -> {decoy}\n{out.stdout}"
+    tip = run(["git", "rev-parse", "refs/heads/lcars/m-001"], cwd=repo).stdout.strip()
+    if out.returncode:
+        assert tip == before and not (m / "ticket-zero.json").exists(), out.stdout
+        print("Symbolic mission publication refused; decoy and mission unchanged:", out.stdout.strip())
+    else:
+        assert tip != before
+        assert run(["git", "symbolic-ref", "-q", "refs/heads/lcars/m-001"],
+                   cwd=repo, good=False).returncode == 1
+        assert run(["git", "cat-file", "blob", "lcars/m-001:src/calc.js"], cwd=repo).stdout == expected
+        assert json.loads((m / "ticket-zero.json").read_text())["commit"] == tip
+        assert json.loads((m / "state.json").read_text())["stage"] == "implement"
+        print(f"Symbolic mission ref replaced by ticket zero {tip}; decoy unchanged at {decoy}")
+
+
+def moved_mission_ref():
+    repo, m, env = fixture("moved-ref", ["src/calc.js"])
+    before = run(["git", "rev-parse", "lcars/m-001"], cwd=repo).stdout.strip()
+    blob = run(["git", "cat-file", "blob", "lcars/m-001:src/calc.js"], cwd=repo).stdout
+    (repo / "src/calc.js").write_text("exports.add = () => 348;\n")
+    git = repo.parent / "shim/racing-git"
+    git.write_text("""#!/usr/bin/env bash
+set -euo pipefail
+if [[ "${3-}" == commit-tree ]]; then
+  moved=$(git -C "$2" commit-tree 'HEAD^{tree}' -p refs/heads/lcars/m-001 -m "captain: advance mission branch")
+  git -C "$2" update-ref --no-deref refs/heads/lcars/m-001 "$moved"
+fi
+exec git "$@"
+""")
+    git.chmod(0o755)
+    env["LCARS_GIT_BIN"] = str(git)
+    out = schedule(repo, env, good=False)
+    assert out.returncode != 0 and "but expected" in out.stdout, out.stdout
+    assert before in out.stdout, out.stdout
+    assert run(["git", "rev-parse", "lcars/m-001"], cwd=repo).stdout.strip() != before
+    assert run(["git", "log", "-1", "--format=%s", "lcars/m-001"],
+               cwd=repo).stdout.strip() == "captain: advance mission branch"
+    assert run(["git", "cat-file", "blob", "lcars/m-001:src/calc.js"], cwd=repo).stdout == blob
+    assert not (m / "ticket-zero.json").exists() and not list(m.glob("ticket-zero-index-*"))
+    assert json.loads((m / "state.json").read_text())["stage"] == "schedule"
+    print("Compare-and-swap refused a moved Mission branch; captain's commit preserved:", out.stdout.strip())
 
 
 def new_input():
@@ -354,7 +408,8 @@ def directory_input():
 CASES = {"1": tracked, "2": new_input, "3": ignored_input, "4": missing_input,
          "5": only_declared, "6": no_inputs, "plan": plan_contract, "no-lock": no_input_lock,
          "symlink": symlink_input, "repeat": repeated_schedule, "checked-out": checked_out_branch,
-         "ignore-file": ignore_file_input, "directory": directory_input}
+         "ignore-file": ignore_file_input, "directory": directory_input,
+         "symbolic-ref": symbolic_mission_ref, "moved-ref": moved_mission_ref}
 if sys.argv[1:] == ["live"]:
     CASES = {"live": live_landed_input}
 for key in sys.argv[1:] or CASES:

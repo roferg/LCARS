@@ -173,7 +173,7 @@ OUT="$FX/out1.txt"
 printf 'y\n' | LCARS_REPO="$SRC" LCARS_GIT_BIN="$GITSTUB" LCARS_GH_BIN="$GHSTUB" \
   LCARS_VERSION_CWD="$REPO1" LCARS_VERSION_STAMP="$STAMP" LCARS_NOW_EPOCH=1000 \
   LCARS_INSTALL_BIN="$INSTALLSTUB" LCARS_UPDATE_BIN="$UPDATESTUB" \
-  bash "$CHECK" ask >"$OUT" 2>&1
+  python3 "$REPO_ROOT/tests/lib/ptyreply.py" bash "$CHECK" ask >"$OUT" 2>&1
 check "1. SOURCE_BEHIND prompt names the remote version + ENGAGE UPDATE" \
   "grep -q '2026.7.2 AVAILABLE' '$OUT' && grep -qi 'ENGAGE UPDATE' '$OUT'"
 check "1. 'y' runs pull → install → update IN ORDER" \
@@ -192,7 +192,7 @@ OUT="$FX/out2.txt"
 printf '\n' | LCARS_REPO="$SRC" LCARS_GIT_BIN="$GITSTUB" LCARS_GH_BIN="$GHSTUB" \
   LCARS_VERSION_CWD="$REPO2" LCARS_VERSION_STAMP="$STAMP" LCARS_NOW_EPOCH=1000 \
   LCARS_INSTALL_BIN="$INSTALLSTUB" LCARS_UPDATE_BIN="$UPDATESTUB" \
-  bash "$CHECK" ask >"$OUT" 2>&1; rc=$?
+  python3 "$REPO_ROOT/tests/lib/ptyreply.py" bash "$CHECK" ask >"$OUT" 2>&1; rc=$?
 check "2. ENTER (default No) exits 0 (verb proceeds)" "[ '$rc' -eq 0 ]"
 check "2. ENTER touches NOTHING (no pull/install/update)" \
   "[ ! -s '$ORDER' ]"
@@ -208,7 +208,7 @@ OUT="$FX/out3a.txt"
 printf 'y\n' | LCARS_REPO="$SRC" LCARS_GIT_BIN="$GITSTUB" LCARS_GH_BIN="$GHSTUB" \
   LCARS_VERSION_CWD="$(mk_initrepo "")" LCARS_VERSION_STAMP="$STAMP" LCARS_NOW_EPOCH=1000 \
   LCARS_INSTALL_BIN="$INSTALLSTUB" LCARS_UPDATE_BIN="$UPDATESTUB" \
-  bash "$CHECK" ask >"$OUT" 2>&1; rc=$?
+  python3 "$REPO_ROOT/tests/lib/ptyreply.py" bash "$CHECK" ask >"$OUT" 2>&1; rc=$?
 check "3a. dirty source main declines with a reason, exits 0" \
   "[ '$rc' -eq 0 ] && grep -qi 'dirty' '$OUT'"
 check "3a. dirty source main does NOT pull" "[ ! -s '$ORDER' ]"
@@ -221,7 +221,7 @@ OUT="$FX/out3b.txt"
 printf 'y\n' | LCARS_REPO="$SRC" LCARS_GIT_BIN="$GITSTUB" LCARS_GH_BIN="$GHSTUB" \
   LCARS_VERSION_CWD="$(mk_initrepo "")" LCARS_VERSION_STAMP="$STAMP" LCARS_NOW_EPOCH=1000 \
   LCARS_INSTALL_BIN="$INSTALLSTUB" LCARS_UPDATE_BIN="$UPDATESTUB" \
-  bash "$CHECK" ask >"$OUT" 2>&1; rc=$?
+  python3 "$REPO_ROOT/tests/lib/ptyreply.py" bash "$CHECK" ask >"$OUT" 2>&1; rc=$?
 check "3b. source not on main declines with a reason, exits 0" \
   "[ '$rc' -eq 0 ] && grep -qi 'not main' '$OUT'"
 check "3b. source not on main does NOT pull" "[ ! -s '$ORDER' ]"
@@ -235,7 +235,7 @@ OUT="$FX/out3c.txt"
 printf 'y\n' | LCARS_REPO="$SRC" LCARS_GIT_BIN="$GITSTUB" LCARS_GH_BIN="$GHSTUB" \
   LCARS_VERSION_CWD="$(mk_initrepo "")" LCARS_VERSION_STAMP="$STAMP" LCARS_NOW_EPOCH=1000 \
   LCARS_INSTALL_BIN="$INSTALLSTUB" LCARS_UPDATE_BIN="$UPDATESTUB" \
-  bash "$CHECK" ask >"$OUT" 2>&1; rc=$?
+  python3 "$REPO_ROOT/tests/lib/ptyreply.py" bash "$CHECK" ask >"$OUT" 2>&1; rc=$?
 check "3c. diverged source declines with a reason, exits 0" \
   "[ '$rc' -eq 0 ] && grep -qi 'diverged' '$OUT'"
 check "3c. diverged source does NOT pull" "[ ! -s '$ORDER' ]"
@@ -249,7 +249,7 @@ OUT="$FX/out4.txt"
 printf 'y\n' | LCARS_REPO="$SRC" LCARS_GIT_BIN="$GITSTUB" LCARS_GH_BIN="$GHSTUB" \
   LCARS_VERSION_CWD="$REPO4" LCARS_VERSION_STAMP="$STAMP" LCARS_NOW_EPOCH=1000 \
   LCARS_INSTALL_BIN="$INSTALLSTUB" LCARS_UPDATE_BIN="$UPDATESTUB" \
-  bash "$CHECK" ask >"$OUT" 2>&1
+  python3 "$REPO_ROOT/tests/lib/ptyreply.py" bash "$CHECK" ask >"$OUT" 2>&1
 check "4. REPO_STALE-only prompt offers lcars update (not a source pull)" \
   "grep -qi 'lcars update' '$OUT' && ! grep -qi 'ENGAGE UPDATE' '$OUT'"
 check "4. REPO_STALE-only runs ONLY update (no pull, no install)" \
@@ -294,7 +294,7 @@ check "4X. ask on a never-delivering stdin COMPLETES (does not hang)" \
 check "4X. it took the safe default (Holding this repo, unchanged)" \
   "grep -qi 'Holding this repo' '$OUT'"
 check "4X. it announced WHY it defaulted (no operator / no answer)" \
-  "grep -qi 'no answer' '$OUT' || grep -qi 'no operator' '$OUT'"
+  "grep -qi 'non-interactive' '$OUT' && ! grep -q '\\[y/N\\]' '$OUT'"
 check "4X. it ran NO update (nobody said yes)" "[ ! -s '$ORDER' ]"
 check "4X. the repo stamp is left untouched (still 2026.7.0)" \
   "grep -q '\"lcarsVersion\": *\"2026.7.0\"' '$REPO4X/.git/lcars/config.json'"
@@ -312,7 +312,7 @@ printf 'y\n' | LCARS_REPO="$SRC" LCARS_GIT_BIN="$GITSTUB" LCARS_GH_BIN="$GHSTUB"
   LCARS_VERSION_CWD="$REPO4Y" LCARS_VERSION_STAMP="$STAMP" LCARS_NOW_EPOCH=1000 \
   LCARS_INSTALL_BIN="$INSTALLSTUB" LCARS_UPDATE_BIN="$UPDATESTUB" \
   LCARS_ASK_TIMEOUT_NONTTY=1 \
-  bash "$CHECK" ask >"$OUT" 2>&1; rc=$?
+  python3 "$REPO_ROOT/tests/lib/ptyreply.py" bash "$CHECK" ask >"$OUT" 2>&1; rc=$?
 check "4Y. CONTROL 'y' is HONOURED — runs ONLY update, exits 0" \
   "[ '$rc' -eq 0 ] && [ \"\$(tr '\n' ' ' < '$ORDER')\" = 'update ' ]"
 check "4Y. CONTROL 'y' restamps the repo current (2026.7.1)" \
@@ -328,11 +328,31 @@ printf 'n\n' | LCARS_REPO="$SRC" LCARS_GIT_BIN="$GITSTUB" LCARS_GH_BIN="$GHSTUB"
   LCARS_VERSION_CWD="$REPO4Yn" LCARS_VERSION_STAMP="$STAMP" LCARS_NOW_EPOCH=1000 \
   LCARS_INSTALL_BIN="$INSTALLSTUB" LCARS_UPDATE_BIN="$UPDATESTUB" \
   LCARS_ASK_TIMEOUT_NONTTY=1 \
-  bash "$CHECK" ask >"$OUT" 2>&1; rc=$?
+  python3 "$REPO_ROOT/tests/lib/ptyreply.py" bash "$CHECK" ask >"$OUT" 2>&1; rc=$?
 check "4Yn. CONTROL 'n' is HONOURED — Holding, no update, exits 0" \
   "[ '$rc' -eq 0 ] && [ ! -s '$ORDER' ] && grep -qi 'Holding this repo' '$OUT'"
 check "4Yn. CONTROL 'n' did NOT emit the no-answer note (a real answer arrived)" \
   "! grep -qi 'no answer' '$OUT' && ! grep -qi 'no operator' '$OUT'"
+
+# S348: all three ask sites must decide up front when stdin is not a terminal.
+for site in source stamp predates; do
+  remote="2026.7.1"; stamp="2026.7.0"
+  [ "$site" = source ] && remote="2026.7.2"
+  [ "$site" = predates ] && stamp=""
+  mk_fixture "$remote"
+  [ "$site" = source ] && git -C "$SRC" checkout -q --detach HEAD~1
+  setup_stubs
+  NONTTY_REPO="$(mk_initrepo "$stamp")"
+  OUT="$FX/nonterminal-$site.txt"
+  printf 'y\n' | LCARS_REPO="$SRC" LCARS_GIT_BIN="$GITSTUB" LCARS_GH_BIN="$GHSTUB" \
+    LCARS_VERSION_CWD="$NONTTY_REPO" LCARS_VERSION_STAMP="$STAMP" LCARS_NOW_EPOCH=1000 \
+    LCARS_INSTALL_BIN="$INSTALLSTUB" LCARS_UPDATE_BIN="$UPDATESTUB" \
+    bash "$CHECK" ask >"$OUT" 2>&1; rc=$?
+  check "S348.$site non-terminal check does NOT ask" \
+    "[ '$rc' -eq 0 ] && ! grep -q '\\[y/N\\]' '$OUT'"
+  check "S348.$site non-terminal check states No and leaves versions untouched" \
+    "grep -qi 'non-interactive.*No' '$OUT' && [ ! -s '$ORDER' ]"
+done
 
 # --- 5. DRIFT → warned, names lcars release -------------------------------
 mk_fixture "2026.7.1" 1              # tip has an unversioned commit past VERSION
@@ -509,7 +529,7 @@ OUT="$FX/out8d.txt"
 printf 'y\n' | LCARS_REPO="$SRC" LCARS_GIT_BIN="$GITSTUB" LCARS_GH_BIN="$GHSTUB" \
   LCARS_VERSION_CWD="$(mk_initrepo "")" LCARS_VERSION_STAMP="$STAMP" LCARS_NOW_EPOCH=1000 \
   LCARS_INSTALL_BIN="$INSTALLSTUB" LCARS_UPDATE_BIN="$UPDATESTUB" \
-  bash "$CHECK" ask >"$OUT" 2>&1
+  python3 "$REPO_ROOT/tests/lib/ptyreply.py" bash "$CHECK" ask >"$OUT" 2>&1
 check "8d. ask-mode unstamped prompt says PREDATES (not 'STAMP  BEHIND')" \
   "grep -qi 'PREDATES' '$OUT'"
 check "8d. ask-mode unstamped 'y' runs ONLY lcars update (no pull/install)" \
