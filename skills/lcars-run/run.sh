@@ -5484,6 +5484,10 @@ cmd_plan_save() {
     # missing-field message is never buried under a page of seam advice.
     validate_plan_seams "$PLAN" 2>>"$_verr" || _vrc=$?
   fi
+  if [ "$_vrc" -eq 0 ] && grep -q '"inputPaths"[[:space:]]*:' "$PLAN"; then
+    "${LCARS_PYTHON_BIN:-python3}" "$SKILL_DIR/declared-inputs.py" \
+      "$REPO_ROOT" "$PLAN" "$MISSION_DIR" "" validate 2>>"$_verr" || _vrc=$?
+  fi
   # ALWAYS replay what the validators said. On a clean pass that is nothing; it
   # is NOT always nothing, because validate_plan_seams reports an UNCHECKED
   # check (no interpreter, a crash) while still passing the plan — and a warning
@@ -6805,6 +6809,63 @@ cmd_schedule() {
     exit 1
   fi
 
+  # Off-checkout ticket zero uses its own index; unrelated captain staging stays.
+  local input_paths="" input_path input_ignore input_rule
+  if grep -q '"inputPaths"[[:space:]]*:' "$plan"; then
+    if ! input_paths="$("${LCARS_PYTHON_BIN:-python3}" "$SKILL_DIR/declared-inputs.py" \
+      "$REPO_ROOT" "$plan" "$MISSION_DIR" "$(json_str "$STATE" branch)" paths)"; then
+      rm -f "$table" "$wavemap" "$scan"
+      exit 1
+    fi
+  fi
+  if [ -n "$input_paths" ]; then
+    acquire_replay_lock
+    while IFS= read -r input_path; do
+      [ -n "$input_path" ] || continue
+      input_ignore="$(greenfield_gitignore_covers "$input_path")"
+      case "$input_ignore" in
+        yes)
+          if ! input_rule="$("$GIT_BIN" -C "$REPO_ROOT" check-ignore --no-index -v -- "$input_path" </dev/null 2>&1)"; then
+            release_replay_lock
+            rm -f "$table" "$wavemap" "$scan"
+            die "declared input '$input_path' is ignored, but git could not read its matching rule: $input_rule — nothing staged."
+          fi
+          release_replay_lock
+          rm -f "$table" "$wavemap" "$scan"
+          die "declared input '$input_path' is ignored — NOT staged. Matched ignore rule: $input_rule. Approval cannot override this; LCARS will not change .gitignore or force-add it."
+          ;;
+        unknown)
+          release_replay_lock
+          rm -f "$table" "$wavemap" "$scan"
+          die "declared input '$input_path': git could not check ignore rules — nothing staged."
+          ;;
+      esac
+    done <<< "$input_paths"
+    local input_rc=0
+    "${LCARS_PYTHON_BIN:-python3}" "$SKILL_DIR/declared-inputs.py" \
+      "$REPO_ROOT" "$plan" "$MISSION_DIR" "$(json_str "$STATE" branch)" || input_rc=$?
+    if [ "$input_rc" -ne 0 ]; then
+      release_replay_lock
+      rm -f "$table" "$wavemap" "$scan"
+      if [ "$input_rc" -eq 3 ]; then
+        local input_question; input_question="$(cat "$MISSION_DIR/ticket-zero-question.txt")"
+        write_pending "$MISSION_DIR/ticket-zero-question.txt" "schedule"
+        lcars_state_set "$STATE" awaitingHuman true
+        lcars_state_set_string "$STATE" pendingQuestion "$input_question"
+        lcars_state_refusal_die "lcars run"
+        gh_relabel "lcars:schedule lcars:awaiting-human" ""
+        echo "SCHEDULE: paused — ticket zero needs approval"
+        printf '  %s\n' "$input_question"
+        echo "  Stage:  schedule (awaiting-human)"
+        echo "  Answer with:  $(respond_hint)"
+        [ -n "$RELABEL_NOTE" ] && echo "$RELABEL_NOTE"
+        exit 0
+      fi
+      exit 1
+    fi
+    release_replay_lock
+  fi
+
   # SINGLE-TICKET FAST-PATH (BUG-005, Session 33). When Plan emits exactly ONE
   # ticket, a per-ticket sub-issue would merely DUPLICATE the Mission's own
   # issue — so don't open one. Reuse the Mission's githubIssue as the lone
@@ -7516,7 +7577,9 @@ lcarsq_stage() { # tree pkg_rel  → "<run_dir>\t<stage_dir>"
 # files that were already lying around (bugs.md, lockfiles, …). Best-effort and
 # jq-free; an empty/failed snapshot just means "nothing was pre-existing".
 snapshot_untracked() { # out-file
-  ( cd "$REPO_ROOT" && "$GIT_BIN" ls-files --others --exclude-standard ) >"$1" 2>/dev/null || : >"$1"
+  # Include ignored paths so commit_ticket cannot attribute older work to this
+  # ticket. Staging still uses --exclude-standard; this only widens the snapshot.
+  ( cd "$REPO_ROOT" && "$GIT_BIN" ls-files --others ) >"$1" 2>/dev/null || : >"$1"
 }
 
 # === Scratch hygiene (CLI/host-agnostic) ====================================
@@ -7818,10 +7881,38 @@ commit_ticket() { # ticket  summary
     [ -f "$before" ] && grep -qxF -- "$f" "$before" && continue     # pre-existing untracked
     ( cd "$REPO_ROOT" && "$GIT_BIN" add -- "$f" >/dev/null 2>&1 )
   done <"$now"
+  # The excluded listing cannot see ignored work products. Compare the bare
+  # listing against it and the ticket snapshot; scratch keeps its silent skip.
+  local ignored_output=0 ignore_verdict ignore_rule
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    is_scratch "$f" && continue
+    grep -qxF -- "$f" "$now" && continue
+    [ -f "$before" ] && grep -qxF -- "$f" "$before" && continue
+    ignore_verdict="$(greenfield_gitignore_covers "$f")"
+    case "$ignore_verdict" in
+      yes)
+        ignored_output=1
+        printf '  ⚠ ticket %s produced ignored file %s — NOT staged.\n' "$1" "$f" >&2
+        if ignore_rule="$("$GIT_BIN" -C "$REPO_ROOT" check-ignore --no-index -v -- "$f" </dev/null 2>&1)"; then
+          printf '    Matched ignore rule: %s\n' "$ignore_rule" >&2
+        else
+          printf '    Could not read the matching ignore rule: %s\n' "$ignore_rule" >&2
+        fi
+        printf '    Move the work product to a non-ignored path, or review the matched rule and commit it by hand; LCARS will not change ignore rules or force-add it.\n' >&2
+        ;;
+      unknown)
+        ignored_output=1
+        printf '  ⚠ ticket %s produced unstaged file %s — git could not determine whether it is ignored; inspect it with git check-ignore --no-index -v before committing it by hand.\n' "$1" "$f" >&2
+        ;;
+    esac
+  done < <( cd "$REPO_ROOT" && "$GIT_BIN" ls-files --others )
   rm -f "$now"
 
   if "$GIT_BIN" diff --cached --quiet 2>/dev/null; then
-    COMMIT_NOTE="  ⚠ ticket $1 produced no file changes to commit."
+    if [ "$ignored_output" -eq 0 ]; then
+      COMMIT_NOTE="  ⚠ ticket $1 produced no file changes to commit."
+    fi
     cleanup_runner_scratch "$before"
     return 0
   fi
@@ -27537,6 +27628,11 @@ FSG_EOF
     apply_declared_setup "$RESULT" "$SETUP" "${POSARG:-}" || __as_rc=$?
     printf 'ASRC=%s\n' "$__as_rc"
     printf 'ASNOTE=%s\n' "$SETUP_NOTE"
+    exit 0 ;;
+  snapshot-untracked-test)
+    locate_mission "$MISSION_ID"
+    [ -n "$TICKET" ] || die "usage: run.sh snapshot-untracked-test --mission <id> --ticket <t>"
+    snapshot_untracked "$(ticket_dir "$TICKET")/.untracked-before"
     exit 0 ;;
   # Drives the REAL commit_ticket in WORKTREE mode ($LCARS_TICKET_WORKTREE set by
   # the caller), so the multi-session cumulative-commit contract can be exercised

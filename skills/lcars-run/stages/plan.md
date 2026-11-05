@@ -284,6 +284,25 @@ Review loop-back), **revise** the plan to resolve every objection — re-slice
 oversized or horizontal tickets, fix dependency edges — rather than re-emitting
 the rejected shape.
 
+## Declare existing build inputs — `inputPaths`
+
+Declare supplied build-time scripts, source images and other input FILES in a
+ticket's `inputPaths` array, for example `"inputPaths": ["scripts/build.mjs",
+"assets/source.png"]`. These are existing captain-supplied inputs, not files the
+ticket will create. Use exact repo-relative file paths, never globs, directories,
+absolute paths, traversal, symlinks or `.git` paths. Omit the key or use `[]` when
+there are no supplied inputs; do not infer declarations from filenames in prose.
+This is a sibling of `seams` and `entrypoints`, not a DATA PRECONDITIONS claim.
+
+Schedule lands the union of these paths on the Mission branch as **ticket zero**
+before any Implement worker starts. Already-tracked inputs need no approval.
+NEW (untracked) inputs require the captain's awaiting-human approval first;
+`lcars respond` with `approve` resumes Schedule and lands only those files.
+Ignored or missing inputs are refused by name. Approval never overrides an
+ignore rule: LCARS never edits the captain's `.gitignore` or force-adds inputs.
+Workers read the landed bytes in their normal in-repo checkout; this does not
+grant access to external inputs or widen their path fence.
+
 ## Declare the seams and the entrypoints — `seams` / `entrypoints`
 
 Six live bugs shipped past a fully green test suite in one weekend, and every

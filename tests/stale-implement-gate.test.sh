@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
-# S345: real feedback / Implement / PR boundaries on the retained flat Git rig.
+# S345: real feedback / Implement / PR boundaries on a temporary flat Git fixture.
 set -uo pipefail
 
 ROOT="$PWD"
-drive=tests/drives/s345
-fixture="$drive/fix"
+scratch="$(mktemp -d)"
+trap 'rm -rf "$scratch"' EXIT
+scratch="$(cd "$scratch" && pwd -P)"
+fixture="$scratch/fix"
 repo="$fixture/repo"
 m="$repo/.git/lcars/missions/m-001"
-scratch="$(mktemp -d "$drive/stale-gate.XXXXXX")"
-trap 'rm -rf "$scratch"' EXIT
 pass=0
 fail=0
 ok()   { printf '  \033[32mPASS\033[0m %s\n' "$1"; pass=$((pass + 1)); }
@@ -18,6 +18,12 @@ check(){ if eval "$2"; then ok "$1"; else bad "$1 ($2)"; fi; }
 [ -d "$repo/.git" ] || {
   bash tests/fixtures/mkflatrepo.sh --dir "$fixture" --files 1 --sleep 0 --tip flat1
 }
+python3 - "$m/state.json" <<'PY'
+import json, sys
+from pathlib import Path
+path = Path(sys.argv[1])
+path.write_text(json.dumps(json.loads(path.read_text()), indent=2) + "\n")
+PY
 . skills/lcars-init/lcars-state.sh
 
 cat >"$scratch/gh" <<'SH'
@@ -54,11 +60,15 @@ SH
 cat >"$scratch/rebuild" <<'SH'
 #!/usr/bin/env bash
 set -euo pipefail
-wt="$(python3 -c 'import os; print(os.path.relpath(os.getcwd(), os.environ["TEST_ROOT"]))')"
-out="$(python3 -c 'import os; print(os.path.relpath(os.environ["LCARS_WORK_OUT"], os.environ["TEST_ROOT"]))')"
-case "$wt:$out" in /*|*:/*|*..*) printf 'Fixture path must be downward: %s : %s\n' "$wt" "$out" >&2; exit 1 ;; esac
+wt="$PWD"
+out="${LCARS_WORK_OUT:-}"
 [ -n "$out" ] || { echo 'No scratch output directory in prompt.' >&2; exit 1; }
-cd "$TEST_ROOT"
+for path in "$wt" "$out"; do
+  case "$path" in
+    "$TEST_SCRATCH/"*) ;;
+    *) printf 'Fixture path must stay in its temp directory: %s\n' "$path" >&2; exit 1 ;;
+  esac
+done
 printf 'rebuild\n' >>"$WORKER_LOG"
 cat >"$wt/tests/s345-feedback.test.js" <<'JS'
 const { test } = require('node:test');
@@ -89,24 +99,17 @@ SH
 chmod +x "$scratch/rebuild"
 chmod +x "$scratch/gh" "$scratch/claude"
 cp "$scratch/claude" "$scratch/copilot"
+export TEST_MKTEMP_BIN="$(command -v mktemp)"
 cat >"$scratch/mktemp" <<'SH'
 #!/usr/bin/env bash
 set -euo pipefail
-cd "$TEST_ROOT"
-args=()
+args=("$@")
 template=0
 for arg in "$@"; do
-  case "$arg" in
-    "$TEST_ROOT/"*) arg="${arg#"$TEST_ROOT/"}"; template=1 ;;
-    /*|*../*) printf 'Fixture refuses outside temporary path: %s\n' "$arg" >&2; exit 1 ;;
-    -*) ;;
-    *) template=1 ;;
-  esac
-  args+=("$arg")
+  case "$arg" in -*) ;; *) template=1 ;; esac
 done
-[ "$template" -eq 1 ] || args+=("$TEST_TMP/tmp.XXXXXX")
-path="$(/usr/bin/mktemp "${args[@]}")"
-printf '%s/%s\n' "$TEST_ROOT" "$path"
+[ "$template" -eq 1 ] || args+=("$TMPDIR/tmp.XXXXXX")
+exec "$TEST_MKTEMP_BIN" "${args[@]}"
 SH
 cat >"$scratch/age-git" <<'SH'
 #!/usr/bin/env bash
@@ -119,18 +122,20 @@ SH
 chmod +x "$scratch/age-git"
 chmod +x "$scratch/mktemp" "$scratch/copilot"
 export TEST_ROOT="$ROOT" GH_LOG="$scratch/gh.log" WORKER_LOG="$scratch/worker.log"
-export LCARS_GH_BIN="$ROOT/$scratch/gh" LCARS_WORKER_BIN="$ROOT/$scratch/claude"
+export TEST_SCRATCH="$scratch"
+export LCARS_GH_BIN="$scratch/gh" LCARS_WORKER_BIN="$scratch/claude"
 export LCARS_WORKER_CLI=claude LCARS_OWNER_ENFORCE=0 LCARS_XO_ENFORCE=0
 export LCARS_NOTIFY_NO_DESKTOP=1
 mkdir -p "$scratch/tmp"
-export TMPDIR="$ROOT/$scratch/tmp"
-export TEST_TMP="$scratch/tmp"
-export PATH="$ROOT/$scratch:$PATH"
+export TMPDIR="$scratch/tmp"
+export PATH="$scratch:$PATH"
 
 in_repo() {
-  python3 - "$repo" "$ROOT/$1" "${@:2}" <<'PY'
+  python3 - "$repo" "$1" "${@:2}" <<'PY'
 import subprocess, sys
-sys.exit(subprocess.call(["bash", *sys.argv[2:]], cwd=sys.argv[1]))
+from pathlib import Path
+sys.exit(subprocess.call(["bash", str(Path(sys.argv[2]).resolve()), *sys.argv[3:]],
+                         cwd=sys.argv[1]))
 PY
 }
 state() {
@@ -154,7 +159,7 @@ prepare() {
   rm -f "$m/feedback.md" "$m/events.jsonl" "$m/comments.json" "$m/pending.json"
   lcars_state_set_string "$m/state.json" stage implement
   lcars_state_set_string "$m/state.json" type feature
-  git -C "$repo" remote set-url origin "$ROOT/$fixture/remote.git"
+  git -C "$repo" remote set-url origin "$fixture/remote.git"
   if ! git --git-dir="$fixture/remote.git" rev-parse --verify refs/heads/main >/dev/null 2>&1; then
     git -C "$repo" push -q origin s345-base:main
   fi
@@ -253,7 +258,7 @@ printf 'EVIDENCE 2: feedback rc=%s; recorded=%s; tip=%s; advance rc=%s stage=%s;
 cat "$scratch/advance.out"
 
 unknown_age_rc=0
-LCARS_GIT_BIN="$ROOT/$scratch/age-git" in_repo skills/lcars-run/run.sh impl-advance --mission m-001 \
+LCARS_GIT_BIN="$scratch/age-git" in_repo skills/lcars-run/run.sh impl-advance --mission m-001 \
   >"$scratch/unknown-age.out" 2>&1 || unknown_age_rc=$?
 check '2. unknown commit age stays an explicit actionable refusal' \
   "[ '$unknown_age_rc' -eq 1 ] && grep -Fq 'tip $tip (age unknown' '$scratch/unknown-age.out' && grep -Fq \"implement the feedback and commit new work on 'lcars/m-001'\" '$scratch/unknown-age.out'"
@@ -300,12 +305,12 @@ printf 'EVIDENCE 3: zero-ahead control rc=%s; open_pr rc=%s; ahead=%s tip=%s; pr
 cat "$scratch/pr.out"
 
 unknown_pr_rc=0
-LCARS_GIT_BIN="$ROOT/$scratch/age-git" in_repo "$scratch/open-pr.sh" \
+LCARS_GIT_BIN="$scratch/age-git" in_repo "$scratch/open-pr.sh" \
   >"$scratch/unknown-pr-age.out" 2>&1 || unknown_pr_rc=$?
 check '3. unknown PR tip age stays an explicit actionable refusal' \
   "[ '$unknown_pr_rc' -eq 1 ] && grep -Fq 'tip $tip (age unknown' '$scratch/unknown-pr-age.out' && grep -Fq \"implement the feedback and commit new work on 'lcars/m-001'\" '$scratch/unknown-pr-age.out'"
 missing_pr_rc=0
-GIT_FAIL_TIP_READ=1 LCARS_GIT_BIN="$ROOT/$scratch/age-git" in_repo "$scratch/open-pr.sh" \
+GIT_FAIL_TIP_READ=1 LCARS_GIT_BIN="$scratch/age-git" in_repo "$scratch/open-pr.sh" \
   >"$scratch/missing-pr.out" 2>&1 || missing_pr_rc=$?
 check '3. PR branch-read failure names the rejected tip and unknown age' \
   "[ '$missing_pr_rc' -eq 1 ] && grep -Fq 'tip $tip (age unknown' '$scratch/missing-pr.out' && grep -Fq \"restore mission branch 'lcars/m-001' before retrying\" '$scratch/missing-pr.out'"
@@ -332,7 +337,7 @@ lcars_state_set_string "$m/state.json" branch "$positive_branch"
 feedback
 reschedule
 positive_rc=0
-LCARS_WORKER_BIN="$ROOT/$scratch/rebuild" in_repo skills/lcars-run/run.sh implement --mission m-001 \
+LCARS_WORKER_BIN="$scratch/rebuild" in_repo skills/lcars-run/run.sh implement --mission m-001 \
   >"$scratch/positive.out" 2>&1 || positive_rc=$?
 positive_tip="$(git -C "$repo" rev-parse "$positive_branch")"
 check '4. a real successful rebuild moves the tip and advances to Verify' \

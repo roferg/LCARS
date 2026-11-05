@@ -1432,7 +1432,7 @@ run_plan_save "$repo" "$pf"
 # S346: this is a RECONSTRUCTION, not a recovered pre-feedback plan. b151's
 # plan.json and approved-plan.json were overwritten identically; the original
 # measurement texts survive only in the corrected plan's serves fields.
-S346="$REPO_ROOT/tests/drives/s346"
+S346="$REPO_ROOT/tests/fixtures/s346-controls"
 repo="$(new_mission)"
 run_plan_save "$repo" "$S346/vacuous-asset-plan.json"
 S346_VACUOUS_OUT="$OUT"; S346_VACUOUS_RC="$RC"

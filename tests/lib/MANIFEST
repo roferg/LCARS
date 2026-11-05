@@ -26,6 +26,7 @@
 100644 tests/lib/MANIFEST                          doc        this file — the allow-list itself
 100644 tests/lib/README.md                         doc        what lives here, and the equipment-vs-rig line
 100644 tests/lib/cage.py                           exercised  harness, lcars-eeh, lcars-xo-observe/-press/-phone/-evidence/-render-gate
+100644 tests/lib/declared-inputs.py                exercised  declared-inputs — temporary Schedule/Respond fixtures
 100755 tests/lib/drive-rig.sh                      exercised  establish-vision, foundation-gate
 100644 tests/lib/evaluate_prompt_guard.py          exercised  lcars-xo-drives, lcars-xo-eyes
 100644 tests/lib/front-door-findings.test.py            exercised  front-door-findings

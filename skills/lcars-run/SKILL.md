@@ -78,6 +78,14 @@ cold worker. The driver subcommands sit on top of the mechanical persistence
 subcommands (`gate` / `save` / `validate-*` / `plan-save` / `review-save` /
 `impl-*`), which they reuse to record results.
 
+Plan may declare supplied build-input files in each ticket's `inputPaths`.
+Schedule commits their union on the Mission branch as **ticket zero** before
+Implement. NEW untracked paths first park Schedule behind `write_pending`'s
+awaiting-human gate; answer with `approve` via `lcars respond` to resume.
+Ignored or missing paths are refused by name, with the matching ignore rule
+when applicable. Approval never edits `.gitignore` or force-adds ignored inputs.
+No declarations means no ticket zero, gate, or added output.
+
 **This build implements the Research, Validate, Plan, Plan Review, Schedule,
 Implement, and Verify stages.** A Mission filed by `lcars file` sits at stage
 `align` (the Align grilling already happened during `lcars file`), so the next
@@ -1138,6 +1146,14 @@ below describes — fast-forwards of a clean tree, never anything else.
   changes, or a git failure just leaves a warning — the saved result still
   stands. Don't hand-commit the Implementer's output elsewhere; let
   `impl-save-result` do it onto the branch.
+  Newly produced ignored files get a loud warning naming the path and Git's
+  matching rule (including its source file), with guidance to move the work
+  product to a non-ignored path or review the rule and commit it by hand.
+  LCARS does not force-add these files or change ignore rules; legitimate
+  tracked changes still commit. Harness scratch remains silent, even when
+  ignored; non-scratch output ignored by `.git/info/exclude` is still reported.
+  The before-ticket snapshot includes ignored paths so older files are not
+  misreported as new output. A genuine no-op keeps the existing no-changes note.
 - **Verify is a human gate — `lcars run` never advances it.** `verify-summary`
   is read-only; the Mission only leaves Verify when the captain runs
   `lcars approve` (→ `done`) or `lcars feedback` (→ `align`). Don't try to ship
