@@ -7883,31 +7883,87 @@ commit_ticket() { # ticket  summary
   done <"$now"
   # The excluded listing cannot see ignored work products. Compare the bare
   # listing against it and the ticket snapshot; scratch keeps its silent skip.
-  local ignored_output=0 ignore_verdict ignore_rule
-  while IFS= read -r f; do
-    [ -n "$f" ] || continue
-    is_scratch "$f" && continue
-    grep -qxF -- "$f" "$now" && continue
-    [ -f "$before" ] && grep -qxF -- "$f" "$before" && continue
-    ignore_verdict="$(greenfield_gitignore_covers "$f")"
-    case "$ignore_verdict" in
-      yes)
-        ignored_output=1
-        printf '  ⚠ ticket %s produced ignored file %s — NOT staged.\n' "$1" "$f" >&2
-        if ignore_rule="$("$GIT_BIN" -C "$REPO_ROOT" check-ignore --no-index -v -- "$f" </dev/null 2>&1)"; then
-          printf '    Matched ignore rule: %s\n' "$ignore_rule" >&2
-        else
-          printf '    Could not read the matching ignore rule: %s\n' "$ignore_rule" >&2
-        fi
-        printf '    Move the work product to a non-ignored path, or review the matched rule and commit it by hand; LCARS will not change ignore rules or force-add it.\n' >&2
-        ;;
-      unknown)
-        ignored_output=1
-        printf '  ⚠ ticket %s produced unstaged file %s — git could not determine whether it is ignored; inspect it with git check-ignore --no-index -v before committing it by hand.\n' "$1" "$f" >&2
-        ;;
-    esac
-  done < <( cd "$REPO_ROOT" && "$GIT_BIN" ls-files --others )
-  rm -f "$now"
+  local ignored_output=0 ignore_candidates
+  ignore_candidates="$(mktemp)"
+  if ! "${LCARS_PYTHON_BIN:-python3}" - "$GIT_BIN" "$REPO_ROOT" "$now" "$before" "$(scratch_globs)" <<'IGNORE_CANDIDATES_PY' >"$ignore_candidates"
+import ctypes
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+git, repo, now, before, scratch = sys.argv[1:]
+excluded = set(Path(now).read_bytes().split(b"\n"))
+if Path(before).is_file():
+    excluded.update(Path(before).read_bytes().split(b"\n"))
+# Native fnmatch keeps shell case semantics for escapes and POSIX classes;
+# flags=0 lets wildcards match slashes and leading dots, just like is_scratch.
+fnmatch = ctypes.CDLL(None).fnmatch
+fnmatch.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_int]
+fnmatch.restype = ctypes.c_int
+globs = [glob for glob in os.fsencode(scratch).split(b"\n") if glob]
+listing = subprocess.run([git, "-C", repo, "ls-files", "--others"],
+                         capture_output=True, check=True).stdout
+for path in listing.split(b"\n"):
+    if path and path not in excluded and not any(fnmatch(glob, path, 0) == 0 for glob in globs):
+        sys.stdout.buffer.write(path + b"\n")
+IGNORE_CANDIDATES_PY
+  then
+    rm -f "$now" "$ignore_candidates"
+    return 1
+  fi
+  if [ -s "$ignore_candidates" ]; then
+    "${LCARS_PYTHON_BIN:-python3}" - "$GIT_BIN" "$REPO_ROOT" "$1" "$ignore_candidates" <<'IGNORED_OUTPUT_PY' >&2 || ignored_output=1
+import subprocess
+import sys
+from pathlib import Path
+
+git, repo, ticket, candidates = sys.argv[1:]
+paths = Path(candidates).read_text()
+result = subprocess.run(
+    [git, "-C", repo, "check-ignore", "--no-index", "--stdin", "-v"],
+    input=paths, capture_output=True, text=True)
+if result.returncode not in (0, 1):
+    examples = paths.splitlines()
+    print(f"  ⚠ ticket {ticket} produced {len(examples)} unstaged file(s) — git could not determine whether they are ignored.")
+    for path in examples[:2]:
+        print(f"    {path}")
+    if len(examples) > 2:
+        print(f"    … and {len(examples) - 2} more")
+    print(f"    check-ignore failed (exit {result.returncode}): {result.stderr[:300]!r}")
+    print("    Inspect them with git check-ignore --no-index -v before committing them by hand.")
+    sys.exit(1)
+
+groups = {}
+for line in result.stdout.splitlines():
+    rule, path = line.split("\t", 1)
+    if rule.split(":", 2)[2].startswith("!"):
+        continue
+    groups.setdefault(rule, []).append(path)
+total = sum(len(matches) for matches in groups.values())
+if not total:
+    sys.exit(0)
+if total == 1:
+    rule, matches = next(iter(groups.items()))
+    print(f"  ⚠ ticket {ticket} produced ignored file {matches[0]} — NOT staged.")
+    print(f"    Matched ignore rule: {rule}\t{matches[0]}")
+else:
+    print(f"  ⚠ ticket {ticket} produced {total} ignored files — NOT staged.")
+    shown = list(groups.items())[:3]
+    for rule, matches in shown:
+        print(f"    {rule} matched {len(matches)} path(s), e.g.")
+        for path in matches[:2]:
+            print(f"      {path}")
+        if len(matches) > 2:
+            print(f"      … and {len(matches) - 2} more")
+    if len(groups) > len(shown):
+        remaining = total - sum(len(matches) for _, matches in shown)
+        print(f"    … and {len(groups) - len(shown)} more rule(s) matching {remaining} path(s)")
+print("    Move the work product to a non-ignored path, or review the matched rule and commit it by hand; LCARS will not change ignore rules or force-add it.")
+sys.exit(1)
+IGNORED_OUTPUT_PY
+  fi
+  rm -f "$now" "$ignore_candidates"
 
   if "$GIT_BIN" diff --cached --quiet 2>/dev/null; then
     if [ "$ignored_output" -eq 0 ]; then
