@@ -7116,6 +7116,21 @@ ticket_dir() {
 # candidates), the files SPAN multiple packages (>1 candidate), or the manifest is
 # missing. Every "" case routes the gate through TODAY'S byte-for-byte repo-root
 # behaviour — a safe no-op.
+#
+# S352 — THE REPO ROOT IS A CANDIDATE TOO. Measured 2026-11-05 on a real drive:
+# a path that resolved to NO sub-package used to be silently SKIPPED, so a ticket
+# whose files were two under `tools/` and TEN elsewhere (data/, assets/, src/,
+# tests/) saw exactly ONE candidate — `tools` — and the whole ticket was declared
+# to belong to it. The post-commit gate then ran `npm test` inside `tools/`,
+# whose package.json is a bare TYPE MARKER (`{"type": "commonjs"}` — no scripts,
+# not a project), and failed in ~1s without running a single test, reporting
+# "the implementation is NOT present on the committed branch" about correct,
+# committed work. A path in no sub-package BELONGS TO THE ROOT, so it now
+# registers the root as a candidate under the sentinel `.` — never a legal
+# package dir, so it cannot collide with one. A ticket spanning root + one
+# sub-package therefore counts 2 and returns "" (the safe behaviour), while a
+# ticket genuinely CONFINED to one sub-package — the case this helper exists to
+# serve, type-marker packages included — is byte-for-byte unaffected.
 ticket_target_package() { # ticketId [root]  → pkg dir relative to repo root, or ""
   local id="$1" root="${2:-$REPO_ROOT}"
   local mf="$MISSION_DIR/manifests/$id.md"
@@ -7130,14 +7145,20 @@ ticket_target_package() { # ticketId [root]  → pkg dir relative to repo root, 
       if [ -f "$root/$d/package.json" ]; then cand="$d"; break; fi
       case "$d" in */*) d="${d%/*}" ;; *) d="." ;; esac
     done
-    [ -n "$cand" ] || continue
+    # S352: no enclosing sub-package means the path lives at the REPO ROOT, which
+    # is a scope like any other — register it as the sentinel `.` instead of
+    # dropping it, so a ticket spanning root + a sub-package counts TWO.
+    [ -n "$cand" ] || cand="."
     case " $found " in *" $cand "*) : ;; *) found="${found:+$found }$cand" ;; esac
   done <<EOF
 $(manifest_relevant_files "$mf")
 EOF
-  # 0 candidates → "" (root / no sub-package); exactly 1 → it; >1 (spans packages) → "".
+  # 0 candidates (an empty/unparseable section) → ""; exactly 1 → it; >1 (the files
+  # SPAN scopes, the repo root among them) → "".
   set -- $found
   [ "$#" -eq 1 ] || return 0
+  # The lone scope IS the repo root → "" (no sub-package at all), unchanged.
+  [ "$1" = "." ] && return 0
   printf '%s' "$1"
 }
 
@@ -8884,12 +8905,30 @@ rg_signature() { # category → the ERE for that category's runner-output signat
       #     genuine failing suite returns. Kept even though 3.81 reports a dead
       #     exec as `Error 1`, because on 4.x it is a positive, exit-code-true
       #     signal and it cannot collide with a real runner's status.
+      #
+      # S352 — npm's OWN "there is no test script here" DIAGNOSTIC. Measured
+      # 2026-11-05 on a real drive: the post-commit gate ran `npm test` inside a
+      # sub-package whose package.json is a bare TYPE MARKER
+      # (`{"type": "commonjs"}` — no `scripts` at all), npm printed
+      #   npm error Missing script: "test"
+      # and NOT ONE alternative above matched it. `Missing script` appeared
+      # nowhere in this script, so neither this arm nor the zero-collected path
+      # fired and the gate fell through to a plain red that accused correct,
+      # committed work of never having landed. It is exactly the npm sibling of
+      # the ENOENT / could-not-determine-executable cases already here: the
+      # runner never started, so the red is about the ENVIRONMENT and the verdict
+      # must be INCONCLUSIVE, never a missing implementation.
+      #   • `^npm (error|ERR!) Missing script:` — npm 10 says `error`, npm 9 and
+      #     earlier say `ERR!`; both carry the same prefix. LINE-START ANCHORED
+      #     on npm's own program prefix, exactly like its three neighbours, so an
+      #     assertion diff that merely QUOTES the phrase mid-line can never fire
+      #     (pinned as a control in tests/post-commit-false-red.test.sh).
       # Like every alternative above it, these only ever REJECT MORE reds — the
       # kind moves runner-red ⇒ env-failure, i.e. proof ⇒ INCONCLUSIVE, and
       # `proof_fail_first_missing_module`'s conjunct 4 re-asks THIS detector, so
       # a widened arm makes that narrowing refuse more too. No consumer of
       # red_gate_env_failure turns an env verdict into a pass.
-      printf '%s' '^(/[^: ]*/)?(sh|bash|zsh|dash|ash|ksh|env)(\[[0-9]+\])?:.*not found|^(/[^: ]*/)?(sh|bash|zsh|dash|ash|ksh)(\[[0-9]+\])?:.*: No such file or directory$|^npm (error|ERR!) code ENOENT|^npm (error|ERR!) enoent|^(vitest|jest|mocha|pytest|ts-node|tsx|deno|bun|npm|npx|pnpm|yarn|node):.*not found|^npm (error|ERR!) could not determine executable to run|ERR_PNPM_|node_modules.*(missing|not found|No such)|Cannot find module.*node_modules|WARN.*node_modules|ModuleNotFoundError|No module named|: Permission denied$|: cannot execute|cannot execute binary file|^env: .+: No such file or directory|No such file or directory.*(venv|virtualenv|/bin/activate|/bin/python)|source[[:space:]].*/activate|^g?make(\[[0-9]+\])?: \*\*\* (No rule to make target |No targets specified and no makefile found)|^g?make(\[[0-9]+\])?: .*: (No such file or directory|command not found)$|^g?make(\[[0-9]+\])?: \*\*\* \[.*\] Error 127$' ;;
+      printf '%s' '^(/[^: ]*/)?(sh|bash|zsh|dash|ash|ksh|env)(\[[0-9]+\])?:.*not found|^(/[^: ]*/)?(sh|bash|zsh|dash|ash|ksh)(\[[0-9]+\])?:.*: No such file or directory$|^npm (error|ERR!) code ENOENT|^npm (error|ERR!) enoent|^(vitest|jest|mocha|pytest|ts-node|tsx|deno|bun|npm|npx|pnpm|yarn|node):.*not found|^npm (error|ERR!) could not determine executable to run|^npm (error|ERR!) Missing script:|ERR_PNPM_|node_modules.*(missing|not found|No such)|Cannot find module.*node_modules|WARN.*node_modules|ModuleNotFoundError|No module named|: Permission denied$|: cannot execute|cannot execute binary file|^env: .+: No such file or directory|No such file or directory.*(venv|virtualenv|/bin/activate|/bin/python)|source[[:space:]].*/activate|^g?make(\[[0-9]+\])?: \*\*\* (No rule to make target |No targets specified and no makefile found)|^g?make(\[[0-9]+\])?: .*: (No such file or directory|command not found)$|^g?make(\[[0-9]+\])?: \*\*\* \[.*\] Error 127$' ;;
     assertion)
       # A GENUINE assertion red (the runner started, tests ran, an assertion FAILED)
       # — common vitest/jest/node/pytest phrasings. Classify-only: it never runs
@@ -15990,7 +16029,17 @@ PCTIP_EOF
     bothnote=" JUDGED COMMIT: ${ref}. CURRENT BRANCH TIP: ${tip} (the same commit — this verdict is about the current state of the branch)."
   fi
 
-  local detail="POST-COMMIT GATE — ticket $t's suite is RED against the COMMITTED branch state (commit ${ref}). The implementation is NOT present on the committed branch: the Implementer reported green from its OWN scratch worktree, but the change never landed (or only an out-of-scope change was committed). The ticket FAILS this worker session — it must land its change on the committed branch to pass.${bothnote} Command run: $cmd. To re-open this ticket and let a fresh worker land it, run: $(reopen_hint "$t")"
+  # S352 — SHOW THE RUNNER'S OWN WORDS. The zero-collected and env details below
+  # already carry an $out tail; this path threw the output away, so the ONE piece
+  # of evidence that would have named the real fault (`npm error Missing script:
+  # "test"`, measured 2026-11-05) never reached the captain or the next worker.
+  # Three fresh workers re-did correct work against a verdict whose evidence had
+  # been discarded. The tail is bounded exactly like the other details'.
+  local outtail=""
+  [ -n "$(printf '%s' "$out" | grep . || true)" ] \
+    && outtail="
+$(printf '%s\n' "$out" | tail -12)"
+  local detail="POST-COMMIT GATE — ticket $t's suite is RED against the COMMITTED branch state (commit ${ref}). The implementation is NOT present on the committed branch: the Implementer reported green from its OWN scratch worktree, but the change never landed (or only an out-of-scope change was committed). The ticket FAILS this worker session — it must land its change on the committed branch to pass.${bothnote} Command run: $cmd. To re-open this ticket and let a fresh worker land it, run: $(reopen_hint "$t")${outtail}"
   printf '  ✗ %s\n' "$detail" >&2
   [ -n "$POST_COMMIT_SIGNAL" ] && printf '%s\n' "$detail" >"$POST_COMMIT_SIGNAL"
   return 1
