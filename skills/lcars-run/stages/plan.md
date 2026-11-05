@@ -86,6 +86,13 @@ declaration:
   A note must be a quoted, non-blank reason explaining why, naming the asset
   BY NAME — not an empty string or a shrug.
 
+Write asset-verification criteria against the COMMITTED bytes —
+`git cat-file blob <ref>:<path>` — not the working tree: a sheet was once reported
+as landed because its hash matched a dirty working file while the committed blob
+was different art. Pixel- or hash-equality between a rebuild and the committed
+file passes when BOTH are blank; equality alone is not an absence bar —
+the content measurement is.
+
 Both declarations may coexist on a criterion; every field must still be valid.
 Use each field at most once per criterion: repeating `failsOnAbsence` or
 `absenceNote` is refused as "carries duplicate absence declarations — use each

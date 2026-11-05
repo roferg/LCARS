@@ -76,6 +76,10 @@ Audit **every** ticket against the criteria below:
   and one reasoned `absenceNote` together; that combination is legal.
   These fields live on criterion objects; other criteria may remain strings.
   Read the criterion's CLAIM and the note's reason, not just their syntax.
+  Object by ticket and criterion if asset verification reads the working tree
+  instead of the committed blob (`git cat-file blob <ref>:<path>`), or claims an
+  absence bar from pixel/hash equality alone: a rebuild and committed file can
+  BOTH be blank.
   Edge, jitter and mirror checks can all pass on blank sprite cells; an
   observable content criterion is the missing bar. Object by ticket and
   criterion when the claimed bar does not address absence, or the note dodges
