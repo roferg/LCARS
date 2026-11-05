@@ -10,7 +10,7 @@ import unittest
 
 ROOT = Path.cwd()
 RUN = os.environ.get("LCARS_RUN_SCRIPT", str(ROOT / "skills/lcars-run/run.sh"))
-SCRATCH = Path("tests/drives/s348")
+SCRATCH = Path("tests/drives/s349")
 # Untouched pre-S348 baseline, not HEAD's parent (which changes after commits).
 # LCARS_S348_PARENT can supply the same baseline from another local git ref.
 PARENT_COMMIT = os.environ.get(
@@ -119,8 +119,26 @@ elif role == "plan":
         self.record = self.home / "workers.jsonl"
 
     def tearDown(self):
-        self.git("worktree", "prune")
-        shutil.rmtree(self.home)
+        try:
+            self.assert_clean_recovery()
+            if int(self.git("rev-list", "--count", "--merges", "lcars/m-001")):
+                self.assert_preserved()
+            if os.environ.get("LCARS_S348_EVIDENCE"):
+                with open(os.environ["LCARS_S348_EVIDENCE"], "a") as f:
+                    f.write(json.dumps({
+                        "test": self.id(), "boundary": "cleanup",
+                        "old": self.old, "base": self.base,
+                        "tip": self.git("rev-parse", "lcars/m-001"),
+                        "originalTipAncestor": self.git(
+                            "merge-base", self.old, "lcars/m-001") == self.old,
+                        "baseAncestor": self.git(
+                            "merge-base", self.base, "lcars/m-001") == self.base,
+                        "worktreeCount": 1, "reanchorPaths": [],
+                        "replayLock": False,
+                    }) + "\n")
+        finally:
+            self.git("worktree", "prune")
+            shutil.rmtree(self.home)
 
     def git(self, *args):
         return subprocess.check_output(
@@ -161,6 +179,208 @@ elif role == "plan":
                     "output": result.stdout,
                 }) + "\n")
         return result
+
+    def command(self, script, *args):
+        result = subprocess.run(
+            ["bash", str(ROOT / script), *args], cwd=self.repo,
+            env=dict(os.environ, LCARS_GH_BIN=str(ROOT / self.fake),
+                     LCARS_VERSION_CHECK="0", LCARS_OWNER_ENFORCE="0",
+                     LCARS_XO_ENFORCE="0", LCARS_NOTIFY_NO_DESKTOP="1"),
+            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT, text=True, timeout=90,
+        )
+        if os.environ.get("LCARS_S348_EVIDENCE"):
+            with open(os.environ["LCARS_S348_EVIDENCE"], "a") as f:
+                f.write(json.dumps({
+                    "test": self.id(), "command": [str(script), *args],
+                    "rc": result.returncode, "old": self.old, "base": self.base,
+                    "tip": self.git("rev-parse", "lcars/m-001"),
+                    "state": json.loads(self.state.read_text()),
+                    "output": result.stdout,
+                }) + "\n")
+        return result
+
+    def send_back(self):
+        state = json.loads(self.state.read_text())
+        state["stage"] = "verify"
+        self.state.write_text(json.dumps(state, indent=2) + "\n")
+        result = self.command(
+            Path("skills/lcars-feedback/feedback.sh"), "--mission", "m-001",
+            "--feedback", "Implement the feedback, not just the base update.",
+        )
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertEqual(json.loads(self.state.read_text())["rejectedTip"], self.old)
+
+    def prepare_advance(self):
+        state = json.loads(self.state.read_text())
+        state["stage"] = "implement"
+        self.state.write_text(json.dumps(state, indent=2) + "\n")
+        (self.mdir / "waves.json").write_text(json.dumps([
+            {"wave": 1, "tickets": [{"id": "t-001", "issue": 101}]},
+        ], indent=2) + "\n")
+        ticket = self.mdir / "tickets/t-001"
+        ticket.mkdir(parents=True, exist_ok=True)
+        (ticket / "result.json").write_text(json.dumps({
+            "ticketId": "t-001", "passed": True, "attempts": 1,
+            "summary": "Worker claims success without new work.", "newTests": [],
+        }, indent=2) + "\n")
+
+    def open_pr(self):
+        return self.command(Path(RUN).relative_to(ROOT), "open-pr",
+                            "--mission", "m-001")
+
+    def prepare_pr(self):
+        remote = self.home / "remote.git"
+        subprocess.check_call(["git", "init", "-q", "--bare", str(remote)])
+        self.git("remote", "add", "origin", str(ROOT / remote))
+        self.fake.write_text(
+            "#!/usr/bin/env bash\n"
+            'case "$*" in *"pr create"*) echo https://github.com/fixture/local/pull/77 ;; esac\n'
+            "exit 0\n"
+        )
+
+    def advance(self):
+        return self.command(Path(RUN).relative_to(ROOT), "impl-advance",
+                            "--mission", "m-001")
+
+    def assert_rejected(self, result, stage):
+        tip = self.git("rev-parse", "lcars/m-001")
+        age = self.git("show", "-s", "--format=%ar", tip)
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn(
+            f"tip {tip} (committed {age}) is unchanged since send-back"
+            f" — implement the feedback and commit new work on 'lcars/m-001'."
+            f" Mission stays at {stage}.", result.stdout,
+        )
+        self.assertEqual(json.loads(self.state.read_text())["rejectedTip"], tip)
+        self.assert_clean_recovery()
+
+    def test_sent_back_drive_recovery_still_refuses_open_pr(self):
+        self.send_back()
+        result = self.drive()
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assert_preserved()
+        state = json.loads(self.state.read_text())
+        state["stage"] = "verify"
+        self.state.write_text(json.dumps(state, indent=2) + "\n")
+        self.prepare_pr()
+        self.assert_rejected(self.open_pr(), "verify")
+
+    def test_sent_back_drive_recovery_still_refuses_impl_advance(self):
+        self.send_back()
+        result = self.drive()
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assert_preserved()
+        self.prepare_advance()
+        self.assert_rejected(self.advance(), "implement")
+        self.assertEqual(json.loads(self.state.read_text())["stage"], "implement")
+
+    def test_sent_back_selfheal_recovery_still_refuses_both_guards(self):
+        self.send_back()
+        # Existing self-heal tests load this real guard at its own public seam.
+        seam = self.home / "selfheal.sh"
+        seam.write_text(r"""#!/usr/bin/env bash
+set -uo pipefail
+. "$TEST_ROOT/skills/lcars-init/lcars-common.sh"
+. "$TEST_ROOT/skills/lcars-init/lcars-state.sh"
+for fn in selfheal_base_drift_blocks selfheal_merge_base merge_base_in_worktree \
+          replay_lock_path acquire_replay_lock release_replay_lock; do
+  source /dev/stdin <<<"$(sed -n "/^$fn() {/,/^}/p" "$TEST_ROOT/skills/lcars-run/run.sh")"
+done
+drive_load_base_lib() { :; }
+pid_alive() { kill -0 "${1:-0}" 2>/dev/null; }
+json_str() { sed -n "s/.*\"$2\"[[:space:]]*:[[:space:]]*\"\([^\"]*\)\".*/\1/p" "$1" | head -1; }
+GIT_BIN=git
+REPLAY_LOCK_DIR=""
+REPLAY_LOCK_STALE_SECS=300
+REPO_ROOT="$PWD"
+MISSION_DIR=.git/lcars/missions/m-001
+STATE="$MISSION_DIR/state.json"
+selfheal_base_drift_blocks lcars/m-001 main
+rc=$?
+[ "$rc" -eq 1 ]
+""")
+        result = subprocess.run(
+            ["bash", str(ROOT / seam)], cwd=self.repo,
+            env=dict(os.environ, TEST_ROOT=str(ROOT)), stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=90,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assert_preserved()
+        self.prepare_advance()
+        self.assert_rejected(self.advance(), "implement")
+        state = json.loads(self.state.read_text())
+        state["stage"] = "verify"
+        self.state.write_text(json.dumps(state, indent=2) + "\n")
+        self.prepare_pr()
+        self.assert_rejected(self.open_pr(), "verify")
+
+    def test_real_feedback_commit_releases_advance_and_open_pr(self):
+        self.send_back()
+        result = self.drive()
+        self.assertEqual(result.returncode, 0, result.stdout)
+        merged = self.git("rev-parse", "lcars/m-001")
+        self.assertEqual(json.loads(self.state.read_text())["rejectedTip"], merged)
+        self.assert_preserved()
+        self.git("checkout", "-q", "lcars/m-001")
+        (self.repo / "mission").write_text("feedback implemented\n")
+        self.git("add", "mission")
+        self.git("commit", "-qm", "Implement real feedback")
+        self.assertNotEqual(self.git("rev-parse", "HEAD"), merged)
+        self.git("checkout", "-q", "main")
+        self.prepare_pr()
+        self.prepare_advance()
+        advance = self.advance()
+        self.assertEqual(advance.returncode, 0, advance.stdout)
+        self.assertEqual(json.loads(self.state.read_text())["stage"], "verify")
+        opened = self.open_pr()
+        self.assertEqual(opened.returncode, 0, opened.stdout)
+        state = json.loads(self.state.read_text())
+        self.assertEqual(state["prUrl"], "https://github.com/fixture/local/pull/77")
+        self.assertEqual(state["rejectedTip"], merged)
+        self.assert_preserved()
+        self.assert_clean_recovery()
+
+    def test_recovery_without_send_back_does_not_gain_rejected_tip(self):
+        result = self.drive()
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertNotIn("rejectedTip", json.loads(self.state.read_text()))
+        self.assert_preserved()
+        self.assert_clean_recovery()
+
+    def test_untracked_declared_input_does_not_block_recovery(self):
+        # This path is tracked on the mission, but untracked in the main checkout.
+        declared_input = self.repo / "mission"
+        original = b"captain's declared input\x00left untouched\n"
+        declared_input.write_bytes(original)
+        result = self.drive()
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertEqual(json.loads(self.state.read_text())["stage"], "validate",
+                         result.stdout)
+        self.assertNotEqual(self.git("rev-parse", "lcars/m-001"), self.old)
+        self.assertEqual(declared_input.read_bytes(), original)
+        self.assertIn("?? mission", self.git("status", "--porcelain"))
+        self.assertEqual(self.git("status", "--porcelain", "-uno"), "")
+        self.assert_preserved()
+        self.assert_clean_recovery()
+
+    def test_dirty_tracked_change_still_refuses_recovery(self):
+        tracked = self.repo / "shared"
+        original = "captain's uncommitted tracked change\n"
+        tracked.write_text(original)
+        result = self.drive()
+        self.assertEqual(result.returncode, 0, result.stdout)
+        state = json.loads(self.state.read_text())
+        self.assertTrue(state.get("awaitingHuman"), result.stdout)
+        self.assertIn(
+            "Recovery refused: dirty working tree; commit or stash your work before retrying.",
+            state["pendingQuestion"],
+        )
+        self.assertEqual(state["stage"], "research")
+        self.assertEqual(self.git("rev-parse", "lcars/m-001"), self.old)
+        self.assertEqual(tracked.read_text(), original)
+        self.assertFalse(self.record.exists())
+        self.assert_clean_recovery()
 
     def test_research_recovers_and_advances(self):
         result = self.drive()
@@ -215,6 +435,7 @@ elif role == "plan":
         self.assert_clean_recovery()
 
     def test_concurrent_advance_is_recorded_without_retry_or_dereference(self):
+        self.send_back()
         race = self.git("commit-tree", self.git("rev-parse", "lcars/m-001^{tree}"),
                         "-p", self.old, "-m", "concurrent fix")
         calls = self.home / "cas.log"
@@ -228,6 +449,7 @@ fi
         self.assertEqual(result.returncode, 0, result.stdout)
         state = json.loads(self.state.read_text())
         self.assertTrue(state.get("awaitingHuman"), result.stdout)
+        self.assertEqual(state["rejectedTip"], self.old)
         self.assertIn("mission tip changed", state["pendingQuestion"])
         self.assertEqual(self.git("rev-parse", "lcars/m-001"), race)
         self.assertEqual(self.git("merge-base", self.old, race), self.old)

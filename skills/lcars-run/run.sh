@@ -17325,7 +17325,9 @@ selfheal_merge_base() { # branch base
       printf 'Recovery refused: %s operation-in-progress; finish it before retrying.\n' "$LCARS_BASE_INFLIGHT"
       exit 1
     fi
-    dirty="$("$GIT_BIN" status --porcelain 2>&1)" || { printf '%s\n' "$dirty"; exit 1; }
+    # Untracked captain files cannot affect a merge in its own detached worktree.
+    # Still refuse tracked changes so recovery never runs over uncommitted work.
+    dirty="$("$GIT_BIN" status --porcelain -uno 2>&1)" || { printf '%s\n' "$dirty"; exit 1; }
     if [ -n "$dirty" ]; then
       printf 'Recovery refused: dirty working tree; commit or stash your work before retrying.\n'
       exit 1
@@ -17360,6 +17362,10 @@ selfheal_merge_base() { # branch base
       "refs/heads/$branch" "$merged" "$tip" || {
         printf 'Recovery refused: mission tip changed during the merge; no commits were replaced.\n'; exit 1;
       }
+    # A base-only merge is still rejected work, at its newly published SHA.
+    if [ -n "${STATE:-}" ] && [ -n "$(json_str "$STATE" rejectedTip)" ]; then
+      lcars_state_set_string "$STATE" rejectedTip "$merged" || exit 1
+    fi
   )
 }
 
