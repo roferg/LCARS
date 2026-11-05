@@ -72,6 +72,43 @@ But a criterion that carries `serves` MUST carry a readable `direction` — the
 harness rejects a `serves` with no `direction`, naming the criterion, because a
 missing direction is exactly the polarity nothing is allowed to guess.
 
+**Declare the binary-asset absence bar — `failsOnAbsence` / `absenceNote`.**
+On a ticket naming a `.png`, `.jpg`, `.jpeg`, `.gif`, `.webp`, `.wav`, `.mp3`,
+`.ogg`, `.ttf`, `.otf`, `.woff` or `.woff2` file in its `title`, `rationale`,
+`description`, `entrypoints[].path` or criterion text, at least ONE
+`acceptanceCriteria` entry must be an OBJECT carrying `text` and an absence
+declaration:
+
+- **`"failsOnAbsence": true`** — this criterion would FAIL if the delivered
+  asset were absent or blank. Write an observable content bar: edge, jitter and
+  mirror checks alone can all pass on blank sprite cells.
+- **`"absenceNote": "<why>"`** — absence cannot apply to this criterion.
+  A note must be a quoted, non-blank reason explaining why, naming the asset
+  BY NAME — not an empty string or a shrug.
+
+Write asset-verification criteria against the COMMITTED bytes —
+`git cat-file blob <ref>:<path>` — not the working tree: a sheet was once reported
+as landed because its hash matched a dirty working file while the committed blob
+was different art. Pixel- or hash-equality between a rebuild and the committed
+file passes when BOTH are blank; equality alone is not an absence bar —
+the content measurement is.
+
+Both declarations may coexist on a criterion; every field must still be valid.
+Use each field at most once per criterion: repeating `failsOnAbsence` or
+`absenceNote` is refused as "carries duplicate absence declarations — use each
+field at most once". One `"failsOnAbsence": true` together with one reasoned
+`absenceNote` is legal; repeating the same field is not.
+A blank `absenceNote` is refused even beside `"failsOnAbsence": true`, or another
+criterion with a valid declaration. Other criteria may remain plain strings
+unless the mockup contract requires objects. A ticket naming no binary asset
+owes no absence declaration. This adds no `drawnAt` minimum and does not change
+the mockup provenance rule.
+
+The harness REJECTS a missing or unusable absence declaration, naming the
+offending ticket and criterion. Declarations are accepted, not verified:
+Plan Review judges the criterion's claim and the note's reason from the ticket,
+not by executing checks or verifying them against assets.
+
 ## Slicing: cohesion first, size second
 
 **Slice on behavioral seams, not on a line count.** The primary rule is
@@ -246,6 +283,25 @@ If a reviewer-objections file is listed under "Read these artifacts" (a Plan
 Review loop-back), **revise** the plan to resolve every objection — re-slice
 oversized or horizontal tickets, fix dependency edges — rather than re-emitting
 the rejected shape.
+
+## Declare existing build inputs — `inputPaths`
+
+Declare supplied build-time scripts, source images and other input FILES in a
+ticket's `inputPaths` array, for example `"inputPaths": ["scripts/build.mjs",
+"assets/source.png"]`. These are existing captain-supplied inputs, not files the
+ticket will create. Use exact repo-relative file paths, never globs, directories,
+absolute paths, traversal, symlinks or `.git` paths. Omit the key or use `[]` when
+there are no supplied inputs; do not infer declarations from filenames in prose.
+This is a sibling of `seams` and `entrypoints`, not a DATA PRECONDITIONS claim.
+
+Schedule lands the union of these paths on the Mission branch as **ticket zero**
+before any Implement worker starts. Already-tracked inputs need no approval.
+NEW (untracked) inputs require the captain's awaiting-human approval first;
+`lcars respond` with `approve` resumes Schedule and lands only those files.
+Ignored or missing inputs are refused by name. Approval never overrides an
+ignore rule: LCARS never edits the captain's `.gitignore` or force-adds inputs.
+Workers read the landed bytes in their normal in-repo checkout; this does not
+grant access to external inputs or widen their path fence.
 
 ## Declare the seams and the entrypoints — `seams` / `entrypoints`
 

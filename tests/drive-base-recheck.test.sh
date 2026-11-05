@@ -778,7 +778,7 @@ check "14. …and it really cleared the condition (branch now at the base)" \
 check "14. …without detaching the worktree" \
   "[ \"\$(git -C '$WT8' symbolic-ref --short HEAD)\" = '$MB8' ]"
 
-# --- Behaviour 13: the branch carries its OWN commit → never moved ----------
+# --- Behaviour 13: own commits forbid a fast-forward, not a preserving merge --
 r9="$(make_fixture d9)"; prd9="$TMPROOT/prd9.md"; write_prd "$prd9"; file_mission "$r9" --prd "$prd9"
 M9="$(mdir "$r9")"; MB9="lcars/$MID"
 # One real commit ON the mission branch, made without checking it out — exactly
@@ -793,42 +793,39 @@ advance_origin d9 3
 ORIGIN_TIP9="$(sha "$TMPROOT/d9.git" refs/heads/main)"
 drive "$r9" "$MID" --step
 check "13. the drive exits 0" "[ \"\$(cat '$r9.drive.rc')\" = '0' ]"
-check "13. the mission branch was NOT moved" \
-  "[ \"\$(sha '$r9' 'refs/heads/$MB9')\" = '$OWN9' ]"
+check "13. the recovery preserves the original mission tip as an ancestor" \
+  "git -C '$r9' merge-base --is-ancestor '$OWN9' '$MB9'"
 check "13. its own commit still exists on it" \
   "git -C '$r9' cat-file -e '$MB9:mission-work.txt'"
 check "13. no commit was lost anywhere in the repo" \
   "git -C '$r9' cat-file -e '$OWN9^{commit}'"
 check "13. the base itself was still fast-forwarded" \
   "[ \"\$(sha '$r9' refs/heads/main)\" = '$ORIGIN_TIP9' ]"
-check "13. the loud ⚠ MISSION BRANCH warning is retained" \
-  "grep -q '⚠ MISSION BRANCH' '$r9.drive.out'"
-check "13. …and the rebase Fix line is printed" \
-  "grep -q 'Fix:.*git rebase' '$r9.drive.out'"
+check "13. recovery reports the merge instead of a stale-tree warning" \
+  "grep -q 'RECOVERY.*merged' '$r9.drive.out' && ! grep -q '⚠ MISSION BRANCH' '$r9.drive.out'"
+check "13. no worker-forbidden rebase is offered" \
+  "! grep -q 'Fix:.*git rebase' '$r9.drive.out'"
 check "13. …and NOT a 'git branch -f' that would destroy that commit" \
   "! grep -q 'git branch -f' '$r9.drive.out'"
-check "13. …and it names how many commits of its own it carries" \
-  "grep -qi 'commit(s) of its own' '$r9.drive.out'"
+check "13. the published merge contains the base tip as an ancestor too" \
+  "git -C '$r9' merge-base --is-ancestor '$ORIGIN_TIP9' '$MB9'"
 check "13. missionBranchAtBase is FALSE" \
   "[ \"\$(sf '$M9/state.json' baseFreshness.missionBranchAtBase)\" = 'False' ]"
 check "13. it does NOT claim a move" "! grep -q '✓ MISSION BRANCH' '$r9.drive.out'"
 
-# --- Behaviour 14b: the rebase Fix: really clears the condition -------------
-FIX9="$(fixline "$r9.drive.out")"
-check "14. the carries-work lane printed a Fix: command" "[ -n \"\$FIX9\" ]"
-FIX9_RC=0; ( cd "$r9" && eval "$FIX9" ) >"$TMPROOT/fix9.out" 2>&1 || FIX9_RC=$?
-check "14. …running it verbatim SUCCEEDS" "[ '$FIX9_RC' = '0' ] || { cat '$TMPROOT/fix9.out'; false; }"
-check "14. …the branch now contains the base" \
+# --- Behaviour 14b: the in-system merge already cleared the condition ------
+check "14. the recovery advanced Research to Validate" \
+  "[ \"\$(sf '$M9/state.json' stage)\" = 'validate' ]"
+check "14. its event names Align, not Implement" \
+  "ev_line '$M9/events.jsonl' selfheal_reanchor | qgrep -q '\"stage\":\"align\"'"
+check "14. the branch now contains the base" \
   "git -C '$r9' merge-base --is-ancestor refs/heads/main 'refs/heads/$MB9'"
-check "14. …and the mission's own work survived the rebase" \
+check "14. …and the mission's own work survived the merge" \
   "git -C '$r9' cat-file -e '$MB9:mission-work.txt'"
-# The rebase leaves the captain on the mission branch, which today's copy says
-# out loud; the "brings you back" command must work too.
-BACK9="$(grep -o 'git checkout [^ ]*' "$r9.drive.out" | tail -1)"
-check "14. …the 'brings you back' command was printed" "[ -n \"\$BACK9\" ]"
-BACK9_RC=0; ( cd "$r9" && eval "$BACK9" ) >/dev/null 2>&1 || BACK9_RC=$?
-check "14. …and running it returns HEAD to where the captain was" \
-  "[ '$BACK9_RC' = '0' ] && [ \"\$(git -C '$r9' symbolic-ref --short HEAD)\" = 'main' ]"
+check "14. recovery left the captain on the original checkout" \
+  "[ \"\$(git -C '$r9' symbolic-ref --short HEAD)\" = 'main' ]"
+check "14. recovery left no scratch worktree" \
+  "[ -z \"\$(find '$M9' -maxdepth 1 -name 'reanchor.*' -print)\" ]"
 
 # --- Behaviour 15: a logged-bug child moves NOTHING ------------------------
 # Re-asserted against the branch as well as the parent: the child's base IS the

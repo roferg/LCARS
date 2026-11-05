@@ -4,6 +4,85 @@ All notable changes to LCARS are recorded here, newest first. The version
 scheme is `YYYY.M.N` (calendar year, month with no leading zero, per-month
 counter). Every PR into `main` bumps `VERSION` and adds its entry here.
 
+## 2026.11.2 — 2026-11-05
+
+A hands-off Mission can no longer land half-missing work, and a Mission you
+sent back can no longer finish itself. The round's own capstone then caught two
+of these fixes fighting each other on a real drive, and a real-artwork drive
+caught a gate that rejected correct work.
+
+### a bar a blank artifact would satisfy is no longer a plan (S346)
+
+A Mission re-cut four character sheets, deleted a third of the art, and passed.
+All three measurement tools agreed it was perfect — one of them scored BETTER
+the more was deleted, because an empty row has flawless edges. Plan Review now
+refuses a ticket naming a binary asset unless its acceptance carries a
+criterion a blank or absent artifact FAILS: `failsOnAbsence` on the criterion,
+or an `absenceNote` saying which other criterion covers it. The rule is gated
+on tickets that actually name an asset, so a text-only repo never sees it.
+
+Measured, not assumed: a live Plan worker given the original PRD wrote the
+criterion unprompted on the first try, where the same worker without the
+contract declared nothing across 48 criteria. Plan Review's round-one objection
+count was unchanged — the rule costs nothing on a compliant plan.
+
+### a stage cannot be finished by commits you already rejected (S345)
+
+`lcars feedback` now records the rejected tip, and both Implement's advance and
+`open-pr` refuse while the branch still stands there. Send-back also clears the
+schedule — waves, tickets and manifests — so a re-plan starts clean instead of
+inheriting the work you turned down.
+
+### a produced file git cannot see is reported, and declared inputs land first (S347)
+
+A worker that writes only into an ignored path used to report "produced no file
+changes" and lose its work with the scratch worktree. The commit step now names
+the ignored products and the rule that hid them, bounded so a thousand-file
+repo costs a fraction of a second. Separately, a Mission that declares an input
+file now commits it at Schedule — with your approval first, naming the file and
+its blob — instead of a worker discovering at Implement that it is not there.
+
+### a branch behind its base recovers from any stage (S348)
+
+The re-anchor recovery reaches every headless stage, not just Implement, and a
+non-interactive prompt now reports and takes the default instead of blocking
+forever on a dialog nobody is awake to answer.
+
+### a base recovery is still rejected work (S349)
+
+The capstone's own finding, and the reason it exists. S348's recovery publishes
+a MERGE commit, whose new sha satisfied S345's sha-identity guard — so a
+Mission opened a pull request having implemented nothing, which is precisely
+the failure this round set out to stop, re-entered through the door the round
+added. It fires exactly after a send-back, when a Mission is most likely to be
+behind its base. The recovery now carries the rejected tip forward to the merge
+it publishes, which is the truth of the situation: the rejected state moved,
+and nothing was implemented. One honest commit still releases it.
+
+Confirmed on a real drive with a counterfactual on the pre-fix tree, and again
+end to end afterwards: a real post-send-back pipeline reaches the guard
+carrying the merge, the guard refuses, a real worker's commit releases it, and
+the pull request opens with the work in it.
+
+### a marker file no longer makes a gate reject correct work (S352)
+
+Found by driving the real artwork. A subdirectory holding a `package.json` that
+is only a module-type marker — `{"type": "commonjs"}`, no scripts — captured an
+entire ticket, because the ticket's other files, which belong to no
+sub-package, were skipped rather than counted as the repo root. The gate then
+ran `npm test` in that directory, npm answered `Missing script: "test"`, no
+classifier recognised it, and the verdict fell through to "the implementation
+is NOT present on the committed branch" — in under four seconds, having run no
+test, about work that was present and correct. It cost one ticket five worker
+sessions where one was real.
+
+Three changes: the repo root is now a scope, so a ticket spanning root and a
+sub-package falls back to running at the top level (a ticket genuinely confined
+to one package is unaffected); npm's missing-script diagnostic is an
+environment fault, never a verdict about your code; and the runner's real
+output now survives into the red instead of being discarded behind a false
+accusation.
+
 ## 2026.11.1 — 2026-11-03
 
 ### launch an app whose command carries a leading `VAR=value` (S296 L1)

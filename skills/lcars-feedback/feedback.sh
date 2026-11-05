@@ -10,8 +10,8 @@
 #   2. resets state.json's stage to "align",
 #   3. moves the GitHub label to lcars:align (kept in step with the stage).
 #
-# Crucially it DELETES nothing: the PRD, the research findings, the validated and
-# approved plans all stay on disk. So the next `lcars run <id>` re-enters Align
+# The PRD, research findings, validated and approved plans all stay on disk;
+# stale implement results are cleared. So the next `lcars run <id>` re-enters Align
 # with the FULL prior history — the spec, the artifacts, and every feedback note
 # — rather than starting cold.
 #
@@ -265,8 +265,8 @@ if [ "$TYPE" = "bug" ] && [ -n "$PARENT" ]; then
   exit 0
 fi
 
-# S178: the ordinary send-back KEEPS every artifact on purpose ("The prior PRD
-# and artifacts are kept"), and that is right — but plan-under-review.json is a
+# S178: the ordinary send-back KEEPS the prior planning history on purpose
+# ("The prior PRD and artifacts are kept") — but plan-under-review.json is a
 # PENDING REQUEST, not an artifact. It means "Plan Review asked for a revision
 # and has not got one", and the captain's correction supersedes that request:
 # the Mission re-plans from a corrected PRD, so the next plan must not be diffed
@@ -275,9 +275,24 @@ fi
 # and consumed it); this closes the window where it is not.
 rm -f "$MISSION_DIR/plan-under-review.json" 2>/dev/null || true
 
+# Schedule and Implement must rebuild results, not reuse the rejected run.
+rm -f  "$MISSION_DIR/waves.json" 2>/dev/null || true
+rm -rf "$MISSION_DIR/tickets"    2>/dev/null || true
+rm -rf "$MISSION_DIR/manifests"  2>/dev/null || true
+
 # 1b. Close any open PR (S75) and clear the recorded PR/review markers, so the
 # in-review PR does not linger and a re-entry to Verify opens a fresh one.
 close_open_pr
+
+# No branch tip means no measurement, not a reassuring zero or ambient HEAD.
+BRANCH="$(json_str "$STATE" branch)"
+if [ -n "$BRANCH" ]; then
+  if REJECTED_TIP="$(git rev-parse --verify "refs/heads/$BRANCH^{commit}" 2>/dev/null)"; then
+    lcars_state_set_string "$STATE" rejectedTip "$REJECTED_TIP"
+  else
+    printf "lcars feedback: could not read branch '%s'; no new rejected tip was recorded — restore that branch before re-running the Mission.\n" "$BRANCH" >&2
+  fi
+fi
 
 # 2 + 3. Reset to Align and move the label in step. Remove whatever stage label
 # the card carried (plus any awaiting-human overlay) and add lcars:align.
@@ -292,7 +307,7 @@ lcars_state_refusal_die "lcars feedback"
 echo "FEEDBACK: sent back to Align"
 echo "  Appended your note to feedback.md."
 echo "  Stage:  align (was ${PREV_STAGE:-unknown})"
-echo "  The prior PRD and artifacts are kept — \`lcars run $MISSION_ID\` re-enters Align with the full history."
+echo "  The prior PRD and planning history are kept; implement results are cleared — \`lcars run $MISSION_ID\` re-enters Align with the full history."
 [ -n "$PR_NOTE" ] && echo "$PR_NOTE"
 [ -n "$RELABEL_NOTE" ] && echo "$RELABEL_NOTE"
 exit 0

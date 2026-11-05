@@ -42,6 +42,7 @@
 100644 tests/fixtures/decisions/budget-prd.md
 100644 tests/fixtures/decisions/measured-prd.md
 100644 tests/fixtures/decisions/no-questions-prd.md
+100644 tests/fixtures/declared-input-worker.py
 100644 tests/fixtures/lcars-state-writer-last.py
 100644 tests/fixtures/mkflatrepo.sh
 100644 tests/fixtures/plan-mockup/bypass-buried-marker.json
@@ -92,6 +93,10 @@
 100644 tests/fixtures/s313-live-plan/README.md
 100644 tests/fixtures/s313-live-plan/folded-plan.json
 100644 tests/fixtures/s313-live-plan/standalone-lock-plan.json
+100644 tests/fixtures/s346-controls/README.md
+100644 tests/fixtures/s346-controls/corrected-declared.json
+100644 tests/fixtures/s346-controls/corrected-plan.json
+100644 tests/fixtures/s346-controls/vacuous-asset-plan.json
 100644 tests/fixtures/usage/claude-output-json.json
 100644 tests/fixtures/usage/claude-transcript.jsonl
 100644 tests/fixtures/usage/copilot-events-2.jsonl

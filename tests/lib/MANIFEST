@@ -26,6 +26,8 @@
 100644 tests/lib/MANIFEST                          doc        this file — the allow-list itself
 100644 tests/lib/README.md                         doc        what lives here, and the equipment-vs-rig line
 100644 tests/lib/cage.py                           exercised  harness, lcars-eeh, lcars-xo-observe/-press/-phone/-evidence/-render-gate
+100644 tests/lib/declared-inputs.py                exercised  declared-inputs — temporary Schedule/Respond fixtures
+100644 tests/lib/drive-reanchor.py                exercised  drive-reanchor — real drive boundary with local git and fake workers
 100755 tests/lib/drive-rig.sh                      exercised  establish-vision, foundation-gate
 100644 tests/lib/evaluate_prompt_guard.py          exercised  lcars-xo-drives, lcars-xo-eyes
 100644 tests/lib/front-door-findings.test.py            exercised  front-door-findings
@@ -35,6 +37,7 @@
 100644 tests/lib/lcars-ech-grants.test.py               exercised  lcars-ech
 100644 tests/lib/optional_runner.py                exercised  optional-runner, gate-execution-findings, settings-findings
 100644 tests/lib/phone-mkfixture.py                exercised  lcars-xo-phone
+100644 tests/lib/ptyreply.py                       exercised  version-check — interactive version-check pty replies
 100755 tests/lib/ptyrun.py                         exercised  harness, lcars-ech
 100755 tests/lib/real-worker.sh                    exercised  real-worker-resolution
 100644 tests/lib/skill_frontmatter.py              exercised  skill-frontmatter — the strict SKILL.md frontmatter reader

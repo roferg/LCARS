@@ -39,6 +39,13 @@ description: >-
 Versions are compared field-by-field **numerically**, so `2026.7.10` is correctly
 newer than `2026.7.2`.
 
+The shared `check.sh ask` helper asks to update only when stdin is a terminal.
+With non-interactive stdin it reports the available version or stale/predates
+stamp and explicitly takes **No**, leaving versions unchanged without reading
+an answer. This includes piped `y` input. Terminal prompts and their existing
+default-No behaviour are unchanged; explicit `check.sh update` remains the
+non-interactive update action.
+
 ## Run it
 
 ```bash

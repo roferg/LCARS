@@ -111,7 +111,22 @@ reports the refusal with inspection/retry guidance; it never retries or forces
 the pointer. Checkout registration is rechecked immediately before publication,
 but registration and ref publication are not one atomic transaction.
 
-During Implement self-heal, a working Mission that is behind its base can instead **merge** the base into its branch, preserving published commits and linked bug fixes without rebasing. Recovery uses a detached scratch worktree and the replay mutex, checks both original tips remain ancestors, and updates the Mission ref only if its old tip is unchanged. The existing shared ticket-suite re-test and full-suite gate judge the merged state. Dirty trees, unfinished operations, checked-out Mission branches and merge conflicts stop recovery for a human; the lossless-only startup fast-forward rule is unchanged.
+During Implement self-heal, a working Mission that is behind its base can instead **merge** the base into its branch, preserving published commits and linked bug fixes without rebasing. Recovery uses a detached scratch worktree and the replay mutex, checks both original tips remain ancestors, and updates the Mission ref only if its old tip is unchanged. The existing shared ticket-suite re-test and full-suite gate judge the merged state. Dirty tracked changes, unfinished operations, checked-out Mission branches and merge conflicts stop recovery for a human; untracked files in the captain's checkout cannot affect the detached merge and are left untouched. The lossless-only startup fast-forward rule is unchanged.
+
+Before non-Implement Stages, the drive-level base check also calls that **same**
+merge recovery beside the unchanged own-commit fast-forward refusal. It supports
+local and recorded remote-tracking bases, preserves both tips, and publishes
+with one `--no-deref` compare-and-swap attempt. Failure parks the Mission
+awaiting-human before a worker runs; success continues the actual Stage on the
+merged tip. Implement's self-heal flow is unchanged. The freshness verdict
+itself remains best-effort and non-blocking; a recovery refusal is a separate
+human gate.
+
+After either recovery path successfully publishes a merge, an existing
+`rejectedTip` is carried forward to that merge's SHA: merging the base alone
+does not implement send-back feedback. Both Implement advancement and PR
+opening still refuse that tip until new work is committed. Recovery never
+adds `rejectedTip` to a Mission that was not sent back.
 
 ## .git/lcars/
 The directory where the Harness stores all local state for active Missions: paused state, wave dependency graphs, question queues, and stage checkpoints. Stored inside `.git/` so it is never tracked by git and requires no `.gitignore` entry. The Harness leaves zero artifacts in the working tree.

@@ -3289,9 +3289,11 @@ implement_nav_block() { # ticket-id
 
 # Each Stage runs only when the Mission is parked at the stage that feeds it,
 # so we never relabel or overwrite a mission mid-flight. Research runs on
-# `align`; Validate runs on `validate`.
+# `align` or its in-flight `research` resume pointer; Validate runs on `validate`.
 require_stage() { # wanted-stage
   local stage; stage="$(json_str "$STATE" stage)"
+  # Research's in-flight resume pointer feeds the same gate/save as Align.
+  [ "$1" = align ] && [ "$stage" = research ] && return 0
   [ "$stage" = "$1" ] || die "mission is at stage '${stage:-unknown}', not '$1' — this Stage only runs on a mission parked at '$1'."
 }
 
@@ -3708,7 +3710,10 @@ LCARS_AWK_CRIT="$(cat <<'LCARS_AWK_CRIT_EOF'
 # null, true, 0 and "\t" as content, so all four passed as anchors. The
 # validator refuses anything that is not a non-empty string, and it can only do
 # that if the parser tells it what the value WAS.
-function lcars_crit_entries(t, ctext, cdecl, cval, ctype, cserves, cdir,   i, n, ch, inq, esc, cur, k, depth, pend, bare, j, d2, q2, e2) {
+# cabs/cabsval/cabstype independently retain failsOnAbsence / absenceNote, with
+# values and types keyed by criterion AND field so both can coexist.
+# An absence declaration never changes mockup provenance on the criterion.
+function lcars_crit_entries(t, ctext, cdecl, cval, ctype, cserves, cdir, cabs, cabsval, cabstype,   i, n, ch, inq, esc, cur, k, depth, pend, bare, j, d2, q2, e2) {
   n = length(t); inq = 0; esc = 0; cur = ""; k = 0; depth = 0; pend = ""
   for (i = 1; i <= n; i++) {
     ch = substr(t, i, 1)
@@ -3717,12 +3722,16 @@ function lcars_crit_entries(t, ctext, cdecl, cval, ctype, cserves, cdir,   i, n,
       else if (ch == "\\") { cur = cur ch; esc = 1 }
       else if (ch == "\"") {
         inq = 0
-        if (depth == 0) { k++; ctext[k] = cur; cdecl[k] = ""; cval[k] = ""; ctype[k] = ""; cserves[k] = ""; cdir[k] = "" }
+        if (depth == 0) { k++; ctext[k] = cur; cdecl[k] = ""; cval[k] = ""; ctype[k] = ""; cserves[k] = ""; cdir[k] = ""; cabs[k] = ""; cabsval[k] = ""; cabstype[k] = "" }
         else if (pend == "") { pend = cur }          # this string is a KEY
         else {                                        # …the VALUE of that key
           if (pend == "text") ctext[k] = cur
           else if (pend == "serves") cserves[k] = cur
           else if (pend == "direction") cdir[k] = cur
+          else if (pend == "failsOnAbsence" || pend == "absenceNote") {
+            cabs[k] = cabs[k] (cabs[k] == "" ? "" : " ") pend
+            cabsval[k, pend] = cur; cabstype[k, pend] = "s"
+          }
           else if (pend == "drawnAt" || pend == "notDrawn" || pend == "notVisual") {
             cdecl[k] = cdecl[k] (cdecl[k] == "" ? "" : " ") pend
             cval[k] = cur; ctype[k] = "s"
@@ -3735,7 +3744,7 @@ function lcars_crit_entries(t, ctext, cdecl, cval, ctype, cserves, cdir,   i, n,
     }
     if (ch == "\"") { inq = 1; cur = "" }
     else if (ch == "{" && depth == 0) {
-      depth = 1; pend = ""; k++; ctext[k] = ""; cdecl[k] = ""; cval[k] = ""; ctype[k] = ""; cserves[k] = ""; cdir[k] = ""
+      depth = 1; pend = ""; k++; ctext[k] = ""; cdecl[k] = ""; cval[k] = ""; ctype[k] = ""; cserves[k] = ""; cdir[k] = ""; cabs[k] = ""; cabsval[k] = ""; cabstype[k] = ""
     }
     else if ((ch == "{" || ch == "[") && depth > 0) {
       # A NESTED object/array as a value ({"drawnAt": {"screen": "b"}} or []).
@@ -3758,6 +3767,10 @@ function lcars_crit_entries(t, ctext, cdecl, cval, ctype, cserves, cdir,   i, n,
         cdecl[k] = cdecl[k] (cdecl[k] == "" ? "" : " ") pend
         cval[k] = substr(t, i, 1) "…" ; ctype[k] = "x"
       }
+      else if (pend == "failsOnAbsence" || pend == "absenceNote") {
+        cabs[k] = cabs[k] (cabs[k] == "" ? "" : " ") pend
+        cabsval[k, pend] = substr(t, i, 1); cabstype[k, pend] = "x"
+      }
       pend = ""; i = j
     }
     else if (ch == "}" && depth == 1) { depth = 0; pend = "" }
@@ -3775,6 +3788,10 @@ function lcars_crit_entries(t, ctext, cdecl, cval, ctype, cserves, cdir,   i, n,
       if (pend == "drawnAt" || pend == "notDrawn" || pend == "notVisual") {
         cdecl[k] = cdecl[k] (cdecl[k] == "" ? "" : " ") pend
         cval[k] = bare; ctype[k] = "b"
+      }
+      else if (pend == "failsOnAbsence" || pend == "absenceNote") {
+        cabs[k] = cabs[k] (cabs[k] == "" ? "" : " ") pend
+        cabsval[k, pend] = bare; cabstype[k, pend] = "b"
       }
       pend = ""
       i--                                   # let the loop see the , or }
@@ -3913,12 +3930,51 @@ validate_plan_json() { # file [mockup-basenames] [mockup-place-names] [final-att
     # citation true, does the BUILT screen match the drawing — is handed to the
     # build-gate round (see the handoff at plan_mockup_contract_block).
     function excerpt(c) { return (length(c) > 110 ? substr(c, 1, 110) "…" : c) }
+    # S346: filenames only, in title, rationale, description, entrypoint paths
+    # and criterion text. No prose classification or inference from serves/proof.
+    # Residual: an asset ticket spelling no filename in any scanned field is
+    # invisible here; closing that would require forbidden prose classification.
+    # stages/plan-review.md asks the reviewer the absence question, and a real
+    # Copilot reviewer caught such a ticket in testing. That is the mitigation:
+    # judgement, not a guarantee.
+    function binary_asset(v) {
+      return tolower(v) ~ /(^|[^a-z0-9_.\/<>-])[a-z0-9_.\/<>-]+\.(png|jpg|jpeg|gif|webp|wav|mp3|ogg|ttf|otf|woff|woff2)([^a-z0-9_.-]|[.-]([^a-z0-9]|$)|$)/
+    }
     # jsonblank(v) — a STRING whose content is whitespace is not a declaration.
     # It decodes the whitespace ESCAPES too: round 2 checked bytes, so a JSON
     # "\t" read as content and passed as an anchor.
     function jsonblank(v) {
       gsub(/\\[tnrfb]/, "", v); gsub(/\\u0020/, "", v)
       gsub(/[[:space:]]/, "", v); return (v == "")
+    }
+    # Kept separate: S346 must not change the existing mockup blank check.
+    # Handle JSON escapes and literal UTF-8 Unicode whitespace alike.
+    function absenceblank(v) {
+      v=tolower(v)
+      gsub(/\\[tnrf]/, "", v)
+      gsub(/\\u(000[9a-d]|001[c-f]|0020|0085|00a0|1680|200[0-9a]|202[89f]|205f|3000)/, "", v)
+      gsub(/| | | | | | | | | | | | | | | | | |　/, "", v)
+      gsub(/[[:space:]]/, "", v)
+      return (v == "")
+    }
+    function abswhy(i,   n, names, j, d) {
+      if (sdabs[i] == "") return "no absence declaration"
+      if (sdtext[i] == "") return "has no \"text\" for its absence declaration"
+      n=split(sdabs[i], names, " ")
+      if (n > 2 || (n == 2 && names[1] == names[2]))
+        return "carries duplicate absence declarations — use each field at most once"
+      for (j=1; j<=n; j++) {
+        d=names[j]
+        if (d == "failsOnAbsence") {
+          if (sdabstype[i, d] != "b" || sdabsval[i, d] != "true")
+            return "\"failsOnAbsence\" must be the bare value true"
+        }
+        else if (d == "absenceNote") {
+          if (sdabstype[i, d] != "s") return "\"absenceNote\" must be a quoted string"
+          if (absenceblank(sdabsval[i, d])) return "\"absenceNote\" is blank — explain by name why absence cannot apply"
+        }
+      }
+      return ""
     }
     # typedesc(i) — what the planner actually wrote, for the message.
     function typedesc(i) {
@@ -3966,6 +4022,7 @@ validate_plan_json() { # file [mockup-basenames] [mockup-place-names] [final-att
       inobj=1; delete have; delete crit; acok=0; id=""; ndep=0; in_ac=0; actext=""; visual=""
       in_deps=0; deptext=""
       ttl=""; enew=-1; etest=-1          # S313 — the regression-lock signals
+      asset=0
       next
     }
     /^[[:space:]]*\}[,]?[[:space:]]*$/ && !in_ac && !in_deps {
@@ -3988,7 +4045,20 @@ validate_plan_json() { # file [mockup-basenames] [mockup-place-names] [final-att
       # ticket (a requirement link is not a visual concern), accumulated into ONE
       # message like s174bad and emitted from END.
       delete sdtext; delete sddecl; delete sdval; delete sdtype; delete sdserves; delete sddir
-      nsd = lcars_crit_entries(actext, sdtext, sddecl, sdval, sdtype, sdserves, sddir)
+      delete sdabs; delete sdabsval; delete sdabstype
+      nsd = lcars_crit_entries(actext, sdtext, sddecl, sdval, sdtype, sdserves, sddir, sdabs, sdabsval, sdabstype)
+      for (ci = 1; ci <= nsd; ci++) if (binary_asset(sdtext[ci])) asset=1
+      if (asset) {
+        absenceok=0
+        for (ci = 1; ci <= nsd; ci++)
+          if (abswhy(ci) == "") absenceok=1
+        for (ci = 1; ci <= nsd; ci++) {
+          why=abswhy(ci)
+          if (!absenceok || (sdabs[ci] != "" && why != ""))
+            absencebad = absencebad "\n  ticket " tickets " (" id "), criterion " ci \
+              " (\"" excerpt(sdtext[ci]) "\"): " why "."
+        }
+      }
       for (ci = 1; ci <= nsd; ci++) {
         if (sdserves[ci] != "" && sddir[ci] != "delivers" && sddir[ci] != "removes") {
           sdbad = sdbad "\n  ticket " tickets " (" id "), criterion " ci
@@ -4099,6 +4169,19 @@ validate_plan_json() { # file [mockup-basenames] [mockup-place-names] [final-att
       if (n < 2) next
       key=a[2]; have[key]=1
       if (key=="id") id=a[4]
+      else if (key=="description" || key=="rationale") {
+        v=$0; sub(/^[[:space:]]*"(description|rationale)"[[:space:]]*:[[:space:]]*/, "", v)
+        if (binary_asset(v)) asset=1
+      }
+      else if (key=="entrypoints") {
+        v=$0
+        while (match(v, /"path"[[:space:]]*:[[:space:]]*"[^"]*"/)) {
+          p=substr(v, RSTART, RLENGTH)
+          sub(/^"path"[[:space:]]*:[[:space:]]*"/, "", p); sub(/"$/, "", p)
+          if (binary_asset(p)) asset=1
+          v=substr(v, RSTART + RLENGTH)
+        }
+      }
       # S313 — the TITLE text (taken as the whole line minus the key, for the
       # same escaped-quote reason the criteria accumulator gives below) and the
       # two LoC declarations the regression-lock rule reads. A bare numeric value
@@ -4106,6 +4189,7 @@ validate_plan_json() { # file [mockup-basenames] [mockup-place-names] [final-att
       # exactly as the slice-pressure reader does.
       else if (key=="title") {
         v=$0; sub(/.*"title"[[:space:]]*:[[:space:]]*/, "", v); ttl=v
+        if (binary_asset(v)) asset=1
       }
       else if (key=="estimatedNewLoc") {
         v=a[3]; gsub(/[^0-9]/, "", v); if (v != "") enew=v+0
@@ -4172,6 +4256,8 @@ validate_plan_json() { # file [mockup-basenames] [mockup-place-names] [final-att
             req[8]="dependencies"; req[9]="rationale" }
     END {
       if (tickets == 0) fail("no tickets in the plan — a plan needs at least one ticket.")
+      if (absencebad != "" && !failed)
+        fail("this plan'"'"'s binary-asset tickets do not declare a usable absence bar. Add \"failsOnAbsence\": true to a criterion, or a quoted, non-blank \"absenceNote\" explaining why absence cannot apply. Declarations are accepted, not verified." absencebad)
       for (r=1; r<=drefs; r++)
         if (!(depof[r] in ids))
           fail("ticket " depticket[r] " depends on \"" depof[r] "\", which is not a ticket id in this plan.")
@@ -5399,6 +5485,10 @@ cmd_plan_save() {
     # half-formed plan is never failed twice for the same thing, and so a
     # missing-field message is never buried under a page of seam advice.
     validate_plan_seams "$PLAN" 2>>"$_verr" || _vrc=$?
+  fi
+  if [ "$_vrc" -eq 0 ] && grep -q '"inputPaths"[[:space:]]*:' "$PLAN"; then
+    "${LCARS_PYTHON_BIN:-python3}" "$SKILL_DIR/declared-inputs.py" \
+      "$REPO_ROOT" "$PLAN" "$MISSION_DIR" "" validate 2>>"$_verr" || _vrc=$?
   fi
   # ALWAYS replay what the validators said. On a clean pass that is nothing; it
   # is NOT always nothing, because validate_plan_seams reports an UNCHECKED
@@ -6721,6 +6811,63 @@ cmd_schedule() {
     exit 1
   fi
 
+  # Off-checkout ticket zero uses its own index; unrelated captain staging stays.
+  local input_paths="" input_path input_ignore input_rule
+  if grep -q '"inputPaths"[[:space:]]*:' "$plan"; then
+    if ! input_paths="$("${LCARS_PYTHON_BIN:-python3}" "$SKILL_DIR/declared-inputs.py" \
+      "$REPO_ROOT" "$plan" "$MISSION_DIR" "$(json_str "$STATE" branch)" paths)"; then
+      rm -f "$table" "$wavemap" "$scan"
+      exit 1
+    fi
+  fi
+  if [ -n "$input_paths" ]; then
+    acquire_replay_lock
+    while IFS= read -r input_path; do
+      [ -n "$input_path" ] || continue
+      input_ignore="$(greenfield_gitignore_covers "$input_path")"
+      case "$input_ignore" in
+        yes)
+          if ! input_rule="$("$GIT_BIN" -C "$REPO_ROOT" check-ignore --no-index -v -- "$input_path" </dev/null 2>&1)"; then
+            release_replay_lock
+            rm -f "$table" "$wavemap" "$scan"
+            die "declared input '$input_path' is ignored, but git could not read its matching rule: $input_rule — nothing staged."
+          fi
+          release_replay_lock
+          rm -f "$table" "$wavemap" "$scan"
+          die "declared input '$input_path' is ignored — NOT staged. Matched ignore rule: $input_rule. Approval cannot override this; LCARS will not change .gitignore or force-add it."
+          ;;
+        unknown)
+          release_replay_lock
+          rm -f "$table" "$wavemap" "$scan"
+          die "declared input '$input_path': git could not check ignore rules — nothing staged."
+          ;;
+      esac
+    done <<< "$input_paths"
+    local input_rc=0
+    "${LCARS_PYTHON_BIN:-python3}" "$SKILL_DIR/declared-inputs.py" \
+      "$REPO_ROOT" "$plan" "$MISSION_DIR" "$(json_str "$STATE" branch)" || input_rc=$?
+    if [ "$input_rc" -ne 0 ]; then
+      release_replay_lock
+      rm -f "$table" "$wavemap" "$scan"
+      if [ "$input_rc" -eq 3 ]; then
+        local input_question; input_question="$(cat "$MISSION_DIR/ticket-zero-question.txt")"
+        write_pending "$MISSION_DIR/ticket-zero-question.txt" "schedule"
+        lcars_state_set "$STATE" awaitingHuman true
+        lcars_state_set_string "$STATE" pendingQuestion "$input_question"
+        lcars_state_refusal_die "lcars run"
+        gh_relabel "lcars:schedule lcars:awaiting-human" ""
+        echo "SCHEDULE: paused — ticket zero needs approval"
+        printf '  %s\n' "$input_question"
+        echo "  Stage:  schedule (awaiting-human)"
+        echo "  Answer with:  $(respond_hint)"
+        [ -n "$RELABEL_NOTE" ] && echo "$RELABEL_NOTE"
+        exit 0
+      fi
+      exit 1
+    fi
+    release_replay_lock
+  fi
+
   # SINGLE-TICKET FAST-PATH (BUG-005, Session 33). When Plan emits exactly ONE
   # ticket, a per-ticket sub-issue would merely DUPLICATE the Mission's own
   # issue — so don't open one. Reuse the Mission's githubIssue as the lone
@@ -6969,6 +7116,21 @@ ticket_dir() {
 # candidates), the files SPAN multiple packages (>1 candidate), or the manifest is
 # missing. Every "" case routes the gate through TODAY'S byte-for-byte repo-root
 # behaviour — a safe no-op.
+#
+# S352 — THE REPO ROOT IS A CANDIDATE TOO. Measured 2026-11-05 on a real drive:
+# a path that resolved to NO sub-package used to be silently SKIPPED, so a ticket
+# whose files were two under `tools/` and TEN elsewhere (data/, assets/, src/,
+# tests/) saw exactly ONE candidate — `tools` — and the whole ticket was declared
+# to belong to it. The post-commit gate then ran `npm test` inside `tools/`,
+# whose package.json is a bare TYPE MARKER (`{"type": "commonjs"}` — no scripts,
+# not a project), and failed in ~1s without running a single test, reporting
+# "the implementation is NOT present on the committed branch" about correct,
+# committed work. A path in no sub-package BELONGS TO THE ROOT, so it now
+# registers the root as a candidate under the sentinel `.` — never a legal
+# package dir, so it cannot collide with one. A ticket spanning root + one
+# sub-package therefore counts 2 and returns "" (the safe behaviour), while a
+# ticket genuinely CONFINED to one sub-package — the case this helper exists to
+# serve, type-marker packages included — is byte-for-byte unaffected.
 ticket_target_package() { # ticketId [root]  → pkg dir relative to repo root, or ""
   local id="$1" root="${2:-$REPO_ROOT}"
   local mf="$MISSION_DIR/manifests/$id.md"
@@ -6983,14 +7145,20 @@ ticket_target_package() { # ticketId [root]  → pkg dir relative to repo root, 
       if [ -f "$root/$d/package.json" ]; then cand="$d"; break; fi
       case "$d" in */*) d="${d%/*}" ;; *) d="." ;; esac
     done
-    [ -n "$cand" ] || continue
+    # S352: no enclosing sub-package means the path lives at the REPO ROOT, which
+    # is a scope like any other — register it as the sentinel `.` instead of
+    # dropping it, so a ticket spanning root + a sub-package counts TWO.
+    [ -n "$cand" ] || cand="."
     case " $found " in *" $cand "*) : ;; *) found="${found:+$found }$cand" ;; esac
   done <<EOF
 $(manifest_relevant_files "$mf")
 EOF
-  # 0 candidates → "" (root / no sub-package); exactly 1 → it; >1 (spans packages) → "".
+  # 0 candidates (an empty/unparseable section) → ""; exactly 1 → it; >1 (the files
+  # SPAN scopes, the repo root among them) → "".
   set -- $found
   [ "$#" -eq 1 ] || return 0
+  # The lone scope IS the repo root → "" (no sub-package at all), unchanged.
+  [ "$1" = "." ] && return 0
   printf '%s' "$1"
 }
 
@@ -7432,7 +7600,9 @@ lcarsq_stage() { # tree pkg_rel  → "<run_dir>\t<stage_dir>"
 # files that were already lying around (bugs.md, lockfiles, …). Best-effort and
 # jq-free; an empty/failed snapshot just means "nothing was pre-existing".
 snapshot_untracked() { # out-file
-  ( cd "$REPO_ROOT" && "$GIT_BIN" ls-files --others --exclude-standard ) >"$1" 2>/dev/null || : >"$1"
+  # Include ignored paths so commit_ticket cannot attribute older work to this
+  # ticket. Staging still uses --exclude-standard; this only widens the snapshot.
+  ( cd "$REPO_ROOT" && "$GIT_BIN" ls-files --others ) >"$1" 2>/dev/null || : >"$1"
 }
 
 # === Scratch hygiene (CLI/host-agnostic) ====================================
@@ -7734,10 +7904,94 @@ commit_ticket() { # ticket  summary
     [ -f "$before" ] && grep -qxF -- "$f" "$before" && continue     # pre-existing untracked
     ( cd "$REPO_ROOT" && "$GIT_BIN" add -- "$f" >/dev/null 2>&1 )
   done <"$now"
-  rm -f "$now"
+  # The excluded listing cannot see ignored work products. Compare the bare
+  # listing against it and the ticket snapshot; scratch keeps its silent skip.
+  local ignored_output=0 ignore_candidates
+  ignore_candidates="$(mktemp)"
+  if ! "${LCARS_PYTHON_BIN:-python3}" - "$GIT_BIN" "$REPO_ROOT" "$now" "$before" "$(scratch_globs)" <<'IGNORE_CANDIDATES_PY' >"$ignore_candidates"
+import ctypes
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+git, repo, now, before, scratch = sys.argv[1:]
+excluded = set(Path(now).read_bytes().split(b"\n"))
+if Path(before).is_file():
+    excluded.update(Path(before).read_bytes().split(b"\n"))
+# Native fnmatch keeps shell case semantics for escapes and POSIX classes;
+# flags=0 lets wildcards match slashes and leading dots, just like is_scratch.
+fnmatch = ctypes.CDLL(None).fnmatch
+fnmatch.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_int]
+fnmatch.restype = ctypes.c_int
+globs = [glob for glob in os.fsencode(scratch).split(b"\n") if glob]
+listing = subprocess.run([git, "-C", repo, "ls-files", "--others"],
+                         capture_output=True, check=True).stdout
+for path in listing.split(b"\n"):
+    if path and path not in excluded and not any(fnmatch(glob, path, 0) == 0 for glob in globs):
+        sys.stdout.buffer.write(path + b"\n")
+IGNORE_CANDIDATES_PY
+  then
+    rm -f "$now" "$ignore_candidates"
+    return 1
+  fi
+  if [ -s "$ignore_candidates" ]; then
+    "${LCARS_PYTHON_BIN:-python3}" - "$GIT_BIN" "$REPO_ROOT" "$1" "$ignore_candidates" <<'IGNORED_OUTPUT_PY' >&2 || ignored_output=1
+import subprocess
+import sys
+from pathlib import Path
+
+git, repo, ticket, candidates = sys.argv[1:]
+paths = Path(candidates).read_text()
+result = subprocess.run(
+    [git, "-C", repo, "check-ignore", "--no-index", "--stdin", "-v"],
+    input=paths, capture_output=True, text=True)
+if result.returncode not in (0, 1):
+    examples = paths.splitlines()
+    print(f"  ⚠ ticket {ticket} produced {len(examples)} unstaged file(s) — git could not determine whether they are ignored.")
+    for path in examples[:2]:
+        print(f"    {path}")
+    if len(examples) > 2:
+        print(f"    … and {len(examples) - 2} more")
+    print(f"    check-ignore failed (exit {result.returncode}): {result.stderr[:300]!r}")
+    print("    Inspect them with git check-ignore --no-index -v before committing them by hand.")
+    sys.exit(1)
+
+groups = {}
+for line in result.stdout.splitlines():
+    rule, path = line.split("\t", 1)
+    if rule.split(":", 2)[2].startswith("!"):
+        continue
+    groups.setdefault(rule, []).append(path)
+total = sum(len(matches) for matches in groups.values())
+if not total:
+    sys.exit(0)
+if total == 1:
+    rule, matches = next(iter(groups.items()))
+    print(f"  ⚠ ticket {ticket} produced ignored file {matches[0]} — NOT staged.")
+    print(f"    Matched ignore rule: {rule}\t{matches[0]}")
+else:
+    print(f"  ⚠ ticket {ticket} produced {total} ignored files — NOT staged.")
+    shown = list(groups.items())[:3]
+    for rule, matches in shown:
+        print(f"    {rule} matched {len(matches)} path(s), e.g.")
+        for path in matches[:2]:
+            print(f"      {path}")
+        if len(matches) > 2:
+            print(f"      … and {len(matches) - 2} more")
+    if len(groups) > len(shown):
+        remaining = total - sum(len(matches) for _, matches in shown)
+        print(f"    … and {len(groups) - len(shown)} more rule(s) matching {remaining} path(s)")
+print("    Move the work product to a non-ignored path, or review the matched rule and commit it by hand; LCARS will not change ignore rules or force-add it.")
+sys.exit(1)
+IGNORED_OUTPUT_PY
+  fi
+  rm -f "$now" "$ignore_candidates"
 
   if "$GIT_BIN" diff --cached --quiet 2>/dev/null; then
-    COMMIT_NOTE="  ⚠ ticket $1 produced no file changes to commit."
+    if [ "$ignored_output" -eq 0 ]; then
+      COMMIT_NOTE="  ⚠ ticket $1 produced no file changes to commit."
+    fi
     cleanup_runner_scratch "$before"
     return 0
   fi
@@ -8651,12 +8905,30 @@ rg_signature() { # category → the ERE for that category's runner-output signat
       #     genuine failing suite returns. Kept even though 3.81 reports a dead
       #     exec as `Error 1`, because on 4.x it is a positive, exit-code-true
       #     signal and it cannot collide with a real runner's status.
+      #
+      # S352 — npm's OWN "there is no test script here" DIAGNOSTIC. Measured
+      # 2026-11-05 on a real drive: the post-commit gate ran `npm test` inside a
+      # sub-package whose package.json is a bare TYPE MARKER
+      # (`{"type": "commonjs"}` — no `scripts` at all), npm printed
+      #   npm error Missing script: "test"
+      # and NOT ONE alternative above matched it. `Missing script` appeared
+      # nowhere in this script, so neither this arm nor the zero-collected path
+      # fired and the gate fell through to a plain red that accused correct,
+      # committed work of never having landed. It is exactly the npm sibling of
+      # the ENOENT / could-not-determine-executable cases already here: the
+      # runner never started, so the red is about the ENVIRONMENT and the verdict
+      # must be INCONCLUSIVE, never a missing implementation.
+      #   • `^npm (error|ERR!) Missing script:` — npm 10 says `error`, npm 9 and
+      #     earlier say `ERR!`; both carry the same prefix. LINE-START ANCHORED
+      #     on npm's own program prefix, exactly like its three neighbours, so an
+      #     assertion diff that merely QUOTES the phrase mid-line can never fire
+      #     (pinned as a control in tests/post-commit-false-red.test.sh).
       # Like every alternative above it, these only ever REJECT MORE reds — the
       # kind moves runner-red ⇒ env-failure, i.e. proof ⇒ INCONCLUSIVE, and
       # `proof_fail_first_missing_module`'s conjunct 4 re-asks THIS detector, so
       # a widened arm makes that narrowing refuse more too. No consumer of
       # red_gate_env_failure turns an env verdict into a pass.
-      printf '%s' '^(/[^: ]*/)?(sh|bash|zsh|dash|ash|ksh|env)(\[[0-9]+\])?:.*not found|^(/[^: ]*/)?(sh|bash|zsh|dash|ash|ksh)(\[[0-9]+\])?:.*: No such file or directory$|^npm (error|ERR!) code ENOENT|^npm (error|ERR!) enoent|^(vitest|jest|mocha|pytest|ts-node|tsx|deno|bun|npm|npx|pnpm|yarn|node):.*not found|^npm (error|ERR!) could not determine executable to run|ERR_PNPM_|node_modules.*(missing|not found|No such)|Cannot find module.*node_modules|WARN.*node_modules|ModuleNotFoundError|No module named|: Permission denied$|: cannot execute|cannot execute binary file|^env: .+: No such file or directory|No such file or directory.*(venv|virtualenv|/bin/activate|/bin/python)|source[[:space:]].*/activate|^g?make(\[[0-9]+\])?: \*\*\* (No rule to make target |No targets specified and no makefile found)|^g?make(\[[0-9]+\])?: .*: (No such file or directory|command not found)$|^g?make(\[[0-9]+\])?: \*\*\* \[.*\] Error 127$' ;;
+      printf '%s' '^(/[^: ]*/)?(sh|bash|zsh|dash|ash|ksh|env)(\[[0-9]+\])?:.*not found|^(/[^: ]*/)?(sh|bash|zsh|dash|ash|ksh)(\[[0-9]+\])?:.*: No such file or directory$|^npm (error|ERR!) code ENOENT|^npm (error|ERR!) enoent|^(vitest|jest|mocha|pytest|ts-node|tsx|deno|bun|npm|npx|pnpm|yarn|node):.*not found|^npm (error|ERR!) could not determine executable to run|^npm (error|ERR!) Missing script:|ERR_PNPM_|node_modules.*(missing|not found|No such)|Cannot find module.*node_modules|WARN.*node_modules|ModuleNotFoundError|No module named|: Permission denied$|: cannot execute|cannot execute binary file|^env: .+: No such file or directory|No such file or directory.*(venv|virtualenv|/bin/activate|/bin/python)|source[[:space:]].*/activate|^g?make(\[[0-9]+\])?: \*\*\* (No rule to make target |No targets specified and no makefile found)|^g?make(\[[0-9]+\])?: .*: (No such file or directory|command not found)$|^g?make(\[[0-9]+\])?: \*\*\* \[.*\] Error 127$' ;;
     assertion)
       # A GENUINE assertion red (the runner started, tests ran, an assertion FAILED)
       # — common vitest/jest/node/pytest phrasings. Classify-only: it never runs
@@ -15757,7 +16029,17 @@ PCTIP_EOF
     bothnote=" JUDGED COMMIT: ${ref}. CURRENT BRANCH TIP: ${tip} (the same commit — this verdict is about the current state of the branch)."
   fi
 
-  local detail="POST-COMMIT GATE — ticket $t's suite is RED against the COMMITTED branch state (commit ${ref}). The implementation is NOT present on the committed branch: the Implementer reported green from its OWN scratch worktree, but the change never landed (or only an out-of-scope change was committed). The ticket FAILS this worker session — it must land its change on the committed branch to pass.${bothnote} Command run: $cmd. To re-open this ticket and let a fresh worker land it, run: $(reopen_hint "$t")"
+  # S352 — SHOW THE RUNNER'S OWN WORDS. The zero-collected and env details below
+  # already carry an $out tail; this path threw the output away, so the ONE piece
+  # of evidence that would have named the real fault (`npm error Missing script:
+  # "test"`, measured 2026-11-05) never reached the captain or the next worker.
+  # Three fresh workers re-did correct work against a verdict whose evidence had
+  # been discarded. The tail is bounded exactly like the other details'.
+  local outtail=""
+  [ -n "$(printf '%s' "$out" | grep . || true)" ] \
+    && outtail="
+$(printf '%s\n' "$out" | tail -12)"
+  local detail="POST-COMMIT GATE — ticket $t's suite is RED against the COMMITTED branch state (commit ${ref}). The implementation is NOT present on the committed branch: the Implementer reported green from its OWN scratch worktree, but the change never landed (or only an out-of-scope change was committed). The ticket FAILS this worker session — it must land its change on the committed branch to pass.${bothnote} Command run: $cmd. To re-open this ticket and let a fresh worker land it, run: $(reopen_hint "$t")${outtail}"
   printf '  ✗ %s\n' "$detail" >&2
   [ -n "$POST_COMMIT_SIGNAL" ] && printf '%s\n' "$detail" >"$POST_COMMIT_SIGNAL"
   return 1
@@ -17076,6 +17358,9 @@ selfheal_merge_base() { # branch base
   (
     # Subshell-owned variables survive an early exit until its cleanup trap.
     branch="$1"; base="$2"; wt=""
+    base_ref="refs/heads/$base"
+    "$GIT_BIN" rev-parse --verify -q "$base_ref" >/dev/null 2>&1 ||
+      base_ref="refs/remotes/$base"
     acquire_replay_lock
     trap 'if [ -n "$wt" ]; then
       "$GIT_BIN" worktree remove --force "$wt" >/dev/null 2>&1 ||
@@ -17089,7 +17374,9 @@ selfheal_merge_base() { # branch base
       printf 'Recovery refused: %s operation-in-progress; finish it before retrying.\n' "$LCARS_BASE_INFLIGHT"
       exit 1
     fi
-    dirty="$("$GIT_BIN" status --porcelain 2>&1)" || { printf '%s\n' "$dirty"; exit 1; }
+    # Untracked captain files cannot affect a merge in its own detached worktree.
+    # Still refuse tracked changes so recovery never runs over uncommitted work.
+    dirty="$("$GIT_BIN" status --porcelain -uno 2>&1)" || { printf '%s\n' "$dirty"; exit 1; }
     if [ -n "$dirty" ]; then
       printf 'Recovery refused: dirty working tree; commit or stash your work before retrying.\n'
       exit 1
@@ -17100,7 +17387,7 @@ selfheal_merge_base() { # branch base
       exit 1
     fi
     tip="$("$GIT_BIN" rev-parse --verify "refs/heads/$branch")" || exit 1
-    basesha="$("$GIT_BIN" rev-parse --verify "refs/heads/$base")" || exit 1
+    basesha="$("$GIT_BIN" rev-parse --verify "$base_ref")" || exit 1
     wt="$(mktemp -d "$MISSION_DIR/reanchor.XXXXXX")" || exit 1
     "$GIT_BIN" worktree add -q --detach "$wt" "$tip" || exit 1
     if ! out="$(merge_base_in_worktree "$wt" "$basesha" 2>&1)"; then
@@ -17116,14 +17403,18 @@ selfheal_merge_base() { # branch base
     wt=""
     _lcars_base_worktree_of "$branch"
     if [ -n "$LCARS_MB_WT" ] ||
-       [ "$("$GIT_BIN" rev-parse "refs/heads/$base")" != "$basesha" ]; then
+       [ "$("$GIT_BIN" rev-parse "$base_ref")" != "$basesha" ]; then
       printf 'Recovery refused: branch checkout or base changed during the merge; retry after it settles.\n'
       exit 1
     fi
-    "$GIT_BIN" update-ref -m "lcars: merge $base into $branch for self-heal" \
+    "$GIT_BIN" update-ref --no-deref -m "lcars: merge $base into $branch for self-heal" \
       "refs/heads/$branch" "$merged" "$tip" || {
         printf 'Recovery refused: mission tip changed during the merge; no commits were replaced.\n'; exit 1;
       }
+    # A base-only merge is still rejected work, at its newly published SHA.
+    if [ -n "${STATE:-}" ] && [ -n "$(json_str "$STATE" rejectedTip)" ]; then
+      lcars_state_set_string "$STATE" rejectedTip "$merged" || exit 1
+    fi
   )
 }
 
@@ -17741,6 +18032,24 @@ EOF
     fi
   fi
   rm -f "$fssig"
+
+  local rejected_tip; rejected_tip="$(json_str "$STATE" rejectedTip)"
+  if [ -n "$rejected_tip" ]; then
+    local branch tip age
+    branch="$(json_str "$STATE" branch)"
+    [ -n "$branch" ] \
+      || die "rejected tip $rejected_tip (age unknown: mission has no branch recorded) cannot be checked — restore the branch in state.json before retrying. Mission stays at implement."
+    tip="$("$GIT_BIN" rev-parse --verify "refs/heads/$branch^{commit}" 2>/dev/null)" \
+      || die "rejected tip $rejected_tip (age unknown: mission branch could not be read) cannot be checked — restore mission branch '$branch' before retrying. Mission stays at implement."
+    if [ "$tip" = "$rejected_tip" ]; then
+      if age="$("$GIT_BIN" show -s --format=%ar "$tip" 2>/dev/null)"; then
+        age="committed $age"
+      else
+        age="age unknown: Git could not read its commit time"
+      fi
+      die "tip $tip ($age) is unchanged since send-back — implement the feedback and commit new work on '$branch'. Mission stays at implement."
+    fi
+  fi
 
   # All green — clear any awaiting-human gate (defensive, like validate-advance)
   # and advance the Mission to Verify, keeping stage and label in step.
@@ -25211,6 +25520,7 @@ drive_emit_base_stale() { # stage-at-drive-start
 }
 
 # The whole re-check, in caller order. Runs ONCE per drive.
+# Returns 1 only when working-branch recovery parked an awaiting-human gate.
 drive_base_recheck() {
   drive_load_base_lib || return 0
   local base branch stage
@@ -25227,8 +25537,8 @@ drive_base_recheck() {
   # `lcars/<id>` and tells it to IGNORE the ambient checkout — so fast-forwarding
   # only the base leaves every Stage reasoning about the filing-time tree, which is
   # the whole failure S159 exists to close. The drive therefore advances the
-  # mission branch too, but ONLY when that is LOSSLESS (no commits of its own);
-  # one commit of its own and it is left alone with the loud ⚠ block and a rebase.
+  # mission branch too, but fast-forwards ONLY when it has no commits of its own.
+  # Working branches use the existing detached merge recovery instead.
   #
   # NOT for a `child-base` Mission: a logged bug's base is its parent's branch,
   # LCARS takes no position on it, and the parent's branch is never moved.
@@ -25242,6 +25552,47 @@ drive_base_recheck() {
   if [ "${LCARS_BASE_VERDICT:-}" != "child-base" ] \
      && [ "${LCARS_BASE_BLOCKER:-}" != "operation-in-progress" ]; then
     lcars_base_advance_mission_branch "$branch" "$base" || true
+    # The lossless startup helper only measures local heads. A recorded
+    # remote-tracking base still belongs to the same detached merge recovery.
+    if [ "$stage" != implement ] && [ -z "${LCARS_MB_BEHIND:-}" ] \
+       && "$GIT_BIN" rev-parse --verify -q "refs/remotes/$base" >/dev/null 2>&1; then
+      LCARS_MB_BEHIND="$(_lcars_base_count "refs/heads/$branch" "refs/remotes/$base")"
+      LCARS_MB_AHEAD="$(_lcars_base_count "refs/remotes/$base" "refs/heads/$branch")"
+      case "${LCARS_MB_BEHIND:-0}:${LCARS_MB_AHEAD:-0}" in
+        *[!0-9:]*|0:*|*:0) : ;;
+        *) LCARS_MB_MOVE=refused ;;
+      esac
+    fi
+    if [ "$stage" != implement ] && [ "${LCARS_MB_MOVE:-}" = refused ] \
+       && [ "${LCARS_MB_AHEAD:-0}" -gt 0 ] && [ "${LCARS_MB_BEHIND:-0}" -gt 0 ]; then
+      local recovery
+      if recovery="$(selfheal_merge_base "$branch" "$base" 2>&1)"; then
+        LCARS_MB_MOVE=""
+        printf "  RECOVERY — merged '%s' into '%s'; continuing %s on the merged tip.\n" "$base" "$branch" "$stage"
+        emit_event selfheal_reanchor "$stage" \
+          "merged '$base' into '$branch' before $stage; continuing on the merged tip" \
+          "tip=$(selfheal_branch_tip "$branch")" || :
+      else
+        local recovery_rc=$?
+        [ -n "$recovery" ] || recovery="Recovery refused: recovery exited with status $recovery_rc; mission commits are untouched. Inspect the repository before retrying."
+        LCARS_MB_REASON="$recovery"
+        local question
+        question="$(printf '%s' "$recovery" | tr '\n' ' ') Resolve the recovery blocker, then re-drive; do not rebase or force the mission branch."
+        printf '%s\n' "$recovery" >"$MISSION_DIR/recovery-diagnosis.txt"
+        printf '%s\n' "$question" >"$MISSION_DIR/recovery-question.txt"
+        write_pending "$MISSION_DIR/recovery-question.txt" "$stage"
+        lcars_state_set "$STATE" awaitingHuman true
+        lcars_state_set_string "$STATE" pendingQuestion "$question"
+        lcars_state_refusal_die "lcars run"
+        gh_relabel "lcars:$stage lcars:awaiting-human" ""
+        drive_persist_base_freshness "$branch"
+        drive_emit_base_stale "$stage"
+        emit_event selfheal_refused "$stage" "$question" || :
+        emit_event gate "$stage" "base recovery needs a human; no Stage worker was dispatched" || :
+        printf '%s\n' "$recovery"
+        return 1
+      fi
+    fi
     lcars_base_branch_note_drive "$branch" "$base" || true
   fi
   # Persisted AFTER the advance, so `missionBranchAtBase` records what the branch
@@ -26371,8 +26722,11 @@ cmd_drive() {
   # here: after the driver lock (so two drives can never fetch/fast-forward the
   # same base at once) and BEFORE the stage loop (so it is once per drive, not
   # once per Stage, and so the first Stage worker is spawned into the tree it
-  # produced). It never blocks — see drive_base_recheck.
-  drive_base_recheck
+  # produced). A refused working-branch recovery parks before any worker runs.
+  if ! drive_base_recheck; then
+    drive_halt_awaiting "$(json_str "$STATE" stage)"
+    return 0
+  fi
 
   # S312 — UNDECLARED DRIFT, HERE, NOT TWENTY MINUTES FROM NOW. Same slot, same
   # two reasons as the base re-check above (after the lock, once per drive,
@@ -26456,7 +26810,7 @@ cmd_drive() {
     # `--step` calls). align with no feedback.md is a freshly-filed Mission → Research.
     local action
     case "$stage" in
-      align)       action="research" ;;
+      align|research) action="research" ;;
       validate)    action="validate" ;;
       plan)        action="plan" ;;
       plan-review) action="plan-review" ;;
@@ -27435,6 +27789,11 @@ FSG_EOF
     apply_declared_setup "$RESULT" "$SETUP" "${POSARG:-}" || __as_rc=$?
     printf 'ASRC=%s\n' "$__as_rc"
     printf 'ASNOTE=%s\n' "$SETUP_NOTE"
+    exit 0 ;;
+  snapshot-untracked-test)
+    locate_mission "$MISSION_ID"
+    [ -n "$TICKET" ] || die "usage: run.sh snapshot-untracked-test --mission <id> --ticket <t>"
+    snapshot_untracked "$(ticket_dir "$TICKET")/.untracked-before"
     exit 0 ;;
   # Drives the REAL commit_ticket in WORKTREE mode ($LCARS_TICKET_WORKTREE set by
   # the caller), so the multi-session cumulative-commit contract can be exercised

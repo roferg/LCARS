@@ -66,9 +66,12 @@ new_mission_blank_mockup() {
   echo "$repo"
 }
 
-run_plan_save() { # repo planfile -> sets RC + OUT
-  OUT="$( cd "$1" && bash "$SCRIPT" plan-save --mission test-001 --plan "$2" 2>&1 )"
+run_plan_save() { # repo planfile [flags …] -> sets RC + OUT
+  OUT="$( cd "$1" && bash "$SCRIPT" plan-save --mission test-001 --plan "$2" "${@:3}" 2>&1 )"
   RC=$?
+  if [ -n "${LCARS_S346_EVIDENCE:-}" ]; then
+    printf '\nPLAN %s\nRC %s\n%s\n' "$2" "$RC" "$OUT" >> "$LCARS_S346_EVIDENCE"
+  fi
 }
 
 ticket() { # acceptanceCriteria-block -> full one-ticket plan.json on stdout
@@ -1425,6 +1428,291 @@ run_plan_save "$repo" "$pf"
 { [ "$RC" -eq 0 ] && printf '%s' "$OUT" | grep -q "advanced"; } \
   && ok "(c-control) a plain-string (unlinked) criterion advances without a direction" \
   || bad "(c-control) a plain-string criterion advances (rc=$RC: $OUT)"
+
+# S346: this is a RECONSTRUCTION, not a recovered pre-feedback plan. b151's
+# plan.json and approved-plan.json were overwritten identically; the original
+# measurement texts survive only in the corrected plan's serves fields.
+S346="$REPO_ROOT/tests/fixtures/s346-controls"
+repo="$(new_mission)"
+run_plan_save "$repo" "$S346/vacuous-asset-plan.json"
+S346_VACUOUS_OUT="$OUT"; S346_VACUOUS_RC="$RC"
+{ [ "$RC" -ne 0 ] && printf '%s' "$OUT" | grep -q 't-003' \
+  && printf '%s' "$OUT" | grep -q 'criterion 1' \
+  && printf '%s' "$OUT" | grep -q 'criterion 2' \
+  && printf '%s' "$OUT" | grep -q 'criterion 3' \
+  && [ "$(printf '%s' "$OUT" | grep -c '^lcars run:')" -eq 1 ]; } \
+  && ok "S346/1. vacuous asset measurements refused together by ticket and criterion" \
+  || bad "S346/1. vacuous asset measurements refused together (rc=$RC: $OUT)"
+{ [ "$RC" -ne 0 ] && ! printf '%s' "$OUT" | grep -q 't-001\|t-002'; } \
+  && ok "S346/2. only the asset-delivering ticket is flagged" \
+  || bad "S346/2. only the asset-delivering ticket is flagged (rc=$RC: $OUT)"
+
+# Independent filename measurement, restricted to the specified trigger inputs.
+COUNTS="$(python3 - "$S346/vacuous-asset-plan.json" <<'PY'
+import json, re, sys
+for t in json.load(open(sys.argv[1])):
+    texts = [t["description"]] + [e["path"] for e in t["entrypoints"]]
+    texts += [c if isinstance(c, str) else c["text"] for c in t["acceptanceCriteria"]]
+    names = set(re.findall(r'[\w/<>.-]+\.(?:png|jpg|jpeg|gif|webp|wav|mp3|ogg|ttf|otf|woff2?)(?![\w.-])',
+                           " ".join(texts), re.I))
+    print(t["id"], len(names))
+PY
+)"
+[ "$COUNTS" = "$(printf 't-001 0\nt-002 0\nt-003 7')" ] \
+  && ok "S346/2. trigger inputs name exactly 0, 0, 7 distinct binary filenames" \
+  || bad "S346/2. binary filename discrimination measurement: $COUNTS"
+
+# The existing before/after measure-content criterion is declared, not rewritten.
+# Keep arrays inline: expanding entrypoints/seams trips an inherited shape defect.
+repo="$(new_mission)"; pf="$repo/corrected-declared.json"
+python3 - "$S346/corrected-plan.json" > "$pf" <<'PY'
+import json, sys
+plan = json.load(open(sys.argv[1]))
+c = plan[2]["acceptanceCriteria"][3]
+assert isinstance(c, str) and "measure-content.mjs" in c and "after ink > 0" in c
+plan[2]["acceptanceCriteria"][3] = {"text": c, "failsOnAbsence": True}
+print("[")
+for i, t in enumerate(plan):
+    print("  {\n" + ",\n".join("    " + json.dumps(k) + ": " + json.dumps(v)
+                               for k, v in t.items()) + "\n  }" +
+          ("," if i + 1 < len(plan) else ""))
+print("]")
+PY
+run_plan_save "$repo" "$pf"
+{ [ "$RC" -eq 0 ] && printf '%s' "$OUT" | grep -q 'advanced'; } \
+  && ok "S346/3. corrected real plan with its content criterion declared advances" \
+  || bad "S346/3. corrected content declaration advances (rc=$RC: $OUT)"
+
+repo="$(new_mission)"; pf="$repo/absence-note.json"
+ticket '    "acceptanceCriteria": [{"text": "silence.wav remains silent", "absenceNote": "silence.wav is intentional silence; missing ink or samples cannot distinguish it."}], ' > "$pf"
+run_plan_save "$repo" "$pf"
+{ [ "$RC" -eq 0 ] && printf '%s' "$OUT" | grep -q 'advanced'; } \
+  && ok "S346/4. a by-name absenceNote with a reason advances" \
+  || bad "S346/4. by-name absenceNote advances (rc=$RC: $OUT)"
+
+# D35: byte-oriented blank checks mistake escaped Unicode whitespace for ink.
+for note in '""' '"   "' '"\t"' '"\u0009"' '"\u00a0"' \
+  '"\u1680"' '"\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a"' \
+  '"\u0085\u2028\u2029\u202f\u205f\u3000"' '"\u000A\u000B\u000C\u000D\u0020"'
+do
+  repo="$(new_mission)"; pf="$repo/blank-absence-note.json"
+  ticket "    \"acceptanceCriteria\": [{\"text\": \"silence.wav remains silent\", \"absenceNote\": $note}]," > "$pf"
+  run_plan_save "$repo" "$pf"
+  { [ "$RC" -ne 0 ] && printf '%s' "$OUT" | grep -q 'absenceNote'; } \
+    && ok "S346/4. whitespace-only absenceNote $note is refused" \
+    || bad "S346/4. whitespace-only absenceNote $note refused (rc=$RC: $OUT)"
+done
+# JSON can also carry those characters literally rather than as \u escapes.
+repo="$(new_mission)"; pf="$repo/literal-whitespace-note.json"
+ticket '    "acceptanceCriteria": [{"text": "silence.wav remains silent", "absenceNote": "\u00a0\u2003\u202f\u3000"}],' \
+  | python3 -c 'import sys; print(sys.stdin.read().encode().decode("unicode_escape"))' > "$pf"
+run_plan_save "$repo" "$pf"
+{ [ "$RC" -ne 0 ] && printf '%s' "$OUT" | grep -q 'absenceNote'; } \
+  && ok "S346/4. literal Unicode whitespace-only note is refused" \
+  || bad "S346/4. literal Unicode whitespace-only note refused (rc=$RC: $OUT)"
+
+# Byte-oriented awk locales must not strip the bytes of a non-whitespace rune
+# merely because those bytes also occur in Unicode whitespace code points.
+repo="$(new_mission)"; pf="$repo/unicode-reason.json"
+ticket '    "acceptanceCriteria": [{"text": "silence.wav remains silent", "absenceNote": "\u16a0"}],' \
+  | python3 -c 'import sys; print(sys.stdin.read().encode().decode("unicode_escape"))' > "$pf"
+LC_ALL=C run_plan_save "$repo" "$pf"
+{ [ "$RC" -eq 0 ] && printf '%s' "$OUT" | grep -q 'advanced'; } \
+  && ok "S346/4. a non-whitespace Unicode reason remains non-blank in the C locale" \
+  || bad "S346/4. Unicode reason was stripped as whitespace (rc=$RC: $OUT)"
+
+repo="$(new_mission)"; pf="$repo/blank-note-beside-declaration.json"
+ticket '    "acceptanceCriteria": [{"text": "sprite.png has visible ink", "failsOnAbsence": true}, {"text": "silence.wav remains silent", "absenceNote": "\u0009"}],' > "$pf"
+run_plan_save "$repo" "$pf"
+{ [ "$RC" -eq 1 ] && printf '%s' "$OUT" | grep -q 'criterion 2' \
+  && printf '%s' "$OUT" | grep -q 'absenceNote.*blank'; } \
+  && ok "S346/4. a valid sibling declaration cannot launder a blank note" \
+  || bad "S346/4. blank note beside valid declaration refused (rc=$RC: $OUT)"
+
+# These literal expected outputs were measured on the saved, unchanged driver.
+# Neither acceptance nor refusal may move by a byte on a non-asset ticket.
+S346_ADVANCED="$(cat <<'EOF'
+PLAN: advanced
+  Wrote plan.json.
+  Stage:  plan-review
+  ⚠ no GitHub issue on file — skipped relabel (local-only mission).
+EOF
+)"
+for fixture in plan-mockup/capstone-0of44.json plan-mockup/capstone-corrected-174.json \
+  s313-live-plan/folded-plan.json
+do
+  repo="$(new_mission)"
+  run_plan_save "$repo" "$REPO_ROOT/tests/fixtures/$fixture"
+  { [ "$RC" -eq 0 ] && [ "$OUT" = "$S346_ADVANCED" ]; } \
+    && ok "S346/6. $fixture preserves rc=0 and every output byte" \
+    || bad "S346/6. $fixture baseline differs (rc=$RC: $OUT)"
+done
+S346_LOCK_REFUSAL="$(cat <<'EOF'
+lcars run: this plan emits a STANDALONE REGRESSION-LOCK ticket, and the proof gates cannot accept that shape from anyone. These ticket(s) declare "estimatedNewLoc": 0 beside test LoC AND name a golden / characterisation / lock-existing-behaviour deliverable in their own title or criteria:
+    ticket 1 (t-001)
+  NO worker can prove such a ticket. A characterisation test asserts behaviour that ALREADY EXISTS, so it passes on the parent commit by construction, the flip-flop gate finds no red, and declaring flipFlop "not-applicable" to get out is refused beside new tests. Measured once at nine TDD sessions and three human gates.
+  FOLD IT — the guard is real and it must SURVIVE, and this plan already says where it goes: the planner declared a dependency edge between the lock ticket(s) above and t-002, which is its own statement that they are about the same behaviour. Move those acceptance criteria, and the golden tests themselves as supporting tests riding along, INTO the ticket that CHANGES the behaviour they guard. That ticket has its own new tests to flip red on the parent and green on the tip, the goldens ride along declared, and the guard is still committed and still guarding. Guard preserved, proof honest.
+  Then retire the now-empty lock ticket and re-point any dependency that named it.
+  NOT THIS MISSION SCOPE is the other answer, and it is the right one if NO ticket here really changes the behaviour these goldens guard: say so in the ticket you do emit, and do not invent a ticket to hold the lock.
+  Either way, keep every golden you wrote. Relocating the guard is the cure; losing it is not.
+EOF
+)"
+repo="$(new_mission)"
+run_plan_save "$repo" "$REPO_ROOT/tests/fixtures/s313-live-plan/standalone-lock-plan.json"
+{ [ "$RC" -eq 1 ] && [ "$OUT" = "$S346_LOCK_REFUSAL" ]; } \
+  && ok "S346/6. standalone lock preserves rc=1 and every refusal byte" \
+  || bad "S346/6. standalone lock baseline differs (rc=$RC: $OUT)"
+
+for anchor in '#not-a-drawn-place' 'attachment-01.html' '#screen-starter'
+do
+  repo="$(new_mission "$MOCK")"; pf="$repo/membership-control.json"
+  mticket true "[{\"text\": \"the nav shows its items\", \"drawnAt\": \"$anchor\"}, {\"text\": \"keyboard support\", \"notDrawn\": \"not in this drawing\"}, {\"text\": \"the state persists\", \"notVisual\": true}]" > "$pf"
+  run_plan_save "$repo" "$pf"
+  { [ "$RC" -eq 1 ] && printf '%s' "$OUT" | grep -q 'names no place in the drawing'; } \
+    && ok "S346/7. nonmember/filename/token-prefix $anchor is still refused" \
+    || bad "S346/7. membership control $anchor refused (rc=$RC: $OUT)"
+done
+repo="$(new_mission "$MOCK")"; pf="$repo/mixed-provenance.json"
+mticket true '[{"text": "the nav shows its items", "drawnAt": "#screen-start"}, {"text": "keyboard support", "notDrawn": "not in this drawing"}, {"text": "the state persists", "notVisual": true}]' > "$pf"
+run_plan_save "$repo" "$pf"
+{ [ "$RC" -eq 0 ] && printf '%s' "$OUT" | grep -q 'advanced'; } \
+  && ok "S346/7. drawnAt/notDrawn/notVisual remain independently valid" \
+  || bad "S346/7. valid mockup provenance advances (rc=$RC: $OUT)"
+
+pr_prompt
+{ printf '%s' "$PR_OUT" | grep -q 'failsOnAbsence' \
+  && printf '%s' "$PR_OUT" | grep -q 'absenceNote'; } \
+  && ok "S346/3-4. the real reviewer prompt carries the absence claim audit" \
+  || bad "S346/3-4. the reviewer has no absence claim audit"
+
+# S346 fix1 D1: sentence punctuation is a boundary, filename continuations are not.
+while IFS='|' read -r expected text; do
+  repo="$(new_mission)"; pf="$repo/binary-boundary.json"
+  ticket "    \"establishesSharedInfrastructure\": false,
+    \"acceptanceCriteria\": [\"$text\"]," > "$pf"
+  run_plan_save "$repo" "$pf"
+  if [ "$expected" = FIRES ]; then
+    { [ "$RC" -eq 1 ] && printf '%s' "$OUT" | grep -q 'binary-asset'; } \
+      && ok "S346/fix1 D1 $expected: $text" \
+      || bad "S346/fix1 D1 $expected: $text (rc=$RC: $OUT)"
+  else
+    { [ "$RC" -eq 0 ] && [ "$OUT" = "$S346_ADVANCED" ]; } \
+      && ok "S346/fix1 D1 $expected: $text" \
+      || bad "S346/fix1 D1 $expected: $text (rc=$RC: $OUT)"
+  fi
+done <<'BOUNDARIES'
+FIRES|Rebuild assets/sprites/npc_rosa.png.
+FIRES|Rebuild assets/sprites/npc_rosa.png
+FIRES|Rebuild assets/sprites/npc_rosa.png, and more
+FIRES|Rebuild assets/sprites/npc_rosa.png-
+FIRES|Rebuild assets/sprites/npc_rosa.PNG.
+FIRES|Rebuild (assets/sprites/npc_rosa.png)
+FIRES|Rebuild assets/sprites/npc_rosa.png from art.
+FIRES|Rebuild sheet.wav.
+FIRES|Rebuild font.woff2.
+SILENT|a .pngx file
+SILENT|see report.png.md only
+SILENT|oldpng/newpng
+SILENT|the word png alone
+SILENT|Rebuild assets/sprites/npc_rosa.png-ish
+BOUNDARIES
+
+repo="$(new_mission)"; pf="$repo/sentence-asset.json"
+ticket '    "acceptanceCriteria": ["edge, jitter and mirror checks pass"],' \
+  | sed 's|"description": .*|"description": "Rebuild assets/sprites/npc_rosa.png.",|' > "$pf"
+run_plan_save "$repo" "$pf"
+{ [ "$RC" -eq 1 ] && printf '%s' "$OUT" | grep -q 'binary-asset'; } \
+  && ok "S346/fix1 D1 vacuous bar with only sentence-ending filename is refused" \
+  || bad "S346/fix1 D1 sentence-ending vacuous bar refused (rc=$RC: $OUT)"
+
+# S346 fix1 D2: the only filename may be in the title or the rationale.
+for field in title rationale; do
+  repo="$(new_mission)"; pf="$repo/asset-$field.json"
+  ticket '    "acceptanceCriteria": ["edge, jitter and mirror checks pass"],' \
+    | sed "s|\"$field\": .*|\"$field\": \"Rebuild assets/sprites/npc_rosa.png.\",|" > "$pf"
+  run_plan_save "$repo" "$pf"
+  { [ "$RC" -eq 1 ] && printf '%s' "$OUT" | grep -q 'binary-asset'; } \
+    && ok "S346/fix1 D2 filename only in $field fires" \
+    || bad "S346/fix1 D2 filename only in $field fires (rc=$RC: $OUT)"
+done
+
+# S346 fix1 D3: the first cold Planner prompt must teach the absence declaration.
+repo="$(new_mission)"; md="$repo/.git/lcars/missions/test-001"
+printf 'Rebuild the sprite.\n' > "$md/prd.md"
+printf 'Rebuild the sprite end to end.\n' > "$md/validated-plan.md"
+pf="$repo/planner-prompt.txt"; : > "$pf"
+( cd "$repo" && PR_PROMPT_OUT="$pf" LCARS_WORKER_BIN="$PRWORK/claude" \
+    LCARS_WORKER_TRIES=1 LCARS_GH_BIN=true LCARS_GIT_BIN="$(command -v git)" \
+    bash "$SCRIPT" plan --mission test-001 >/dev/null 2>&1 )
+PLAN_PROMPT="$(cat "$pf")"
+{ printf '%s' "$PLAN_PROMPT" | grep -q 'failsOnAbsence' \
+  && printf '%s' "$PLAN_PROMPT" | grep -q 'absenceNote' \
+  && printf '%s' "$PLAN_PROMPT" | grep -q 'accepted, not verified'; } \
+  && ok "S346/fix1 D3 first Planner prompt teaches the absence declaration" \
+  || bad "S346/fix1 D3 first Planner prompt omits the absence declaration"
+
+for declarations in \
+  '"failsOnAbsence": true, "absenceNote": "silence.wav is intentional silence; absent samples cannot distinguish it."' \
+  '"absenceNote": "silence.wav is intentional silence; absent samples cannot distinguish it.", "failsOnAbsence": true'
+do
+  repo="$(new_mission)"; pf="$repo/both-absence.json"
+  ticket "    \"acceptanceCriteria\": [{\"text\": \"silence.wav remains silent\", $declarations}]," > "$pf"
+  run_plan_save "$repo" "$pf"
+  { [ "$RC" -eq 0 ] && printf '%s' "$OUT" | grep -q 'advanced'; } \
+    && ok "S346/fix1 D3 both valid absence declarations advance: $declarations" \
+    || bad "S346/fix1 D3 both valid absence declarations advance (rc=$RC: $OUT)"
+done
+
+# A valid field must not hide an invalid one, in either key order.
+for note in '"   "' "$(printf '\"\t\"')" '"\u0009"'; do
+  for declarations in "\"failsOnAbsence\": true, \"absenceNote\": $note" \
+    "\"absenceNote\": $note, \"failsOnAbsence\": true"
+  do
+    repo="$(new_mission)"; pf="$repo/both-blank-absence.json"
+    ticket "    \"acceptanceCriteria\": [{\"text\": \"silence.wav remains silent\", $declarations}]," > "$pf"
+    run_plan_save "$repo" "$pf"
+    { [ "$RC" -eq 1 ] && printf '%s' "$OUT" | grep -q 'absenceNote.*blank'; } \
+      && ok "S346/fix1 D3 blank note beside true is refused: $declarations" \
+      || bad "S346/fix1 D3 blank note beside true refused (rc=$RC: $OUT)"
+  done
+done
+for declarations in \
+  '"failsOnAbsence": false, "absenceNote": "silence.wav is intentional silence."' \
+  '"absenceNote": "silence.wav is intentional silence.", "failsOnAbsence": "true"'
+do
+  repo="$(new_mission)"; pf="$repo/both-invalid-absence.json"
+  ticket "    \"acceptanceCriteria\": [{\"text\": \"silence.wav remains silent\", $declarations}]," > "$pf"
+  run_plan_save "$repo" "$pf"
+  { [ "$RC" -eq 1 ] && printf '%s' "$OUT" | grep -q 'failsOnAbsence.*bare value true'; } \
+    && ok "S346/fix1 D3 note cannot launder an invalid failsOnAbsence: $declarations" \
+    || bad "S346/fix1 D3 invalid failsOnAbsence refused (rc=$RC: $OUT)"
+done
+
+# S346 fix1 controls: unchanged non-asset output and the exact corrected artifact.
+repo="$(new_mission)"; pf="$repo/no-binary-asset.json"
+ticket '    "establishesSharedInfrastructure": false,
+    "acceptanceCriteria": ["the thing works"],' > "$pf"
+run_plan_save "$repo" "$pf"
+{ [ "$RC" -eq 0 ] && [ "$OUT" = "$S346_ADVANCED" ]; } \
+  && ok "S346/fix1 control no binary asset preserves rc and every output byte" \
+  || bad "S346/fix1 control no binary asset changed (rc=$RC: $OUT)"
+
+repo="$(new_mission)"
+run_plan_save "$repo" "$S346/corrected-declared.json"
+{ [ "$RC" -eq 0 ] && [ "$OUT" = "$S346_ADVANCED" ]; } \
+  && ok "S346/fix1 control exact corrected-declared.json advances" \
+  || bad "S346/fix1 control exact corrected-declared.json advances (rc=$RC: $OUT)"
+
+# Observe the final-attempt path; do not change its policy or retry budget.
+repo="$(new_mission)"; pf="$repo/final-vacuous-asset.json"
+cp "$S346/vacuous-asset-plan.json" "$pf"
+run_plan_save "$repo" "$pf" --final-attempt
+{ [ "$RC" -eq 1 ] && printf '%s' "$OUT" | grep -q 'binary-asset' \
+  && grep -q '"stage": "plan"' "$repo/.git/lcars/missions/test-001/state.json" \
+  && [ ! -f "$repo/.git/lcars/missions/test-001/plan.json" ] \
+  && [ ! -f "$repo/.plan-reject-note" ]; } \
+  && ok "S346/fix1 final attempt rejects absence failure, reports reason and does not advance" \
+  || bad "S346/fix1 final-attempt absence failure policy changed (rc=$RC: $OUT)"
 
 echo
 printf 'plan-validator: %d passed, %d failed\n' "$PASS" "$FAIL"
