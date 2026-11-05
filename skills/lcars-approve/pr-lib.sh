@@ -269,7 +269,12 @@ open_pr() {
   [ -n "${BRANCH:-}" ] || BRANCH="$(json_str "$STATE" branch)"
   [ -n "${BASE:-}" ]   || BASE="$(json_str "$STATE" base)"
   BASE="${BASE:-main}"
-  [ -n "$BRANCH" ] || die "mission has no branch on file — re-file it so it gets a branch. Mission stays at verify."
+  if [ -z "$BRANCH" ]; then
+    local missing_branch_tip; missing_branch_tip="$(json_str "$STATE" rejectedTip)"
+    [ -z "$missing_branch_tip" ] \
+      || die "rejected tip $missing_branch_tip (age unknown: mission has no branch recorded) cannot be checked — restore the branch in state.json before retrying. Mission stays at verify."
+    die "mission has no branch on file — re-file it so it gets a branch. Mission stays at verify."
+  fi
 
   # Idempotency: a recorded prUrl means the PR already exists → no second PR.
   local existing; existing="$(json_str "$STATE" prUrl)"
@@ -284,6 +289,21 @@ open_pr() {
   # 002's Verify boundary in the S111 proof drive).
   "$GIT_BIN" show-ref --verify --quiet "refs/heads/$BRANCH" \
     || die "mission branch '$BRANCH' does not exist — Implement never committed to it. Mission stays at verify."
+
+  local rejected_tip; rejected_tip="$(json_str "$STATE" rejectedTip)"
+  if [ -n "$rejected_tip" ]; then
+    local tip age
+    tip="$("$GIT_BIN" rev-parse --verify "refs/heads/$BRANCH^{commit}" 2>/dev/null)" \
+      || die "rejected tip $rejected_tip (age unknown: mission branch could not be read) cannot be checked — restore mission branch '$BRANCH' before retrying. Mission stays at verify."
+    if [ "$tip" = "$rejected_tip" ]; then
+      if age="$("$GIT_BIN" show -s --format=%ar "$tip" 2>/dev/null)"; then
+        age="committed $age"
+      else
+        age="age unknown: Git could not read its commit time"
+      fi
+      die "tip $tip ($age) is unchanged since send-back — implement the feedback and commit new work on '$BRANCH'. Mission stays at verify."
+    fi
+  fi
 
   # Require commits ahead of the base — no content, no PR.
   local ahead; ahead="$("$GIT_BIN" rev-list --count "$BASE..$BRANCH" 2>/dev/null)"

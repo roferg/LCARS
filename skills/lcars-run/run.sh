@@ -17742,6 +17742,24 @@ EOF
   fi
   rm -f "$fssig"
 
+  local rejected_tip; rejected_tip="$(json_str "$STATE" rejectedTip)"
+  if [ -n "$rejected_tip" ]; then
+    local branch tip age
+    branch="$(json_str "$STATE" branch)"
+    [ -n "$branch" ] \
+      || die "rejected tip $rejected_tip (age unknown: mission has no branch recorded) cannot be checked — restore the branch in state.json before retrying. Mission stays at implement."
+    tip="$("$GIT_BIN" rev-parse --verify "refs/heads/$branch^{commit}" 2>/dev/null)" \
+      || die "rejected tip $rejected_tip (age unknown: mission branch could not be read) cannot be checked — restore mission branch '$branch' before retrying. Mission stays at implement."
+    if [ "$tip" = "$rejected_tip" ]; then
+      if age="$("$GIT_BIN" show -s --format=%ar "$tip" 2>/dev/null)"; then
+        age="committed $age"
+      else
+        age="age unknown: Git could not read its commit time"
+      fi
+      die "tip $tip ($age) is unchanged since send-back — implement the feedback and commit new work on '$branch'. Mission stays at implement."
+    fi
+  fi
+
   # All green — clear any awaiting-human gate (defensive, like validate-advance)
   # and advance the Mission to Verify, keeping stage and label in step.
   # S180: the answers.json deletion here is kept for the same reason as

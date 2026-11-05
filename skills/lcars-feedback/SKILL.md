@@ -4,8 +4,8 @@ description: >-
   Send an LCARS Mission back to Align with the captain's feedback — the
   Verify feedback loop. Appends the note to the Mission's feedback.md (a
   durable, accumulating history), resets the stage to `align`, and moves the
-  GitHub label to `lcars:align`, while deleting none of the prior artifacts
-  (PRD, research, validated/approved plans) so the next `lcars run`
+  GitHub label to `lcars:align`, keeping prior planning artifacts
+  (PRD, research, validated/approved plans) but clearing implement results so the next `lcars run`
   re-enters Align with the full history. Use when the captain runs `lcars
   feedback <mission-id> "<feedback>"`, or asks to send a Mission back /
   reject it with changes / re-align it after reviewing it in Verify.
@@ -45,8 +45,15 @@ bash ~/.claude/skills/lcars-feedback/feedback.sh \
    entry), so the spec on GitHub moves when the spec moves, not when a note is
    filed.
 
-It **deletes nothing**: the PRD, research findings, and validated/approved plans
-all stay on disk.
+The PRD, research findings, `plan.json`, and validated/approved plans stay on
+disk. The stale `waves.json`, `tickets/`, and `manifests/` are removed so Schedule
+and Implement rebuild instead of reusing the rejected run's passing results.
+Top-level send-back records the mission branch's SHA as `state.json.rejectedTip`;
+Implement cannot advance to Verify, and a new PR cannot open, until that tip
+changes. Refusals name the rejected SHA, its commit age, and the remedy:
+implement the feedback and commit new work on the mission branch. An absent
+`rejectedTip` means no measurement and adds no gate to a first-time mission.
+Logged-bug send-back retains its existing Plan reset and does not record this key.
 
 ## Re-entering Align with the full history
 
@@ -75,6 +82,8 @@ with its full history intact, and that `lcars run <id>` will re-enter Align.
 ## Implementation
 
 The logic lives in `feedback.sh` next to this file; its behaviour is covered by
-`tests/lcars-feedback.test.sh` in the LCARS repo (run with `bash tests/run.sh`).
+`tests/lcars-feedback.test.sh` and `tests/stale-implement-gate.test.sh` in the
+LCARS repo (run each scoped with `python3 tests/lib/cage.py 900 bash
+tests/<suite>.test.sh < /dev/null`).
 `LCARS_GH_BIN` and `LCARS_NOW` are taken via env so tests can stub them. Edit
 the repo copy, not `~/.claude` — `./install.sh` symlinks it in.
