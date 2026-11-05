@@ -3708,7 +3708,10 @@ LCARS_AWK_CRIT="$(cat <<'LCARS_AWK_CRIT_EOF'
 # null, true, 0 and "\t" as content, so all four passed as anchors. The
 # validator refuses anything that is not a non-empty string, and it can only do
 # that if the parser tells it what the value WAS.
-function lcars_crit_entries(t, ctext, cdecl, cval, ctype, cserves, cdir,   i, n, ch, inq, esc, cur, k, depth, pend, bare, j, d2, q2, e2) {
+# cabs/cabsval/cabstype independently retain failsOnAbsence / absenceNote, with
+# values and types keyed by criterion AND field so both can coexist.
+# An absence declaration never changes mockup provenance on the criterion.
+function lcars_crit_entries(t, ctext, cdecl, cval, ctype, cserves, cdir, cabs, cabsval, cabstype,   i, n, ch, inq, esc, cur, k, depth, pend, bare, j, d2, q2, e2) {
   n = length(t); inq = 0; esc = 0; cur = ""; k = 0; depth = 0; pend = ""
   for (i = 1; i <= n; i++) {
     ch = substr(t, i, 1)
@@ -3717,12 +3720,16 @@ function lcars_crit_entries(t, ctext, cdecl, cval, ctype, cserves, cdir,   i, n,
       else if (ch == "\\") { cur = cur ch; esc = 1 }
       else if (ch == "\"") {
         inq = 0
-        if (depth == 0) { k++; ctext[k] = cur; cdecl[k] = ""; cval[k] = ""; ctype[k] = ""; cserves[k] = ""; cdir[k] = "" }
+        if (depth == 0) { k++; ctext[k] = cur; cdecl[k] = ""; cval[k] = ""; ctype[k] = ""; cserves[k] = ""; cdir[k] = ""; cabs[k] = ""; cabsval[k] = ""; cabstype[k] = "" }
         else if (pend == "") { pend = cur }          # this string is a KEY
         else {                                        # …the VALUE of that key
           if (pend == "text") ctext[k] = cur
           else if (pend == "serves") cserves[k] = cur
           else if (pend == "direction") cdir[k] = cur
+          else if (pend == "failsOnAbsence" || pend == "absenceNote") {
+            cabs[k] = cabs[k] (cabs[k] == "" ? "" : " ") pend
+            cabsval[k, pend] = cur; cabstype[k, pend] = "s"
+          }
           else if (pend == "drawnAt" || pend == "notDrawn" || pend == "notVisual") {
             cdecl[k] = cdecl[k] (cdecl[k] == "" ? "" : " ") pend
             cval[k] = cur; ctype[k] = "s"
@@ -3735,7 +3742,7 @@ function lcars_crit_entries(t, ctext, cdecl, cval, ctype, cserves, cdir,   i, n,
     }
     if (ch == "\"") { inq = 1; cur = "" }
     else if (ch == "{" && depth == 0) {
-      depth = 1; pend = ""; k++; ctext[k] = ""; cdecl[k] = ""; cval[k] = ""; ctype[k] = ""; cserves[k] = ""; cdir[k] = ""
+      depth = 1; pend = ""; k++; ctext[k] = ""; cdecl[k] = ""; cval[k] = ""; ctype[k] = ""; cserves[k] = ""; cdir[k] = ""; cabs[k] = ""; cabsval[k] = ""; cabstype[k] = ""
     }
     else if ((ch == "{" || ch == "[") && depth > 0) {
       # A NESTED object/array as a value ({"drawnAt": {"screen": "b"}} or []).
@@ -3758,6 +3765,10 @@ function lcars_crit_entries(t, ctext, cdecl, cval, ctype, cserves, cdir,   i, n,
         cdecl[k] = cdecl[k] (cdecl[k] == "" ? "" : " ") pend
         cval[k] = substr(t, i, 1) "…" ; ctype[k] = "x"
       }
+      else if (pend == "failsOnAbsence" || pend == "absenceNote") {
+        cabs[k] = cabs[k] (cabs[k] == "" ? "" : " ") pend
+        cabsval[k, pend] = substr(t, i, 1); cabstype[k, pend] = "x"
+      }
       pend = ""; i = j
     }
     else if (ch == "}" && depth == 1) { depth = 0; pend = "" }
@@ -3775,6 +3786,10 @@ function lcars_crit_entries(t, ctext, cdecl, cval, ctype, cserves, cdir,   i, n,
       if (pend == "drawnAt" || pend == "notDrawn" || pend == "notVisual") {
         cdecl[k] = cdecl[k] (cdecl[k] == "" ? "" : " ") pend
         cval[k] = bare; ctype[k] = "b"
+      }
+      else if (pend == "failsOnAbsence" || pend == "absenceNote") {
+        cabs[k] = cabs[k] (cabs[k] == "" ? "" : " ") pend
+        cabsval[k, pend] = bare; cabstype[k, pend] = "b"
       }
       pend = ""
       i--                                   # let the loop see the , or }
@@ -3913,12 +3928,51 @@ validate_plan_json() { # file [mockup-basenames] [mockup-place-names] [final-att
     # citation true, does the BUILT screen match the drawing — is handed to the
     # build-gate round (see the handoff at plan_mockup_contract_block).
     function excerpt(c) { return (length(c) > 110 ? substr(c, 1, 110) "…" : c) }
+    # S346: filenames only, in title, rationale, description, entrypoint paths
+    # and criterion text. No prose classification or inference from serves/proof.
+    # Residual: an asset ticket spelling no filename in any scanned field is
+    # invisible here; closing that would require forbidden prose classification.
+    # stages/plan-review.md asks the reviewer the absence question, and a real
+    # Copilot reviewer caught such a ticket in testing. That is the mitigation:
+    # judgement, not a guarantee.
+    function binary_asset(v) {
+      return tolower(v) ~ /(^|[^a-z0-9_.\/<>-])[a-z0-9_.\/<>-]+\.(png|jpg|jpeg|gif|webp|wav|mp3|ogg|ttf|otf|woff|woff2)([^a-z0-9_.-]|[.-]([^a-z0-9]|$)|$)/
+    }
     # jsonblank(v) — a STRING whose content is whitespace is not a declaration.
     # It decodes the whitespace ESCAPES too: round 2 checked bytes, so a JSON
     # "\t" read as content and passed as an anchor.
     function jsonblank(v) {
       gsub(/\\[tnrfb]/, "", v); gsub(/\\u0020/, "", v)
       gsub(/[[:space:]]/, "", v); return (v == "")
+    }
+    # Kept separate: S346 must not change the existing mockup blank check.
+    # Handle JSON escapes and literal UTF-8 Unicode whitespace alike.
+    function absenceblank(v) {
+      v=tolower(v)
+      gsub(/\\[tnrf]/, "", v)
+      gsub(/\\u(000[9a-d]|001[c-f]|0020|0085|00a0|1680|200[0-9a]|202[89f]|205f|3000)/, "", v)
+      gsub(/| | | | | | | | | | | | | | | | | |　/, "", v)
+      gsub(/[[:space:]]/, "", v)
+      return (v == "")
+    }
+    function abswhy(i,   n, names, j, d) {
+      if (sdabs[i] == "") return "no absence declaration"
+      if (sdtext[i] == "") return "has no \"text\" for its absence declaration"
+      n=split(sdabs[i], names, " ")
+      if (n > 2 || (n == 2 && names[1] == names[2]))
+        return "carries duplicate absence declarations — use each field at most once"
+      for (j=1; j<=n; j++) {
+        d=names[j]
+        if (d == "failsOnAbsence") {
+          if (sdabstype[i, d] != "b" || sdabsval[i, d] != "true")
+            return "\"failsOnAbsence\" must be the bare value true"
+        }
+        else if (d == "absenceNote") {
+          if (sdabstype[i, d] != "s") return "\"absenceNote\" must be a quoted string"
+          if (absenceblank(sdabsval[i, d])) return "\"absenceNote\" is blank — explain by name why absence cannot apply"
+        }
+      }
+      return ""
     }
     # typedesc(i) — what the planner actually wrote, for the message.
     function typedesc(i) {
@@ -3966,6 +4020,7 @@ validate_plan_json() { # file [mockup-basenames] [mockup-place-names] [final-att
       inobj=1; delete have; delete crit; acok=0; id=""; ndep=0; in_ac=0; actext=""; visual=""
       in_deps=0; deptext=""
       ttl=""; enew=-1; etest=-1          # S313 — the regression-lock signals
+      asset=0
       next
     }
     /^[[:space:]]*\}[,]?[[:space:]]*$/ && !in_ac && !in_deps {
@@ -3988,7 +4043,20 @@ validate_plan_json() { # file [mockup-basenames] [mockup-place-names] [final-att
       # ticket (a requirement link is not a visual concern), accumulated into ONE
       # message like s174bad and emitted from END.
       delete sdtext; delete sddecl; delete sdval; delete sdtype; delete sdserves; delete sddir
-      nsd = lcars_crit_entries(actext, sdtext, sddecl, sdval, sdtype, sdserves, sddir)
+      delete sdabs; delete sdabsval; delete sdabstype
+      nsd = lcars_crit_entries(actext, sdtext, sddecl, sdval, sdtype, sdserves, sddir, sdabs, sdabsval, sdabstype)
+      for (ci = 1; ci <= nsd; ci++) if (binary_asset(sdtext[ci])) asset=1
+      if (asset) {
+        absenceok=0
+        for (ci = 1; ci <= nsd; ci++)
+          if (abswhy(ci) == "") absenceok=1
+        for (ci = 1; ci <= nsd; ci++) {
+          why=abswhy(ci)
+          if (!absenceok || (sdabs[ci] != "" && why != ""))
+            absencebad = absencebad "\n  ticket " tickets " (" id "), criterion " ci \
+              " (\"" excerpt(sdtext[ci]) "\"): " why "."
+        }
+      }
       for (ci = 1; ci <= nsd; ci++) {
         if (sdserves[ci] != "" && sddir[ci] != "delivers" && sddir[ci] != "removes") {
           sdbad = sdbad "\n  ticket " tickets " (" id "), criterion " ci
@@ -4099,6 +4167,19 @@ validate_plan_json() { # file [mockup-basenames] [mockup-place-names] [final-att
       if (n < 2) next
       key=a[2]; have[key]=1
       if (key=="id") id=a[4]
+      else if (key=="description" || key=="rationale") {
+        v=$0; sub(/^[[:space:]]*"(description|rationale)"[[:space:]]*:[[:space:]]*/, "", v)
+        if (binary_asset(v)) asset=1
+      }
+      else if (key=="entrypoints") {
+        v=$0
+        while (match(v, /"path"[[:space:]]*:[[:space:]]*"[^"]*"/)) {
+          p=substr(v, RSTART, RLENGTH)
+          sub(/^"path"[[:space:]]*:[[:space:]]*"/, "", p); sub(/"$/, "", p)
+          if (binary_asset(p)) asset=1
+          v=substr(v, RSTART + RLENGTH)
+        }
+      }
       # S313 — the TITLE text (taken as the whole line minus the key, for the
       # same escaped-quote reason the criteria accumulator gives below) and the
       # two LoC declarations the regression-lock rule reads. A bare numeric value
@@ -4106,6 +4187,7 @@ validate_plan_json() { # file [mockup-basenames] [mockup-place-names] [final-att
       # exactly as the slice-pressure reader does.
       else if (key=="title") {
         v=$0; sub(/.*"title"[[:space:]]*:[[:space:]]*/, "", v); ttl=v
+        if (binary_asset(v)) asset=1
       }
       else if (key=="estimatedNewLoc") {
         v=a[3]; gsub(/[^0-9]/, "", v); if (v != "") enew=v+0
@@ -4172,6 +4254,8 @@ validate_plan_json() { # file [mockup-basenames] [mockup-place-names] [final-att
             req[8]="dependencies"; req[9]="rationale" }
     END {
       if (tickets == 0) fail("no tickets in the plan — a plan needs at least one ticket.")
+      if (absencebad != "" && !failed)
+        fail("this plan'"'"'s binary-asset tickets do not declare a usable absence bar. Add \"failsOnAbsence\": true to a criterion, or a quoted, non-blank \"absenceNote\" explaining why absence cannot apply. Declarations are accepted, not verified." absencebad)
       for (r=1; r<=drefs; r++)
         if (!(depof[r] in ids))
           fail("ticket " depticket[r] " depends on \"" depof[r] "\", which is not a ticket id in this plan.")

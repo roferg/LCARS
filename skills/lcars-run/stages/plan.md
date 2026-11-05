@@ -72,6 +72,36 @@ But a criterion that carries `serves` MUST carry a readable `direction` — the
 harness rejects a `serves` with no `direction`, naming the criterion, because a
 missing direction is exactly the polarity nothing is allowed to guess.
 
+**Declare the binary-asset absence bar — `failsOnAbsence` / `absenceNote`.**
+On a ticket naming a `.png`, `.jpg`, `.jpeg`, `.gif`, `.webp`, `.wav`, `.mp3`,
+`.ogg`, `.ttf`, `.otf`, `.woff` or `.woff2` file in its `title`, `rationale`,
+`description`, `entrypoints[].path` or criterion text, at least ONE
+`acceptanceCriteria` entry must be an OBJECT carrying `text` and an absence
+declaration:
+
+- **`"failsOnAbsence": true`** — this criterion would FAIL if the delivered
+  asset were absent or blank. Write an observable content bar: edge, jitter and
+  mirror checks alone can all pass on blank sprite cells.
+- **`"absenceNote": "<why>"`** — absence cannot apply to this criterion.
+  A note must be a quoted, non-blank reason explaining why, naming the asset
+  BY NAME — not an empty string or a shrug.
+
+Both declarations may coexist on a criterion; every field must still be valid.
+Use each field at most once per criterion: repeating `failsOnAbsence` or
+`absenceNote` is refused as "carries duplicate absence declarations — use each
+field at most once". One `"failsOnAbsence": true` together with one reasoned
+`absenceNote` is legal; repeating the same field is not.
+A blank `absenceNote` is refused even beside `"failsOnAbsence": true`, or another
+criterion with a valid declaration. Other criteria may remain plain strings
+unless the mockup contract requires objects. A ticket naming no binary asset
+owes no absence declaration. This adds no `drawnAt` minimum and does not change
+the mockup provenance rule.
+
+The harness REJECTS a missing or unusable absence declaration, naming the
+offending ticket and criterion. Declarations are accepted, not verified:
+Plan Review judges the criterion's claim and the note's reason from the ticket,
+not by executing checks or verifying them against assets.
+
 ## Slicing: cohesion first, size second
 
 **Slice on behavioral seams, not on a line count.** The primary rule is
