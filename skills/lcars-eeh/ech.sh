@@ -330,7 +330,7 @@ else
   lcars_chunk_owner()      { return 0; }
   lcars_chunk_own()        { return 1; }
   lcars_chunk_release()    { return 0; }
-  lcars_chunk_owned_bugs() { return 0; }
+  lcars_chunk_owned()      { return 0; }
 fi
 
 # The parallelism ceiling. Two concurrent missions was the measured safe maximum
@@ -695,16 +695,38 @@ subech_seat() {
 subech_chunk_root() { ap_j "delegates.$1.mission"; }
 
 # mission_in_chunk <delegate-id> <mission> — is this Mission inside that chunk?
-# A chunk is the delegate's Mission AND every bug Mission logged beneath it, at
-# any depth: a bug logged against a bug is still the same piece of work, and the
-# sub-ECH that owns the parent is the one driving it. The ascent is bounded, so
-# a record whose `parentMission` points in a circle cannot hang a verb.
+#
+# A chunk is THREE things, and the third is the captain's own words of
+# 2026-11-20: *"sub echs can chunk the work they want to the factory how they
+# see fit. So if they get told add fish to the river system that's impacted by
+# water level, they can sub divide the missions they feed the factory as it
+# makes sense."* So:
+#
+#   1. the Mission the delegate's unit resolves to (its SEED), and
+#   2. every Mission THAT DELEGATE ITSELF FILED, recorded in the same
+#      `chunk-owners` record that carries its bugs — one record, one reader, no
+#      second notion of ownership, and
+#   3. every bug Mission logged beneath any of those, at any depth: a bug
+#      logged against a bug is still the same piece of work and the same seat is
+#      driving it.
+#
+# Without (2) a sub-ECH told to add fish to the river system, which splits that
+# into three Missions exactly as he asks, would be REFUSED on two of its own
+# three — the session is called "a sub-ECH owns its chunk" and his definition of
+# a chunk includes the Missions it files.
+#
+# A DELEGATE WITH NO SEED CAN STILL OWN WHAT IT FILED. The seed used to be
+# mandatory and an empty one meant "no chunk at all"; it is now one of three
+# ways in, which is why the loop no longer refuses before it starts.
+#
+# The ascent is bounded, so a record whose `parentMission` points in a circle
+# cannot hang a verb.
 mission_in_chunk() {
   local did="$1" m="$2" root hops=0
   root="$(subech_chunk_root "$did")"
-  [ -n "$root" ] || return 1
   while [ -n "$m" ] && [ "$hops" -lt 32 ]; do
-    [ "$m" = "$root" ] && return 0
+    [ -n "$root" ] && [ "$m" = "$root" ] && return 0
+    [ "$(lcars_chunk_owner "$LCARS_DIR" "$m")" = "$did" ] && return 0
     m="$(mstate "$m" parentMission)"
     hops=$((hops + 1))
   done
@@ -742,7 +764,7 @@ subech_scope_or_die() {
     done
     die "$verb: $m is NOT IN YOUR CHUNK. You are sub-ECH $seat and your chunk is $(subech_chunk_root "$seat") and the bug Missions logged under it. $m belongs to:$line. Authority travels with the chunk — each sub-ECH files, verifies and drives its OWN chunk, and reaching into a sibling's is how two seats do the same work twice and neither one owns the result. If this really is your work, the MAIN ECH re-chunks it; raise that with \`$SELF_CMD beat $seat \"BLOCKED: <what you need>\"\`."
   fi
-  die "$verb: $m is NOT IN YOUR CHUNK. You are sub-ECH $seat and your chunk is $(subech_chunk_root "$seat") and the bug Missions logged under it. No sub-ECH owns $m, so it is the MAIN ECH's — it owns the overall ask and every Mission not handed to a chunk. Authority travels with the chunk, and it does not travel outside one. Raise it with \`$SELF_CMD beat $seat \"BLOCKED: <what you need>\"\`."
+  die "$verb: $m is NOT IN YOUR CHUNK. You are sub-ECH $seat and your chunk is $(subech_chunk_root "$seat") and the bug Missions logged under it. No sub-ECH owns $m, so it is the MAIN ECH's — it owns the overall ask and every Mission not handed to a chunk. Authority travels with the chunk, and it does not travel outside one. IF YOU FILED $m YOURSELF, file through the front door so the ownership is recorded — \`$SELF_CMD exec lcars-file/file.sh --prd <f>\` — because a Mission created around this verb is a Mission nothing can attribute to you, and the safe answer to an unattributable Mission is this refusal. Otherwise raise it with \`$SELF_CMD beat $seat \"BLOCKED: <what you need>\"\`."
 }
 
 # subech_reserved_or_die <verb> <the one-line reason it stays at the top> —
@@ -6407,6 +6429,51 @@ cmd_exec() {
     done
     budget_check "$role" "$mission" || return $?
   fi
+
+  # ==== S365 fix round 1: A MISSION A SUB-ECH FILES JOINS ITS CHUNK ========
+  # `exec` is the front door the brief hands a delegate for every sibling
+  # script, so it is the one place a Mission created BY a sub-ECH can be
+  # attributed to it — recorded exactly as `file-bug` records a bug it filed:
+  # the missions directory before, the missions directory after, and the
+  # difference is this seat's. Nothing is inferred from a script's name or its
+  # output.
+  #
+  # IT RUNS ONLY FOR A SUB-ECH SEAT. For the main ECH — every invocation that
+  # existed before this and every repo that never minted a sub-ECH — the
+  # `exec` below is reached unchanged, so `exec` keeps replacing this process
+  # and its exit status, signals and stdio are byte-for-byte what they were.
+  # A sub-ECH's call is FORKED instead, because a process that has `exec`d away
+  # cannot record anything afterwards. The exit status is passed straight back.
+  #
+  # AND THE BLIND SPOT, SAID OUT LOUD: a delegate that goes around this verb
+  # (`bash .../file.sh` by hand) gets no ownership recorded, so its Mission is
+  # OUT OF CHUNK and every verb on it is REFUSED. That is the safe direction —
+  # a refusal naming the cure, never a silent grant — and the refusal names the
+  # front door.
+  local seat; seat="$(subech_seat)" || exit $?
+  if [ -n "$seat" ]; then
+    local before="$APDIR/exec.before.$$" after="$APDIR/exec.after.$$"
+    mkdir -p "$APDIR"
+    mission_ids | sort >"$before"
+    local xrc=0
+    bash "$target" "$@" || xrc=$?
+    mission_ids | sort >"$after"
+    local newm; newm="$(comm -13 "$before" "$after")"
+    rm -f "$before" "$after"
+    local nm
+    for nm in $newm; do
+      if lcars_chunk_own "$LCARS_DIR" "$nm" "$seat"; then
+        say "CHUNK: $nm is now yours ($seat) — you filed it, you drive it, and it is"
+        say "  inside your chunk for \`file-bug\`, \`live-check\`, \`policy\` and \`drive\`."
+      else
+        say "⚠ CHUNK NOT RECORDED: $nm was created, but the ownership record at"
+        say "  $LCARS_DIR/chunk-owners could not be written. Until it is, $nm is OUTSIDE"
+        say "  your chunk and every verb on it will be refused — the safe way round, not a"
+        say "  silent grant. Fix the directory, then re-run this to record it."
+      fi
+    done
+    return "$xrc"
+  fi
   exec bash "$target" "$@"
 }
 
@@ -7318,11 +7385,20 @@ or a wrong unit id. Confirm which with the ECH before you write anything."
 
 ### YOUR CHUNK, AND THE AUTHORITY THAT COMES WITH IT
 
-**You are a sub-ECH and you OWN a chunk.** Your chunk is Mission
-\`${mid:-$unit_i}\` and every bug Mission logged beneath it, at any depth. Inside
-it you hand the work to the factory, make sure it lands, **validate it, file
-your own bugs and drive your own fixes** until the chunk meets the ask in § 1.
-That is the authority; the scope is the chunk and nothing wider.
+**You are a sub-ECH and you OWN a chunk.** Your chunk starts at Mission
+\`${mid:-$unit_i}\`, and it is three things: that Mission, **every Mission YOU
+file for this work**, and every bug Mission logged beneath any of them at any
+depth. Inside it you hand the work to the factory, make sure it lands,
+**validate it, file your own bugs and drive your own fixes** until the chunk
+meets the ask in § 1. That is the authority; the scope is the chunk and nothing
+wider.
+
+**SUBDIVIDE THE WORK AS IT MAKES SENSE — that is yours to decide.** If this
+chunk is better as three Missions than one, file three; each one you file JOINS
+your chunk and you drive it. **File them through this verb and no other**, or
+nothing can attribute them to you and every verb on them will be refused:
+
+    bash $SELF exec lcars-file/file.sh --prd <your-prd.md>
 
 **Declare which seat you are, on every verb**, or the authority cannot resolve
 and you will be refused as the main ECH's impostor:
@@ -8281,14 +8357,16 @@ PY
   # is the correct state for a bug nobody is driving, and it is the invariant
   # that lets the flat ownership record carry a LIVE fact: a claim that outlives
   # its seat is exactly the stale claim that would buy a false accept.
-  local released; released="$(lcars_chunk_owned_bugs "$LCARS_DIR" "$did" | tr '\n' ' ')"
+  local released; released="$(lcars_chunk_owned "$LCARS_DIR" "$did" | tr '\n' ' ')"
   released="${released% }"
   lcars_chunk_release "$LCARS_DIR" "$did" || true
   say "CLOSED: $did (unit $unit) — status done"
   if [ -n "$released" ]; then
-    say "OWNERSHIP RELEASED: $released — bug Mission(s) $did was driving. Nobody is driving"
-    say "  them now, so they BLOCK the parent's accept again until a sub-ECH owns them or"
-    say "  they reach done. Nothing was dropped and nothing was closed on their behalf."
+    say "OWNERSHIP RELEASED: $released — EVERYTHING $did owned: the Missions it filed for its"
+    say "  chunk and the bug Missions it was driving. Nobody is driving them now, so its"
+    say "  Missions leave its chunk and its bugs BLOCK the parent's accept again until a"
+    say "  sub-ECH owns them or they reach done. Nothing was dropped, nothing was closed"
+    say "  on their behalf, and the Mission records themselves are untouched."
   fi
   say "THAT IS THE DELEGATE, AND ONLY THE DELEGATE. This is not a verdict and nothing"
   say "  advanced: the Mission's stage and its verdict are untouched, by design."

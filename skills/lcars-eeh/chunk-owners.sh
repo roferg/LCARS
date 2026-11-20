@@ -16,7 +16,7 @@
 # the accept path is precisely how two gates come to disagree, so the fact both
 # of them need is kept in a flat, greppable, append-only file instead:
 #
-#     .git/lcars/chunk-owners          <bug-mission-id>\t<delegate-id>
+#     .git/lcars/chunk-owners          <mission-id>\t<delegate-id>
 #
 # APPEND-ONLY, LATEST LINE WINS, and a RELEASE drops a delegate's lines. The
 # shape is the questions ledger's and the tier ledger's, for the same reason:
@@ -43,7 +43,20 @@ lcars_chunk_owners_file() {
   printf '%s/chunk-owners' "${1%/}"
 }
 
-# lcars_chunk_owner <lcars-dir> <bug-mission-id> → the owning delegate id, or
+# WHAT A ROW MEANS, AND IT IS TWO THINGS (S365 fix round 1). A row is written
+# for a BUG a sub-ECH filed with `file-bug` — the row that stops that filing
+# ending the parent's run — and for a MISSION a sub-ECH filed through
+# `lcars-ech exec`, which is the captain's own definition of a chunk: *"they can
+# sub divide the missions they feed the factory as it makes sense."* One record
+# and one reader for both, because a second notion of ownership is a second
+# answer to "whose work is this". The two never collide: a Mission id and a bug
+# Mission id are both mission ids and each appears at most once as a key.
+#
+# WHO READS WHICH. The accept gates (`land`, `approve.sh`) only ever ask about a
+# `type: bug` child of the Mission being landed, so a Mission row can never make
+# a blocker go quiet. `mission_in_chunk` asks about any Mission.
+
+# lcars_chunk_owner <lcars-dir> <mission-id> → the owning delegate id, or
 # nothing at all. The LAST matching line wins, because the record is appended.
 #
 # AND A LINE ALONE IS NOT ENOUGH: the named delegate must also have the artifact
@@ -71,7 +84,7 @@ lcars_chunk_owner() {
   printf '%s' "$id"
 }
 
-# lcars_chunk_own <lcars-dir> <bug-mission-id> <delegate-id> — record it.
+# lcars_chunk_own <lcars-dir> <mission-id> <delegate-id> — record it.
 lcars_chunk_own() {
   local f dir bug did
   dir="${1:-}"; bug="${2:-}"; did="${3:-}"
@@ -83,10 +96,12 @@ lcars_chunk_own() {
 }
 
 # lcars_chunk_release <lcars-dir> <delegate-id> — drop every line that delegate
-# owns. Called when a sub-ECH is CLOSED: a closed sub-ECH drives nothing, and a
-# claim that outlives the seat is exactly the stale claim that would buy a false
-# accept. The bug Missions themselves are untouched — they go back to blocking,
-# which is the correct state for a bug nobody is driving.
+# owns: EVERYTHING, the Missions it filed for its chunk as well as the bugs it
+# was driving. Called when a sub-ECH is CLOSED: a closed sub-ECH drives nothing,
+# and a claim that outlives the seat is exactly the stale claim that would buy a
+# false accept. The Mission records themselves are untouched — the bugs go back
+# to blocking, which is the correct state for a bug nobody is driving, and the
+# Missions leave the closed seat's chunk.
 lcars_chunk_release() {
   local f dir did tmp line owner
   dir="${1:-}"; did="${2:-}"
@@ -104,8 +119,12 @@ lcars_chunk_release() {
   return 0
 }
 
-# lcars_chunk_owned_bugs <lcars-dir> <delegate-id> → the bug Missions it owns.
-lcars_chunk_owned_bugs() {
+# lcars_chunk_owned <lcars-dir> <delegate-id> → every Mission id it owns —
+# the ones it filed for its chunk and the bugs it is driving. Named for what it
+# returns: it was `..._owned_bugs` while a row could only ever be a bug, and a
+# function whose name says "bugs" while it returns Missions too is the kind of
+# label this project has been bitten by before.
+lcars_chunk_owned() {
   local f line owner
   f="$(lcars_chunk_owners_file "${1:-}")"
   [ -n "${2:-}" ] || return 0

@@ -220,6 +220,45 @@ JSON
 done'
 stub "$STUBS/log-files.sh" 0 "$LOGFILES"
 
+# A `lcars-file/file.sh` stand-in that creates a REAL Mission the way file.sh
+# does — a directory with a `state.json` under `.git/lcars/missions/`. `exec`
+# attributes a Mission by DIFFING that directory, so the fixture has to make a
+# real one; a stub that only exits 0 would prove nothing.
+FILEMAKES='id=""
+while [ $# -gt 0 ]; do
+  case "$1" in --id) id="$2"; shift ;; esac
+  shift
+done
+[ -n "$id" ] || id="filed-$$"
+d="$LCARS_ECH_CWD/.git/lcars/missions/$id"
+mkdir -p "$d"
+cat >"$d/state.json" <<JSON
+{"id":"$id","stage":"verify","type":"feature","title":"mission $id",
+ "branch":"lcars/$id","issue":"1"}
+JSON
+# AND ITS BRANCH, which the real file.sh cuts too — `live-check` prepares a
+# worktree from it, so a Mission record with no branch fails for a reason that
+# has nothing to do with authority (measured: "git worktree add --detach
+# failed for lcars/<id>").
+git -C "$LCARS_ECH_CWD" branch -q "lcars/$id" main 2>/dev/null || true'
+stub "$STUBS/file-makes.sh" 0 "$FILEMAKES"
+# AND IT HAS TO LIVE WHERE `exec` RESOLVES SCRIPTS: $SKILLS_DIR/<skill>/<script>,
+# which `exec` refuses to escape (no `..`, no absolute path). So the fixture
+# plants a whole fake skills tree and points the launcher at it — the real
+# resolution rule exercised, not bypassed.
+# It mirrors the lcars-eeh dir OF THE SCRIPT UNDER TEST, so the same fixture
+# measures the baseline and the cure without a second code path.
+EXEC_SKILLS="$TMPROOT/exec-skills"
+mkdir -p "$EXEC_SKILLS/lcars-file" "$EXEC_SKILLS/lcars-eeh"
+cp -R "$(dirname "$SCRIPT")"/. "$EXEC_SKILLS/lcars-eeh/"
+cp "$STUBS/file-makes.sh" "$EXEC_SKILLS/lcars-file/file.sh"
+# `live-check` resolves its checklists at $SKILLS_DIR/lcars-run/live-check/, so
+# a tree without them refuses for a reason that has nothing to do with
+# authority — the first run of this section failed three rows on exactly that.
+mkdir -p "$EXEC_SKILLS/lcars-run"
+cp -R "$(dirname "$SCRIPT")/../lcars-run/live-check" "$EXEC_SKILLS/lcars-run/" 2>/dev/null || true
+EXEC_SCRIPT="$EXEC_SKILLS/lcars-eeh/$(basename "$SCRIPT")"
+
 # ech_at <script> <repo> <args…> — every external dependency env-injected.
 ech_at() {
   local script="$1" repo="$2"; shift 2
@@ -240,6 +279,17 @@ ech_at() {
   bash "$script" "$@" </dev/null
 }
 ech() { local repo="$1"; shift; ech_at "$SCRIPT" "$repo" "$@"; }
+# `exec` resolves scripts under the LAUNCHER's own skills dir, so running the
+# launcher FROM the fake tree is what points it at the fixture's file.sh. The
+# launcher is a copy of the real ech.sh, so the code under test is unchanged.
+xech() {              # xech <seat|-> <repo> <args…>  — through the fake tree
+  local seat="$1" repo="$2"; shift 2
+  if [ "$seat" = "-" ]; then
+    ech_at "$EXEC_SCRIPT" "$repo" "$@"
+  else
+    LCARS_ECH_AS="$seat" ech_at "$EXEC_SCRIPT" "$repo" "$@"
+  fi
+}
 # The same, but AS a sub-ECH seat.
 ech_as() {
   local seat="$1" repo="$2"; shift 2
@@ -709,6 +759,165 @@ rm -f "$A8/.git/lcars/chunk-owners"
 rcA8=0; approve_in "$A8" >"$A8/out.txt" 2>&1 || rcA8=$?
 check "8e. approve with NO ownership record at all behaves exactly as before" \
   "[ \$rcA8 -ne 0 ] && grep -q 'logged bug(s) still open' '$A8/out.txt'"
+# AND `exec` ITSELF, which gained a branch in fix round 1. For the MAIN ECH it
+# still `exec`s — the process is replaced, as it always was — so its output and
+# its exit status must be byte-for-byte the baseline's. (A sub-ECH's call is
+# forked instead, which is the only way anything can be recorded after it.)
+EXEC_SKILLS_BASE="$TMPROOT/exec-skills-base"
+mkdir -p "$EXEC_SKILLS_BASE/lcars-file" "$EXEC_SKILLS_BASE/lcars-eeh"
+if [ "$base_ok" = 1 ]; then
+  cp -R "$BASE_DIR/skills/lcars-eeh/." "$EXEC_SKILLS_BASE/lcars-eeh/"
+fi
+cp "$STUBS/file-makes.sh" "$EXEC_SKILLS_BASE/lcars-file/file.sh"
+R8C="$(new_repo)"; ap_init "$R8C"; new_mission "$R8C" m-plain verify
+R8D="$(new_repo)"; ap_init "$R8D"; new_mission "$R8D" m-plain verify
+ech_at "$EXEC_SKILLS_BASE/lcars-eeh/$(basename "$SCRIPT")" "$R8C"   exec lcars-file/file.sh --id m-new >"$TMPROOT/before.exec" 2>&1; e8b=$?
+ech_at "$EXEC_SCRIPT" "$R8D" exec lcars-file/file.sh --id m-new >"$TMPROOT/after.exec" 2>&1; e8a=$?
+check "8f. a MAIN-ECH \`exec\` is byte-identical to the baseline, same exit status" \
+  "[ '$e8b' = '$e8a' ] && diff -q '$TMPROOT/before.exec' '$TMPROOT/after.exec' >/dev/null"
+check "8f2. …and it really filed the Mission both times (not silent on both sides)" \
+  "[ -f '$R8C/.git/lcars/missions/m-new/state.json' ] \
+   && [ -f '$R8D/.git/lcars/missions/m-new/state.json' ]"
+check "8f3. …and claimed no owner on either side" \
+  "[ ! -f '$R8C/.git/lcars/chunk-owners' ] && [ ! -f '$R8D/.git/lcars/chunk-owners' ]"
+echo
+
+# =========================================================================
+printf '== 9. A SUB-ECH SUBDIVIDES ITS CHUNK: THE MISSIONS IT FILES ARE ITS OWN ==\n'
+# =========================================================================
+# THE CAPTAIN, 2026-11-20, in his own words: *"sub echs can chunk the work they
+# want to the factory how they see fit. So if they get told add fish to the
+# river system that's impacted by water level, they can sub divide the missions
+# they feed the factory as it makes sense."* So a sub-ECH handed ONE chunk is
+# EXPECTED to file several Missions for it and drive all of them. With a chunk
+# of "the seeded Mission plus bugs beneath it" it would be refused on two of its
+# own three.
+#
+# WIDENING A CHUNK IS EXACTLY HOW A BLOCKER COULD GO QUIET, so § 9f re-runs all
+# four of § 6's control shapes at the new, wider root. That is the row that
+# matters here.
+R9="$(fast_chunk_repo)"
+X9A="$(xech d1 "$R9" exec lcars-file/file.sh --id m-fish 2>&1)"; x9arc=$?
+X9B="$(xech d1 "$R9" exec lcars-file/file.sh --id m-water 2>&1)"; x9brc=$?
+X9C="$(xech d1 "$R9" exec lcars-file/file.sh --id m-cast 2>&1)"; x9crc=$?
+check "9a. [precondition] the three Missions were really created" \
+  "[ $x9arc -eq 0 ] && [ $x9brc -eq 0 ] && [ $x9crc -eq 0 ] \
+   && [ -f '$R9/.git/lcars/missions/m-fish/state.json' ] \
+   && [ -f '$R9/.git/lcars/missions/m-water/state.json' ] \
+   && [ -f '$R9/.git/lcars/missions/m-cast/state.json' ]"
+check "9b. each one is RECORDED as the sub-ECH's, in the one ownership record" \
+  "[ \"\$(. '$CHUNK_LIB'; lcars_chunk_owner '$R9/.git/lcars' m-fish)\" = d1 ] \
+   && [ \"\$(. '$CHUNK_LIB'; lcars_chunk_owner '$R9/.git/lcars' m-water)\" = d1 ] \
+   && [ \"\$(. '$CHUNK_LIB'; lcars_chunk_owner '$R9/.git/lcars' m-cast)\" = d1 ]"
+check "9b2. …and \`exec\` says so, naming the Mission and the seat" \
+  "printf '%s' \"\$X9A\" | grep -q 'm-fish' && printf '%s' \"\$X9A\" | grep -q 'd1'"
+# BEHAVIOUR 1 — all four chunk verbs work on every one of the three.
+# ONE COUNTER PER VERB, not one for all four: the first run of this section
+# failed `[ 3 -eq 0 ]` and the number said nothing about WHICH verb, which is
+# the measurement naming the fix rather than the reader guessing at it.
+lc9=0; fb9=0; dr9=0; po9=0
+for m9 in m-fish m-water m-cast; do
+  xech d1 "$R9" live-check "$m9" --type cli >/dev/null 2>&1 || lc9=$((lc9+1))
+  xech d1 "$R9" file-bug --parent "$m9" --prd "$PRD_GOOD" >/dev/null 2>&1 || fb9=$((fb9+1))
+  xech d1 "$R9" drive "$m9" >/dev/null 2>&1 || dr9=$((dr9+1))
+  # The real waiter clears its own recorded pid on exit; the stub's is already
+  # gone, so clear the record too or the two-mission ceiling (MAX_SLOTS) refuses
+  # the third drive for a reason that is not about authority.
+  xech - "$R9" record "drivers.$m9.pid" '' >/dev/null 2>&1
+  p9="$(xech d1 "$R9" policy --mission "$m9" --verdict high --live-check pass 2>&1)"
+  printf '%s' "$p9" | grep -q 'NOT IN YOUR CHUNK' && po9=$((po9+1))
+done
+check "9c. \`live-check\` works on ALL THREE Missions it filed"  "[ $lc9 -eq 0 ]"
+check "9c2. \`file-bug\` works on all three"                      "[ $fb9 -eq 0 ]"
+check "9c3. \`drive\` works on all three"                         "[ $dr9 -eq 0 ]"
+check "9c4. \`policy\` clears the authority gate on all three"    "[ $po9 -eq 0 ]"
+# BEHAVIOUR 4 — a bug beneath a Mission IT FILED is in its chunk, one level
+# wider than the seed. The bugs filed above are exactly that case; name it.
+check "9d. a bug beneath a Mission it FILED is in its chunk (the descent is now rooted wider)" \
+  "[ -f '$R9/.git/lcars/missions/bug-001/state.json' ] \
+   && [ \"\$(. '$CHUNK_LIB'; lcars_chunk_owner '$R9/.git/lcars' bug-001)\" = d1 ]"
+# BEHAVIOUR 2 — a Mission the MAIN ECH filed belongs to nobody.
+X9M="$(xech - "$R9" exec lcars-file/file.sh --id m-main 2>&1)"; x9mrc=$?
+check "9e. a Mission the MAIN ECH filed is owned by NO sub-ECH (unchanged behaviour)" \
+  "[ $x9mrc -eq 0 ] && [ -f '$R9/.git/lcars/missions/m-main/state.json' ] \
+   && [ -z \"\$(. '$CHUNK_LIB'; lcars_chunk_owner '$R9/.git/lcars' m-main)\" ]"
+check "9e2. …and a sub-ECH may not act on it — it is the MAIN ECH's" \
+  "! xech d1 '$R9' live-check m-main --type cli >/dev/null 2>&1"
+# BEHAVIOUR 3 — nor on a Mission ANOTHER sub-ECH filed, and the owner is named.
+xech d2 "$R9" exec lcars-file/file.sh --id m-theirs-own >/dev/null 2>&1
+S9="$(xech d1 "$R9" live-check m-theirs-own --type cli 2>&1)"; s9rc=$?
+check "9f. a sub-ECH may NOT act on a Mission ANOTHER sub-ECH filed" "[ $s9rc -ne 0 ]"
+check "9f2. …and the refusal NAMES the sibling that owns it" \
+  "printf '%s' \"\$S9\" | grep -q 'd2'"
+# BEHAVIOUR 7 — closing releases EVERYTHING, Missions as well as bugs.
+C9="$(xech - "$R9" delegate close d1 2>&1)"
+check "9g. \`delegate close\` releases the Missions it filed, not just its bugs" \
+  "[ -z \"\$(. '$CHUNK_LIB'; lcars_chunk_owner '$R9/.git/lcars' m-fish)\" ] \
+   && [ -z \"\$(. '$CHUNK_LIB'; lcars_chunk_owner '$R9/.git/lcars' m-water)\" ] \
+   && [ -z \"\$(. '$CHUNK_LIB'; lcars_chunk_owner '$R9/.git/lcars' m-cast)\" ] \
+   && [ -z \"\$(. '$CHUNK_LIB'; lcars_chunk_owner '$R9/.git/lcars' bug-001)\" ]"
+check "9g2. …and it SAYS what it released, by id" \
+  "printf '%s' \"\$C9\" | grep -q 'm-fish' && printf '%s' \"\$C9\" | grep -qi 'released'"
+check "9g3. …and d2's claim is untouched by d1's close" \
+  "[ \"\$(. '$CHUNK_LIB'; lcars_chunk_owner '$R9/.git/lcars' m-theirs-own)\" = d2 ]"
+check "9g4. …and the Mission records themselves were NOT touched" \
+  "[ -f '$R9/.git/lcars/missions/m-fish/state.json' ]"
+echo
+
+# =========================================================================
+printf '== 9b. THE FALSE-ACCEPT CONTROL AT THE NEW, WIDER ROOT ==\n'
+printf '   (all four of § 6 shapes, on a Mission the sub-ECH FILED)\n'
+# =========================================================================
+# 9h — unowned bug beneath a FILED Mission still blocks it.
+R9H="$(fast_chunk_repo)"
+xech d1 "$R9H" exec lcars-file/file.sh --id m-fish >/dev/null 2>&1
+xech - "$R9H" file-bug --parent m-fish --prd "$PRD_GOOD" >/dev/null 2>&1   # main ECH: unowned
+L9H="$(xech - "$R9H" land m-fish 2>&1)"; l9hrc=$?
+check "9h. an UNOWNED bug beneath a Mission the sub-ECH filed STILL blocks it" \
+  "[ $l9hrc -eq 10 ] && printf '%s' \"\$L9H\" | grep -q 'BLOCKED BY UNOWNED LOGGED BUG'"
+check "9h2. …named BY ID" "grep -q 'bug-001' '$R9H/.git/lcars/autopilot.json'"
+# 9i — owner closed out: the bug blocks again.
+R9I="$(fast_chunk_repo)"
+xech d1 "$R9I" exec lcars-file/file.sh --id m-fish >/dev/null 2>&1
+xech d1 "$R9I" file-bug --parent m-fish --prd "$PRD_GOOD" >/dev/null 2>&1
+check "9i. [precondition] that bug is owned and driven while the seat is open" \
+  "! xech - '$R9I' land m-fish 2>&1 | grep -q 'BLOCKED BY UNOWNED LOGGED BUG'"
+xech - "$R9I" delegate close d1 >/dev/null 2>&1
+L9I="$(xech - "$R9I" land m-fish 2>&1)"; l9irc=$?
+check "9i2. once its owner is CLOSED the bug blocks that filed Mission again" \
+  "[ $l9irc -eq 10 ] && printf '%s' \"\$L9I\" | grep -q 'bug-001'"
+# 9j — a forged claim at the wider root buys nothing.
+R9J="$(fast_chunk_repo)"
+xech d1 "$R9J" exec lcars-file/file.sh --id m-fish >/dev/null 2>&1
+xech - "$R9J" file-bug --parent m-fish --prd "$PRD_GOOD" >/dev/null 2>&1
+mkdir -p "$R9J/.git/lcars/delegates/d77"
+echo "# a brief nobody minted" >"$R9J/.git/lcars/delegates/d77/BRIEF.md"
+printf 'bug-001\td77\n' >>"$R9J/.git/lcars/chunk-owners"
+L9J="$(xech - "$R9J" land m-fish 2>&1)"; l9jrc=$?
+check "9j. a claim NO RECORD BACKS still blocks a filed Mission, naming the id" \
+  "[ $l9jrc -eq 10 ] && printf '%s' \"\$L9J\" | grep -q 'd77'"
+# 9k — mixed: one driven, one not, beneath a FILED Mission.
+R9K="$(fast_chunk_repo)"
+xech d1 "$R9K" exec lcars-file/file.sh --id m-fish >/dev/null 2>&1
+xech d1 "$R9K" file-bug --parent m-fish --prd "$PRD_GOOD" >/dev/null 2>&1   # bug-001 owned
+xech - "$R9K" file-bug --parent m-fish --prd "$PRD_GOOD" >/dev/null 2>&1    # bug-002 unowned
+L9K="$(xech - "$R9K" land m-fish 2>&1)"; l9krc=$?
+check "9k. a filed Mission with one driven and one undriven bug is still blocked" \
+  "[ $l9krc -eq 10 ]"
+check "9k2. the refusal names the UNDRIVEN one" \
+  "grep -q 'bug-002' '$R9K/.git/lcars/autopilot.json'"
+check "9k3. …and does NOT list the driven one in the blocking sentence" \
+  "! grep -o 'Mission(s)[^\"]*' '$R9K/.git/lcars/autopilot.json' | grep -q 'bug-001'"
+# 9l — THE REAL ACCEPT PATH does not change its mind about a Mission row.
+# A Mission id in `chunk-owners` must never make approve.sh let a bug past.
+A9="$(approve_repo verify)"
+mkdir -p "$A9/.git/lcars/delegates/d1"
+echo "# BRIEF d1" >"$A9/.git/lcars/delegates/d1/BRIEF.md"
+printf '%s\td1\n' "$PID" >>"$A9/.git/lcars/chunk-owners"    # the PARENT is owned, not the bug
+rc9=0; approve_in "$A9" >"$A9/out.txt" 2>&1 || rc9=$?
+check "9l. a MISSION row in the record does not buy its bug child an accept" \
+  "[ \$rc9 -ne 0 ] && grep -q 'logged bug(s) still open' '$A9/out.txt'"
+check "9l2. …and nothing merged" "! grep -q 'pr-merge' '$A9/gh.log'"
 echo
 
 # =========================================================================

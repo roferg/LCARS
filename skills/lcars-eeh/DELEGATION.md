@@ -446,6 +446,7 @@ a live Mission had ended that Mission's run.**
 | the action for the verdict pair | `policy` | **yes** | **refused** |
 | drives its own fixes | `drive` | **yes** | **refused** |
 | the factory's front door | `lcars file`, `lcars log`, `lcars answer` | **yes** (unchanged) | n/a |
+| subdivides its own chunk into Missions | `exec lcars-file/file.sh` | **yes** — each one JOINS its chunk | n/a |
 | raises it with the ECH | `beat … "BLOCKED: …"` | **yes** — the only channel up | n/a |
 | the captain's attention | `ask` | **never** | **never** |
 | the landing decision | `land`, `approve`, `push-gated` | **never** | **never** |
@@ -478,13 +479,48 @@ manufactures its own false positives.*
 
 ### THE CHUNK, AND WHERE IT STOPS
 
-A sub-ECH's chunk is **the Mission its unit resolves to** (`delegates.<id>.mission`)
-**and every bug Mission logged beneath it, at any depth** — a bug logged against
-a bug is the same piece of work and the same seat is driving it. The ascent is
-bounded, so a `parentMission` pointing in a circle cannot hang a verb. Reaching
-into a sibling's chunk is how two seats do the same work twice and neither owns
-the result, so it is refused **by name**; if the work really belongs elsewhere,
-the **main ECH re-chunks it**.
+A sub-ECH's chunk is **three** things:
+
+- **its SEED** — the Mission its unit resolves to (`delegates.<id>.mission`);
+- **every Mission IT ITSELF FILED**, through `lcars-ech exec`;
+- **every bug Mission logged beneath any of those, at any depth** — a bug
+  logged against a bug is the same piece of work and the same seat is driving
+  it.
+
+*(Bulleted, not numbered, deliberately: `tests/delegation.test.sh` § D10 asserts
+that the span from the unconditional gate to the verbs restates no numbered
+sequence of its own, because a second copy of `HOLOGRAM-COMMAND-MODE.md` § 6's
+steps is how the two drifted apart in a day. A numbered list anywhere in that
+span trips it, and the assertion is right to be crude.)*
+
+**The second of those IS THE CAPTAIN'S OWN DEFINITION, 2026-11-20:** *"sub echs can chunk the
+work they want to the factory how they see fit. So if they get told add fish to
+the river system that's impacted by water level, they can sub divide the
+missions they feed the factory as it makes sense."* A sub-ECH handed one chunk
+is **expected** to file several Missions for it — the fish data, the water-level
+coupling, the cast verb — and drive all of them. With only (1) and (3) it would
+be refused on two of its own three.
+
+**IT IS RECORDED, NOT INFERRED, AND IN THE SAME RECORD.** A Mission created
+while `LCARS_ECH_AS` names a live sub-ECH is written to `chunk-owners` exactly
+as a bug it filed is: the missions directory before the call, the missions
+directory after, and the difference is that seat's. One record and one reader
+for both, because a second notion of ownership is a second answer to *"whose
+work is this"*. Nothing is read from a script's name or its output.
+
+**AND THE ROUTE MATTERS, WHICH IS A COST THE FRONT-DOOR CONTRACT ALREADY
+CHARGES.** `lcars-ech exec` is the one place a creation can be attributed, so a
+delegate that goes around it (`bash .../file.sh` by hand) gets no ownership
+recorded and its Mission is **out of chunk** — every verb on it refused, with
+the refusal naming the front door. That is the safe direction: an unattributable
+Mission earns a refusal, never a silent grant.
+
+The ascent is bounded at 32 hops, so a `parentMission` pointing in a circle
+cannot hang a verb. **A delegate with no seed can still own what it filed** —
+the seed is one of three ways in, not a precondition. Reaching into a sibling's
+chunk is how two seats do the same work twice and neither owns the result, so it
+is refused **by name**; if the work really belongs elsewhere, the **main ECH
+re-chunks it**.
 
 ### A BUG A SUB-ECH OWNS AND IS DRIVING DOES NOT BLOCK THE PARENT
 
@@ -497,10 +533,17 @@ may silently drop a logged bug — so:
   by id, and why**.
 
 **Ownership is recorded, released, and checked.** It is written to
-`.git/lcars/chunk-owners` (`<bug-mission-id>` TAB `<delegate-id>`, append-only,
-latest line wins) by `file-bug` when a sub-ECH files inside its chunk, and
-**released by `delegate close`** — a closed sub-ECH drives nothing, so its bugs
-go back to blocking, which is the correct state for a bug nobody is driving.
+`.git/lcars/chunk-owners` (`<mission-id>` TAB `<delegate-id>`, append-only,
+latest line wins) by `file-bug` when a sub-ECH files a bug inside its chunk and
+by `exec` for a Mission it files, and **released by `delegate close` — all of
+it**, the Missions it filed as well as the bugs it was driving. A closed sub-ECH
+drives nothing, so its bugs go back to blocking (the correct state for a bug
+nobody is driving) and its Missions leave its chunk.
+
+**A MISSION ROW CAN NEVER MAKE A BLOCKER GO QUIET.** Both accept gates only ever
+ask about a `type: bug` child of the Mission being landed, so widening what a
+row can name widens the CHUNK and not the gate. `mission_in_chunk` is the only
+reader that asks about an ordinary Mission.
 **A CLAIM IS CHECKED, NOT TAKEN, AT TWO DEPTHS.** Both readers require the
 named delegate to also have the artifact a mint produces —
 `delegates/<id>/BRIEF.md` — so one line in a text file is not an accept; when in
