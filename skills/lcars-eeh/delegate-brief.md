@@ -37,14 +37,14 @@ four, delegates duplicate each other's work and leave gaps between them.
 | `{{WORKSPACE}}` | the brief's own **self-check** — the absolute path it was minted at, and the instruction not to use it anywhere else but to ask for a re-mint (**D16**) — then the repository root, the Mission's branch and base, and the ABSOLUTE path of the launcher that minted this brief (**D6**) |
 | `{{TIER_DELIVERABLE}}` | what THIS tier adds to the hand-back. Empty at T0/T1; at T2 it asks for the tester's evidence and bug list (**D4**) |
 | `{{TIER_CONTRACT}}` | the `<!-- tier:<T> -->` block of `DELEGATION.md`, verbatim |
-| `{{VERBS}}` | the LCARS verbs in scope for this unit |
+| `{{VERBS}}` | the LCARS verbs in scope for this unit — and, **S365**, § *YOUR CHUNK, AND THE AUTHORITY THAT COMES WITH IT*: the chunk this sub-ECH owns **by Mission id**, the `LCARS_ECH_AS` export that makes its authority resolvable, the verbs that are **its own inside that chunk** (`file-bug`, `live-check`, `policy`, `drive`), that the same verbs are **refused by name outside it**, and the limit — `land`, `approve`, `push-gated` and `ask` stay the MAIN ECH's, each with the reason. The ONE statement of all of it is `DELEGATION.md` § *AUTHORITY TRAVELS WITH THE CHUNK*; this slot carries it to a reader who will never open that file, which is S359's lesson: a brief that does not state the rule it holds a delegate to manufactures its own false positives |
 | `{{BOUNDARIES}}` | what this unit does not cover |
 | `{{CREATED_AT}}` | when it was minted |
 | `{{SIGNOFF}}` | who minted it and under which recorded judgement |
 | `{{LAUNCHER}}` | **S351** — `bash <absolute path of the launcher that minted this brief>`, the same path § 3 already gives for every other verb. A brief whose commands are runnable as they stand is the difference between a delegate that beats and one that goes looking |
 | `{{BEAT_LIMIT}}` | **S351** — the silence limit this delegate is held to, in minutes and in seconds, and what happens on expiry. The number comes from `BEAT_LIMIT` (`LCARS_ECH_BEAT_LIMIT`), so a brief minted under an overridden limit states the limit it was actually minted under. That figure is also RECORDED at `delegates.<id>.beatLimit`, so `stalled` can report the limit this delegate was briefed under rather than whichever one happens to be set when the report runs |
 | `{{ENGINE_STAMP}}` | **S352** — the engine AND model this delegate's role must run on, by name, from the role → engine matrix (`DELEGATION.md` § *Who runs what*), plus the rule that **another engine may not be chosen**. At T2 it also names the tester's row. Recorded at `delegates.<id>.engine` / `.model`, so nothing greps the brief back to learn what it was stamped with. **S352 fix round 1** adds the three things that rule did not cover: **every seat the delegate opens** takes the same row (there is no `subdelegate` row, and a T2 delegate dividing its unit could otherwise open three Claude seats without breaking a sentence); **the seat it is already in** is checked, because a brief pasted into a window it did not choose bills the unit just the same; and a **FREE→BILLED substitution** is stated in the brief and recorded at `delegates.<id>.engineRecorded` / `.engineSubstituted` rather than being visible only on the `engines` screen |
-| `{{FRONT_DOOR}}` | **S352** — the front-door clause: the verbs in scope by name, the Holodeck route for screen work, HCM § 4a's rule stated once, what the delegate decides alone, that a question goes UP to the ECH, **the absorption route and what is NOT absorption**, the T2 tester hand-off, and the two-list sign-off. The ONE statement of those rules is `DELEGATION.md`; this slot carries them to a reader who will never open it. **S352 fix round 1** labels the exit door the prohibitions made necessary: the absorption section used to end on *"raise it"* with no command behind it, and the only escalation verb named was `ask` — which prints *QUESTION FOR THE CAPTAIN*, fires the notifier this same brief forbids four times, and was not even in the reserved list. The channel is now **one runnable command**, a `BLOCKED:` beat, which `stalled` and `status` surface at once; `ask` joins `land` and `file-bug` on the reserved list; and the `lcars log` door names the `bug-prd.md` to copy, because a brief that said `--prd <f>` and nothing more sent a stuck delegate at a door with no handle |
+| `{{FRONT_DOOR}}` | **S352** — the front-door clause: the verbs in scope by name, the Holodeck route for screen work, HCM § 4a's rule stated once, what the delegate decides alone, that a question goes UP to the ECH, **the absorption route and what is NOT absorption**, the T2 tester hand-off, and the two-list sign-off. The ONE statement of those rules is `DELEGATION.md`; this slot carries them to a reader who will never open it. **S352 fix round 1** labels the exit door the prohibitions made necessary: the absorption section used to end on *"raise it"* with no command behind it, and the only escalation verb named was `ask` — which prints *QUESTION FOR THE CAPTAIN*, fires the notifier this same brief forbids four times, and was not even in the reserved list. The channel is now **one runnable command**, a `BLOCKED:` beat, which `stalled` and `status` surface at once; `ask` joins `land` on the reserved list; and the `lcars log` door names the `bug-prd.md` to copy, because a brief that said `--prd <f>` and nothing more sent a stuck delegate at a door with no handle. **S365** re-reads one entry of that list: `file-bug` is the sub-ECH's own verb **inside its own chunk** and is reserved only outside it — see the `{{VERBS}}` row |
 
 **Those two slots were named and left empty by S350 so that S352 would edit ONE
 template instead of inventing a second one. S352 has filled them.** A renderer
@@ -184,27 +184,42 @@ Also, and without exception:
 - You do not interrupt the captain. A scope change, a product call he owns, or a
   conflict with a standing rule comes back to the ECH, which owns the interrupt
   budget (§ 9). **Your problem is the ECH's problem**, not his.
-- You do not merge, approve, land or mark anything verified. That is § 5.
+- You do not merge, approve, land or mark the WHOLE ask verified, approved or
+  landed. That is § 5.
+- You do not reach outside your own chunk. § 3 names what is yours and where it
+  stops.
 - Everything you write stays inside `.git/lcars/` or the mission's own branch.
 
-## 5. The ECH verifies this itself — at every tier
+## 5. YOU verify your chunk; the MAIN ECH verifies the whole
 
-When you are done, **the ECH will verify the work itself**, independently of
-whatever you report. Every time, at every tier, including this one:
+**Each ECH verifies its own chunk, and the one above it verifies the whole.**
 
-1. it reads **Number One's** verdict,
-2. it runs **`lcars-ech live-check`** itself — its own eyes on the real product,
-3. it takes the one action **`lcars-ech policy`** gives for that verdict pair,
-4. it files what it found with **`lcars-ech file-bug`** — its own bugs, in its
-   own words.
+**YOUR CHUNK IS YOURS TO VERIFY.** When its work is done, you verify it
+yourself, independently of whatever the factory or any helper reports — every
+time, and § 3 gives you the verbs:
+
+1. you read **Number One's** verdict, if one was run,
+2. you run **`lcars-ech live-check`** on your chunk — your own eyes on the real
+   product,
+3. you take the one action **`lcars-ech policy`** gives for that verdict pair,
+4. you file what you found with **`lcars-ech file-bug`** — your own bugs, in
+   your own words, inside your chunk — and you **drive them**.
 
 On the modelled run Number One filed **0 of 31** bugs and every one came from
-the ECH's own live check. So this is not a formality and it is not a fallback.
+an ECH's own live check. So this is not a formality and it is not a fallback: a
+robot reviewer's verdict is no substitute for a real look, which is why the look
+is **yours** for the scope you own rather than something you wait for.
 
-**Your hand-back is a report, never a verdict.** Saying "all green" is an input
-to that check, not a substitute for it, and nothing advances on your word:
-closing you out marks *you* done and moves neither the mission's stage nor its
-verdict.
+**AND THE WHOLE IS NOT YOURS.** When you hand back,
+**the ECH will verify the work itself** at the level of the whole ask — do the
+chunks fit together, is the overall ask met — and that is the one thing no
+single chunk can see. It is not a second validation of your chunk.
+
+**Your hand-back is a report, never a verdict** about the whole. Saying "all
+green" is an input to that check, not a substitute for it, and nothing about
+the whole advances on your word: closing you out marks *you* done and moves
+neither the mission's stage nor its verdict. `land` and `approve` stay the main
+ECH's.
 
 {{ENGINE_STAMP}}
 

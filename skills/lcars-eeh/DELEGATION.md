@@ -95,8 +95,8 @@ ECH with a `BLOCKED:` beat — § *The exit door, named* — and never by runnin
 ### T2 — T1, plus an independent FRESH-CONTEXT tester at the gate
 
 Everything T1 is, plus a **separate** tester/reviewer at the unit's gate that
-never saw the implementor's reasoning. It returns evidence and a bug list; the
-ECH files them.
+never saw the implementor's reasoning. It returns evidence and a bug list, and
+the ECH that OWNS THAT CHUNK files them — § *AUTHORITY TRAVELS WITH THE CHUNK*.
 
 **This is the single best-evidenced pattern in the research behind this file.**
 Cognition measured roughly **2 bugs per pull request, 58% of them severe**, and
@@ -388,9 +388,13 @@ came from the ECH's own live check**.
 What is **this file's own** — the three things that are true because of
 DELEGATION, and the reason delegation needs no exception in § 6:
 
-- **A delegate's hand-back is a REPORT, never a verdict.** The ECH verifies
-  independently of it, every time. A hand-back that says "all green" is an
-  input to the check, not a substitute for it.
+- **A delegate's hand-back is a REPORT, never a verdict** about the WHOLE. The
+  ECH above it verifies the whole independently of it, every time. A hand-back
+  that says "all green" is an input to that check, not a substitute for it. What
+  it is NOT any more is a report about its own chunk waiting for someone else's
+  look: a sub-ECH **validates its own chunk itself** (§ *AUTHORITY TRAVELS WITH
+  THE CHUNK*), which is § 6's standing job applied per ECH, not an exception
+  to it.
 - **T2's dedicated tester is ADDITIVE.** It is an extra, independent pair of
   eyes on top of the ECH's own looking. It **does not replace** the ECH's check
   and no tier may be configured to skip it. A higher tier buys you more eyes; it
@@ -405,6 +409,128 @@ DELEGATION, and the reason delegation needs no exception in § 6:
   beside it and names what it supersedes. The record is append-only, so the
   closed delegate keeps its id, its brief and its close time, which is why
   `delegate close` can go on refusing a second close.
+
+---
+
+## AUTHORITY TRAVELS WITH THE CHUNK
+
+**Captain's ruling, 2026-11-20.** A **sub-ECH owns a chunk**: it hands it to the
+factory, makes sure it lands, **validates it, files its own bugs and drives its
+own fixes** until the chunk meets the ask. The **main ECH** owns the overall ask,
+decides the chunking, and verifies **the whole** at the end. *"Each ECH verifies
+its own chunk, and the one above it verifies the whole."*
+
+**THIS IS A RE-READING, NOT A REVERSAL, AND THAT MATTERS.** The narrow rule it
+replaces cites his instruction of 2026-11-11 and the evidence that Number One
+filed **0 of 31** bugs while the ECH's own live check found all 31. That evidence
+says *an automated reviewer's verdict is no substitute for a real look.* It does
+**not** say *only one ECH may ever look.* **A sub-ECH IS an ECH doing its own
+real look**, so `HOLOGRAM-COMMAND-MODE.md` § 6's standing job is **unchanged**
+and now applies **per ECH, to the scope that ECH owns**. What changed is *which*
+ECH owns *which* scope — nothing about the look itself got weaker.
+
+**AND THE NARROW READING HAD A MEASURED COST.** On the 2026-11-18 capstone the
+delegate found real defects and could not file them, so the supervisor filed
+four through the front door exactly as briefed — and **those four filings are
+what then blocked the parent Mission from being accepted at all.**
+`resolve-logs` *orders* logged bugs but does not *drive* them, so clearing the
+gate meant four full pipelines. On that build, **an ECH that filed bugs against
+a live Mission had ended that Mission's run.**
+
+### WHAT A SUB-ECH MAY AND MAY NOT DO
+
+| | verb | in its OWN chunk | outside it |
+|---|---|---|---|
+| files its own bugs | `file-bug` | **yes**, recorded with its owner | **refused**, naming whose chunk it is |
+| its own verify gate | `live-check`, `live-check done` | **yes** — § 6's standing job, per ECH | **refused** |
+| the action for the verdict pair | `policy` | **yes** | **refused** |
+| drives its own fixes | `drive` | **yes** | **refused** |
+| the factory's front door | `lcars file`, `lcars log`, `lcars answer` | **yes** (unchanged) | n/a |
+| raises it with the ECH | `beat … "BLOCKED: …"` | **yes** — the only channel up | n/a |
+| the captain's attention | `ask` | **never** | **never** |
+| the landing decision | `land`, `approve`, `push-gated` | **never** | **never** |
+
+**`ask` and `land` STAY WITH THE MAIN ECH, and the refusal names it.** `ask`
+prints *QUESTION FOR THE CAPTAIN* and fires his notifier: the interrupt budget
+has exactly four categories, it is **the captain's**, and the main ECH is the one
+seat that spends it — delegation still adds no fifth. `land` is one decision
+about the **whole ask**, and the seat that makes it is the one that verifies the
+whole. A refusal that only says *no* leaves a seat with nowhere to go, so each
+one **names who owns the verb** and hands back the `BLOCKED:` beat.
+
+### WHICH SEAT IS RUNNING A VERB — `LCARS_ECH_AS`
+
+Authority has to be attributable, so a sub-ECH **declares itself**:
+
+```bash
+export LCARS_ECH_AS=<delegate-id>      # every verb this seat runs
+```
+
+**Unset means the main ECH**, which is every invocation that existed before this
+rule and every repo that has never minted a sub-ECH — so nothing changes where
+nobody asked for it. **A value the record does not back is REFUSED, never
+promoted:** that variable is the one thing carrying authority, so a typo in it
+must refuse rather than hand over everything, and a **closed** sub-ECH is
+refused too (it handed its chunk back; it drives nothing). The minted brief
+states the export, so the obligation travels with the hand-off — S359's lesson
+the hard way: *a brief that does not state the rule it holds a delegate to
+manufactures its own false positives.*
+
+### THE CHUNK, AND WHERE IT STOPS
+
+A sub-ECH's chunk is **the Mission its unit resolves to** (`delegates.<id>.mission`)
+**and every bug Mission logged beneath it, at any depth** — a bug logged against
+a bug is the same piece of work and the same seat is driving it. The ascent is
+bounded, so a `parentMission` pointing in a circle cannot hang a verb. Reaching
+into a sibling's chunk is how two seats do the same work twice and neither owns
+the result, so it is refused **by name**; if the work really belongs elsewhere,
+the **main ECH re-chunks it**.
+
+### A BUG A SUB-ECH OWNS AND IS DRIVING DOES NOT BLOCK THE PARENT
+
+**The open-children gate is right to exist and its TIMING was wrong.** Nothing
+may silently drop a logged bug — so:
+
+- a bug a sub-ECH **owns and is driving** does **not** block the parent's accept,
+  and every one let through is **named with its owner** on the way past;
+- an **unowned, undriven** bug **still blocks**, and the refusal says **which,
+  by id, and why**.
+
+**Ownership is recorded, released, and checked.** It is written to
+`.git/lcars/chunk-owners` (`<bug-mission-id>` TAB `<delegate-id>`, append-only,
+latest line wins) by `file-bug` when a sub-ECH files inside its chunk, and
+**released by `delegate close`** — a closed sub-ECH drives nothing, so its bugs
+go back to blocking, which is the correct state for a bug nobody is driving.
+**A CLAIM IS CHECKED, NOT TAKEN, AT TWO DEPTHS.** Both readers require the
+named delegate to also have the artifact a mint produces —
+`delegates/<id>/BRIEF.md` — so one line in a text file is not an accept; when in
+doubt they return nothing, which means the bug **blocks**. On top of that, the
+ECH's own `land` checks the delegate **record** itself and **blocks loudly, by
+name**, on a claim no record backs or whose delegate is closed. The second depth
+is `land`'s alone, because `approve.sh` has no JSON reader for `delegates.<id>`
+and giving it one is how the two gates start disagreeing; `approve.sh`'s trust
+level in a local record is unchanged from what it has always been (it already
+believes a child's own `stage` and `foldedInto`). A false accept is worse than
+the blocking this rule cures, and the cheapest attack on it is a hand-written
+claim.
+
+**WHY A FLAT FILE AND NOT A FIELD IN `autopilot.json`.** Two scripts have to
+agree about what a blocker is — `lcars-ech land` and `approve.sh`'s own
+pre-merge gate — and they read JSON in two different ways (`ech.sh` through
+python, `approve.sh` with `sed`, with no python dependency at all). The
+open-children gate's own comment says why that matters: it and the folder use
+*"deliberately the same reader … so the two can never disagree about what a
+child is"*. One greppable file, read by `skills/lcars-eeh/chunk-owners.sh`,
+which both of them source. **A missing file means nobody owns anything**, which
+is every repo before this rule — the degradation is the known-good control.
+
+### ONE LAYER, AND WHAT STILL GOES UP
+
+A sub-ECH owns a chunk; it is **not** a licence to re-delegate authority
+downward without end. What goes **up** to the main ECH is unchanged: a scope
+change, a product call the captain owns, a conflict with a standing rule, a
+question only the main ECH can settle, and anything needing a chunk it does not
+own. The channel is the `BLOCKED:` beat, which `stalled` surfaces at once.
 
 ---
 
@@ -607,8 +733,10 @@ delegate absorbs a stumble **through the factory's own verbs**:
 - a **question only the ECH can settle** → **UP to the ECH, through a
   `BLOCKED:` beat** (below). A delegate does **not** run `lcars-ech ask`: that
   verb prints *QUESTION FOR THE CAPTAIN* and fires his notifier, and the
-  interrupt budget is the ECH's to spend. `ask` is in the brief's reserved list
-  beside `land` and `file-bug` for exactly that reason.
+  interrupt budget is the captain's for the MAIN ECH to spend. `ask` is in the
+  brief's reserved list beside `land` for exactly that reason. `file-bug` is
+  **not** on that list any more: inside its own chunk it is the sub-ECH's own
+  verb — § *AUTHORITY TRAVELS WITH THE CHUNK*.
 
 **THESE ARE NOT ABSORPTION:** hacking past a red test (deleting it, skipping it,
 loosening its assertion), **building a parallel control beside the real one**, or
@@ -639,10 +767,13 @@ delegate saying it needs an answer, and the ECH's three answers are: answer it,
 replace it, or (only for a call he owns) raise it with the captain. The block
 is read from the **latest** beat only, so the delegate's next beat clears it.
 
-**AND THE DOOR FOR A DEFECT IS `lcars log`, not `file-bug`.** `lcars-ech
-file-bug` is reserved to the ECH and sits behind an evidence-first template
-(`Observed live:` as acceptance criterion #1); `lcars log` asks only for a title
-and `**Type:** bug`. A brief that sent a stuck delegate at `--prd <f>` without
+**AND THERE ARE NOW TWO DOORS FOR A DEFECT, BOTH OPEN IN ITS OWN CHUNK.**
+`lcars log` asks only for a title and `**Type:** bug`; `lcars-ech file-bug` sits
+behind an evidence-first template (`Observed live:` as acceptance criterion #1)
+and is **the sub-ECH's own verb inside its chunk** — and the one that records
+who owns the bug, which is what stops the filing ending the parent's run
+(§ *AUTHORITY TRAVELS WITH THE CHUNK*). Outside its chunk, `file-bug` is
+refused by name. A brief that sent a stuck delegate at `--prd <f>` without
 saying what goes in the file was sending it at a door with no handle, so every
 brief now names the staged `bug-prd.md` to copy.
 
@@ -668,8 +799,10 @@ and the real product — never its own reasoning**, and gets back **evidence and
 bug list**. The bug list is **filed through `lcars log`** against the parent
 Mission, one bug per item. **The delegate FILES them; it does not ADJUDICATE
 them** — it does not decide which are real, does not hand-write bugs in place of
-filing them, and **does not fix them inline**. Nothing it files is a verdict and
-the ECH files its own bugs regardless. **`ORCHESTRATION.md` owns the
+filing them, and **does not fix them inline**. Nothing it files is a verdict about the
+whole, and the ECH above it still verifies the whole regardless. **A sub-ECH
+may file the list through `lcars-ech file-bug` instead, inside its own chunk**,
+which records who owns and drives each one. **`ORCHESTRATION.md` owns the
 tester's own rules** (§ *The loop* step 2, § *The tester opens the real product
 first*) and neither this file nor any brief restates them.
 

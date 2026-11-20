@@ -308,6 +308,31 @@ APJSON="$LCARS_DIR/autopilot.json"
 APDIR="$LCARS_DIR/autopilot"
 LOCKDIR="$LCARS_DIR/autopilot.json.lock"
 
+# --- WHICH SEAT IS RUNNING THIS VERB (S365) -------------------------------
+# UNSET MEANS THE MAIN ECH, which is every invocation that existed before S365
+# and every repo that has never minted a sub-ECH. Set to a delegate id it means
+# "I am that sub-ECH", and the verbs below hold it to its own chunk. The brief
+# a sub-ECH is handed states the export, so the obligation travels with the
+# hand-off instead of living only in this file.
+ECH_AS="${LCARS_ECH_AS:-}"
+
+# THE ONE READER AND WRITER OF SUB-ECH BUG OWNERSHIP. Shared with
+# `skills/lcars-approve/approve.sh` so the ECH's accept pre-check and the
+# product's own pre-merge gate cannot disagree about what a blocker is.
+CHUNK_LIB="${LCARS_CHUNK_LIB:-$SELF_DIR/chunk-owners.sh}"
+if [ -f "$CHUNK_LIB" ]; then
+  # shellcheck source=chunk-owners.sh
+  . "$CHUNK_LIB"
+else
+  # A MISSING LIBRARY DEGRADES TO "NOBODY OWNS ANYTHING", never to a crash and
+  # never to a weaker gate: with no owners, every open logged bug blocks exactly
+  # as it did before S365. A broken install must not be able to buy an accept.
+  lcars_chunk_owner()      { return 0; }
+  lcars_chunk_own()        { return 1; }
+  lcars_chunk_release()    { return 0; }
+  lcars_chunk_owned_bugs() { return 0; }
+fi
+
 # The parallelism ceiling. Two concurrent missions was the measured safe maximum
 # on a 10-core Mac; three drove load average to 170 and killed workers.
 MAX_SLOTS=2
@@ -618,6 +643,117 @@ open_children_of() {
     [ "$(mstate "$c" stage)" = "done" ] && continue
     printf '%s\n' "$c"
   done
+}
+
+# ==========================================================================
+# AUTHORITY TRAVELS WITH THE CHUNK (S365)
+# ==========================================================================
+# The captain's model, 2026-11-20: the MAIN ECH owns the overall ask, decides
+# the chunking and verifies the WHOLE; a SUB-ECH owns a chunk — hands it to the
+# factory, makes sure it lands, validates it, FILES ITS OWN BUGS and DRIVES ITS
+# OWN FIXES. `ask` and `land` stay with the main ECH: the interrupt budget is
+# still the captain's for the main ECH to spend, and landing is still ONE
+# decision.
+#
+# IT IS A RE-READING, NOT A REVERSAL. The rule it replaces cites the evidence
+# that an automated reviewer filed 0 of 31 bugs while the ECH's own live check
+# found all 31. That says a ROBOT REVIEWER'S VERDICT is no substitute for a real
+# look — it does not say only one ECH may ever look. A sub-ECH IS an ECH doing
+# its own real look, so `HOLOGRAM-COMMAND-MODE.md` § 6's standing job is
+# unchanged and now applies PER ECH, to the scope that ECH owns.
+#
+# A SEAT WITH NO RECORD IS NOT THE MAIN ECH. `LCARS_ECH_AS` unset is the main
+# ECH; set to anything the record does not back is a REFUSAL, because otherwise
+# a typo in the one variable that carries authority silently buys full
+# authority.
+
+# delegate_is_open <delegate-id> — is there a record for it, and is it still
+# OPEN? `delegate close` writes `status: done` plus a `closedAt` (it does not
+# write "closed"), and `delegate_closed` already reads it that way; this is the
+# same discriminator so the two can never disagree.
+delegate_is_open() {
+  [ -n "$(ap_j "delegates.$1.id")" ] || return 1
+  [ "$(ap_j "delegates.$1.status")" = "done" ] && return 1
+  return 0
+}
+
+# subech_seat → the sub-ECH id this invocation is running as, or nothing at all
+# for the main ECH. Dies on a claim the record does not back.
+subech_seat() {
+  [ -n "$ECH_AS" ] || return 0
+  local st; st="$(ap_j "delegates.$ECH_AS.id")"
+  if [ -z "$st" ]; then
+    die "LCARS_ECH_AS is set to '$ECH_AS', and there is no delegate $ECH_AS in $APJSON. A seat claiming an id nobody minted is NOT promoted to the main ECH — that variable is the one thing that carries authority, so a typo in it must refuse rather than hand over everything. Mint the sub-ECH (\`$SELF_CMD delegate <unit>\`), use the id \`$SELF_CMD delegates\` prints, or unset LCARS_ECH_AS to run as the main ECH."
+  fi
+  if ! delegate_is_open "$ECH_AS"; then
+    die "LCARS_ECH_AS is set to '$ECH_AS', and that sub-ECH is CLOSED (status done) — it handed its chunk back, so it owns nothing and drives nothing. A closed seat may not file, verify or drive. If the chunk needs another pass, the main ECH mints a fresh sub-ECH beside it: \`$SELF_CMD delegate $(ap_j "delegates.$ECH_AS.unit")\`."
+  fi
+  printf '%s' "$ECH_AS"
+}
+
+# subech_chunk_root <delegate-id> → the Mission at the root of its chunk.
+subech_chunk_root() { ap_j "delegates.$1.mission"; }
+
+# mission_in_chunk <delegate-id> <mission> — is this Mission inside that chunk?
+# A chunk is the delegate's Mission AND every bug Mission logged beneath it, at
+# any depth: a bug logged against a bug is still the same piece of work, and the
+# sub-ECH that owns the parent is the one driving it. The ascent is bounded, so
+# a record whose `parentMission` points in a circle cannot hang a verb.
+mission_in_chunk() {
+  local did="$1" m="$2" root hops=0
+  root="$(subech_chunk_root "$did")"
+  [ -n "$root" ] || return 1
+  while [ -n "$m" ] && [ "$hops" -lt 32 ]; do
+    [ "$m" = "$root" ] && return 0
+    m="$(mstate "$m" parentMission)"
+    hops=$((hops + 1))
+  done
+  return 1
+}
+
+# chunk_owners_of <mission> → the OPEN sub-ECHs whose chunk contains it, one id
+# per line. Used to say WHOSE chunk a refused Mission is, by name.
+chunk_owners_of() {
+  local d
+  for d in $(ap_keys delegates); do
+    delegate_is_open "$d" || continue
+    mission_in_chunk "$d" "$1" && printf '%s\n' "$d"
+  done
+}
+
+# subech_scope_or_die <verb> <mission> — the in-chunk check every verb a sub-ECH
+# MAY run goes through. Silent for the main ECH, so nothing changes for it.
+subech_scope_or_die() {
+  local verb="$1" m="$2" seat owners o line=""
+  seat="$(subech_seat)" || exit $?
+  [ -n "$seat" ] || return 0
+  mission_in_chunk "$seat" "$m" && return 0
+  # NO PIPE: a `grep` that filters everything out exits 1, and under `pipefail`
+  # that is a non-zero pipeline for a perfectly ordinary answer.
+  owners=""
+  for o in $(chunk_owners_of "$m"); do
+    [ "$o" = "$seat" ] && continue
+    owners="$owners $o"
+  done
+  owners="${owners# }"
+  if [ -n "$owners" ]; then
+    for o in $owners; do
+      line="$line $o (chunk root $(subech_chunk_root "$o"))"
+    done
+    die "$verb: $m is NOT IN YOUR CHUNK. You are sub-ECH $seat and your chunk is $(subech_chunk_root "$seat") and the bug Missions logged under it. $m belongs to:$line. Authority travels with the chunk — each sub-ECH files, verifies and drives its OWN chunk, and reaching into a sibling's is how two seats do the same work twice and neither one owns the result. If this really is your work, the MAIN ECH re-chunks it; raise that with \`$SELF_CMD beat $seat \"BLOCKED: <what you need>\"\`."
+  fi
+  die "$verb: $m is NOT IN YOUR CHUNK. You are sub-ECH $seat and your chunk is $(subech_chunk_root "$seat") and the bug Missions logged under it. No sub-ECH owns $m, so it is the MAIN ECH's — it owns the overall ask and every Mission not handed to a chunk. Authority travels with the chunk, and it does not travel outside one. Raise it with \`$SELF_CMD beat $seat \"BLOCKED: <what you need>\"\`."
+}
+
+# subech_reserved_or_die <verb> <the one-line reason it stays at the top> —
+# `ask` and `land`. The refusal NAMES WHO OWNS THEM, because a refusal that
+# only says no leaves a seat with nowhere to go, and a channel-less delegate
+# under pressure improvises.
+subech_reserved_or_die() {
+  local verb="$1" why="$2" seat
+  seat="$(subech_seat)" || exit $?
+  [ -n "$seat" ] || return 0
+  die "$verb: RESERVED TO THE MAIN ECH, which owns it. You are sub-ECH $seat and your chunk is $(subech_chunk_root "$seat") — inside it you file your own bugs, run your own live check and drive your own fixes. $why Your route is one beat the main ECH reads at once: \`$SELF_CMD beat $seat \"BLOCKED: <what you need from the main ECH>\"\`. Nothing was raised, nothing was landed and nothing advanced."
 }
 
 # driver_live <mission> — the ONE source of truth for "is a drive in flight".
@@ -3668,6 +3804,9 @@ cmd_drive() {
   local m="${1:?drive: <mission> required}"
   require_state
   mexists "$m" || die "drive: no mission $m in $MISSIONS"
+  # S365: A SUB-ECH DRIVES ITS OWN FIXES — inside its own chunk, and nowhere
+  # else. Silent for the main ECH.
+  subech_scope_or_die drive "$m"
   budget_check worker "$m" || return $?
   if driver_live "$m"; then
     die "drive: a driver for $m is already live (pid $(ap_j "drivers.$m.pid")) — one driver per mission." 11
@@ -4201,6 +4340,12 @@ PY
 # milestone stop. § 9: one open question blocks ITS milestone and no other, so
 # `ask` returns and the mode keeps working — `next` names the runnable rest.
 cmd_ask() {
+  # S365: STILL THE MAIN ECH'S, AT ANY SCOPE. A sub-ECH owns its chunk, not the
+  # captain's attention — the interrupt budget has four categories, it is the
+  # captain's, and the MAIN ECH is the one that spends it. Asked before the
+  # arguments, because this is not an argument question.
+  subech_reserved_or_die ask \
+    "The captain's interrupt budget has exactly four categories, it is HIS, and the main ECH is the only seat that spends it; a sub-ECH does not interrupt him and delegation adds no fifth category."
   local what="" mission="" why="" cmdline="" rollback=""
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -4350,6 +4495,10 @@ clean_stale_reconciles() {
 
 cmd_land() {
   local m="${1:?land: <mission> required}"
+  # S365: LANDING IS ONE DECISION AND IT IS THE MAIN ECH'S. A sub-ECH drives its
+  # chunk to the ask; it does not decide that the ask is met for the whole.
+  subech_reserved_or_die land \
+    "Landing is ONE decision about the WHOLE ask, and the main ECH makes it: it owns the overall ask and verifies the whole at the end, which is the one thing no single chunk can see."
   require_state
   mexists "$m" || die "land: no mission $m in $MISSIONS"
 
@@ -4361,15 +4510,59 @@ cmd_land() {
   # Pre-check 2: open logged children. S232 made approve refuse these; the mode
   # checks FIRST so the refusal arrives as a question rather than a stack trace,
   # and so no half-approve has to be cleaned up.
-  local open; open="$(open_children_of "$m" | tr '\n' ' ')"
-  open="${open% }"
-  if [ -n "$open" ]; then
+  #
+  # S365 — THE GATE IS RIGHT TO EXIST AND ITS TIMING WAS WRONG. Measured on the
+  # 2026-11-18 capstone: the supervisor filed four bugs through the front door
+  # exactly as briefed, and the parent then could not be accepted until all four
+  # reached their own Verify — `resolve-logs` ORDERS them but does not DRIVE
+  # them, so clearing it meant four full pipelines. On that build an ECH that
+  # filed bugs against a live Mission had ENDED that Mission's run. So: a bug a
+  # sub-ECH OWNS AND IS DRIVING does not block; an UNOWNED, UNDRIVEN one still
+  # does, and the refusal says WHICH, BY ID. Nothing is silently dropped —
+  # every bug let through is named with its owner on the way past.
+  #
+  # AND A CLAIM IS CHECKED, NOT TAKEN. An ownership line naming a delegate no
+  # record backs BLOCKS, loudly, by name: the whole point of the gate is that a
+  # false accept is worse than the blocking it cures, and the cheapest attack on
+  # it is a hand-written claim.
+  local c owner blocking="" driven="" reasons=""
+  for c in $(open_children_of "$m"); do
+    owner="$(lcars_chunk_owner "$LCARS_DIR" "$c")"
+    if [ -z "$owner" ]; then
+      blocking="$blocking $c"
+      reasons="$reasons
+  $c — NO SUB-ECH OWNS IT, so nobody is driving it. An unowned logged bug still blocks: that is the half of this gate that is right."
+    elif [ -z "$(ap_j "delegates.$owner.id")" ]; then
+      blocking="$blocking $c"
+      reasons="$reasons
+  $c — claims owner $owner, and THERE IS NO DELEGATE $owner IN THE RECORD. An unbacked claim buys nothing; a hand-written line is not a seat driving the work."
+    elif ! delegate_is_open "$owner"; then
+      blocking="$blocking $c"
+      reasons="$reasons
+  $c — its owner $owner is CLOSED, so nobody is driving it any more."
+    else
+      driven="$driven $c($owner)"
+    fi
+  done
+  blocking="${blocking# }"
+  driven="${driven# }"
+  if [ -n "$blocking" ]; then
     write_pending "$m" \
-      "$m cannot be landed: its logged bug Mission(s) $open are still open." \
-      "Approving a parent with bugs in flight ships a known-broken merge — LCARS refuses it, and so does the mode." \
+      "$m cannot be landed: its logged bug Mission(s) $blocking are still open." \
+      "Approving a parent with bugs in flight ships a known-broken merge — LCARS refuses it, and so does the mode. Which ones block, and why:$reasons${driven:+
+  NOT blocking (a sub-ECH owns and is driving them): $driven}" \
       "bash $SKILLS_DIR/lcars-resolve-logs/resolve-logs.sh --parent $m   # then re-verify, then: $SELF_CMD land $m" \
       "nothing to undo — no approve was attempted."
+    say "BLOCKED BY UNOWNED LOGGED BUG(S): $blocking"
+    say "$reasons"
+    [ -n "$driven" ] && say "  NOT blocking — a sub-ECH owns and is driving: $driven"
     exit 10
+  fi
+  if [ -n "$driven" ]; then
+    say "LOGGED BUG(S) LET THROUGH, each with the sub-ECH driving it: $driven"
+    say "  A bug a sub-ECH owns and is driving does not gate this accept — it owns that"
+    say "  chunk and takes it the rest of the way. Nothing is dropped: the claim is in"
+    say "  $LCARS_DIR/chunk-owners, and it blocks again the moment nobody owns it."
   fi
 
   # The captain's test command, as recorded BEFORE any approve could promote
@@ -4923,6 +5116,11 @@ cmd_live_check() {
   done
   require_state
   mexists "$m" || die "live-check: no mission $m in $MISSIONS"
+  # S365: EACH ECH VERIFIES ITS OWN CHUNK. HOLOGRAM-COMMAND-MODE.md § 6's
+  # standing job is UNCHANGED — "do the live check yourself every time,
+  # regardless of its verdict" — and it now applies PER ECH, to the scope that
+  # ECH owns. The main ECH's own look is untouched and verifies the whole.
+  subech_scope_or_die live-check "$m"
   [ -n "$types" ] || die "live-check: --type is required — one or more of: $LIVE_CHECK_TYPES (comma-separated). Pick every type the milestone touches."
   # VALIDATE EVERY TYPE BEFORE PREPARING ANYTHING. A half-prepared check with
   # one checklist printed is worse than a refusal: somebody follows the half.
@@ -5039,6 +5237,8 @@ cmd_live_check_done() {
   done
   require_state
   mexists "$m" || die "live-check done: no mission $m in $MISSIONS"
+  # S365: a sub-ECH records the verdict of ITS OWN look, on its own chunk.
+  subech_scope_or_die "live-check done" "$m"
   case "$verdict" in
     pass|bugs) ;;
     "") die "live-check done: --verdict is required (pass | bugs). There is no default: an unrecorded live check would read later as one that passed." ;;
@@ -5522,6 +5722,11 @@ cmd_file_bug() {
   [ -n "$parent" ] || die "file-bug: --parent <mission> is required — a logged bug is always a CHILD of the mission it was found in, and grounding needs the parent's code."
   [ "$n" -gt 0 ] || die "file-bug: --prd <file> is required (once per bug). The template is $BUG_PRD_LOCAL."
   mexists "$parent" || die "file-bug: no parent mission $parent in $MISSIONS"
+  # S365: A SUB-ECH FILES ITS OWN BUGS — INSIDE ITS OWN CHUNK. Silent for the
+  # main ECH, which files anywhere. Asked BEFORE any PRD is read, so an
+  # out-of-chunk filing costs nothing and leaves nothing behind.
+  subech_scope_or_die file-bug "$parent"
+  local filer; filer="$(subech_seat)" || exit $?
   [ -x "$LOG_SCRIPT" ] || [ -f "$LOG_SCRIPT" ] || die "file-bug: no lcars log at $LOG_SCRIPT"
 
   # VALIDATE EVERY PRD FIRST, so a bad second PRD does not leave a filed first.
@@ -5570,13 +5775,39 @@ cmd_file_bug() {
       die "file-bug: the new Mission $c is not linked to $parent (parentMission is '$(mstate "$c" parentMission)') — refusing to report it as filed."
     fi
     say "FILED: $c  (parent $parent — linked; \`lcars log\` labels its issue lcars:linked)"
-    ledger_append decisions "$("$PY" - "$parent" "$c" <<'PY'
+    # S365: AND WHO OWNS IT. A bug a sub-ECH filed is a bug that sub-ECH is
+    # driving, so the ownership is RECORDED rather than inferred later — and it
+    # is what stops this filing from ending the parent's run.
+    if [ -n "$filer" ]; then
+      if lcars_chunk_own "$LCARS_DIR" "$c" "$filer"; then
+        say "  OWNER: $filer — you filed it in your own chunk, so you drive it, and it does"
+        say "    NOT block the parent's accept while you do. It blocks again the moment"
+        say "    nobody owns it (\`$SELF_CMD delegate close $filer\` releases the claim)."
+      else
+        say "  ⚠ OWNER NOT RECORDED: $c was filed, but the ownership record at"
+        say "    $LCARS_DIR/chunk-owners could not be written. Until it is, this bug"
+        say "    BLOCKS the parent's accept like any unowned one — which is the safe way"
+        say "    round, not a silent pass. Fix the directory and re-record it."
+      fi
+    fi
+    ledger_append decisions "$("$PY" - "$parent" "$c" "$filer" <<'PY'
 import json, sys
-print(json.dumps({"kind": "bug-filed", "parent": sys.argv[1], "bug": sys.argv[2]}))
+rec = {"kind": "bug-filed", "parent": sys.argv[1], "bug": sys.argv[2]}
+if sys.argv[3]:
+    rec["owner"] = sys.argv[3]
+print(json.dumps(rec))
 PY
 )" >/dev/null || true
   done
   say ""
+  if [ -n "$filer" ]; then
+    say "NEXT: this is YOUR bug and YOUR chunk — drive it, verify it, and report when the"
+    say "chunk meets the ask. The main ECH verifies the whole at the end."
+    say "  $SELF_CMD drive $parent"
+    say "  bash $SKILLS_DIR/lcars-resolve-logs/resolve-logs.sh --parent $parent"
+    say "  $SELF_CMD live-check $parent --type <types>   # your own eyes, different data"
+    return 0
+  fi
   say "NEXT: resolve every logged bug in one batch, then re-run the live check with DIFFERENT data:"
   say "  bash $SKILLS_DIR/lcars-resolve-logs/resolve-logs.sh --parent $parent"
   say "  $SELF live-check $parent --type <types>      # different data this round"
@@ -5687,6 +5918,10 @@ cmd_policy() {
   done
   if [ "$table" = 1 ]; then policy_table; return 0; fi
   require_state
+  # S365: a sub-ECH takes policy's action on its OWN chunk. With no --mission
+  # there is nothing to scope and nothing changes (the table and the generic
+  # advice are not a per-Mission decision).
+  [ -n "$mission" ] && subech_scope_or_die policy "$mission"
   # The verdict can come from Number One's own file rather than a flag, so
   # nobody has to retype what the verifier already wrote.
   if [ -z "$verdict" ] && [ -n "$mission" ]; then
@@ -7081,17 +7316,53 @@ or a wrong unit id. Confirm which with the ECH before you write anything."
 - \`lcars-xo/xo.sh\`
   Number One, the verifier.
 
+### YOUR CHUNK, AND THE AUTHORITY THAT COMES WITH IT
+
+**You are a sub-ECH and you OWN a chunk.** Your chunk is Mission
+\`${mid:-$unit_i}\` and every bug Mission logged beneath it, at any depth. Inside
+it you hand the work to the factory, make sure it lands, **validate it, file
+your own bugs and drive your own fixes** until the chunk meets the ask in § 1.
+That is the authority; the scope is the chunk and nothing wider.
+
+**Declare which seat you are, on every verb**, or the authority cannot resolve
+and you will be refused as the main ECH's impostor:
+
+    export LCARS_ECH_AS=__LCARS_DELEGATE_ID__
+
+**THESE ARE YOURS, INSIDE YOUR CHUNK:**
+
+- \`$SELF_CMD file-bug --parent <mission-in-your-chunk> --prd <bug-prd.md>\`
+  your own bugs, in your own words, behind the evidence-first template (AC #1 is
+  \`Observed live:\`). A bug you file in your chunk is a bug YOU drive, and it
+  does **not** block the parent's accept while you do — which is exactly why it
+  is yours now and was not before.
+- \`$SELF_CMD live-check <mission-in-your-chunk> --type <types>\` and
+  \`$SELF_CMD live-check done <…> --verdict pass|bugs\`
+  **your own eyes on the real product.** \`HOLOGRAM-COMMAND-MODE.md\` § 6 is
+  unchanged and it is now YOUR standing job for YOUR chunk: do the live check
+  yourself every time, whatever any report says.
+- \`$SELF_CMD policy --mission <mission-in-your-chunk> …\` and
+  \`$SELF_CMD drive <mission-in-your-chunk>\`
+  the one action for the verdict pair, and driving your own fixes.
+
+**AND OUTSIDE IT THEY ARE REFUSED BY NAME.** Reaching into a sibling's chunk is
+how two seats do the same work twice and neither one owns the result, so the
+refusal names whose chunk it is. If work you need really sits outside yours,
+the **main ECH re-chunks it** — raise that, do not take it.
+
 The ECH keeps these to ITSELF and you do not run them: \`land\`, \`approve\`,
-\`policy\`, \`live-check\`, \`file-bug\`, \`push-gated\`, \`ask\`. They are the gate in § 5, and
-they are the reason nothing advances on your word.
+\`push-gated\`, \`ask\` — and \`file-bug\`, \`live-check\`, \`policy\` or \`drive\` on
+anything OUTSIDE your chunk. They are the reason nothing about the WHOLE
+advances on one chunk's word.
 
 \`ask\` is on that list for its own reason: it prints **QUESTION FOR THE
 CAPTAIN** and fires his notifier, and § 4 of this brief forbids you spending his
-interrupt budget — that budget is the ECH's. \`file-bug\` is on it for a
-related one: it is the ECH filing its OWN bugs in its own words, behind an
-evidence-first template, and it is not your filing route. **Your route to the
-ECH is the \`BLOCKED:\` beat named at the end of this section, and your route for
-a defect is \`lcars log\`.**"
+interrupt budget — that budget is the captain's and the **MAIN ECH** is the one
+seat that spends it. \`land\` is on it for a different one: landing is **one
+decision about the whole ask**, and the main ECH makes it because it verifies
+**the whole** at the end — the one thing no single chunk can see. **Your route
+to the main ECH is the \`BLOCKED:\` beat named at the end of this section, and
+inside your chunk \`lcars log\` and \`file-bug\` are both open to you.**"
 
   # AT T2, ONE MORE THING IS IN THIS DELEGATE'S OWN SCOPE (D4). T2 used to
   # arrive only as a quoted description of what T2 *is* — never as an
@@ -7309,6 +7580,13 @@ sys.stdout.write("%s\n%s\n" % (did, " ".join(skipped)))
 PYALLOC
 )"
   did="$(printf '%s\n' "$allocout" | sed -n 1p)"
+  # S365: § 3's authority block is composed BEFORE an id is allocated (the
+  # allocator has to skip occupied ids first), so its one runnable command
+  # carries a placeholder until here. A brief whose commands are runnable as
+  # they stand is the difference between a delegate that beats and one that
+  # goes looking — and `$did` used directly up there was an unbound variable
+  # that killed the whole mint.
+  verbs="${verbs//__LCARS_DELEGATE_ID__/$did}"
   skipped="$(printf '%s\n' "$allocout" | sed -n 2p)"
   [ -n "$did" ] || die "delegate: could not allocate a delegate id from $APJSON."
 
@@ -7998,7 +8276,20 @@ PY
   local rc=$?
   ap_unlock
   [ "$rc" = 0 ] || die "delegate close: could not write $APJSON — $did is NOT closed."
+  # S365: AND ITS CLAIM ON ITS BUGS IS RELEASED. A closed sub-ECH drives
+  # nothing, so the bugs it owned go back to BLOCKING the parent's accept. That
+  # is the correct state for a bug nobody is driving, and it is the invariant
+  # that lets the flat ownership record carry a LIVE fact: a claim that outlives
+  # its seat is exactly the stale claim that would buy a false accept.
+  local released; released="$(lcars_chunk_owned_bugs "$LCARS_DIR" "$did" | tr '\n' ' ')"
+  released="${released% }"
+  lcars_chunk_release "$LCARS_DIR" "$did" || true
   say "CLOSED: $did (unit $unit) — status done"
+  if [ -n "$released" ]; then
+    say "OWNERSHIP RELEASED: $released — bug Mission(s) $did was driving. Nobody is driving"
+    say "  them now, so they BLOCK the parent's accept again until a sub-ECH owns them or"
+    say "  they reach done. Nothing was dropped and nothing was closed on their behalf."
+  fi
   say "THAT IS THE DELEGATE, AND ONLY THE DELEGATE. This is not a verdict and nothing"
   say "  advanced: the Mission's stage and its verdict are untouched, by design."
   # S352 — the two-list sign-off, reported.

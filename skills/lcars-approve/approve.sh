@@ -42,6 +42,25 @@ LCARS_STATE_LIB="${LCARS_STATE_LIB:-$SELF_DIR/../lcars-init/lcars-state.sh}"
 # shellcheck source=../lcars-init/lcars-state.sh
 . "$LCARS_STATE_LIB"
 
+# --- WHICH SUB-ECH OWNS A LOGGED BUG (S365) --------------------------------
+# THE SAME LIBRARY `lcars-eeh/ech.sh` READS, sourced here so this gate and the
+# ECH's own accept pre-check cannot disagree about what a blocker is. That is
+# the open-children gate's own rule applied once more: it and the folder use
+# "deliberately the same reader … so the two can never disagree about what a
+# child is".
+#
+# A MISSING LIBRARY DEGRADES, IT DOES NOT REFUSE — and the degradation is the
+# SAFE direction: with no reader there are no owners, so every open logged bug
+# blocks exactly as it did before S365. A broken install must never be able to
+# buy an accept, and it must never take the merge gate down either.
+LCARS_CHUNK_LIB="${LCARS_CHUNK_LIB:-$SELF_DIR/../lcars-eeh/chunk-owners.sh}"
+if [ -f "$LCARS_CHUNK_LIB" ]; then
+  # shellcheck source=../lcars-eeh/chunk-owners.sh
+  . "$LCARS_CHUNK_LIB"
+else
+  lcars_chunk_owner() { return 0; }
+fi
+
 HOST_ADAPTER="${LCARS_HOST_ADAPTER:-$SELF_DIR/../lcars-run/host-adapter.sh}"
 # The sibling run.sh — its `reconcile` subcommand is the S76 self-heal engine the
 # merge gate runs BEFORE merging (BUG-037). Override the path for tests.
@@ -420,8 +439,16 @@ fold_logged_children() {
 # stays identical to what json_str can read.
 gate_json_str() { json_str "$@" 2>/dev/null; }
 
-open_logged_children() { # → "<id>\t<title>\t<stage>" per OPEN child
-  local cstate bid stage title folded missions_dir
+# open_logged_children [driven]
+#   default  → "<id>\t<title>\t<stage>" per OPEN child THAT BLOCKS
+#   "driven" → "<id>\t<title>\t<stage>\t<owner>" per open child a sub-ECH owns
+# ONE reader, two views, so the list that blocks and the list that is let
+# through can never be computed from two different definitions of a child. It
+# is also why the second view is an ARGUMENT and not a global: this function is
+# always called inside `$( )`, and a variable set in a command substitution
+# never reaches its caller.
+open_logged_children() {
+  local cstate bid stage title folded missions_dir owner
   [ -n "${MISSION_DIR:-}" ] || return 0
   missions_dir="$(dirname "$MISSION_DIR")"
   for cstate in "$missions_dir"/*/state.json; do
@@ -435,6 +462,21 @@ open_logged_children() { # → "<id>\t<title>\t<stage>" per OPEN child
     bid="$(gate_json_str "$cstate" id)"
     [ -n "$bid" ] || bid="$(basename "$(dirname "$cstate")")"
     title="$(gate_json_str "$cstate" title)"
+    # S365 — A BUG A SUB-ECH OWNS AND IS DRIVING IS NOT AN OBSTACLE, exactly as
+    # a `foldedInto` child above is not. THE GATE IS RIGHT AND ITS TIMING WAS
+    # WRONG: measured on the 2026-11-18 capstone, four bugs filed through the
+    # front door by the supervisor made the parent unacceptable until all four
+    # reached their own Verify, so an ECH that filed bugs against a live Mission
+    # had ended that Mission's run. An UNOWNED bug still blocks — that is the
+    # half of this gate that is right, and it is the half a false accept would
+    # destroy. NOT SILENT: every bug let through is named with its owner.
+    owner="$(lcars_chunk_owner "$(dirname "$missions_dir")" "$bid")"
+    if [ -n "$owner" ]; then
+      [ "${1:-blockers}" = "driven" ] \
+        && printf '%s\t%s\t%s\t%s\n' "$bid" "${title:-no title}" "${stage:-unknown}" "$owner"
+      continue
+    fi
+    [ "${1:-blockers}" = "driven" ] && continue
     printf '%s\t%s\t%s\n' "$bid" "${title:-no title}" "${stage:-unknown}"
   done
 }
@@ -586,7 +628,7 @@ stateless_mission_dirs() { # → one mission dir path per dir with NO state.json
 # virtues (names the bug by title, its stage, the irreversibility, and ends
 # "Nothing has been merged.").
 refuse_if_open_logged_children() {
-  local open bid title stage broken stateless rec
+  local open bid title stage broken stateless rec sbid stitle sstage sowner
   broken="$(unreadable_mission_records)"
   if [ -n "$broken" ]; then
     {
@@ -657,6 +699,25 @@ refuse_if_open_logged_children() {
   fi
 
   open="$(open_logged_children)"
+  # SAID OUT LOUD, ONCE, WHETHER OR NOT ANYTHING BLOCKS. A bug this gate let
+  # through is a bug somebody is still driving, and an accept that says nothing
+  # about it is the silent drop this gate exists to prevent. Warned once across
+  # both call sites, the same once-flag shape as the two warnings above.
+  local driven; driven="$(open_logged_children driven)"
+  if [ -n "$driven" ] && [ -z "${SUBECH_WARNED:-}" ]; then
+    SUBECH_WARNED=1
+    {
+      printf '  ⚠ logged bug(s) a sub-ECH owns and is driving — NOT blocking this merge:\n'
+      while IFS=$'\t' read -r sbid stitle sstage sowner; do
+        [ -n "$sbid" ] || continue
+        printf '      • %s  %s  (stage %s)  driven by sub-ECH %s\n' \
+          "$sbid" "$stitle" "$sstage" "$sowner"
+      done <<<"$driven"
+      printf '    Authority travels with the chunk: the sub-ECH that owns each one takes it\n'
+      printf '    the rest of the way. Its claim is recorded in .git/lcars/chunk-owners and it\n'
+      printf '    BLOCKS again the moment nobody owns it (closing that sub-ECH releases it).\n'
+    } >&2
+  fi
   [ -n "$open" ] || return 0
   {
     printf 'APPROVE: refused — %s has logged bug(s) still open, and merging now would ship it with their fixes left outside the PR. Once this Mission is Done its bugs cannot be folded onto it at all (a logged bug has no PR of its own, and resolve-logs only resolves an ACTIVE parent), so they would have to be re-filed by hand. Still open:\n' \
