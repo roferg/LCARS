@@ -252,6 +252,36 @@ EXEC_SKILLS="$TMPROOT/exec-skills"
 mkdir -p "$EXEC_SKILLS/lcars-file" "$EXEC_SKILLS/lcars-eeh"
 cp -R "$(dirname "$SCRIPT")"/. "$EXEC_SKILLS/lcars-eeh/"
 cp "$STUBS/file-makes.sh" "$EXEC_SKILLS/lcars-file/file.sh"
+# A `lcars-log/log.sh` creator too (F2 files UNDER a parent through it), and a
+# `lcars-run/run.sh` stand-in that is NOT a Mission creator but DOES see one
+# appear while it runs — F3's measured defect in miniature.
+mkdir -p "$EXEC_SKILLS/lcars-log"
+LOGMAKES='parent=""; id=""
+while [ $# -gt 0 ]; do
+  case "$1" in --parent) parent="$2"; shift ;; --id) id="$2"; shift ;; esac
+  shift
+done
+[ -n "$id" ] || id="xbug-$$"
+d="$LCARS_ECH_CWD/.git/lcars/missions/$id"
+mkdir -p "$d"
+cat >"$d/state.json" <<JSON
+{"id":"$id","stage":"align","type":"bug","title":"a filed bug",
+ "branch":"lcars/$parent","parentMission":"$parent","parentIssue":"1"}
+JSON'
+stub "$STUBS/log-makes.sh" 0 "$LOGMAKES"
+cp "$STUBS/log-makes.sh" "$EXEC_SKILLS/lcars-log/log.sh"
+RUNMAKES='# NOT a Mission creator. It stands in for the documented long-running
+# use (`exec lcars-run/run.sh drive`) and creates a Mission the way ANOTHER
+# TERMINAL would during the call — the exact shape F3 was measured on.
+d="$LCARS_ECH_CWD/.git/lcars/missions/m-elsewhere"
+mkdir -p "$d"
+cat >"$d/state.json" <<JSON
+{"id":"m-elsewhere","stage":"verify","type":"feature","title":"the captains own",
+ "branch":"lcars/m-elsewhere","issue":"1"}
+JSON'
+mkdir -p "$EXEC_SKILLS/lcars-run"
+stub "$STUBS/run-makes.sh" 0 "$RUNMAKES"
+cp "$STUBS/run-makes.sh" "$EXEC_SKILLS/lcars-run/run.sh"
 # `live-check` resolves its checklists at $SKILLS_DIR/lcars-run/live-check/, so
 # a tree without them refuses for a reason that has nothing to do with
 # authority — the first run of this section failed three rows on exactly that.
@@ -362,11 +392,15 @@ fast_chunk_repo() {
   }
 }
 JSON
-  # The artifact a real mint writes. An ownership claim is only honoured when
-  # it is there, so a fixture without it would be testing the wrong refusal.
+  # The artifacts a real mint writes: the brief, and S365 fix round 2's SEAT
+  # MARKER. An ownership claim is only honoured when BOTH are there — that two
+  # `[ -f ]` test is the one adjudicator both accept gates share — so a fixture
+  # without them would be testing the wrong refusal.
   mkdir -p "$r/.git/lcars/delegates/d1" "$r/.git/lcars/delegates/d2"
   echo "# BRIEF d1" >"$r/.git/lcars/delegates/d1/BRIEF.md"
   echo "# BRIEF d2" >"$r/.git/lcars/delegates/d2/BRIEF.md"
+  : >"$r/.git/lcars/delegates/d1/OPEN"
+  : >"$r/.git/lcars/delegates/d2/OPEN"
   printf '%s\n' "$r"
 }
 
@@ -441,6 +475,10 @@ R3="$(fast_chunk_repo)"
 A3="$(ech_as d1 "$R3" ask "should this chunk ship?" --mission m-mine \
         --command "lcars-ech land m-mine" --rollback "nothing" 2>&1)"; a3rc=$?
 check "3a. a sub-ECH may NOT run \`ask\`, even inside its own chunk" "[ $a3rc -ne 0 ]"
+# THE REFUSAL IS NOW THE BOUNDARY'S (fix round 2, F5) — `ask` is simply not on
+# the allow-list — and it still has to carry everything the per-verb refusal
+# carried: who owns it, why, and the one channel back. These rows are unchanged
+# on purpose: they are what stopped the boundary from being a worse message.
 check "3b. the refusal names the MAIN ECH as the owner of \`ask\`" \
   "printf '%s' \"\$A3\" | grep -qi 'main ECH'"
 check "3c. it says WHY — the interrupt budget is not the sub-ECH's to spend" \
@@ -570,6 +608,7 @@ R6C="$(fast_chunk_repo)"
 ech "$R6C" file-bug --parent m-mine --prd "$PRD_GOOD" >/dev/null 2>&1
 mkdir -p "$R6C/.git/lcars/delegates/d77"
 echo "# a brief nobody minted" >"$R6C/.git/lcars/delegates/d77/BRIEF.md"
+: >"$R6C/.git/lcars/delegates/d77/OPEN"
 printf 'bug-001\td77\n' >>"$R6C/.git/lcars/chunk-owners"
 L6C="$(ech "$R6C" land m-mine 2>&1)"; l6crc=$?
 check "6j. a claim naming a delegate NO RECORD BACKS does not clear the gate" \
@@ -657,6 +696,7 @@ own_it() { # repo delegate
 JSON
   mkdir -p "$repo/.git/lcars/delegates/$did"
   echo "# BRIEF $did" >"$repo/.git/lcars/delegates/$did/BRIEF.md"
+  : >"$repo/.git/lcars/delegates/$did/OPEN"
   printf '%s\t%s\n' "$CID" "$did" >>"$repo/.git/lcars/chunk-owners"
 }
 A6="$(approve_repo verify)"
@@ -892,6 +932,7 @@ xech d1 "$R9J" exec lcars-file/file.sh --id m-fish >/dev/null 2>&1
 xech - "$R9J" file-bug --parent m-fish --prd "$PRD_GOOD" >/dev/null 2>&1
 mkdir -p "$R9J/.git/lcars/delegates/d77"
 echo "# a brief nobody minted" >"$R9J/.git/lcars/delegates/d77/BRIEF.md"
+: >"$R9J/.git/lcars/delegates/d77/OPEN"
 printf 'bug-001\td77\n' >>"$R9J/.git/lcars/chunk-owners"
 L9J="$(xech - "$R9J" land m-fish 2>&1)"; l9jrc=$?
 check "9j. a claim NO RECORD BACKS still blocks a filed Mission, naming the id" \
@@ -913,11 +954,195 @@ check "9k3. …and does NOT list the driven one in the blocking sentence" \
 A9="$(approve_repo verify)"
 mkdir -p "$A9/.git/lcars/delegates/d1"
 echo "# BRIEF d1" >"$A9/.git/lcars/delegates/d1/BRIEF.md"
+: >"$A9/.git/lcars/delegates/d1/OPEN"
 printf '%s\td1\n' "$PID" >>"$A9/.git/lcars/chunk-owners"    # the PARENT is owned, not the bug
 rc9=0; approve_in "$A9" >"$A9/out.txt" 2>&1 || rc9=$?
 check "9l. a MISSION row in the record does not buy its bug child an accept" \
   "[ \$rc9 -ne 0 ] && grep -q 'logged bug(s) still open' '$A9/out.txt'"
 check "9l2. …and nothing merged" "! grep -q 'pr-merge' '$A9/gh.log'"
+echo
+
+# =========================================================================
+printf '== 11. THE BOUNDARY: DENY BY DEFAULT (the fresh tester, F5/F6) ==\n'
+# =========================================================================
+# THE SUITE WAS GREEN WHILE ALL OF THIS WAS TRUE, which is the gap these rows
+# close. Round 1 added authority as CHECKS ON PARTICULAR VERBS: six verbs opted
+# in, about twenty did not. The tester walked through with real verbs and zero
+# hand-editing, and the identity mechanism — 16/16 forgery attacks refused —
+# was irrelevant, because the seat never had to GUESS an id. It ISSUED one.
+R11="$(fast_chunk_repo)"
+cp "$R11/.git/lcars/autopilot.json" "$TMPROOT/ap11.before"
+printf '# spec\n' >"$TMPROOT/spec12.md"
+# ---- 11a: THE ESCALATION CHAIN, as ONE end-to-end row -------------------
+# record -> tier -> delegate -> act as the seat you just minted.
+e1="$(xech d1 "$R11" record 'missions.theirs.id' m-theirs 2>&1)"; e1rc=$?
+e2="$(xech d1 "$R11" tier theirs --tier T1 --why "mine now" 2>&1)"; e2rc=$?
+e3="$(xech d1 "$R11" delegate theirs 2>&1)"; e3rc=$?
+e4rc=0; xech d9 "$R11" live-check m-theirs --type cli >/dev/null 2>&1 || e4rc=$?
+check "11a. THE ESCALATION CHAIN IS BROKEN AT ITS FIRST LINK, and at every link" \
+  "[ $e1rc -ne 0 ] && [ $e2rc -ne 0 ] && [ $e3rc -ne 0 ] && [ $e4rc -ne 0 ]"
+check "11a2. …\`record\` is refused, naming the MAIN ECH as owner" \
+  "printf '%s' \"\$e1\" | grep -qi 'main ECH' && printf '%s' \"\$e1\" | grep -q 'NOT A VERB A SUB-ECH MAY RUN'"
+# The fixture already maps `theirs` -> m-theirs (that is d2's own chunk), so
+# the measurement is that the RECORD DID NOT CHANGE, not that the id is absent.
+check "11a3. …and it wrote NOTHING: the record is byte-identical to before" \
+  "cmp -s '$R11/.git/lcars/autopilot.json' '$TMPROOT/ap11.before'"
+check "11a4. …\`tier\` recorded no judgement" \
+  "! grep -q 'mine now' '$R11/.git/lcars/autopilot.json'"
+# ANCHORED TO THE MINT'S OWN BANNER, not to the word. The refusal's reason now
+# contains the sentence "a seat has MINTED ITSELF a seat", and a bare
+# `grep MINTED` matched the refusal that proves the attack failed — a test
+# tripped by the prose of its own cure.
+check "11a5. …and \`delegate\` MINTED NOTHING — no third seat, no brief" \
+  "[ ! -d '$R11/.git/lcars/delegates/d3' ] && ! printf '%s\n' \"\$e3\" | grep -q '^MINTED:'"
+check "11a6. the refusal lists the verbs the seat DOES have, so it is not a dead end" \
+  "printf '%s' \"\$e1\" | grep -q 'file-bug' && printf '%s' \"\$e1\" | grep -q 'beat'"
+check "11a7. …and hands back the one channel it has" \
+  "printf '%s' \"\$e1\" | grep -q 'BLOCKED'"
+# ---- 11b: every other ungated verb the tester named ---------------------
+nb=0; nbnames=""
+for v11 in record tier delegate delegates grant answered init preflight status \
+           next stalled playbook report engines worktree workflow-run heartbeat \
+           watch await _waiter push-gated ask land; do
+  if xech d1 "$R11" "$v11" >/dev/null 2>&1; then nb=$((nb+1)); nbnames="$nbnames $v11"; fi
+done
+check "11b. NONE of the 23 main-ECH verbs runs for a sub-ECH (deny by default)" \
+  "[ $nb -eq 0 ]    # granted:$nbnames"
+# F6 — DELEGATION.md's own table says push-gated is never allowed. Now it isn't.
+pg11="$(xech d1 "$R11" push-gated 2>&1)"; pg11rc=$?
+check "11c. [F6] \`push-gated\` is refused, as \`DELEGATION.md\`'s table already said" \
+  "[ $pg11rc -ne 0 ] && printf '%s' \"\$pg11\" | grep -q 'NOT A VERB A SUB-ECH MAY RUN'"
+check "11c2. …and the doc and the code agree on the allow-list, from ONE constant" \
+  "grep -q 'SUBECH_VERBS=\"beat exec budget ledger file-bug live-check policy drive\"' '$REPO_ROOT/skills/lcars-eeh/ech.sh' \
+   && grep -q 'beat exec budget ledger file-bug live-check policy drive' '$DOC'"
+# ---- 11d: the allow-list still WORKS — the control that matters ---------
+# A boundary that refuses everything is not a cure, it is an outage.
+ok11=0
+xech d1 "$R11" beat d1 "step 1 of 2: looking" >/dev/null 2>&1 || ok11=$((ok11+1))
+xech d1 "$R11" live-check m-mine --type cli >/dev/null 2>&1 || ok11=$((ok11+1))
+xech d1 "$R11" file-bug --parent m-mine --prd "$PRD_GOOD" >/dev/null 2>&1 || ok11=$((ok11+1))
+xech d1 "$R11" drive m-mine >/dev/null 2>&1 || ok11=$((ok11+1))
+xech d1 "$R11" exec lcars-file/file.sh --id m-own >/dev/null 2>&1 || ok11=$((ok11+1))
+xech d1 "$R11" ledger feedback '{"kind":"lcars-bug","delegate":"d1","what":"nothing found"}' >/dev/null 2>&1 || ok11=$((ok11+1))
+check "11d. [control] all eight allowed verbs still RUN for a sub-ECH" "[ $ok11 -eq 0 ]"
+check "11d2. [control] …and the MAIN ECH's own verbs are all untouched" \
+  "xech - '$R11' status >/dev/null 2>&1 && xech - '$R11' record 'missions.theirs.id' m-theirs >/dev/null 2>&1 \
+   && xech - '$R11' tier theirs --tier T1 --why 'the main ECH chunking' >/dev/null 2>&1"
+# ---- 11e: and the brief TELLS the seat its boundary ---------------------
+check "11e. the minted brief states the allow-list, rendered from the same constant" \
+  "grep -q 'beat exec budget ledger file-bug live-check policy drive' '$B7'"
+check "11e2. …and says it is deny-by-default, with the reason" \
+  "grep -qi 'deny-by-default' '$B7' && grep -qi 'mint ITSELF' '$B7'"
+echo
+
+# =========================================================================
+printf '== 12. ONE ADJUDICATOR: land and approve cannot disagree (F1) ==\n'
+# =========================================================================
+# THE LIBRARY WAS SHARED AND THE ADJUDICATION WAS NOT. `lcars_chunk_owner`
+# tested a row plus a BRIEF.md; `land` ALSO read the delegate record through
+# python. Two documented verbs reached the disagreement: `init --force` drops
+# `delegates` by design, leaves the briefs by design, and left `chunk-owners`
+# alone — after which `land` BLOCKED and `approve` MERGED.
+R12="$(fast_chunk_repo)"
+xech d1 "$R12" file-bug --parent m-mine --prd "$PRD_GOOD" >/dev/null 2>&1
+check "12a. [precondition] the bug is owned and driven" \
+  "[ \"\$(. '$CHUNK_LIB'; lcars_chunk_owner '$R12/.git/lcars' bug-001)\" = d1 ]"
+I12="$(xech - "$R12" init --spec "$TMPROOT/spec12.md" --scope M0 --force 2>&1)"
+check "12b. \`init --force\` RELEASES the ownership it orphans" \
+  "[ -z \"\$(. '$CHUNK_LIB'; lcars_chunk_claim '$R12/.git/lcars' bug-001)\" ]"
+check "12b2. …and shuts the seat it discarded" \
+  "[ ! -f '$R12/.git/lcars/delegates/d1/OPEN' ]"
+check "12b3. …and SAYS so, beside the records it already names" \
+  "printf '%s' \"\$I12\" | grep -qi 'OWNERSHIP RELEASED'"
+check "12b4. …and it did NOT delete the brief (a durable artifact, by design)" \
+  "[ -f '$R12/.git/lcars/delegates/d1/BRIEF.md' ]"
+# THE DISAGREEMENT ITSELF: a row + a brief but NO open seat. Both gates must
+# reach the same answer, and that answer must be BLOCK.
+R12B="$(approve_repo verify)"
+mkdir -p "$R12B/.git/lcars/delegates/d1"
+echo "# BRIEF d1" >"$R12B/.git/lcars/delegates/d1/BRIEF.md"
+printf '%s\t%s\n' "$CID" d1 >>"$R12B/.git/lcars/chunk-owners"   # no OPEN marker
+rc12=0; approve_in "$R12B" >"$R12B/out.txt" 2>&1 || rc12=$?
+check "12c. the REAL approve REFUSES a claim whose seat is not open" \
+  "[ \$rc12 -ne 0 ] && grep -q 'logged bug(s) still open' '$R12B/out.txt'"
+check "12c2. …and merged nothing" "! grep -q 'pr-merge' '$R12B/gh.log'"
+# …and the ECH's own pre-check agrees, on the same shape, for the same reason.
+R12C="$(fast_chunk_repo)"
+xech d1 "$R12C" file-bug --parent m-mine --prd "$PRD_GOOD" >/dev/null 2>&1
+rm -f "$R12C/.git/lcars/delegates/d1/OPEN"
+L12="$(xech - "$R12C" land m-mine 2>&1)"; l12rc=$?
+check "12d. \`land\` blocks on exactly the same shape" \
+  "[ $l12rc -eq 10 ] && printf '%s' \"\$L12\" | grep -q 'BLOCKED BY UNOWNED LOGGED BUG'"
+check "12d2. …and names the id it refused and WHY — not just 'nobody owns it'" \
+  "printf '%s' \"\$L12\" | grep -q 'd1' && printf '%s' \"\$L12\" | grep -qi 'NOT OPEN'"
+check "12e. [control] with the marker back, BOTH let it through again" \
+  ": >'$R12C/.git/lcars/delegates/d1/OPEN'; ! printf '%s' \"\$(xech - '$R12C' land m-mine 2>&1)\" | grep -q 'BLOCKED BY UNOWNED LOGGED BUG'"
+check "12f. the adjudicator is ONE function, and \`land\` no longer has its own" \
+  "grep -q 'lcars_chunk_owner' '$REPO_ROOT/skills/lcars-approve/approve.sh' \
+   && [ \"\$(grep -c 'delegates\.\$owner\.' '$SCRIPT')\" = 0 ]"
+echo
+
+# =========================================================================
+printf '== 13. A CREATION IS SCOPE-CHECKED BEFORE IT IS RECORDED (F2) ==\n'
+# =========================================================================
+# `d1` ran `exec lcars-log/log.sh --parent m-theirs` and was handed
+# `CHUNK: xbug-1 is now yours (d1)`. Both gates then let `m-theirs` through and
+# d1 could `live-check` inside d2's chunk.
+R13="$(fast_chunk_repo)"
+X13="$(xech d1 "$R13" exec lcars-log/log.sh --parent m-theirs --id xbug-1 2>&1)"
+check "13a. [precondition] the bug under the sibling's Mission really was created" \
+  "[ -f '$R13/.git/lcars/missions/xbug-1/state.json' ]"
+check "13b. it is attributed to NOBODY" \
+  "[ -z \"\$(. '$CHUNK_LIB'; lcars_chunk_claim '$R13/.git/lcars' xbug-1)\" ]"
+check "13c. and the refusal says so, naming the parent and the chunk" \
+  "printf '%s' \"\$X13\" | grep -q 'REFUSED TO ATTRIBUTE' && printf '%s' \"\$X13\" | grep -q 'm-theirs'"
+check "13d. so the sibling's Mission did NOT join d1's chunk" \
+  "! xech d1 '$R13' live-check m-theirs --type cli >/dev/null 2>&1"
+check "13e. …and that undriven bug now BLOCKS the sibling's accept, by id" \
+  "printf '%s' \"\$(xech - '$R13' land m-theirs 2>&1)\" | grep -q 'xbug-1'"
+check "13f. [control] a bug under its OWN chunk is still attributed normally" \
+  "xech d1 '$R13' exec lcars-log/log.sh --parent m-mine --id xbug-2 >/dev/null 2>&1; \
+   [ \"\$(. '$CHUNK_LIB'; lcars_chunk_owner '$R13/.git/lcars' xbug-2)\" = d1 ]"
+check "13g. [control] a PARENTLESS Mission is still claimable — subdivide as you see fit" \
+  "xech d1 '$R13' exec lcars-file/file.sh --id m-root2 >/dev/null 2>&1; \
+   [ \"\$(. '$CHUNK_LIB'; lcars_chunk_owner '$R13/.git/lcars' m-root2)\" = d1 ]"
+echo
+
+# =========================================================================
+printf '== 14. THE ATTRIBUTION WINDOW IS BOUNDED (F3) ==\n'
+# =========================================================================
+# A Mission the captain filed from another terminal during a six-second `exec`
+# was attributed to the sub-ECH, because the diff spanned ANY script's whole
+# life — and `exec … run.sh drive` is a documented long-running use with two
+# concurrent slots by design.
+R14="$(fast_chunk_repo)"
+X14="$(xech d1 "$R14" exec lcars-run/run.sh drive --mission m-mine 2>&1)"; x14rc=$?
+check "14a. [precondition] a Mission really appeared while that script ran" \
+  "[ -f '$R14/.git/lcars/missions/m-elsewhere/state.json' ]"
+check "14b. a NON-CREATING script attributes NOTHING — no window at all" \
+  "[ -z \"\$(. '$CHUNK_LIB'; lcars_chunk_claim '$R14/.git/lcars' m-elsewhere)\" ]"
+check "14b2. …and it said nothing about a chunk, because it measured nothing" \
+  "! printf '%s' \"\$X14\" | grep -q 'CHUNK:'"
+check "14c. so that Mission is not in d1's chunk" \
+  "! xech d1 '$R14' live-check m-elsewhere --type cli >/dev/null 2>&1"
+check "14d. [control] a DECLARED creator is still measured and still attributes" \
+  "xech d1 '$R14' exec lcars-file/file.sh --id m-mine2 >/dev/null 2>&1; \
+   [ \"\$(. '$CHUNK_LIB'; lcars_chunk_owner '$R14/.git/lcars' m-mine2)\" = d1 ]"
+# AND THE LOWER BOUND: a record older than the call is not attributed, even
+# though the listing only noticed it during the call.
+R14B="$(fast_chunk_repo)"
+mkdir -p "$R14B/.git/lcars/missions/m-stale"
+printf '{"id":"m-stale","stage":"verify","type":"feature","title":"older"}\n' \
+  >"$R14B/.git/lcars/missions/m-stale/state.json"
+touch -t 202001010000 "$R14B/.git/lcars/missions/m-stale/state.json"
+# It is not in the "before" listing only because the suite plants it after the
+# fact; the point under test is the MTIME bound, not the listing.
+check "14e. [precondition] the planted record is genuinely older" \
+  "[ \"\$(. '$CHUNK_LIB'; lcars_chunk_claim '$R14B/.git/lcars' m-stale)\" = '' ]"
+X14B="$(xech d1 "$R14B" exec lcars-file/file.sh --id m-fresh 2>&1)"
+check "14f. the fresh Mission is attributed and the stale one is not" \
+  "[ \"\$(. '$CHUNK_LIB'; lcars_chunk_owner '$R14B/.git/lcars' m-fresh)\" = d1 ] \
+   && [ -z \"\$(. '$CHUNK_LIB'; lcars_chunk_claim '$R14B/.git/lcars' m-stale)\" ]"
 echo
 
 # =========================================================================
@@ -983,7 +1208,7 @@ check "10v. [delegation D10] the three verbs are still named, so the gate stays 
 echo
 
 # --- zero spend, every run ------------------------------------------------
-check "11a. ZERO worker spend: no claude/copilot was invoked" \
+check "15a. ZERO worker spend: no claude/copilot was invoked" \
   "[ ! -s '$LCARS_DRIVE_SHIM_LOG' ]"
 
 echo

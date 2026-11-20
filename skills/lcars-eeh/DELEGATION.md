@@ -450,6 +450,40 @@ a live Mission had ended that Mission's run.**
 | raises it with the ECH | `beat … "BLOCKED: …"` | **yes** — the only channel up | n/a |
 | the captain's attention | `ask` | **never** | **never** |
 | the landing decision | `land`, `approve`, `push-gated` | **never** | **never** |
+| the ECH's own bookkeeping | `record`, `tier`, `delegate`, `grant`, `answered`, `init` | **never** — this is the escalation chain | **never** |
+| machinery and the ECH's board | `worktree`, `workflow-run`, `heartbeat`, `watch`, `await`, `_waiter`, `status`, `next`, `stalled`, `delegates`, `playbook`, `report`, `engines` | **never** — not on the allow-list | **never** |
+
+### IT IS A BOUNDARY, NOT A SET OF CHECKS
+
+**S365 fix round 2 (F5), and this is the shape of the rule rather than a detail
+of it.** The first build added authority as *checks on particular verbs*. The
+gate was opt-in and six verbs opted in; about twenty did not. A fresh tester
+walked through it with real verbs and no hand-editing:
+
+> `d1` (chunk `m-mine`) is refused on `m-theirs` — the gate works. Then
+> `record missions.theirs.id …` → *recorded*. Then `tier theirs --tier T1 …` →
+> *TIER: T1*. Then `delegate theirs` → **MINTED: d2**, with a real brief. Then
+> `LCARS_ECH_AS=d2 live-check m-theirs` → **granted**.
+
+**A sub-ECH minted itself a seat over a chunk it was never handed.** The
+identity mechanism refused all sixteen forgery attacks and was *irrelevant*,
+because the seat never had to guess an id — it issued one. With
+`record delegates.<id>.status` it could open and close any seat at will, which
+is the very field the accept gates read.
+
+**So a sub-ECH may run exactly the verbs its brief names, and the dispatcher
+refuses everything else before the verb's arguments are read:**
+
+```
+beat exec budget ledger file-bug live-check policy drive
+```
+
+Four of those eight are **also** scoped to the chunk. **The boundary says which
+VERBS; the chunk says which MISSIONS.** The list lives in ONE constant
+(`SUBECH_VERBS` in `ech.sh`) and the minted brief is rendered from it, so the
+rule a delegate is held to and the rule it is told cannot drift. **A verb added
+to LCARS tomorrow is denied to a sub-ECH until somebody grants it on purpose** —
+that is the whole difference between a boundary and a twenty-first check.
 
 **`ask` and `land` STAY WITH THE MAIN ECH, and the refusal names it.** `ask`
 prints *QUESTION FOR THE CAPTAIN* and fires his notifier: the interrupt budget
@@ -515,6 +549,29 @@ recorded and its Mission is **out of chunk** — every verb on it refused, with
 the refusal naming the front door. That is the safe direction: an unattributable
 Mission earns a refusal, never a silent grant.
 
+**AND A CREATION IS SCOPE-CHECKED BEFORE IT IS RECORDED (F2).** Round 1 claimed
+*any* new Mission with no scope test, so `exec lcars-log/log.sh --parent <a
+sibling's Mission>` handed the seat a bug under someone else's work and pulled
+that Mission into its chunk — both gates then let the sibling's Mission through.
+A creation is claimable only when it is a **new root** (no parent: the
+subdivide-as-you-see-fit case) or when its parent chain **already reaches this
+chunk**. Anything else is **recorded to nobody** and said out loud, which leaves
+it outside every chunk — so it blocks its parent's accept and every verb on it
+is refused.
+
+**AND THE WINDOW IS BOUNDED (F3).** Attribution is a before/after of the
+missions directory, so it is only measured around the **two declared
+Mission-creating scripts** (`lcars-file/file.sh`, `lcars-log/log.sh`), and a new
+record older than the call is not attributed. Round 1 measured it around *any*
+script for that script's whole life, and `exec … run.sh drive` is a documented
+long-running use with two concurrent slots by design: a Mission the captain
+filed from another terminal during a six-second call was attributed to the
+sub-ECH. The long-running case now has no window at all. **What it still cannot
+tell:** another seat filing a *parentless* Mission during those few seconds is
+attributed here. It is bounded (seconds, two scripts), it only ever **widens one
+chunk** rather than granting an accept, and every attribution is printed with
+its id — so it is visible, not silent.
+
 The ascent is bounded at 32 hops, so a `parentMission` pointing in a circle
 cannot hang a verb. **A delegate with no seed can still own what it filed** —
 the seed is one of three ways in, not a precondition. Reaching into a sibling's
@@ -532,6 +589,23 @@ may silently drop a logged bug — so:
 - an **unowned, undriven** bug **still blocks**, and the refusal says **which,
   by id, and why**.
 
+**AND ONE ADJUDICATOR DECIDES IT, WHICH IS THE OTHER HALF OF ROUND 2 (F1).**
+The library was shared and the **adjudication** was not: `lcars_chunk_owner`
+tested a row plus `delegates/<id>/BRIEF.md`, while `land` *also* consulted the
+delegate record through python. So the two gates could disagree, and a fresh
+tester reached the disagreement with two **documented** verbs — `lcars-ech init
+--force` drops `delegates` by design, leaves the briefs by design, and left
+`chunk-owners` alone. Afterwards `land` blocked and **`approve` MERGED.**
+
+The whole test is now **two `[ -f ]`s and no JSON at all**, so there is nothing
+either caller can read differently and no python in `approve.sh`:
+`delegates/<id>/BRIEF.md` (a mint really happened) and `delegates/<id>/OPEN`
+(the seat is still open). `delegate`'s mint writes the marker; `delegate close`
+and `init --force` remove it. `land` reads the record only to say WHY it
+blocked, never to decide, and `lcars_chunk_claim` exists so a refusal can still
+name the id it refused. **A seat minted before the marker existed reads as
+closed, and its bugs block** — the safe direction, as every ambiguity here is.
+
 **Ownership is recorded, released, and checked.** It is written to
 `.git/lcars/chunk-owners` (`<mission-id>` TAB `<delegate-id>`, append-only,
 latest line wins) by `file-bug` when a sub-ECH files a bug inside its chunk and
@@ -544,18 +618,16 @@ nobody is driving) and its Missions leave its chunk.
 ask about a `type: bug` child of the Mission being landed, so widening what a
 row can name widens the CHUNK and not the gate. `mission_in_chunk` is the only
 reader that asks about an ordinary Mission.
-**A CLAIM IS CHECKED, NOT TAKEN, AT TWO DEPTHS.** Both readers require the
-named delegate to also have the artifact a mint produces —
-`delegates/<id>/BRIEF.md` — so one line in a text file is not an accept; when in
-doubt they return nothing, which means the bug **blocks**. On top of that, the
-ECH's own `land` checks the delegate **record** itself and **blocks loudly, by
-name**, on a claim no record backs or whose delegate is closed. The second depth
-is `land`'s alone, because `approve.sh` has no JSON reader for `delegates.<id>`
-and giving it one is how the two gates start disagreeing; `approve.sh`'s trust
-level in a local record is unchanged from what it has always been (it already
-believes a child's own `stage` and `foldedInto`). A false accept is worse than
-the blocking this rule cures, and the cheapest attack on it is a hand-written
-claim.
+**A CLAIM IS CHECKED, NOT TAKEN, AND BY ONE READER.** Both gates ask
+`lcars_chunk_owner` and nothing else, so a claim counts only when the brief AND
+the seat marker are both on disk — one line in a text file is not an accept, and
+when in doubt the reader returns nothing, which means the bug **blocks**. `land`
+additionally reads the delegate record to **say which** of the three reasons it
+blocked for (nobody owns it / the claimed seat has no record / the claimed seat
+is not open), and `approve.sh` names what it let through; neither decides
+differently from the other. A false accept is worse than the blocking this rule
+cures, and the cheapest attacks on it are a hand-written claim and a reset that
+leaves live claims behind — both of which now block.
 
 **WHY A FLAT FILE AND NOT A FIELD IN `autopilot.json`.** Two scripts have to
 agree about what a blocker is — `lcars-ech land` and `approve.sh`'s own

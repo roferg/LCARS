@@ -327,10 +327,14 @@ else
   # A MISSING LIBRARY DEGRADES TO "NOBODY OWNS ANYTHING", never to a crash and
   # never to a weaker gate: with no owners, every open logged bug blocks exactly
   # as it did before S365. A broken install must not be able to buy an accept.
-  lcars_chunk_owner()      { return 0; }
-  lcars_chunk_own()        { return 1; }
-  lcars_chunk_release()    { return 0; }
-  lcars_chunk_owned()      { return 0; }
+  lcars_chunk_owner()           { return 0; }
+  lcars_chunk_claim()           { return 0; }
+  lcars_chunk_own()             { return 1; }
+  lcars_chunk_release()         { return 0; }
+  lcars_chunk_owned()           { return 0; }
+  lcars_chunk_seat_open()       { return 1; }
+  lcars_chunk_seat_open_mark()  { return 1; }
+  lcars_chunk_seat_open_clear() { return 0; }
 fi
 
 # The parallelism ceiling. Two concurrent missions was the measured safe maximum
@@ -667,13 +671,21 @@ open_children_of() {
 # a typo in the one variable that carries authority silently buys full
 # authority.
 
-# delegate_is_open <delegate-id> — is there a record for it, and is it still
-# OPEN? `delegate close` writes `status: done` plus a `closedAt` (it does not
-# write "closed"), and `delegate_closed` already reads it that way; this is the
-# same discriminator so the two can never disagree.
+# delegate_is_open <delegate-id> — is there a record for it, is it still OPEN,
+# and does the SEAT MARKER both accept gates read agree? `delegate close` writes
+# `status: done` plus a `closedAt` (it does not write "closed"), and
+# `delegate_closed` already reads it that way; this is the same discriminator so
+# the two can never disagree.
+#
+# S365 fix round 2 (F1): it ALSO asks `lcars_chunk_seat_open`, the two-file test
+# `approve.sh` uses. "This seat is open" now means ONE thing on every surface
+# that asks — the ECH's verbs, `land`, and the product's own merge gate — and
+# the record and the marker have to agree. Either one missing is a closed seat,
+# which is the safe direction.
 delegate_is_open() {
   [ -n "$(ap_j "delegates.$1.id")" ] || return 1
   [ "$(ap_j "delegates.$1.status")" = "done" ] && return 1
+  lcars_chunk_seat_open "$LCARS_DIR" "$1" || return 1
   return 0
 }
 
@@ -767,15 +779,86 @@ subech_scope_or_die() {
   die "$verb: $m is NOT IN YOUR CHUNK. You are sub-ECH $seat and your chunk is $(subech_chunk_root "$seat") and the bug Missions logged under it. No sub-ECH owns $m, so it is the MAIN ECH's — it owns the overall ask and every Mission not handed to a chunk. Authority travels with the chunk, and it does not travel outside one. IF YOU FILED $m YOURSELF, file through the front door so the ownership is recorded — \`$SELF_CMD exec lcars-file/file.sh --prd <f>\` — because a Mission created around this verb is a Mission nothing can attribute to you, and the safe answer to an unattributable Mission is this refusal. Otherwise raise it with \`$SELF_CMD beat $seat \"BLOCKED: <what you need>\"\`."
 }
 
-# subech_reserved_or_die <verb> <the one-line reason it stays at the top> —
-# `ask` and `land`. The refusal NAMES WHO OWNS THEM, because a refusal that
-# only says no leaves a seat with nowhere to go, and a channel-less delegate
-# under pressure improvises.
-subech_reserved_or_die() {
-  local verb="$1" why="$2" seat
+# ==========================================================================
+# THE BOUNDARY — S365 fix round 2 (F5). DENY BY DEFAULT, ALLOW BY LIST.
+# ==========================================================================
+# ROUND 1 ADDED AUTHORITY AS CHECKS ON PARTICULAR VERBS, AND THAT WAS THE
+# DEFECT. The gate was opt-in and six verbs opted in; about twenty did not,
+# including `record`, `tier`, `delegate`, `grant`, `answered` and `push-gated`.
+# A fresh tester walked straight through, with real verbs and zero hand-editing:
+#
+#     d1 (chunk m-mine)
+#       d1 on m-theirs                  -> NOT IN YOUR CHUNK   (the gate works)
+#       d1: record missions.theirs.id … -> "recorded"           (ungated)
+#       d1: tier theirs --tier T1 …     -> "TIER: T1 for theirs"(ungated)
+#       d1: delegate theirs             -> "MINTED: d2" + brief (ungated)
+#       LCARS_ECH_AS=d2 live-check m-theirs -> rc 0   *** GRANTED
+#
+# **A sub-ECH minted itself a seat over a chunk it was never handed.** The
+# identity mechanism refused all sixteen forgery attacks and was IRRELEVANT,
+# because the seat never had to guess an id — it issued one. With
+# `record delegates.<id>.status` it could also open and close any seat at will,
+# which is the very field the accept gates read.
+#
+# So authority is a BOUNDARY now, not a set of checks: a sub-ECH may run exactly
+# the verbs its brief names, and anything else is refused by the dispatcher
+# before the verb's own arguments are even parsed. A new verb is therefore
+# DENIED to a sub-ECH until somebody adds it here on purpose — which is the
+# whole difference between a boundary and a patch.
+#
+# THE LIST IS THIS CONSTANT, AND THE BRIEF IS RENDERED FROM IT, so the rule a
+# delegate is held to and the rule it is told cannot drift apart (S359's lesson).
+#
+#   beat        its only channel up, including the `BLOCKED:` beat
+#   exec        the front door to every sibling script
+#   budget      the admission check its own brief tells it to run
+#   ledger      the two-list sign-off its close is measured against
+#   file-bug    its own bugs       | each of these four is ALSO scope-gated to
+#   live-check  its own eyes       | its chunk, so the boundary says WHICH VERBS
+#   policy      the one action     | and the scope check says WHICH MISSIONS
+#   drive       its own fixes      |
+#
+# NOT on it, and each for its own reason: `ask` and `land` (the captain's
+# attention and the one landing decision), `record` / `tier` / `delegate` /
+# `grant` / `answered` / `init` / `preflight` (the ECH's own bookkeeping, and
+# the escalation chain above), `push-gated` / `worktree` / `workflow-run` /
+# `heartbeat` / `watch` / `await` / `_waiter` (machinery), and the read-only
+# screens `status` / `next` / `stalled` / `delegates` / `playbook` / `report` /
+# `engines` — a sub-ECH is told what it needs in its brief and reports upward in
+# summaries; it does not read the main ECH's board. `--help` is always allowed,
+# because a seat that cannot ask what it may run is a seat that improvises.
+SUBECH_VERBS="beat exec budget ledger file-bug live-check policy drive"
+
+# subech_boundary_or_die <verb> — the whole boundary, called from the dispatcher
+# before any verb runs. Silent for the main ECH, so every pre-existing
+# invocation and every repo that never minted a sub-ECH is untouched.
+subech_boundary_or_die() {
+  local verb="$1" seat v
+  [ -n "$ECH_AS" ] || return 0            # the main ECH: nothing to decide
+  case "$verb" in ''|-h|--help|help) return 0 ;; esac
   seat="$(subech_seat)" || exit $?
   [ -n "$seat" ] || return 0
-  die "$verb: RESERVED TO THE MAIN ECH, which owns it. You are sub-ECH $seat and your chunk is $(subech_chunk_root "$seat") — inside it you file your own bugs, run your own live check and drive your own fixes. $why Your route is one beat the main ECH reads at once: \`$SELF_CMD beat $seat \"BLOCKED: <what you need from the main ECH>\"\`. Nothing was raised, nothing was landed and nothing advanced."
+  for v in $SUBECH_VERBS; do
+    [ "$verb" = "$v" ] && return 0
+  done
+  # THE REASON RIDES THE SAME REFUSAL. Three verbs have a reason of their own
+  # that is worth more than "not on the list", and S365's first build put them
+  # in per-verb checks inside `cmd_ask` and `cmd_land`. Those checks are gone:
+  # the boundary fires first, so a second copy of the rule would have been
+  # unreachable code AND a second place for it to drift. One refusal, with the
+  # verb's own sentence appended.
+  local why=""
+  case "$verb" in
+    ask)
+      why=" \`ask\` is the captain's attention: his interrupt budget has exactly four categories, it is HIS, and the MAIN ECH is the only seat that spends it — a sub-ECH does not interrupt him and delegation adds no fifth category." ;;
+    land|approve)
+      why=" Landing is ONE decision about the WHOLE ask, and the main ECH makes it because it verifies the whole at the end — the one thing no single chunk can see." ;;
+    push-gated)
+      why=" \`push-gated\` moves work toward a merge, which is the landing decision by another route." ;;
+    record|tier|delegate)
+      why=" THIS ONE IN PARTICULAR: \`record\`, \`tier\` and \`delegate\` are the escalation chain — three of them in a row and a seat has MINTED ITSELF a seat over a chunk nobody handed it, with a brief it issued to itself. \`record\` also writes the very field the accept gates read." ;;
+  esac
+  die "$verb: NOT A VERB A SUB-ECH MAY RUN. It is the MAIN ECH's, which owns the overall ask.$why You are sub-ECH $seat and your chunk is $(subech_chunk_root "$seat"); the verbs your brief gives you are the only ones you have, and they are: $SUBECH_VERBS. This is deny-by-default on purpose, so a verb added to LCARS tomorrow is refused to you until somebody grants it. Your route is one beat the main ECH reads at once: \`$SELF_CMD beat $seat \"BLOCKED: <what you need from the main ECH>\"\`. Nothing was read, written or advanced."
 }
 
 # driver_live <mission> — the ONE source of truth for "is a drive in flight".
@@ -3046,7 +3129,7 @@ cmd_init() {
   # the other half is the mint, which now skips an id whose BRIEF.md is still
   # on disk instead of overwriting it.
   if [ -f "$APJSON" ] && [ "$force" = 1 ]; then
-    local dropped du dg
+    local dropped du="" dg=""
     dropped="$("$PY" - "$APJSON" <<'PYDROP'
 import json, sys
 try:
@@ -3072,6 +3155,28 @@ PYDROP
       say "  as briefs no record claims any more. A later mint SKIPS an id whose"
       say "  BRIEF.md is still there rather than overwrite it, so nothing of"
       say "  anyone's hand-over is destroyed — read or remove them yourself."
+      say ""
+    fi
+    # S365 fix round 2 (F1): AND THE OWNERSHIP GOES WITH THE RECORDS. This flag
+    # drops `delegates` by design and leaves the briefs by design — and it used
+    # to leave `chunk-owners` and the seat markers alone, so afterwards a bug
+    # still "belonged" to a seat that no longer existed: `land` blocked on it and
+    # `approve` MERGED it. A reset that leaves live claims behind is a reset that
+    # hands out an accept. Every seat it discards is shut and every claim it held
+    # is released, which puts those bugs back to BLOCKING — the correct state for
+    # a bug nobody is driving.
+    local dgid released_any=0
+    for dgid in $dg; do
+      lcars_chunk_seat_open_clear "$LCARS_DIR" "$dgid" || true
+      if [ -n "$(lcars_chunk_owned "$LCARS_DIR" "$dgid")" ]; then released_any=1; fi
+      lcars_chunk_release "$LCARS_DIR" "$dgid" || true
+    done
+    if [ "$released_any" = 1 ] || [ -n "$dg" ]; then
+      say "  OWNERSHIP RELEASED with them: every seat above is shut (its \`OPEN\` marker"
+      say "    removed) and every chunk claim it held in $LCARS_DIR/chunk-owners is"
+      say "    dropped. Any bug one of them was driving BLOCKS the parent's accept again,"
+      say "    which is the correct state for a bug nobody is driving. The Mission records"
+      say "    themselves are untouched."
       say ""
     fi
   fi
@@ -3847,7 +3952,13 @@ cmd_drive() {
   mkdir -p "$APDIR"
   local log="$APDIR/drive-$m.log"
   : >"$log"
-  bash "$SELF" _waiter "$m" "$log" >>"$APDIR/waiter-$m.log" 2>&1 </dev/null &
+  # LCARS_ECH_AS IS CLEARED FOR THE WAITER (F5). `_waiter` is internal and is
+  # NOT on the sub-ECH allow-list — deliberately, because it runs the real
+  # driver and a seat able to call it directly would have an ungated drive on
+  # any mission. So the seat does not travel into it: `drive` has already been
+  # scope-checked against this seat's chunk, and the waiter is bookkeeping on a
+  # mission that check already authorised.
+  LCARS_ECH_AS= bash "$SELF" _waiter "$m" "$log" >>"$APDIR/waiter-$m.log" 2>&1 </dev/null &
   local wpid=$!
   ap_set "drivers.$m.pid" "$wpid"
   ap_set "drivers.$m.log" "$log"
@@ -4362,12 +4473,10 @@ PY
 # milestone stop. § 9: one open question blocks ITS milestone and no other, so
 # `ask` returns and the mode keeps working — `next` names the runnable rest.
 cmd_ask() {
-  # S365: STILL THE MAIN ECH'S, AT ANY SCOPE. A sub-ECH owns its chunk, not the
-  # captain's attention — the interrupt budget has four categories, it is the
-  # captain's, and the MAIN ECH is the one that spends it. Asked before the
-  # arguments, because this is not an argument question.
-  subech_reserved_or_die ask \
-    "The captain's interrupt budget has exactly four categories, it is HIS, and the main ECH is the only seat that spends it; a sub-ECH does not interrupt him and delegation adds no fifth category."
+  # S365 fix round 2: NO PER-VERB CHECK HERE ANY MORE. `ask` is off the sub-ECH
+  # allow-list, so the BOUNDARY in the dispatcher refuses it before this
+  # function is entered — and it carries this verb's own reason. A second copy
+  # here would be unreachable code and a second place for the rule to drift.
   local what="" mission="" why="" cmdline="" rollback=""
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -4517,10 +4626,8 @@ clean_stale_reconciles() {
 
 cmd_land() {
   local m="${1:?land: <mission> required}"
-  # S365: LANDING IS ONE DECISION AND IT IS THE MAIN ECH'S. A sub-ECH drives its
-  # chunk to the ask; it does not decide that the ask is met for the whole.
-  subech_reserved_or_die land \
-    "Landing is ONE decision about the WHOLE ask, and the main ECH makes it: it owns the overall ask and verifies the whole at the end, which is the one thing no single chunk can see."
+  # S365 fix round 2: `land` is off the sub-ECH allow-list, so the BOUNDARY
+  # refuses it in the dispatcher, with this verb's own reason. No check here.
   require_state
   mexists "$m" || die "land: no mission $m in $MISSIONS"
 
@@ -4547,23 +4654,31 @@ cmd_land() {
   # record backs BLOCKS, loudly, by name: the whole point of the gate is that a
   # false accept is worse than the blocking it cures, and the cheapest attack on
   # it is a hand-written claim.
-  local c owner blocking="" driven="" reasons=""
+  # S365 fix round 2 (F1): THE DECISION COMES FROM `lcars_chunk_owner` AND FROM
+  # NOTHING ELSE — the same function `approve.sh` calls, so the two gates cannot
+  # reach different answers. This loop used to ALSO consult `delegates.<id>`
+  # through python, which made `land` a second adjudicator: `init --force` drops
+  # `delegates`, leaves the briefs, and left `chunk-owners` alone, after which
+  # `land` blocked and `approve` MERGED. The record is still read — but only to
+  # say WHY, never to decide.
+  local c owner claim blocking="" driven="" reasons=""
   for c in $(open_children_of "$m"); do
     owner="$(lcars_chunk_owner "$LCARS_DIR" "$c")"
-    if [ -z "$owner" ]; then
-      blocking="$blocking $c"
+    if [ -n "$owner" ]; then
+      driven="$driven $c($owner)"
+      continue
+    fi
+    blocking="$blocking $c"
+    claim="$(lcars_chunk_claim "$LCARS_DIR" "$c")"
+    if [ -z "$claim" ]; then
       reasons="$reasons
   $c — NO SUB-ECH OWNS IT, so nobody is driving it. An unowned logged bug still blocks: that is the half of this gate that is right."
-    elif [ -z "$(ap_j "delegates.$owner.id")" ]; then
-      blocking="$blocking $c"
+    elif [ -z "$(ap_j "delegates.$claim.id")" ]; then
       reasons="$reasons
-  $c — claims owner $owner, and THERE IS NO DELEGATE $owner IN THE RECORD. An unbacked claim buys nothing; a hand-written line is not a seat driving the work."
-    elif ! delegate_is_open "$owner"; then
-      blocking="$blocking $c"
-      reasons="$reasons
-  $c — its owner $owner is CLOSED, so nobody is driving it any more."
+  $c — claims owner $claim, and THERE IS NO DELEGATE $claim IN THE RECORD. An unbacked claim buys nothing; a hand-written line is not a seat driving the work."
     else
-      driven="$driven $c($owner)"
+      reasons="$reasons
+  $c — claims owner $claim, and that seat is NOT OPEN (its \`delegates/$claim/OPEN\` marker is gone, or its record says done). A closed seat drives nothing."
     fi
   done
   blocking="${blocking# }"
@@ -6450,18 +6565,62 @@ cmd_exec() {
   # OUT OF CHUNK and every verb on it is REFUSED. That is the safe direction —
   # a refusal naming the cure, never a silent grant — and the refusal names the
   # front door.
+  #
+  # S365 fix round 2 (F3): THE ATTRIBUTION WINDOW IS NARROWED TO THE TWO
+  # DECLARED MISSION-CREATING SCRIPTS. Round 1 diffed the missions directory
+  # around ANY script, for that script's whole life — and `exec … run.sh drive`
+  # is a documented long-running use with two concurrent slots by design, so a
+  # Mission the captain filed from another terminal during a six-second call was
+  # attributed to the sub-ECH. The long-running case now has NO window at all:
+  # only `lcars-file/file.sh` and `lcars-log/log.sh` create Missions, so only
+  # they are measured, and everything else takes the untouched `exec` path.
+  local creates=0
+  case "$script" in
+    lcars-file/file.sh|lcars-log/log.sh) creates=1 ;;
+  esac
   local seat; seat="$(subech_seat)" || exit $?
-  if [ -n "$seat" ]; then
+  if [ -n "$seat" ] && [ "$creates" = 1 ]; then
     local before="$APDIR/exec.before.$$" after="$APDIR/exec.after.$$"
     mkdir -p "$APDIR"
     mission_ids | sort >"$before"
+    # THE WINDOW'S OWN LOWER BOUND, so a record that merely got LISTED late
+    # cannot be claimed: a touched marker, and a new Mission is only attributed
+    # when its own `state.json` is at least as new as it.
+    local mark="$APDIR/exec.mark.$$"
+    : >"$mark"
     local xrc=0
     bash "$target" "$@" || xrc=$?
     mission_ids | sort >"$after"
     local newm; newm="$(comm -13 "$before" "$after")"
     rm -f "$before" "$after"
-    local nm
+    local nm par
     for nm in $newm; do
+      # F3's LOWER BOUND, and it is one test: a record OLDER than the call did
+      # not come out of the call, however late the listing noticed it.
+      if [ "$MISSIONS/$nm/state.json" -ot "$mark" ]; then
+        say "⚠ NOT ATTRIBUTED: $nm appeared during this call but its record is OLDER than"
+        say "  the call, so it did not come out of it. It is recorded to nobody."
+        continue
+      fi
+      # ==== F2: THE SCOPE CHECK, BEFORE ANYTHING IS RECORDED ===============
+      # Round 1 recorded ownership of ANY new Mission with no scope test at all,
+      # so a sub-ECH running `exec lcars-log/log.sh --parent <a sibling's
+      # Mission>` was handed `CHUNK: <bug> is now yours` — and both accept gates
+      # then let the SIBLING's Mission through, and it could `live-check` inside
+      # the sibling's chunk. A Mission is claimable only when it is a NEW ROOT
+      # (no parent — the "subdivide my chunk as I see fit" case the captain
+      # asked for) or when its parent chain already reaches this chunk.
+      par="$(mstate "$nm" parentMission)"
+      if [ -n "$par" ] && ! mission_in_chunk "$seat" "$nm"; then
+        say "REFUSED TO ATTRIBUTE $nm: its parent $par is NOT IN YOUR CHUNK. You are sub-ECH"
+        say "  $seat and your chunk is $(subech_chunk_root "$seat") and what hangs beneath it."
+        say "  Filing under a Mission you do not own would pull that Mission into your chunk,"
+        say "  which is how one seat reaches into another's work. $nm is recorded to NOBODY:"
+        say "  it is outside every chunk, so it blocks its parent's accept and every verb on"
+        say "  it is refused. Authority travels with the chunk and it does not travel outside"
+        say "  one. Raise it with \`$SELF_CMD beat $seat \"BLOCKED: <what you need>\"\`."
+        continue
+      fi
       if lcars_chunk_own "$LCARS_DIR" "$nm" "$seat"; then
         say "CHUNK: $nm is now yours ($seat) — you filed it, you drive it, and it is"
         say "  inside your chunk for \`file-bug\`, \`live-check\`, \`policy\` and \`drive\`."
@@ -6472,6 +6631,7 @@ cmd_exec() {
         say "  silent grant. Fix the directory, then re-run this to record it."
       fi
     done
+    rm -f "$mark"
     return "$xrc"
   fi
   exec bash "$target" "$@"
@@ -7426,10 +7586,29 @@ how two seats do the same work twice and neither one owns the result, so the
 refusal names whose chunk it is. If work you need really sits outside yours,
 the **main ECH re-chunks it** — raise that, do not take it.
 
+### THE BOUNDARY: THESE EIGHT VERBS, AND NOTHING ELSE
+
+**You may run exactly these, and every other \`$SELF_CMD\` verb is REFUSED to
+you before its arguments are even read:**
+
+    $SUBECH_VERBS
+
+That is deny-by-default, and it is deliberate. \`record\`, \`tier\` and
+\`delegate\` let a seat **mint ITSELF a seat over a chunk nobody handed it** —
+three ungated verbs in a row and a sub-ECH is driving a sibling's work with a
+brief it issued to itself. So the list is a boundary, not a set of checks: a
+verb you do not see above is the MAIN ECH's, and a verb added to LCARS tomorrow
+is refused to you until somebody grants it on purpose.
+
+Four of the eight are **also** scoped to your chunk — \`file-bug\`,
+\`live-check\`, \`policy\` and \`drive\`. The boundary says WHICH VERBS; the chunk
+says WHICH MISSIONS.
+
 The ECH keeps these to ITSELF and you do not run them: \`land\`, \`approve\`,
-\`push-gated\`, \`ask\` — and \`file-bug\`, \`live-check\`, \`policy\` or \`drive\` on
-anything OUTSIDE your chunk. They are the reason nothing about the WHOLE
-advances on one chunk's word.
+\`push-gated\`, \`ask\`, \`record\`, \`tier\`, \`delegate\`, \`grant\`, \`answered\`,
+\`init\` — and \`file-bug\`, \`live-check\`, \`policy\` or \`drive\` on anything
+OUTSIDE your chunk. They are the reason nothing about the WHOLE advances on one
+chunk's word.
 
 \`ask\` is on that list for its own reason: it prints **QUESTION FOR THE
 CAPTAIN** and fires his notifier, and § 4 of this brief forbids you spending his
@@ -8158,6 +8337,16 @@ PY
   ap_unlock
   [ "$wrc" = 0 ] || die "delegate: the brief was written to $bpath but the record was NOT — \`$SELF_CMD delegates\` will not show it. Repair $APJSON before handing it out."
 
+  # S365 fix round 2 (F1): THE SEAT MARKER, written by the verb that opens the
+  # seat. It is the one fact BOTH accept gates can read with `[ -f ]`, so "this
+  # seat is open" means the same thing to `land` and to `approve.sh`.
+  if ! lcars_chunk_seat_open_mark "$LCARS_DIR" "$did"; then
+    say "⚠ SEAT MARKER NOT WRITTEN: $DELEGATES_DIR/$did/OPEN could not be created."
+    say "  $did is minted and its brief is on disk, but NOTHING IT FILES WILL COUNT AS"
+    say "  DRIVEN: every bug it owns will go on blocking the parent's accept, because"
+    say "  both gates read that file to decide whether the seat is open. That is the safe"
+    say "  way round, not a silent pass. Fix the directory and re-mint."
+  fi
   say "MINTED: $did for $unit at tier $tier"
   say "BRIEF: $bpath"
   # D14: THE SKIP IS SAID OUT LOUD. A mint that quietly starts at d2 is a mint
@@ -8360,6 +8549,10 @@ PY
   local released; released="$(lcars_chunk_owned "$LCARS_DIR" "$did" | tr '\n' ' ')"
   released="${released% }"
   lcars_chunk_release "$LCARS_DIR" "$did" || true
+  # AND THE SEAT MARKER GOES (F1). The brief file stays — it is a durable
+  # reviewable artifact — but the seat is shut, and both accept gates read that
+  # from this one file rather than from a record only one of them can parse.
+  lcars_chunk_seat_open_clear "$LCARS_DIR" "$did" || true
   say "CLOSED: $did (unit $unit) — status done"
   if [ -n "$released" ]; then
     say "OWNERSHIP RELEASED: $released — EVERYTHING $did owned: the Missions it filed for its"
@@ -9157,6 +9350,11 @@ STATUS_DELEGATES_EOF
 SUB="${1:-}"
 [ $# -gt 0 ] && shift
 ceiling_read
+# THE BOUNDARY, BEFORE THE VERB (F5). Deny-by-default for a sub-ECH seat, and a
+# complete no-op for the main ECH. It is here rather than inside each verb so a
+# verb added tomorrow is refused to a sub-ECH until somebody grants it: that is
+# what makes this a boundary instead of a twenty-first check.
+subech_boundary_or_die "$SUB"
 case "$SUB" in
   init)        cmd_init "$@" ;;
   preflight)   cmd_preflight "$@" ;;

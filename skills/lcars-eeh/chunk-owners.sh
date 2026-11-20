@@ -56,32 +56,90 @@ lcars_chunk_owners_file() {
 # `type: bug` child of the Mission being landed, so a Mission row can never make
 # a blocker go quiet. `mission_in_chunk` asks about any Mission.
 
-# lcars_chunk_owner <lcars-dir> <mission-id> → the owning delegate id, or
-# nothing at all. The LAST matching line wins, because the record is appended.
+# lcars_chunk_claim <lcars-dir> <mission-id> → the delegate id the record
+# CLAIMS for it, with NO adjudication at all. The LAST matching line wins,
+# because the record is appended.
 #
-# AND A LINE ALONE IS NOT ENOUGH: the named delegate must also have the artifact
-# a MINT produces — `delegates/<id>/BRIEF.md`. One line in a text file is the
-# cheapest possible forgery of an accept, and this costs one `[ -f ]` to raise
-# the bar to "a sub-ECH was really minted here". A mint never overwrites a
-# brief and `init --force` deliberately leaves the brief files on disk, so a
-# real owner always has one. WHEN IN DOUBT IT RETURNS NOTHING, which means the
-# bug BLOCKS — the safe direction, every time. The ECH's own `land` goes further
-# and checks the delegate RECORD itself; this is the half both readers can share.
-lcars_chunk_owner() {
-  local f bug line id dir owner
-  dir="${1%/}"
+# IT EXISTS SO A REFUSAL CAN NAME WHAT IT REFUSED. The decision belongs to
+# `lcars_chunk_owner` below and to nothing else; this is only ever read to say
+# *"it claims d77, and d77 is not an open seat"* instead of the much less useful
+# *"nobody owns it"*. **Never branch an accept on this.**
+lcars_chunk_claim() {
+  local f mid line id owner
   f="$(lcars_chunk_owners_file "${1:-}")"
-  bug="${2:-}"
-  [ -n "$bug" ] || return 0
+  mid="${2:-}"
+  [ -n "$mid" ] || return 0
   [ -f "$f" ] && [ -r "$f" ] || return 0
   id=""
   while IFS=$'\t' read -r line owner || [ -n "${line:-}" ]; do
-    [ "$line" = "$bug" ] || continue
+    [ "$line" = "$mid" ] || continue
     id="${owner:-}"
   done <"$f"
   [ -n "$id" ] || return 0
-  [ -f "$dir/delegates/$id/BRIEF.md" ] || return 0
   printf '%s' "$id"
+}
+
+# lcars_chunk_owner <lcars-dir> <mission-id> → the owning delegate id, or
+# nothing at all.
+#
+# THIS IS THE ONE ADJUDICATOR, AND THAT IS THE WHOLE POINT OF THE FILE.
+# S365 fix round 2 (F1). The library was shared and the ADJUDICATION was not:
+# this function tested a line plus `delegates/<id>/BRIEF.md`, while
+# `lcars-ech land` ALSO consulted the delegate record through python. So the two
+# gates could disagree, and a fresh tester reached the disagreement with two
+# DOCUMENTED verbs: `lcars-ech init --force` drops `delegates` by design, leaves
+# the briefs by design, and did not touch `chunk-owners` — after which `land`
+# blocked and **`approve` MERGED**. A shared reader with two adjudicators is the
+# defect this file's header claimed to prevent.
+#
+# SO THE WHOLE TEST IS TWO `[ -f ]`s AND NO JSON AT ALL — no python in
+# `approve.sh`, nothing to parse, nothing either caller can read differently:
+#
+#   * `delegates/<id>/BRIEF.md` — the artifact a MINT produces. One line in a
+#     text file is the cheapest possible forgery of an accept; this raises the
+#     bar to "a sub-ECH was really minted here".
+#   * `delegates/<id>/OPEN` — the SEAT marker, written by `delegate` at mint and
+#     removed by `delegate close` and by `init --force`. "Is this seat still
+#     open" was a field in `autopilot.json` that only one of the two callers
+#     could read; it is a file both of them can.
+#
+# WHEN IN DOUBT IT RETURNS NOTHING, which means the bug BLOCKS — the safe
+# direction, every time, including on a seat minted before the marker existed.
+lcars_chunk_owner() {
+  local dir id
+  dir="${1%/}"
+  id="$(lcars_chunk_claim "$@")"
+  [ -n "$id" ] || return 0
+  [ -f "$dir/delegates/$id/BRIEF.md" ] || return 0
+  [ -f "$dir/delegates/$id/OPEN" ] || return 0
+  printf '%s' "$id"
+}
+
+# lcars_chunk_seat_open <lcars-dir> <delegate-id> — is that seat open? The same
+# two files, so "open" means one thing on every surface that asks.
+lcars_chunk_seat_open() {
+  local dir="${1%/}" id="${2:-}"
+  [ -n "$id" ] || return 1
+  [ -f "$dir/delegates/$id/BRIEF.md" ] || return 1
+  [ -f "$dir/delegates/$id/OPEN" ] || return 1
+  return 0
+}
+
+# lcars_chunk_seat_open_mark / _clear <lcars-dir> <delegate-id> — the ONLY two
+# writers of the seat marker. `delegate` marks, `delegate close` and
+# `init --force` clear.
+lcars_chunk_seat_open_mark() {
+  local dir="${1%/}" id="${2:-}"
+  [ -n "$id" ] || return 1
+  mkdir -p "$dir/delegates/$id" || return 1
+  : >"$dir/delegates/$id/OPEN" || return 1
+  return 0
+}
+lcars_chunk_seat_open_clear() {
+  local dir="${1%/}" id="${2:-}"
+  [ -n "$id" ] || return 1
+  rm -f "$dir/delegates/$id/OPEN"
+  return 0
 }
 
 # lcars_chunk_own <lcars-dir> <mission-id> <delegate-id> — record it.
