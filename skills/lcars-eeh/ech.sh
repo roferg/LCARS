@@ -1039,7 +1039,19 @@ validation_cap_die() {
 # SO THE RULE IS KEYED ON THE ACT, DENY BY DEFAULT, ALLOW BY LIST — the same
 # shape as `SUBECH_VERBS` and `SUBECH_EXEC_SCRIPTS`:
 #
-#   look       prepare a live check: read-only, and it is the whole job
+#   look       prepare a live check — its own eyes on the real product, and the
+#              whole reason a validation pass exists.
+#              **NOT READ-ONLY, and this comment used to say it was.** Measured
+#              (S366 fix round 2): `live-check <m> --type <types>` DESTROYS a
+#              recorded verdict and its paired evidence, leaving the stale note
+#              beside an emptied verdict — a self-contradicting record. That is
+#              pre-existing `live-check` behaviour for every caller, not
+#              something this boundary introduced, and it is fail-safe for a
+#              merge (an emptied verdict cannot buy one; `policy` refuses on a
+#              missing verdict). It is recorded here rather than claimed away,
+#              because a label that says read-only is a label somebody will
+#              trust: `look` is the act a validation pass MAY perform, and the
+#              reason it may is independence, not harmlessness.
 #   file       file what it found — `file-bug`, or `lcars log` through the front
 #              door. Recorded as the DRIVER's bug either way.
 #   ---------- everything below is REFUSED to a validation pass ----------
@@ -1098,6 +1110,26 @@ validator_act_or_die() {
       why="It is not one of the two acts a validation pass performs, and this boundary is deny-by-default: an act nobody has classified is refused rather than guessed at." ;;
   esac
   die "$verb: YOU ARE THE VALIDATION PASS FOR CHUNK $unit, AND THIS IS NOT AN ACT A VALIDATION PASS MAY PERFORM. $why A VALIDATION PASS DOES EXACTLY TWO THINGS: it LOOKS (\`$SELF_CMD live-check <mission> --type <types>\` — your own eyes on the real product, and the whole reason you were minted) and it FILES what it found (\`$SELF_CMD file-bug --parent <mission> --prd <bug-prd.md>\`, or \`exec lcars-log/log.sh\`). Everything you file is recorded as ${driver:-the driver}'s to drive, because the seat that drove this chunk is the seat that fixes it. Then you report, and on re-report you re-check ONLY what you filed. If you believe this chunk needs something neither of those two acts reaches, that is a judgement for the MAIN ECH: \`$SELF_CMD beat $seat \"BLOCKED: <what you need>\"\`. Nothing was read, written, run or advanced."
+}
+
+# seat_role <seat> → `validator` | `driver`, and nothing at all for the main ECH.
+#
+# S366 FIX ROUND 2, CURE B. `cmd_file_bug`'s NEXT block was guarded by
+# `[ -n "$filer" ]` — "is this a sub-ECH AT ALL", not by role — so it was
+# byte-identical for a driver and a validation pass, and a validator read this
+# three lines under the OWNER line that round 1 had just made correct:
+#
+#     OWNER: d1 — THE DRIVER. … you do not fix this chunk.   <- correct
+#     NEXT: this is YOUR bug and YOUR chunk — drive it, verify it …
+#       lcars-ech drive m-mine                               <- refused (fix)
+#       …/resolve-logs.sh --parent m-mine                    <- refused (fix)
+#       lcars-ech live-check m-mine --type <types>           <- refused (verdict path)
+#
+# One resolver, read by every door, so "which role" has one answer.
+seat_role() {
+  local seat="${1:-}"
+  [ -n "$seat" ] || return 0
+  if [ -n "$(delegate_validates "$seat")" ]; then printf 'validator'; else printf 'driver'; fi
 }
 
 # chunk_owner_for <seat> → the seat that OWNS, and therefore DRIVES, a bug this
@@ -6514,14 +6546,28 @@ PY
 )" >/dev/null || true
   done
   say ""
-  if [ -n "$filer" ]; then
+  # CURE B: BY ROLE, through the one resolver. Every command this block prints
+  # to a validation pass used to be refused to it.
+  case "$(seat_role "$filer")" in
+    validator)
+      say "NEXT: you have FILED it, and that is where your part ends. $owner drives it —"
+      say "  \`drive\`, \`policy\` and \`live-check done\` are all refused to you, by name."
+      say "  Carry on LOOKING at what is in your scope, file anything else you find, and"
+      say "  then report. On re-report the main ECH opens your next round, bounded to the"
+      say "  bugs you filed:"
+      say "    $SELF_CMD live-check <mission-in-your-scope> --type <types>   # your eyes"
+      say "    $SELF_CMD beat $filer \"filed $c: <one line on what you saw>\""
+      return 0
+      ;;
+    driver)
     say "NEXT: this is YOUR bug and YOUR chunk — drive it, verify it, and report when the"
     say "chunk meets the ask. The main ECH verifies the whole at the end."
     say "  $SELF_CMD drive $parent"
     say "  bash $SKILLS_DIR/lcars-resolve-logs/resolve-logs.sh --parent $parent"
     say "  $SELF_CMD live-check $parent --type <types>   # your own eyes, different data"
     return 0
-  fi
+      ;;
+  esac
   say "NEXT: resolve every logged bug in one batch, then re-run the live check with DIFFERENT data:"
   say "  bash $SKILLS_DIR/lcars-resolve-logs/resolve-logs.sh --parent $parent"
   say "  $SELF live-check $parent --type <types>      # different data this round"
@@ -7108,7 +7154,7 @@ cmd_exec() {
   subech_exec_target_or_die "$script"
   local target="$SKILLS_DIR/$script"
   [ -f "$target" ] || die "exec: no such script in this LCARS clone: $target"
-  local role="" mission="-" prev="" arg
+  local role="" mission="-" prev="" arg xparent=""
   case "$script:${1:-}" in
     lcars-run/run.sh:plan-review) role=reviewer ;;
     lcars-run/run.sh:drive|lcars-run/run.sh:research|lcars-run/run.sh:validate|lcars-run/run.sh:estimate|lcars-run/run.sh:plan|lcars-run/run.sh:implement|lcars-run/run.sh:implement-ticket)
@@ -7122,6 +7168,28 @@ cmd_exec() {
   for arg in "$@"; do
     [ "$prev" != --mission ] || mission="$arg"
     case "$arg" in --mission=*) mission="${arg#--mission=}" ;; esac
+    # S366 FIX ROUND 2, CURE C — `--parent` IS READ, FOR ONE REASON ONLY.
+    # `exec lcars-log/log.sh --parent <chunk root>` classifies as `file`, which a
+    # validation pass MAY do, and it carries NO `--mission` — so
+    # `subech_scope_or_die` is never called and `validator_recheck_or_die` never
+    # runs. Measured across three real rounds: the narrowed door refuses, this
+    # one returns 0, a Mission is created, it is appended to `filed`, and
+    # `revalidate` then snapshots the WIDER list:
+    #   round 2 ["bug-001"] -> round 3 ["bug-001","xbug-1"] -> [...,"xbug-2"]
+    # That is `validator_recheck_or_die`'s own documented purpose defeated —
+    # "a validator creeps wider every round and the pass never terminates" —
+    # through the very door the act refusal advertises. (The pass still
+    # TERMINATED, on the three-round cap, which held hard on both routes; it
+    # terminated on the cap rather than on the narrowing, which is not the same
+    # thing.)
+    #
+    # IT IS READ FOR THE VALIDATOR NARROWING AND NOTHING ELSE. Checking
+    # `--parent` for the CHUNK is parked D1 and is deliberately NOT attempted
+    # here: `validator_recheck_or_die` returns 0 for a driving seat, for a
+    # validator in round 1, and for any seat with no recorded `recheckScope`, so
+    # nothing outside a narrowed validation pass changes.
+    [ "$prev" != --parent ] || xparent="$arg"
+    case "$arg" in --parent=*) xparent="${arg#--parent=}" ;; esac
     prev="$arg"
   done
   if [ -n "$role" ] && [ -n "$CLAUDE_CEILING" ]; then
@@ -7142,6 +7210,16 @@ cmd_exec() {
     require_state
     if mexists "$mission"; then
       subech_scope_or_die "exec $script --mission" "$mission"
+    fi
+  fi
+  # CURE C's OTHER HALF: A NARROWED VALIDATION PASS OBEYS ITS SCOPE ON EVERY
+  # DOOR, INCLUDING THE ONE WITH NO `--mission`. The SAME decider the scope gate
+  # calls — one function, so the two doors cannot bound a re-check differently.
+  if [ -n "$ECH_AS" ] && [ -n "$xparent" ]; then
+    require_state
+    local xseat; xseat="$(subech_seat)" || exit $?
+    if [ -n "$xseat" ] && mexists "$xparent"; then
+      validator_recheck_or_die "exec $script --parent" "$xparent" "$xseat"
     fi
   fi
 
@@ -8162,6 +8240,174 @@ or a wrong unit id. Confirm which with the ECH before you write anything."
   # BY ABSOLUTE PATH, NEVER A BARE NAME (D6). A bare `lcars-ech` resolves on
   # PATH, which on the captain's laptop is his LIVE launcher — a delegate told
   # to run one can reach a different install than the one that minted its brief.
+  # ==== S366 fix round 2, CURE A: THE ROLE REACHES EVERY SECTION ==========
+  # FIX ROUND 1 MADE § 5 A SLOT AND STOPPED THERE. A fresh tester diffed a real
+  # T1 driver brief against a real T1 validator brief section by section:
+  # § 5 DIFFERS (cured) and `### YOUR CHUNK, AND THE AUTHORITY THAT COMES WITH
+  # IT` was **IDENTICAL** — so a validation pass was still being told, in its own
+  # brief, to do all four acts the harness refuses it:
+  #
+  #   "validate it, file your own bugs and DRIVE YOUR OWN FIXES"          fix
+  #   "SUBDIVIDE THE WORK AS IT MAKES SENSE … File them through this verb"
+  #                                             subdivide, as a MANDATE
+  #   "THESE ARE YOURS: … live-check done --verdict … policy … drive"
+  #                                             verdict, decide, fix
+  #   "chunk it into more Missions … which you may do FREELY"   — the exact
+  #                                             sentence round 1's commit
+  #                                             message claimed to have fixed:
+  #                                             the RUNTIME refusal was fixed,
+  #                                             the BRIEF was not.
+  #   "AND THE NINTH VERB IS YOURS: request-validator … keep driving"
+  #
+  # SO THE ROLE IS A FRAGMENT PER BLOCK, not a patched sentence, and the same
+  # way § 5 was done: each block below is filled ONCE, by role, so a brief
+  # cannot carry both contracts. The driver branches are the shipped text
+  # verbatim, which is what keeps every existing assertion true of a driver.
+  local a_own a_subdiv a_yours b_depth b_ninth f_file f_absorb
+  if [ "$validate" = 1 ]; then
+    a_own="**You are a VALIDATION PASS over a chunk somebody else drove.** The chunk
+starts at Mission \`${mid:-$unit_i}\`, and it is that Mission plus every Mission
+and bug Mission beneath it. $VAL_DRIVER drove it and is still driving it. Inside
+that scope you do exactly two things — **you LOOK at the real product and you
+FILE what you find** — and what you file is $VAL_DRIVER's to fix. That is the
+authority; the scope is the chunk and nothing wider."
+    a_subdiv="**YOU DO NOT SUBDIVIDE THIS CHUNK — it is not yours to divide.** Filing a
+Mission into it is $VAL_DRIVER's call, and \`exec lcars-file/file.sh\` is
+REFUSED to you by name: a Mission you filed into somebody else's chunk is work
+nobody agreed to and nobody owns. If the chunk needs splitting, that is a
+finding — file it, or raise it in a \`BLOCKED:\` beat."
+    a_yours="**THESE TWO ARE YOURS, INSIDE THIS CHUNK, AND THEY ARE ALL YOU HAVE:**
+
+- \`$SELF_CMD live-check <mission-in-this-chunk> --type <types>\`
+  **your own eyes on the real product.** This is the whole reason you were
+  minted: on the modelled run Number One filed **0 of 31** bugs and every one
+  came from an ECH's own live check.
+- \`$SELF_CMD file-bug --parent <mission-in-this-chunk> --prd <bug-prd.md>\`
+  what you found, in your own words, behind the evidence-first template (AC #1
+  is \`Observed live:\`). Every bug you file is recorded as **$VAL_DRIVER's** to
+  drive.
+
+**AND THESE FOUR ARE REFUSED TO YOU BY NAME, inside the chunk as much as
+outside it** — they are the acts a validation pass does not perform:
+
+- \`live-check done … --verdict …\` — the VERDICT. A pass that marks the chunk
+  it is examining verified has decided the thing it was brought in to look at.
+- \`policy\` — the ACTION the verdict pair produces, whose \`merge\` branch
+  prints the \`land\` command.
+- \`drive\`, and \`run.sh\` / \`respond.sh\` / \`resolve-logs.sh\` through
+  \`exec\` — the FIX, by any route. $VAL_DRIVER fixes what you file.
+- \`exec lcars-file/file.sh\` — SUBDIVIDING a chunk that is not yours."
+    b_depth="\`delegate\` is NOT one of yours, and the limit behind that is a DEPTH:
+**sub-ECHs are exactly ONE LAYER deep and you are already on it**, so you may
+not mint a sub-ECH — not a helper ECH, not a second opinion, not one to take a
+piece off you. **AND THE USUAL SECOND ALTERNATIVE IS NOT YOURS EITHER:** a
+driving sub-ECH may chunk its work into more Missions for the factory, and you
+may not — \`exec lcars-file/file.sh\` is refused to you. So for you there is
+exactly one route: **hand it back up** in a \`BLOCKED:\` beat, and the main ECH
+decides."
+    b_ninth="**AND \`request-validator\` IS NOT YOURS EITHER.** It is how a DRIVING seat
+says it is unsure and asks for a second pair of eyes — you ARE that second pair,
+and **validation is never re-delegated**: nobody validates a validation pass.
+Report what you found; after $VALIDATION_MAX_ROUNDS rounds the main ECH decides."
+    f_file="- \`lcars log\` — file a bug you found against a Mission in this chunk. This is
+  how a defect you found gets fixed, and **$VAL_DRIVER is the seat that fixes
+  it**. (\`lcars file\` is NOT yours: filing a Mission into this chunk is
+  refused.)"
+    f_absorb="### YOU DO NOT ABSORB — YOU REPORT. (This section is a driver's; here is yours.)
+
+A driving sub-ECH absorbs its own stumbles rather than sending every red test
+upward. **You are not driving**, so a defect you meet is not a stumble to cure:
+it is the FINDING you were minted to produce.
+
+- a **defect in the work** -> FILE it (\`$SELF_CMD file-bug\`, or
+  \`exec lcars-log/log.sh\`) against a Mission in this chunk. $VAL_DRIVER
+  drives it. You do not fix it, hack past it, or step a stage to get moving.
+- a **question only the main ECH can settle** -> UP, through a \`BLOCKED:\`
+  beat. You do not run \`$SELF_CMD ask\`.
+
+**AND THE THREE THINGS THAT ARE NEVER THE ANSWER apply to you too** — hacking
+past a red test, building a parallel control beside the real one, and
+hand-stepping a stage. Each produces the **green-but-wrong decoy**, and finding
+one is exactly the kind of thing this pass exists to report."
+  else
+    a_own="**You are a sub-ECH and you OWN a chunk.** Your chunk starts at Mission
+\`${mid:-$unit_i}\`, and it is three things: that Mission, **every Mission YOU
+file for this work**, and every bug Mission logged beneath any of them at any
+depth. Inside it you hand the work to the factory, make sure it lands,
+**validate it, file your own bugs and drive your own fixes** until the chunk
+meets the ask in § 1. That is the authority; the scope is the chunk and nothing
+wider."
+    a_subdiv="**SUBDIVIDE THE WORK AS IT MAKES SENSE — that is yours to decide.** If this
+chunk is better as three Missions than one, file three; each one you file JOINS
+your chunk and you drive it. **File them through this verb and no other**, or
+nothing can attribute them to you and every verb on them will be refused:
+
+    bash $SELF exec lcars-file/file.sh --prd <your-prd.md>"
+    a_yours="**THESE ARE YOURS, INSIDE YOUR CHUNK:**
+
+- \`$SELF_CMD file-bug --parent <mission-in-your-chunk> --prd <bug-prd.md>\`
+  your own bugs, in your own words, behind the evidence-first template (AC #1 is
+  \`Observed live:\`). A bug you file in your chunk is a bug YOU drive, and it
+  does **not** block the parent's accept while you do — which is exactly why it
+  is yours now and was not before.
+- \`$SELF_CMD live-check <mission-in-your-chunk> --type <types>\` and
+  \`$SELF_CMD live-check done <…> --verdict pass|bugs\`
+  **your own eyes on the real product.** \`HOLOGRAM-COMMAND-MODE.md\` § 6 is
+  unchanged and it is now YOUR standing job for YOUR chunk: do the live check
+  yourself every time, whatever any report says.
+- \`$SELF_CMD policy --mission <mission-in-your-chunk> …\` and
+  \`$SELF_CMD drive <mission-in-your-chunk>\`
+  the one action for the verdict pair, and driving your own fixes."
+    b_depth="\`delegate\` is NOT one of yours, and the limit behind that is a DEPTH:
+**sub-ECHs are exactly ONE LAYER deep and you are already on it**, so you may
+not mint a sub-ECH — not a helper ECH, not a second opinion, not one to take a
+piece off you. Two things are legal instead and between them they cover every
+reason you would reach for it: **hand it back up** in a \`BLOCKED:\` beat, or
+**chunk it into more Missions for the factory**, which you may do freely (see
+§ 3, *subdivide the work as it makes sense*)."
+    b_ninth="**AND THE NINTH VERB IS YOURS: \`request-validator \"<why>\"\`.** You validate
+your own chunk — that is the default and it is your job, not a formality. But if
+there is something you genuinely cannot tell from any test or any look of your
+own, say so: \`$SELF_CMD request-validator \"<why>\"\` records that on your seat
+and the MAIN ECH decides whether to bring in a separate pair of eyes. It is
+always honoured and it mints nothing, so it is not a way round the cap; it is
+also **not counted as validation coverage**, because it only fires when you
+happen to notice. You are not blocked while you wait — keep driving. If you are
+actually STUCK, that is the \`BLOCKED:\` beat, not this."
+    f_file="- \`lcars file\` — file a Mission. A new unit of work enters here, never by
+  hand-writing a mission record.
+- \`lcars log\` — file a bug you found against this Mission. This is how a defect
+  gets fixed; you do not fix it by editing around it."
+    f_absorb="### ABSORBING A STUMBLE — by using the factory, never by going round it
+
+A delegate that sends every red test back up is worth nothing over the ECH doing
+the unit itself. So absorb it — **through the factory's own verbs**:
+
+- a **defect in the work** -> \`lcars log\` it against this Mission and let the
+  factory fix it;
+- a **ticket whose premises the code contradicts** -> UP to the ECH, through a
+  \`BLOCKED:\` beat. You do not re-anchor the ticket yourself: there is no verb
+  for it in your list, and a rewritten premise is a plan decision;
+- a **question only the ECH can settle** -> UP to the ECH, through a
+  \`BLOCKED:\` beat — the command is at the end of this section. You do not run
+  \`$SELF_CMD ask\`: that verb prints \"QUESTION FOR THE CAPTAIN\" and fires his
+  notifier, and his interrupt budget is the ECH's to spend, not yours.
+
+**THESE ARE NOT ABSORPTION, and none of them is ever the answer:**
+
+- **hacking past a red test** — deleting it, skipping it, loosening its
+  assertion, or making it assert something it was not written to assert;
+- **building a parallel control beside the real one** — a second, dead
+  implementation that goes green while the live one stays broken;
+- **hand-stepping a stage** to get moving — writing the record a stage would
+  have written, so the board says a stage ran that never did.
+
+Each of those produces the **green-but-wrong decoy**: work that reports success
+and delivers nothing, which is the exact class the factory already has machinery
+against. If you are stuck and the only way forward you can see is one of the
+three, **you are not stuck on the work — you are at a question for the ECH.**"
+  fi
+
   local verbs; verbs="Run each one through the launcher that minted this brief, by its absolute path:
 
     bash $SELF exec <skill>/<script>
@@ -8203,41 +8449,17 @@ exactly as the verb would be.
 
 ### YOUR CHUNK, AND THE AUTHORITY THAT COMES WITH IT
 
-**You are a sub-ECH and you OWN a chunk.** Your chunk starts at Mission
-\`${mid:-$unit_i}\`, and it is three things: that Mission, **every Mission YOU
-file for this work**, and every bug Mission logged beneath any of them at any
-depth. Inside it you hand the work to the factory, make sure it lands,
-**validate it, file your own bugs and drive your own fixes** until the chunk
-meets the ask in § 1. That is the authority; the scope is the chunk and nothing
-wider.
+$a_own
 
-**SUBDIVIDE THE WORK AS IT MAKES SENSE — that is yours to decide.** If this
-chunk is better as three Missions than one, file three; each one you file JOINS
-your chunk and you drive it. **File them through this verb and no other**, or
-nothing can attribute them to you and every verb on them will be refused:
+$a_subdiv
 
-    bash $SELF exec lcars-file/file.sh --prd <your-prd.md>
-
-**Declare which seat you are, on every verb**, or the authority cannot resolve
-and you will be refused as the main ECH's impostor:
+**Declare which seat you are, on every verb** — the authority resolves from that
+id and nothing else, so every refusal and every grant in this brief is keyed to
+it. Export it before your first verb and never run one without it:
 
     export LCARS_ECH_AS=__LCARS_DELEGATE_ID__
 
-**THESE ARE YOURS, INSIDE YOUR CHUNK:**
-
-- \`$SELF_CMD file-bug --parent <mission-in-your-chunk> --prd <bug-prd.md>\`
-  your own bugs, in your own words, behind the evidence-first template (AC #1 is
-  \`Observed live:\`). A bug you file in your chunk is a bug YOU drive, and it
-  does **not** block the parent's accept while you do — which is exactly why it
-  is yours now and was not before.
-- \`$SELF_CMD live-check <mission-in-your-chunk> --type <types>\` and
-  \`$SELF_CMD live-check done <…> --verdict pass|bugs\`
-  **your own eyes on the real product.** \`HOLOGRAM-COMMAND-MODE.md\` § 6 is
-  unchanged and it is now YOUR standing job for YOUR chunk: do the live check
-  yourself every time, whatever any report says.
-- \`$SELF_CMD policy --mission <mission-in-your-chunk> …\` and
-  \`$SELF_CMD drive <mission-in-your-chunk>\`
-  the one action for the verdict pair, and driving your own fixes.
+$a_yours
 
 **AND OUTSIDE IT THEY ARE REFUSED BY NAME.** Reaching into a sibling's chunk is
 how two seats do the same work twice and neither one owns the result, so the
@@ -8262,23 +8484,9 @@ Four of the nine are **also** scoped to your chunk — \`file-bug\`,
 \`live-check\`, \`policy\` and \`drive\`. The boundary says WHICH VERBS; the chunk
 says WHICH MISSIONS.
 
-\`delegate\` is NOT one of yours, and the limit behind that is a DEPTH:
-**sub-ECHs are exactly ONE LAYER deep and you are already on it**, so you may
-not mint a sub-ECH — not a helper ECH, not a second opinion, not one to take a
-piece off you. Two things are legal instead and between them they cover every
-reason you would reach for it: **hand it back up** in a \`BLOCKED:\` beat, or
-**chunk it into more Missions for the factory**, which you may do freely (see
-§ 3, *subdivide the work as it makes sense*).
+$b_depth
 
-**AND THE NINTH VERB IS YOURS: \`request-validator \"<why>\"\`.** You validate
-your own chunk — that is the default and it is your job, not a formality. But if
-there is something you genuinely cannot tell from any test or any look of your
-own, say so: \`$SELF_CMD request-validator \"<why>\"\` records that on your seat
-and the MAIN ECH decides whether to bring in a separate pair of eyes. It is
-always honoured and it mints nothing, so it is not a way round the cap; it is
-also **not counted as validation coverage**, because it only fires when you
-happen to notice. You are not blocked while you wait — keep driving. If you are
-actually STUCK, that is the \`BLOCKED:\` beat, not this.
+$b_ninth
 
 The ECH keeps these to ITSELF and you do not run them: \`land\`, \`approve\`,
 \`push-gated\`, \`ask\`, \`record\`, \`tier\`, \`delegate\`, \`grant\`, \`answered\`,
@@ -8800,10 +9008,7 @@ These are the verbs. **Drive through the HUMAN interfaces** — the same ones th
 captain uses — and never hand-step the stage machine underneath them
 (\`HOLOGRAM-COMMAND-MODE.md\` § 4a):
 
-- \`lcars file\` — file a Mission. A new unit of work enters here, never by
-  hand-writing a mission record.
-- \`lcars log\` — file a bug you found against this Mission. This is how a defect
-  gets fixed; you do not fix it by editing around it.
+$f_file
 - \`lcars answer\` — answer a gate the factory is waiting on.
 - \`bash $SELF exec <skill>/<script>\` — reach a sibling skill's own script by the
   route that resolves under either install, with that script's real flags.
@@ -8834,34 +9039,7 @@ The captain's interrupt budget has exactly **FOUR** categories
 **And you do not mark anything verified, approved or landed** — not the unit, not
 a ticket, not the Mission. That is § 5, and it is the hardest rule in this brief.
 
-### ABSORBING A STUMBLE — by using the factory, never by going round it
-
-A delegate that sends every red test back up is worth nothing over the ECH doing
-the unit itself. So absorb it — **through the factory's own verbs**:
-
-- a **defect in the work** -> \`lcars log\` it against this Mission and let the
-  factory fix it;
-- a **ticket whose premises the code contradicts** -> UP to the ECH, through a
-  \`BLOCKED:\` beat. You do not re-anchor the ticket yourself: there is no verb
-  for it in your list, and a rewritten premise is a plan decision;
-- a **question only the ECH can settle** -> UP to the ECH, through a
-  \`BLOCKED:\` beat — the command is at the end of this section. You do not run
-  \`$SELF_CMD ask\`: that verb prints \"QUESTION FOR THE CAPTAIN\" and fires his
-  notifier, and his interrupt budget is the ECH's to spend, not yours.
-
-**THESE ARE NOT ABSORPTION, and none of them is ever the answer:**
-
-- **hacking past a red test** — deleting it, skipping it, loosening its
-  assertion, or making it assert something it was not written to assert;
-- **building a parallel control beside the real one** — a second, dead
-  implementation that goes green while the live one stays broken;
-- **hand-stepping a stage** to get moving — writing the record a stage would
-  have written, so the board says a stage ran that never did.
-
-Each of those produces the **green-but-wrong decoy**: work that reports success
-and delivers nothing, which is the exact class the factory already has machinery
-against. If you are stuck and the only way forward you can see is one of the
-three, **you are not stuck on the work — you are at a question for the ECH.**
+$f_absorb
 
 ### RAISING IT — THIS IS THE CHANNEL, and it is the only one you have
 
@@ -8972,7 +9150,7 @@ every other one by name:**
    <bug-prd.md>\` (or \`exec lcars-log/log.sh\`). Every bug you file is recorded
    as **$VAL_DRIVER's** to drive. You do not fix it.
 
-**AND THESE THREE ARE NOT YOURS, AND ARE REFUSED:**
+**AND THESE FOUR ARE NOT YOURS, AND ARE REFUSED:**
 
 - **\`live-check done --verdict …\`** — the VERDICT. A pass that marks the chunk
   it is examining verified has decided the thing it was brought in to look at.
@@ -8984,6 +9162,8 @@ every other one by name:**
   \`exec\`** — the FIX, by any route. $VAL_DRIVER fixes what you file; a
   validator that cured its own findings would be the one seat here with nobody
   looking at its work.
+- **\`exec lcars-file/file.sh\`** — SUBDIVIDING. The chunk is $VAL_DRIVER's to
+  divide; a Mission you filed into it is work nobody agreed to and nobody owns.
 
 **THEN YOU REPORT, AND YOU STOP.** On re-report the main ECH opens your next
 round with \`$SELF_CMD revalidate $did\`, and that round re-checks **ONLY the

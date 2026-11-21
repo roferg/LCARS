@@ -55,7 +55,7 @@
 # fail on a known-bad build proves nothing; four of those shipped on 2026-11-18.
 #
 # Usage: bash tests/one-layer-validation.test.sh
-#    or: python3 tests/lib/cage.py 1500 bash tests/one-layer-validation.test.sh
+#    or: python3 tests/lib/cage.py 2400 bash tests/one-layer-validation.test.sh
 set -uo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -350,6 +350,54 @@ xech() {
   else LCARS_ECH_AS="$seat" ech_at "$EXEC_SCRIPT" "$repo" "$@"; fi
 }
 ran_log() { cat "$1/exec-ran.log" 2>/dev/null | tr '\n' '|'; }
+
+# stage_evidence <repo> <mission> — write the PAIRED EVIDENCE `live-check done`
+# demands, one row per prepared target: a detector, a target that passes, a
+# known-fail control that fails, distinct nonempty evidence files, and a reason
+# the control is known to fail.
+#
+# WITHOUT THIS, § 11 COULD NOT MEASURE THE MERGE END OF THE THREE-STEP ROUTE AT
+# ALL. `11i`/`11k` both passed on a mutant that removed the act decider
+# entirely, because the refusal they were reading was `live-check done`'s own
+# evidence gate and not the authority boundary — a control that reads the wrong
+# refusal cannot tell the two builds apart. With the evidence staged, the
+# baseline really does reach `ACTION: merge` and the rows discriminate.
+stage_evidence() {
+  # TWO `local` STATEMENTS, NOT ONE, AND THAT IS NOT STYLE. Measured:
+  #   f() { local a="$1" b="$a/x"; echo "$b"; };  f hello  ->  /x
+  # bash does NOT see an earlier assignment from within the SAME `local`, so the
+  # one-liner this replaces computed its evidence path from an EMPTY `$repo` and
+  # tried to write to `/.git/…`. It failed silently inside a command
+  # substitution, the fixture produced nothing, and four rows went red pointing
+  # at the product.
+  local repo="$1" m="$2"
+  local ev="$repo/.git/lcars/missions/$m/live-check"
+  mkdir -p "$ev"
+  python3 - "$repo/.git/lcars/autopilot.json" "$m" "$ev" <<'PYEV'
+import json, os, sys
+ap, m, ev = sys.argv[1:4]
+d = json.load(open(ap))
+targets = (((d.get("liveChecks") or {}).get(m) or {}).get("targets")) or []
+rows = []
+for t in targets:
+    safe = "".join(c if c.isalnum() else "_" for c in t)
+    for role in ("t", "c"):
+        fp = os.path.join(ev, "%s-%s.txt" % (safe, role))
+        with open(fp, "w") as fh:
+            fh.write("observed output for %s (%s), looked at" % (t, role))
+    rows.append({
+        "id": t, "detector": "the same grep on both cases",
+        "target":  {"verdict": "pass", "observation": "the row rendered the configured host",
+                    "evidence": "%s-t.txt" % safe},
+        "control": {"verdict": "fail", "observation": "the row rendered the default host",
+                    "evidence": "%s-c.txt" % safe,
+                    "knownFailure": "the control is built from the pre-fix commit"},
+    })
+with open(os.path.join(ev, "checks.json"), "w") as fh:
+    json.dump(rows, fh, indent=2)
+print(len(rows))
+PYEV
+}
 
 # A valid evidence-first bug PRD (file-bug's own gate must pass before any
 # authority question can be the thing under test).
@@ -714,7 +762,8 @@ check "7n. …refused at ROUND 1 too, not only once it is narrowed" \
   "[ $rc7n -ne 0 ] && grep -qi 'A VALIDATION PASS DOES NOT FIX' '$TMPROOT/out7n.txt'"
 rc7o=0; ech_as d1 "$R7B" drive m-mine >"$TMPROOT/out7o.txt" 2>&1 || rc7o=$?
 check "7o. [control] the DRIVER's own \`drive\` is not refused as a validation pass's" \
-  "! grep -q 'NOT AN ACT A VALIDATION PASS MAY PERFORM' '$TMPROOT/out7o.txt'"
+  "! grep -q 'NOT AN ACT A VALIDATION PASS MAY PERFORM' '$TMPROOT/out7o.txt' \
+   && ! grep -q 'IS OUTSIDE YOUR RE-CHECK' '$TMPROOT/out7o.txt'"
 # AND THE PROOF THAT 7f CAN FAIL. 7f on its own passes anywhere no narrowing
 # exists, so it is not a control by itself — it is the other half of 7g. Here is
 # the build that separates them: one where an EMPTY scope narrows everything
@@ -741,8 +790,11 @@ LCARS_ECH_AS="$V7P" ech_at "$NARROW_BAD" "$R7P" file-bug --parent m-mine --prd "
   >"$TMPROOT/out7p.txt" 2>&1 || rc7p=$?
 check "7p. [discrimination] 7f's own assertion FAILS on an over-narrowing build" \
   "[ $rc7p -ne 0 ] && grep -q 'RE-CHECKS ONLY WHAT IT FILED' '$TMPROOT/out7p.txt'"
-check "7p2. [control] …while THIS build lets that same filing through (7f, re-stated)" \
-  "[ $rc7f -eq 0 ]"
+# NOT A RESTATEMENT OF 7f — the SAME COMMAND on the two builds, side by side,
+# which is the comparison 7f alone cannot make.
+check "7p2. [discrimination] the identical filing: refused on that build, accepted on this" \
+  "[ $rc7p -ne 0 ] && [ $rc7f -eq 0 ] \
+   && grep -q 'FILED:' '$TMPROOT/out7f.txt' && ! grep -q 'FILED:' '$TMPROOT/out7p.txt'"
 echo
 
 # =========================================================================
@@ -1008,9 +1060,21 @@ check "11g. a validation pass may not FILE A MISSION into a chunk it does not ow
   "[ $rc11g -ne 0 ] && grep -q 'That FILES A MISSION' '$TMPROOT/out11g.txt' \
    && [ -z \"\$(ran_log '$R11')\" ]"
 # THE VERDICT AND THE DECISION — the other two thirds of the measured spiral.
+# THE VERDICT AND THE DECISION, WITH THE EVIDENCE STAGED SO THEY CAN ACTUALLY
+# REACH THEIR ACTS. `11i`/`11k` used to pass on a mutant that deleted the act
+# decider, because the refusal they were reading was `live-check done`'s own
+# evidence gate — § 11 could not measure the merge end of the three-step route
+# at all. The validator prepares (allowed: `look`), the fixture stages paired
+# evidence, and only then is the verdict attempted.
+xech "$V11" "$R11" live-check m-mine --type cli >/dev/null 2>&1
+ev11="$(stage_evidence "$R11" m-mine | tr -d ' ')"
+check "11g2. [control] the evidence fixture staged a row per prepared target" \
+  "[ \"\${ev11:-0}\" -gt 0 ] 2>/dev/null && [ -s '$R11/.git/lcars/missions/m-mine/live-check/checks.json' ]"
 rc11h=0; xech "$V11" "$R11" live-check done m-mine --verdict pass >"$TMPROOT/out11h.txt" 2>&1 || rc11h=$?
 check "11h. a validation pass may not WRITE THE VERDICT" \
   "[ $rc11h -ne 0 ] && grep -q 'That WRITES THE VERDICT' '$TMPROOT/out11h.txt'"
+check "11h2. …and the refusal it gets is AUTHORITY, not the evidence gate" \
+  "! grep -q 'enumerate every prepared target' '$TMPROOT/out11h.txt'"
 check "11i. …and no verdict was recorded" \
   "[ -z \"\$(apj '$R11' liveChecks.m-mine.verdict)\" ]"
 rc11j=0; xech "$V11" "$R11" policy --mission m-mine --verdict high --live-check pass >"$TMPROOT/out11j.txt" 2>&1 || rc11j=$?
@@ -1018,10 +1082,34 @@ check "11j. a validation pass may not take the DECISION that prints the merge" \
   "[ $rc11j -ne 0 ] && grep -q 'That is THE DECISION' '$TMPROOT/out11j.txt'"
 check "11k. …and it never reached a merge recommendation" \
   "! grep -q 'ACTION: merge' '$TMPROOT/out11j.txt'"
+# AND THE BUILD 11h–11k MUST FAIL ON: the act decider removed. On it the SAME
+# three steps reach a recorded verdict and `ACTION: merge` — which is the whole
+# spiral, and the only honest proof those four rows measure the boundary.
+ACT_BAD="$EXEC_SKILLS/lcars-eeh/no-act-gate.sh"
+sed 's@^  act="\$(validator_act_of "\$verb")"$@  return 0 # the act decider, removed on purpose@' \
+  "$SCRIPT" >"$ACT_BAD"
+check "11k2. the no-act-gate build really differs from this one, by that one line" \
+  "! diff -q '$SCRIPT' '$ACT_BAD' >/dev/null && grep -q 'removed on purpose' '$ACT_BAD'"
+R11B="$(fast_chunk_repo)"
+ech_at "$ACT_BAD" "$R11B" delegate mine --validate --trigger wide --why "the keystone" >/dev/null 2>&1
+V11B="$(validator_of "$R11B")"
+LCARS_ECH_AS="$V11B" ech_at "$ACT_BAD" "$R11B" live-check m-mine --type cli >/dev/null 2>&1
+ev11b="$(stage_evidence "$R11B" m-mine | tr -d ' ')"
+rc11m2=0
+LCARS_ECH_AS="$V11B" ech_at "$ACT_BAD" "$R11B" live-check done m-mine --verdict pass \
+  >"$TMPROOT/out11k2.txt" 2>&1 || rc11m2=$?
+check "11k3. [discrimination] on that build the validator DOES record the verdict" \
+  "[ $rc11m2 -eq 0 ] && [ \"\$(apj '$R11B' liveChecks.m-mine.verdict)\" = pass ]"
+LCARS_ECH_AS="$V11B" ech_at "$ACT_BAD" "$R11B" policy --mission m-mine --verdict high --live-check pass \
+  >"$TMPROOT/out11k4.txt" 2>&1 || true
+check "11k4. [discrimination] …and REACHES the merge recommendation — the spiral, intact" \
+  "grep -q 'ACTION: merge' '$TMPROOT/out11k4.txt'"
+check "11k5. [control] …so 11i and 11k are measuring the boundary, not the evidence gate" \
+  "[ -n '$V11B' ] && [ \"\${ev11b:-0}\" -gt 0 ] 2>/dev/null"
 # AND THE TWO ACTS IT *MAY* PERFORM, so the cure is a boundary and not an outage.
 rc11l=0; xech "$V11" "$R11" live-check m-mine --type cli >"$TMPROOT/out11l.txt" 2>&1 || rc11l=$?
-check "11l. it MAY LOOK — \`live-check\` is not refused" \
-  "! grep -q 'NOT AN ACT A VALIDATION PASS MAY PERFORM' '$TMPROOT/out11l.txt'"
+check "11l. it MAY LOOK — \`live-check\` is not refused, AND it exits 0" \
+  "[ $rc11l -eq 0 ] && ! grep -q 'NOT AN ACT A VALIDATION PASS MAY PERFORM' '$TMPROOT/out11l.txt'"
 rc11m=0; xech "$V11" "$R11" file-bug --parent m-mine --prd "$PRD_GOOD" >"$TMPROOT/out11m.txt" 2>&1 || rc11m=$?
 check "11m. it MAY FILE — \`file-bug\` goes through" \
   "[ $rc11m -eq 0 ] && grep -q 'FILED:' '$TMPROOT/out11m.txt'"
@@ -1042,9 +1130,20 @@ check "11q. [control] the DRIVER still reaches the stage machine through \`exec\
 rc11r=0; xech d1 "$R11" drive m-mine >"$TMPROOT/out11r.txt" 2>&1 || rc11r=$?
 check "11r. [control] …and its own \`drive\` is not an act refusal" \
   "! grep -q 'NOT AN ACT A VALIDATION PASS MAY PERFORM' '$TMPROOT/out11r.txt'"
+# THE DRIVER REACHES THE DECISION FOR REAL, not merely "is not refused by my
+# rule". `11s` used to assert only the absence of the act refusal and passed
+# while the driver's `policy` exited 1 for an unrelated reason — an absence is
+# not a capability. With the verdict recorded by the DRIVER (its own act), the
+# row asserts the thing that matters: it reaches `ACTION: merge`.
+xech d1 "$R11" live-check m-mine --type cli >/dev/null 2>&1
+stage_evidence "$R11" m-mine >/dev/null
+rc11s0=0; xech d1 "$R11" live-check done m-mine --verdict pass >"$TMPROOT/out11s0.txt" 2>&1 || rc11s0=$?
+check "11s0. [control] the DRIVER may WRITE THE VERDICT, and does" \
+  "[ $rc11s0 -eq 0 ] && [ \"\$(apj '$R11' liveChecks.m-mine.verdict)\" = pass ]"
 rc11s=0; xech d1 "$R11" policy --mission m-mine --verdict high --live-check pass >"$TMPROOT/out11s.txt" 2>&1 || rc11s=$?
-check "11s. [control] …and the DRIVER may still take \`policy\`'s action" \
-  "! grep -q 'NOT AN ACT A VALIDATION PASS MAY PERFORM' '$TMPROOT/out11s.txt'"
+check "11s. [control] …and REACHES \`policy\`'s merge call, exit 0" \
+  "[ $rc11s -eq 0 ] && grep -q 'ACTION: merge' '$TMPROOT/out11s.txt' \
+   && ! grep -q 'NOT AN ACT A VALIDATION PASS MAY PERFORM' '$TMPROOT/out11s.txt'"
 echo
 
 # =========================================================================
@@ -1074,9 +1173,12 @@ check "12c. THE VALIDATOR'S BRIEF DOES NOT CARRY THE DRIVER'S CONTRACT AT ALL" \
 check "12d. …it carries the validation pass's: two acts, named" \
   "grep -q 'A validation pass performs exactly TWO acts' \"$BV12\" \
    && grep -q 'YOU LOOK' \"$BV12\" && grep -q 'YOU FILE WHAT YOU FOUND' \"$BV12\""
-check "12e. …and names all three refused acts, so it cannot be surprised by one" \
+# ALL FOUR, NOT THREE. The first version asserted "all three" and so BAKED IN
+# the gap: `subdivide` was never retracted anywhere in a validator brief.
+check "12e. …and names all FOUR refused acts, so it cannot be surprised by one" \
   "grep -q 'live-check done --verdict' \"$BV12\" && grep -q 'the ACTION the verdict pair produces' \"$BV12\" \
-   && grep -q 'the FIX, by any route' \"$BV12\""
+   && grep -q 'the FIX, by any route' \"$BV12\" \
+   && grep -q 'SUBDIVIDING' \"$BV12\""
 check "12f. STRUCTURAL: the slot is filled once, so no brief can hold both" \
   "[ \"\$(grep -c 'YOUR CHUNK IS YOURS TO VERIFY' \"$BD12\")\" = 1 ] \
    && [ \"\$(grep -c 'YOUR CHUNK IS YOURS TO VERIFY' \"$BV12\")\" = 0 ] \
@@ -1118,8 +1220,33 @@ check "13b. it has NO recheckScope — it has filed nothing, so there is nothing
 rc13c=0; ech_as "$V13B" "$R13" file-bug --parent m-mine --prd "$PRD_GOOD" >"$TMPROOT/out13c.txt" 2>&1 || rc13c=$?
 check "13c. IT IS NOT BRICKED: it can work its whole chunk, as a fresh pass must" \
   "[ $rc13c -eq 0 ] && grep -q 'FILED:' '$TMPROOT/out13c.txt'"
+# 13d's ASSERTION COULD NOT FAIL, measured. It read
+#   ! grep -q 'all this round is for, is: *$'
+# and that `$` anchor is UNSATISFIABLE: the line always continues with
+# ". Re-check those, …". The tester rebuilt the exact Cure-3 defect, the refusal
+# was emitted WITH the literal empty list, and 13d PASSED. The real needle is
+# `is: . Re-check` — an empty expansion followed by the sentence's own full
+# stop — and 13d2/13d3 are the build it must fail on.
 check "13d. …and the refusal naming an EMPTY list never appears" \
-  "! grep -q 'all this round is for, is: *\$' '$TMPROOT/out13c.txt'"
+  "! grep -qF 'all this round is for, is: . Re-check' '$TMPROOT/out13c.txt'"
+EMPTY_BAD="$EXEC_SKILLS/lcars-eeh/empty-scope.sh"
+sed 's@^  \[ -n "\$scope" \] || return 0$@  : # the Cure-3 defect, restored on purpose@' \
+  "$SCRIPT" >"$EMPTY_BAD"
+check "13d2. the empty-scope build really differs from this one, by that one line" \
+  "! diff -q '$SCRIPT' '$EMPTY_BAD' >/dev/null && grep -q 'the Cure-3 defect, restored' '$EMPTY_BAD'"
+R13B="$(fast_chunk_repo)"
+ech_at "$EMPTY_BAD" "$R13B" delegate mine --validate --trigger wide --why "round one" >/dev/null 2>&1
+V13C="$(validator_of "$R13B")"
+ech_at "$EMPTY_BAD" "$R13B" delegate close "$V13C" >/dev/null 2>&1
+ech_at "$EMPTY_BAD" "$R13B" delegate mine --validate --trigger wide --why "a second pass" >/dev/null 2>&1
+V13D="$(validator_of "$R13B")"
+rc13d=0
+LCARS_ECH_AS="$V13D" ech_at "$EMPTY_BAD" "$R13B" file-bug --parent m-mine --prd "$PRD_GOOD" \
+  >"$TMPROOT/out13d.txt" 2>&1 || rc13d=$?
+check "13d3. [discrimination] on the empty-scope build the bricking IS reproduced…" \
+  "[ $rc13d -ne 0 ] && [ -n '$V13D' ]"
+check "13d4. [discrimination] …and 13d's own needle FINDS the empty list there" \
+  "grep -qF 'all this round is for, is: . Re-check' '$TMPROOT/out13d.txt'"
 rc13e=0; ech "$R13" revalidate "$V13B" >"$TMPROOT/out13e.txt" 2>&1 || rc13e=$?
 check "13e. and once it HAS reported, \`revalidate\` narrows it" \
   "[ $rc13e -eq 0 ] && apj '$R13' delegates.$V13B.recheckScope | grep -q 'bug-'"
@@ -1142,9 +1269,18 @@ rc16a=0; ech "$R16" delegate alias --validate --trigger undetectable --why "the 
   >"$TMPROOT/out16a.txt" 2>&1 || rc16a=$?
 check "16a. a SECOND unit label on the same Mission buys no second pass" \
   "[ $rc16a -ne 0 ] && grep -qi 'one validation pass' '$TMPROOT/out16a.txt'"
+# 16b's NEGATIVE CONJUNCT ASSERTED A KEY THAT NEVER EXISTS: `m-other` is created
+# NOWHERE in this suite, so `-z` on it was true on every build, keyed-by-label or
+# keyed-by-work. The discriminating key is the SECOND LABEL — `alias` — which a
+# label-keyed counter WOULD have written and a work-keyed one never does.
 check "16b. …and the round counter is keyed on the WORK, not the label" \
   "[ \"\$(apj '$R16' validations.m-mine.round)\" = 1 ] \
-   && [ -z \"\$(apj '$R16' validations.m-other.round)\" ]"
+   && [ -z \"\$(apj '$R16' validations.alias.round)\" ] \
+   && [ -z \"\$(apj '$R16' units.alias.validationRound)\" ] \
+   && [ -z \"\$(apj '$R16' units.mine.validationRound)\" ]"
+check "16b2. [control] …and the alias label really does resolve to the same Mission" \
+  "[ \"\$(apj '$R16' missions.alias.id)\" = m-mine ] \
+   && [ \"\$(apj '$R16' missions.mine.id)\" = m-mine ]"
 # A REQUEST IS SPENT WHEN IT IS HONOURED. One line of uncertainty bought all
 # three rounds before this.
 R16B="$(fast_chunk_repo)"
@@ -1219,8 +1355,16 @@ check "16q. with the driver CLOSED, the filing says the bug BLOCKS — not that 
    && ! grep -q 'does NOT block' '$TMPROOT/out16q.txt'"
 check "16r. …and it names the main ECH's cure, the one \`delegate_find\` now permits" \
   "grep -q 'mints one beside you' '$TMPROOT/out16q.txt'"
+# A FRESH CONTROL, not output borrowed from two earlier sections: the same
+# fixture shape as 16q with the driver left OPEN.
+R16F="$(fast_chunk_repo)"
+ech "$R16F" delegate mine --validate --trigger wide --why "the keystone" >/dev/null 2>&1
+V16F="$(validator_of "$R16F")"
+rc16s=0; ech_as "$V16F" "$R16F" file-bug --parent m-mine --prd "$PRD_GOOD" \
+  >"$TMPROOT/out16s.txt" 2>&1 || rc16s=$?
 check "16s. [control] with the driver OPEN the same filing says it does NOT block" \
-  "grep -q 'does NOT block' '$TMPROOT/out11n.txt' || grep -q 'does NOT block' '$TMPROOT/out7a.txt'"
+  "[ $rc16s -eq 0 ] && grep -q 'does NOT block' '$TMPROOT/out16s.txt' \
+   && ! grep -q 'SEAT IS CLOSED' '$TMPROOT/out16s.txt'"
 check "16m. the board carries a VALIDATION COVERAGE footer" \
   "grep -q 'VALIDATION COVERAGE' '$TMPROOT/out16m.txt'"
 check "16n. …and a chunk whose only pass came down the REQUEST lane reads NOT VALIDATED" \
@@ -1231,6 +1375,157 @@ check "16o. [control] …while a TRIGGERED pass reads VALIDATED on the same foot
 ech "$R9" delegates >"$TMPROOT/out16p.txt" 2>&1 || true
 check "16p. [control] a repo with no validator at all prints no footer" \
   "! grep -q 'VALIDATION COVERAGE' '$TMPROOT/out16p.txt' && [ -s '$TMPROOT/out16p.txt' ]"
+echo
+
+# =========================================================================
+printf '== 17. THE ROLE REACHES EVERY SECTION, NOT JUST THE ONE IT WAS AIMED AT ==\n'
+# =========================================================================
+# FIX ROUND 2, CURE A. Round 1 slotted § 5 and stopped there. A fresh tester
+# diffed a real driver brief against a real validator brief section by section:
+# § 5 DIFFERS (cured) and `### YOUR CHUNK, AND THE AUTHORITY THAT COMES WITH IT`
+# was IDENTICAL — so the validator brief still told it, in its own words, to do
+# all four acts the harness refuses. The depth-cap sentence in it is the exact
+# one round 1's commit message claimed to have fixed: the RUNTIME refusal was
+# fixed, the BRIEF was not.
+#
+# SO THIS SECTION GREPS THE FINISHED ARTEFACT for each refused act and requires
+# only RETRACTIONS — and § 17c is the control that makes the whole section
+# meaningful: the DRIVER's brief must still carry every one of them.
+R17="$(new_repo)"; ap_init "$R17"; new_mission "$R17" m-17 verify
+ech "$R17" record 'missions.u17.id' m-17 >/dev/null 2>&1
+ech "$R17" tier u17 --tier T1 --why "one owner end to end" >/dev/null 2>&1
+ech "$R17" delegate u17 >/dev/null 2>&1
+ech "$R17" delegate u17 --validate --trigger wide --why "the declared keystone" >/dev/null 2>&1
+V17="$(validator_of "$R17")"
+BD17="$R17/.git/lcars/delegates/d1/BRIEF.md"
+BV17="$R17/.git/lcars/delegates/$V17/BRIEF.md"
+check "17a. both briefs are real mints of real size" \
+  "[ \"\$(wc -c <\"$BD17\" | tr -d ' ')\" -gt 9000 ] && [ -n '$V17' ] \
+   && [ \"\$(wc -c <\"$BV17\" | tr -d ' ')\" -gt 9000 ]"
+# THE FIVE SENTENCES THE TESTER READ OFF A REAL VALIDATOR BRIEF, by their own
+# words. Each is an act the harness refuses; none may survive.
+for n17 in \
+  "drive your own fixes" \
+  "SUBDIVIDE THE WORK AS IT MAKES SENSE" \
+  "THESE ARE YOURS, INSIDE YOUR CHUNK" \
+  "which you may do freely" \
+  "AND THE NINTH VERB IS YOURS" \
+  "ABSORBING A STUMBLE" \
+  "file a Mission. A new unit" \
+  "refused as the main ECH's impostor"; do
+  check "17b. the VALIDATOR brief does not say: $n17" \
+    "! grep -qF \"$n17\" \"$BV17\""
+done
+# THE CONTROL THAT MAKES § 17b MEAN SOMETHING. Without it, a mint that emitted
+# an EMPTY brief would pass every row above.
+for n17c in \
+  "drive your own fixes" \
+  "SUBDIVIDE THE WORK AS IT MAKES SENSE" \
+  "THESE ARE YOURS, INSIDE YOUR CHUNK" \
+  "which you may do freely" \
+  "AND THE NINTH VERB IS YOURS" \
+  "ABSORBING A STUMBLE" \
+  "file a Mission. A new unit"; do
+  check "17c. [control] the DRIVER brief DOES still say: $n17c" \
+    "grep -qF \"$n17c\" \"$BD17\""
+done
+# AND THE RETRACTIONS ARE PRESENT, each naming the act it retracts.
+check "17d. the validator brief retracts FIX, in the chunk-authority section" \
+  "grep -q 'you do exactly two things' \"$BV17\" && grep -q 'to fix' \"$BV17\""
+check "17e. …retracts SUBDIVIDE, by name" \
+  "grep -q 'YOU DO NOT SUBDIVIDE THIS CHUNK' \"$BV17\""
+check "17f. …retracts VERDICT and DECIDE in the same place the driver is granted them" \
+  "grep -q 'THESE TWO ARE YOURS' \"$BV17\" \
+   && grep -q 'AND THESE FOUR ARE REFUSED TO YOU BY NAME' \"$BV17\""
+check "17g. …retracts the second depth-cap alternative, which is not a validator's" \
+  "grep -q 'USUAL SECOND ALTERNATIVE IS NOT YOURS EITHER' \"$BV17\""
+check "17h. …retracts request-validator, because validation is never re-delegated" \
+  "grep -q 'IS NOT YOURS EITHER' \"$BV17\" && grep -q 'never re-delegated' \"$BV17\""
+check "17i. …and replaces ABSORPTION with REPORTING" \
+  "grep -q 'YOU DO NOT ABSORB' \"$BV17\""
+check "17j. …and the front door offers it \`lcars log\`, not \`lcars file\`" \
+  "grep -q 'lcars file\\\` is NOT yours' \"$BV17\""
+check "17k. no raw slot token leaked into either brief" \
+  "! grep -qE '\\{\\{[A-Z_]+\\}\\}' \"$BV17\" && ! grep -qE '\\{\\{[A-Z_]+\\}\\}' \"$BD17\""
+# THE IMPERSONATION SENTENCE WAS FALSE FOR BOTH ROLES, so it is corrected in
+# both: an undeclared seat is NOT refused, and the brief no longer says it is.
+for bb17 in "$BD17" "$BV17"; do
+  check "17l. neither brief claims an undeclared seat is refused as an impostor" \
+    "! grep -q 'impostor' \"$bb17\" && grep -q 'the authority resolves from that' \"$bb17\""
+done
+echo
+
+# =========================================================================
+printf '== 18. BOTH FILING DOORS, AND THE NARROWED ONE THAT HAD NO LOCK ==\n'
+# =========================================================================
+# CURE B. `cmd_file_bug`'s NEXT block was guarded by `[ -n "$filer" ]` — "is this
+# a sub-ECH AT ALL", not by role — so three lines under the OWNER line round 1
+# had just made correct, a validation pass was handed `drive`, `resolve-logs`
+# and `live-check` as its next steps. All three are refused to it.
+R18="$(fast_chunk_repo)"
+xech - "$R18" delegate mine --validate --trigger wide --why "the keystone" >/dev/null 2>&1
+V18="$(validator_of "$R18")"
+rc18=0; xech "$V18" "$R18" file-bug --parent m-mine --prd "$PRD_GOOD" >"$TMPROOT/out18.txt" 2>&1 || rc18=$?
+check "18a. the validator's filing succeeds (the row below is a real filing's output)" \
+  "[ $rc18 -eq 0 ] && grep -q 'FILED:' '$TMPROOT/out18.txt'"
+check "18b. its NEXT step is not a refused verb — no \`drive\`, no \`resolve-logs\`" \
+  "! grep -qE '^ +(bash .*resolve-logs|lcars-ech drive)' '$TMPROOT/out18.txt'"
+check "18c. …nor \`live-check\` on the chunk root it is about to be narrowed off" \
+  "! grep -q 'live-check m-mine --type' '$TMPROOT/out18.txt'"
+check "18d. it says what the part it HAS done was, and whose the fix is" \
+  "grep -q 'you have FILED it, and that is where your part ends' '$TMPROOT/out18.txt' \
+   && grep -q 'd1 drives it' '$TMPROOT/out18.txt'"
+check "18e. …and names the three verbs that are refused to it, so it does not try" \
+  "grep -q 'are all refused to you, by name' '$TMPROOT/out18.txt'"
+# [CONTROL] THE DRIVER'S OWN NEXT BLOCK IS UNTOUCHED — this is the row that
+# would catch a cure that simply deleted the block.
+rc18f=0; xech d1 "$R18" file-bug --parent m-mine --prd "$PRD_GOOD" >"$TMPROOT/out18f.txt" 2>&1 || rc18f=$?
+check "18f. [control] the DRIVER still gets all three of its own next steps" \
+  "[ $rc18f -eq 0 ] && grep -q 'this is YOUR bug and YOUR chunk' '$TMPROOT/out18f.txt' \
+   && grep -q 'lcars-ech drive m-mine' '$TMPROOT/out18f.txt' \
+   && grep -q 'resolve-logs.sh --parent m-mine' '$TMPROOT/out18f.txt' \
+   && grep -q 'live-check m-mine --type' '$TMPROOT/out18f.txt'"
+# CURE C. `exec lcars-log/log.sh --parent <root>` classifies as `file` (allowed)
+# and carries NO `--mission`, so the scope gate — and therefore the re-check
+# narrowing — was never called. Measured across three real rounds: the narrowed
+# door refused, this one returned 0, a Mission was created, it was appended to
+# `filed`, and `revalidate` then snapshotted the WIDER list.
+rc18g=0; xech - "$R18" revalidate "$V18" >"$TMPROOT/out18g.txt" 2>&1 || rc18g=$?
+apj "$R18" "delegates.$V18.recheckScope" >"$TMPROOT/scope18.before"
+check "18g. round 2 opens, bounded to what it filed" \
+  "[ $rc18g -eq 0 ] && grep -q 'bug-' '$TMPROOT/scope18.before'"
+: >"$R18/exec-ran.log"
+rc18h=0; xech "$V18" "$R18" file-bug --parent m-mine --prd "$PRD_GOOD" >"$TMPROOT/out18h.txt" 2>&1 || rc18h=$?
+check "18h. the narrowed door refuses the chunk root, as it did before" \
+  "[ $rc18h -ne 0 ] && grep -q 'RE-CHECKS ONLY WHAT IT FILED' '$TMPROOT/out18h.txt'"
+rc18i=0; xech "$V18" "$R18" exec lcars-log/log.sh --parent m-mine >"$TMPROOT/out18i.txt" 2>&1 || rc18i=$?
+check "18i. AND SO DOES THE OTHER DOOR — the one with no \`--mission\`" \
+  "[ $rc18i -ne 0 ] && grep -q 'RE-CHECKS ONLY WHAT IT FILED' '$TMPROOT/out18i.txt'"
+check "18j. …and \`log.sh\` was NEVER INVOKED (measured, not inferred)" \
+  "[ -z \"\$(ran_log '$R18')\" ]"
+apj "$R18" "delegates.$V18.recheckScope" >"$TMPROOT/scope18.after"
+check "18k. …so the scope did not widen, byte for byte" \
+  "cmp -s '$TMPROOT/scope18.before' '$TMPROOT/scope18.after'"
+check "18k2. [control] …and the scope compared was a real, non-empty one" \
+  "[ -s '$TMPROOT/scope18.before' ] && grep -q 'bug-' '$TMPROOT/scope18.after'"
+# [CONTROLS] NOT AN OUTAGE, THREE WAYS: in-scope on that door works, the driver
+# on that door works, and a validator in ROUND 1 on that door works.
+: >"$R18/exec-ran.log"
+INSCOPE18="$(tr -d '[]" ' <"$TMPROOT/scope18.before" | cut -d, -f1)"
+rc18l=0; xech "$V18" "$R18" exec lcars-log/log.sh --parent "$INSCOPE18" >/dev/null 2>&1 || rc18l=$?
+check "18l. [control] the SAME door, on a bug it DID file, goes through" \
+  "[ -n '$INSCOPE18' ] && [ $rc18l -eq 0 ] && [ -n \"\$(ran_log '$R18')\" ]"
+: >"$R18/exec-ran.log"
+rc18m=0; xech d1 "$R18" exec lcars-log/log.sh --parent m-mine >/dev/null 2>&1 || rc18m=$?
+check "18m. [control] the DRIVER on that door is untouched — parked D1 is not widened" \
+  "[ $rc18m -eq 0 ] && [ -n \"\$(ran_log '$R18')\" ]"
+R18B="$(fast_chunk_repo)"
+xech - "$R18B" delegate mine --validate --trigger wide --why "round one" >/dev/null 2>&1
+V18B="$(validator_of "$R18B")"
+: >"$R18B/exec-ran.log"
+rc18n=0; xech "$V18B" "$R18B" exec lcars-log/log.sh --parent m-mine >/dev/null 2>&1 || rc18n=$?
+check "18n. [control] a validator in ROUND 1 reaches that door — round 1 IS the chunk" \
+  "[ $rc18n -eq 0 ] && [ -n \"\$(ran_log '$R18B')\" ]"
 echo
 
 # --- zero spend, every run ------------------------------------------------

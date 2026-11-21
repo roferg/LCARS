@@ -3173,31 +3173,74 @@ check "no \`awk\` range-to-EOF in this suite's CODE is piped into a \`grep -q\` 
 # assertion that reads the WHOLE document went to PASS 1 / FAIL 39. A guard that
 # only knows the first shape cannot see the second, and "nothing is near it" is
 # a statement about sizes that change.
-# A FIXED STRING, NOT AN ERE, AND CHECKED AGAINST A REAL FILE — both measured.
-# Two earlier attempts at this guard were decoration, and each one said so only
-# because it HAD a control. The first was a `grep -E` pattern whose known-bad
-# control matched NOTHING: the shape carries `\"` and `\$` escapes and an ERE
-# written by eye does not survive them. The second matched its control and NOT
-# the file, because the control string and the pattern shared the same wrong
-# escaping — the exact "greps a string the test itself inserted" fault. So the
-# pattern is the text AS IT APPEARS IN THIS FILE, and the control writes the
-# retired line into a real file with a quoted heredoc and greps THAT.
-S366_SIGPIPE_SHAPE='out\" | grep -q '"'"'<!--'
-check "no WHOLE-DOCUMENT read in this suite's CODE is piped into a \`grep -q\` either" \
-  "! sed '/^[[:space:]]*#/d' '$DIR/delegation.test.sh' | grep -F \"\$S366_SIGPIPE_SHAPE\" >/dev/null"
-# AND THE FIXTURE IS BUILT FROM THE PATTERN, not written out longhand. A quoted
-# heredoc carrying the retired line put a REAL instance of the shape into this
-# file's own code, and the guard — correctly — flagged its own control fixture.
-# Composing the line from `$S366_SIGPIPE_SHAPE` leaves only `%s` placeholders in
-# the source, so the guard stays clean while the control still greps a file that
-# genuinely holds the shape.
-S366_RETIRED_FILE="$TMPROOT/s366-retired-shape.txt"
-printf 'check "a retired assertion" "printf %s tier:T1 -->%s"\n' \
-  "$S366_SIGPIPE_SHAPE" "'" >"$S366_RETIRED_FILE"
-check "[known-bad control] the guard CATCHES that retired line in a real file" \
-  "grep -F \"\$S366_SIGPIPE_SHAPE\" \"\$S366_RETIRED_FILE\" >/dev/null"
-check "[control] …and the file it was given really holds a grep -q on a doc read" \
-  "grep -q 'grep -q' \"\$S366_RETIRED_FILE\" && grep -q 'tier:T1' \"\$S366_RETIRED_FILE\""
+# THE GUARD IS ON THE CLASS, AND ITS CONTROL IS NOT DERIVED FROM IT. Both of
+# those were wrong twice over, and each attempt was caught by having a control
+# at all:
+#   1. an `grep -E` pattern whose known-bad control matched NOTHING — the shape
+#      carries `\"` and `\$` escapes and an ERE written by eye does not survive
+#      them;
+#   2. a fixed string that matched its control and NOT the file, because the
+#      control string and the pattern shared the same wrong escaping;
+#   3. a fixed string that matched the file, with a control BUILT FROM THE
+#      PATTERN — so it passed for a pattern matching nothing anywhere (measured:
+#      a garbage pattern still "passed" its known-bad control). A derivation
+#      tautology in place of an escaping one.
+#      And it guarded ONE BYTE SEQUENCE: four spellings of the identical hazard
+#      went straight through — a different variable, `grep -qF`, extra spacing,
+#      a different needle.
+#
+# SO: the guard is SCOPED to the one section that reads a WHOLE DOCUMENT into a
+# variable (§ 11, `docs delegation`, 69 KB) and asserts that section contains NO
+# early-exiting grep consumer of ANY spelling. That is the class, because in
+# that section every such pipe is the hazard. And the control is four
+# HAND-WRITTEN mutant lines — one per missed spelling — appended to the real
+# section text, each of which the guard must catch.
+# THE SCOPE IS THE WHOLE-DOCUMENT READ ITSELF — the lines from the
+# `docs delegation` capture to the next capture or section header. Scoping by
+# SECTION NUMBER was measured wrong: "§ 11" runs 2,430 lines in this file
+# (later S35x sections were inserted without renumbering) and contains dozens of
+# legitimate small-output pipes. This window is the three assertions that read
+# the 69 KB document, and in there every direct pipe into an early-exiting grep
+# IS the hazard.
+docread_block() {
+  awk '/docs delegation 2>&1\)"/{f=1; print; next} f && /^[A-Za-z_][A-Za-z0-9_]*=/{exit} f{print}' \
+    "$DIR/delegation.test.sh" | sed '/^[[:space:]]*#/d'
+}
+# A `printf` of the variable piped DIRECTLY into an early-exiting grep. The
+# `[^|]*` is load-bearing: it stops at the first pipe, so the neighbouring
+# `printf … | head -1 | grep -q` — measured 40/0 SAFE, because `head` is the
+# SIGPIPE victim and not `printf` — is deliberately not caught.
+S11_EARLY_EXIT='printf[^|]*[|][[:space:]]*grep[[:space:]]+-[a-zA-Z]*q'
+check "the WHOLE-DOCUMENT read pipes into no early-exiting grep, of any spelling" \
+  "! docread_block | grep -E \"\$S11_EARLY_EXIT\" >/dev/null"
+check "[control] …and that window really is the doc read, and really is small" \
+  "docread_block | grep -q 'docs delegation' \
+   && [ \"\$(docread_block | wc -l | tr -d ' ')\" -lt 12 ] \
+   && [ \"\$(docread_block | wc -l | tr -d ' ')\" -gt 2 ]"
+check "[control] …and the measured-SAFE neighbour is deliberately NOT caught" \
+  "docread_block | grep -q 'head -1 | grep -q'"
+S11_MUTANTS="$TMPROOT/s11-mutants"
+mkdir -p "$S11_MUTANTS"
+# FOUR SPELLINGS OF THE SAME HAZARD, written out by hand rather than composed
+# from the pattern. If the guard only knows one byte sequence, three of these
+# four slip past it and this loop says so.
+{ printf '%s\n' 'check "x" "printf '"'"'%s'"'"' \"\$out\" | grep -q '"'"'<!-- tier:T1 -->'"'"'"'; } >"$S11_MUTANTS/1-shipped"
+{ printf '%s\n' 'check "x" "printf '"'"'%s'"'"' \"\$doc\" | grep -q '"'"'tier:T1'"'"'"'; }      >"$S11_MUTANTS/2-other-var"
+{ printf '%s\n' 'check "x" "printf '"'"'%s'"'"' \"\$out\" | grep -qF '"'"'tier:T1'"'"'"'; }     >"$S11_MUTANTS/3-qF"
+{ printf '%s\n' 'check "x" "printf '"'"'%s'"'"' \"\$out\"   |   grep   -qi '"'"'Delegation'"'"'"'; } >"$S11_MUTANTS/4-spacing"
+# AND THE SAFE FORM, which must NOT be caught — otherwise the guard would force
+# a rewrite that the measurement says is WORSE (`head -1 | grep >/dev/null` was
+# 39/1, against 40/0 for the shipped `head -1 | grep -q`).
+{ printf '%s\n' 'check "x" "printf '"'"'%s'"'"' \"\$out\" | head -1 | grep -q '"'"'DELEGATION.md'"'"'"'; } >"$S11_MUTANTS/5-safe-head"
+for m11 in 1-shipped 2-other-var 3-qF 4-spacing; do
+  check "[known-bad control] the guard CATCHES the '$m11' spelling of the hazard" \
+    "grep -E \"\$S11_EARLY_EXIT\" \"$S11_MUTANTS/$m11\" >/dev/null"
+done
+check "[control] …and does NOT catch the measured-safe \`head -1\` form" \
+  "! grep -E \"\$S11_EARLY_EXIT\" \"$S11_MUTANTS/5-safe-head\" >/dev/null"
+check "[control] …and it does NOT fire on a safe rewrite of the same assertion" \
+  "! printf '%s\n' 'check \"x\" \"grep -q '\"'\"'tier:T1'\"'\"' <<<\\\"\\\$out\\\"\"' \
+     | grep -E \"\$S11_EARLY_EXIT\" >/dev/null"
 
 # ==== S358: THE BRIEF MAY NOT NAME A VERB THE PRODUCT DOES NOT HAVE =======
 # IT USED TO READ:
