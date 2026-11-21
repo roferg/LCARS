@@ -211,10 +211,27 @@ usage() {
   delegate <unit>      mint the hand-off BRIEF for a T1/T2 unit from artifact paths
                        alone, at .git/lcars/delegates/<id>/BRIEF.md. Refuses a T0 or
                        an untiered unit; a second mint for one unit is a no-op
+  delegate <unit> --validate --trigger undetectable|irreversible|wide --why "<r>"
+                       mint a SIBLING VALIDATOR for a chunk another sub-ECH drove
+                       (at layer one - sub-ECHs are exactly ONE layer deep). The
+                       DEFAULT is that the driving sub-ECH validates its own chunk;
+                       a separate pass is spent only on one of those three declared
+                       triggers, recorded with its reason, or on a driver's own
+                       recorded `request-validator`, which is honoured and NEVER
+                       counted as coverage. One pass per chunk per round, max three
+  revalidate <id>      open the validator's NEXT round, BOUNDED to the bugs it
+                       filed - a re-validation re-checks only what it filed, never
+                       the whole chunk again. Three rounds, then YOU decide
+  request-validator "<why>"
+                       a DRIVING sub-ECH says it is unsure and asks for a second
+                       pair of eyes. Records one field on its own seat; mints
+                       nothing. Always honoured, never counted as coverage
   delegate close <id>  the DELEGATE is done - and nothing else is. It moves neither
                        the Mission's stage nor its verdict: nothing advances on a
                        delegate's word, and your own live check still runs
-  delegates            id, unit, tier, status for every delegate in this repo
+  delegates            id, unit, tier, status for every delegate in this repo, plus
+                       the shape of the run for a validator: which chunk, on what
+                       trigger, which round, and whether it counts as coverage
   beat <delegate-id> "<one line of progress>" [--step K/N]
                        the delegate says WHERE IT GOT TO. One beat per step. It
                        APPENDS (a beat never destroys an earlier one) and moves
@@ -768,7 +785,14 @@ subech_scope_or_die() {
   local verb="$1" m="$2" seat owners o line=""
   seat="$(subech_seat)" || exit $?
   [ -n "$seat" ] || return 0
-  mission_in_chunk "$seat" "$m" && return 0
+  # IN THE CHUNK IS NOT THE WHOLE ANSWER FOR A VALIDATOR (S366). A validation
+  # pass is bounded to the chunk in round 1 and to WHAT IT FILED from round 2 —
+  # the same choke point, because two places to decide a seat's reach is two
+  # answers. Silent for a driving seat.
+  if mission_in_chunk "$seat" "$m"; then
+    validator_recheck_or_die "$verb" "$m" "$seat"
+    return 0
+  fi
   # NO PIPE: a `grep` that filters everything out exits 1, and under `pipefail`
   # that is a non-zero pipeline for a perfectly ordinary answer.
   owners=""
@@ -824,6 +848,14 @@ subech_scope_or_die() {
 #   live-check  its own eyes       | its chunk, so the boundary says WHICH VERBS
 #   policy      the one action     | and the scope check says WHICH MISSIONS
 #   drive       its own fixes      |
+#   request-validator              the WEAKER of the two validation lanes
+#                                  (S366): a driver that is unsure may ASK for
+#                                  a second pair of eyes. It writes one field on
+#                                  its OWN seat and nothing else — it mints
+#                                  nothing, so it is not a route round the depth
+#                                  cap — and because it only ever fires when a
+#                                  driver notices, a pass granted on it is
+#                                  NEVER counted as validation coverage.
 #
 # NOT on it, and each for its own reason: `ask` and `land` (the captain's
 # attention and the one landing decision), `record` / `tier` / `delegate` /
@@ -834,7 +866,227 @@ subech_scope_or_die() {
 # `engines` — a sub-ECH is told what it needs in its brief and reports upward in
 # summaries; it does not read the main ECH's board. `--help` is always allowed,
 # because a seat that cannot ask what it may run is a seat that improvises.
-SUBECH_VERBS="beat exec budget ledger file-bug live-check policy drive"
+SUBECH_VERBS="beat exec budget ledger file-bug live-check policy drive request-validator"
+
+# ==========================================================================
+# S366 — THE DEPTH CAP: SUB-ECHS ARE EXACTLY ONE LAYER DEEP
+# ==========================================================================
+# S365 landed the REFUSAL (`delegate` is not on the list above, beside `record`
+# and `tier`, because those three in a row are the self-minting chain). It did
+# not land the other half, and the captain's ruling of 2026-11-20 has two:
+#
+#   "Sub-ECHs, EXACTLY ONE LAYER DEEP"  — and  "a sub-ECH MAY NOT MINT A
+#   SUB-ECH. Hard stop, enforced."
+#
+# WHAT WAS STILL OWED. First, the record: nothing on disk carried a parent or a
+# depth, so the cap was enforced and not RECORDED, and an operator could not
+# read the shape of a run off the record at all. `mintedBy` and `depth` now ride
+# every mint (and `delegates` prints them for any seat that is not the plain
+# layer-one default). Second, the refusal's REASON: "not a verb a sub-ECH may
+# run" is a wall with no door in it, and the captain's own tweak the same
+# morning is that a sub-ECH may divide its chunk into as many Missions as it
+# likes. A seat reaching for `delegate` is reaching for one of two legal things,
+# so the refusal names both.
+#
+# IT IS APPENDED TO THE ONE BOUNDARY REFUSAL, NOT CHECKED SEPARATELY. Round 2 of
+# S365 deleted a second copy of exactly this rule from `cmd_ask`/`cmd_land`,
+# because the boundary fires first and a second copy is both unreachable and a
+# second place to drift. This is a SENTENCE on the existing refusal.
+SUBECH_DEPTH_CAP_WHY=" AND THE LIMIT IS A DEPTH: SUB-ECHS ARE EXACTLY ONE LAYER DEEP, so a sub-ECH may not mint a sub-ECH — ever, and that includes a sibling brought in to validate, which the MAIN ECH mints at layer one like every other seat. Every record carries \`mintedBy\` and \`depth\`, so the shape of a run is readable on disk rather than taken on trust. TWO THINGS ARE LEGAL INSTEAD, and between them they cover every reason a seat reaches for this verb: (1) HAND THE WORK BACK UP — if it needs a chunk you were not handed, or a judgement only the main ECH can make, say so in one beat and it re-chunks; (2) CHUNK IT INTO MORE MISSIONS FOR THE FACTORY — you may subdivide your OWN chunk FREELY, into as many Missions as the work divides into, and each one you file through \`exec lcars-file/file.sh --prd <f>\` JOINS your chunk and is yours to drive. That second one is the captain's own ruling of 2026-11-20 and it is not rationed: what is refused here is minting another ECH, never dividing the work."
+
+# ==========================================================================
+# S366 — THE VALIDATION RULE: one pass, on a declared trigger, three rounds
+# ==========================================================================
+# THE CAPTAIN'S OPEN WORRY, 2026-11-20: *"I worry about how the main ech chooses
+# when to use that vs letting the sub ech that drove the work to validate it. I
+# also don't want to end up with spiralling double validation."*
+#
+# THE DEFAULT IS THE DRIVER, AND THAT IS NOT MARKING ITS OWN HOMEWORK. The
+# factory's gates — the flip-flop proof, the declared-test-edits contract, the
+# post-commit check — are independent machinery that has already run; the
+# sub-ECH's job is to confirm they really passed and to take its own live look.
+# Every one of the 2026-11-18 capstone's real findings came from an ECH's own
+# look, and none from an extra reviewer.
+#
+# THE THREE TRIGGERS ARE THE INDUSTRY'S AXES, NOT INVENTED ONES. Safety-critical
+# practice (DO-178C, nuclear IV&V) scales INDEPENDENCE to the severity of an
+# UNDETECTED failure; four-eyes is reserved for IRREVERSIBLE acts; `CODEOWNERS`
+# triages by BLAST RADIUS. Two axes, three triggers:
+#
+#   undetectable  the chunk carries an acceptance criterion its own tests
+#                 cannot fail on. The test is mechanical: does each criterion
+#                 map to a test that could fail on it? "the fish appear in the
+#                 river", asserted against the entity list, does NOT trigger.
+#                 "it looks right", "a player can see it", "the error reads
+#                 clearly" do — nothing can fail on those but a look. The
+#                 precedent is S163: 1,162 tests passed while the board was
+#                 blank in a real browser.
+#   irreversible  it does something that cannot be taken back — a migration, a
+#                 destructive operation, anything touching the forge or
+#                 already-published state.
+#   wide          the declared keystone, or it touches machinery other chunks
+#                 depend on.
+#
+# AND TWO THINGS THAT LOOK LIKE TRIGGERS AND ARE DELIBERATELY NOT. SIZE (a big
+# diff ⇒ more review) is widely used and widely criticised as weak, and it is
+# not used here. "IT CHANGES SOMETHING ON SCREEN" is the captain's own exclusion
+# of 2026-11-20: a button moving four pixels is a visual change a test asserts
+# perfectly well, and that trigger would fire on every UI chunk and re-create
+# the double validation this rule exists to prevent.
+VALIDATION_TRIGGERS="undetectable irreversible wide"
+# THE SAME BOUND ORCHESTRATION.md ALREADY USES FOR FIX ROUNDS, and for the same
+# reason: every session that went past three rounds was cured by deleting or
+# restructuring something, never by the next patch.
+VALIDATION_MAX_ROUNDS=3
+
+# delegate_validates <id> → the unit this seat is the VALIDATION PASS for, or
+# nothing at all for a driving seat. ONE reader, so "is this a validator" means
+# one thing everywhere.
+delegate_validates() { ap_j "delegates.$1.validates"; }
+
+# chunk_seats <unit> <driver|validator> → the OPEN seats of that kind on that
+# unit, one id per line. OPEN is `delegate_is_open` — the same two-file test
+# both accept gates use — so a seat the gates call closed is closed here too.
+chunk_seats() {
+  local unit="$1" want="$2" d v
+  for d in $(ap_keys delegates); do
+    [ "$(ap_j "delegates.$d.unit")" = "$unit" ] || continue
+    delegate_is_open "$d" || continue
+    v="$(delegate_validates "$d")"
+    case "$want" in
+      driver)    [ -z "$v" ] || continue ;;
+      validator) [ -n "$v" ] || continue ;;
+    esac
+    printf '%s\n' "$d"
+  done
+}
+
+# validation_round <unit> → how many validation passes that CHUNK has had.
+# RECORDED ON THE UNIT, not on the seat, so closing a validator and minting a
+# fresh one cannot reset the bound — which is the obvious way round it.
+validation_round() {
+  local r; r="$(ap_j "units.$1.validationRound")"
+  [ -n "$r" ] || r=0
+  printf '%s' "$r"
+}
+
+# validation_cap_die <unit> — THE THREE-ROUND BOUND, IN ONE PLACE. Both doors
+# into a new round (a fresh `delegate --validate` and `revalidate`) call this,
+# so the bound cannot say two different things.
+validation_cap_die() {
+  die "validation: $1 HAS HAD ALL $VALIDATION_MAX_ROUNDS VALIDATION ROUNDS, and there is no fourth. THREE ROUNDS, THEN THE MAIN ECH DECIDES — it reads what the validator filed, what the driver fixed and what is still open, and it makes the call. IT DOES NOT VALIDATE THE CHUNK AGAIN: a fourth pass over the same work is the spiral this rule exists to prevent, and its own whole-job check at the end is the backstop. This is ORCHESTRATION.md § *Three fix rounds, then STOP* applied to validation, and for the same measured reason: every session that went past three rounds was cured by deleting or restructuring something, never by the next patch. What is in front of you is a decision, not another round."
+}
+
+# val_scope <validator-id> → the Missions its re-check is bounded to, one per
+# line. `recheckScope` is a JSON list written by `revalidate`.
+val_scope() {
+  "$PY" - "$APJSON" "$1" <<'PYVS'
+import json, sys
+try:
+    d = json.load(open(sys.argv[1]))
+except Exception:
+    sys.exit(0)
+v = (d.get("delegates") or {}).get(sys.argv[2]) or {}
+for m in (v.get("recheckScope") or []):
+    if isinstance(m, str):
+        print(m)
+PYVS
+}
+
+# validator_recheck_or_die <verb> <mission> <seat> — THE ANTI-SPIRAL HALF OF THE
+# SCOPE CHECK, and it hangs off the SAME choke point as the chunk check so there
+# is one place a seat's reach is decided.
+#
+# ROUND 1 IS THE WHOLE CHUNK — that is what a validation pass IS. From round 2
+# the validator re-checks ONLY the bugs it filed: "on re-report the same
+# validator re-checks ONLY the bugs it filed — never the whole chunk again."
+# Without that, a validator creeps wider every round and the pass never
+# terminates, which is the captain's "spiralling double validation" in its
+# commonest form.
+#
+# A DRIVER IS NEVER NARROWED. It owns its chunk at every round, and a control in
+# tests/one-layer-validation.test.sh § 7k proves this function can tell them
+# apart — a narrowing that froze everybody would pass every other check here.
+#
+# THE ASCENT IS BOUNDED and it accepts a DESCENDANT of a filed bug: a bug logged
+# beneath its own finding is still that finding.
+validator_recheck_or_die() {
+  local verb="$1" m="$2" seat="$3" unit round scope cur hops=0
+  unit="$(delegate_validates "$seat")"
+  [ -n "$unit" ] || return 0
+  # A VALIDATION PASS LOOKS AND FILES; IT DOES NOT FIX. "A validating sub-ECH's
+  # findings go back to the DRIVING sub-ECH as bugs to fix" — so `drive`, which
+  # is how a seat works its own fixes, is not a validator's verb at any round.
+  # A validator that fixed what it found would be the only seat in the model
+  # with no second pair of eyes on its work, and the driver would be reporting
+  # on a chunk somebody else had edited underneath it. It is checked HERE, in
+  # the one function that already decides a validator's reach, rather than in
+  # `cmd_drive` — a second place to decide is a second answer.
+  if [ "$verb" = drive ]; then
+    die "drive: YOU ARE THE VALIDATION PASS FOR $unit, AND A VALIDATION PASS DOES NOT FIX. What you find goes back to $(ap_j "delegates.$seat.validatorFor") — the sub-ECH that drove this chunk — as bugs, with \`$SELF_CMD file-bug --parent <mission> --prd <bug-prd.md>\`, and IT drives them. That is not a formality: a validator that fixed its own findings would be the one seat in this model with nobody looking at its work, and the driver would be reporting on a chunk somebody else had edited underneath it. File what you found, say so in a beat, and on re-report you re-check ONLY what you filed. Nothing was driven."
+  fi
+  round="$(ap_j "delegates.$seat.validationRound")"
+  [ -n "$round" ] || round=1
+  [ "$round" -gt 1 ] 2>/dev/null || return 0
+  scope="$(val_scope "$seat")"
+  cur="$m"
+  while [ -n "$cur" ] && [ "$hops" -lt 32 ]; do
+    printf '%s\n' "$scope" | grep -qx "$cur" && return 0
+    cur="$(mstate "$cur" parentMission)"
+    hops=$((hops + 1))
+  done
+  die "$verb: $m IS OUTSIDE YOUR RE-CHECK. You are the validation pass for chunk $unit and this is ROUND $round, so A RE-VALIDATION RE-CHECKS ONLY WHAT IT FILED — never the whole chunk again. What you filed, and all this round is for, is: $(printf '%s' "$scope" | tr '\n' ' '). Re-check those, report whether each one is cured, and stop there. Widening back out to the chunk every round is how one validation pass becomes an unbounded one, which is the exact spiral this rule exists to prevent; a finding genuinely outside what you filed is a new judgement and it belongs to the MAIN ECH, which decides after round $VALIDATION_MAX_ROUNDS. Nothing was read, written or advanced."
+}
+
+# validator_gate_or_die <unit> <trigger> <why> — EVERY REFUSAL A SEPARATE
+# VALIDATING SIBLING CAN EARN, in one place, BEFORE anything is written. It sets
+# VAL_DRIVER / VAL_TRIGGER / VAL_WHY / VAL_ROUND / VAL_COVERAGE in its caller.
+#
+# THE ORDER IS DELIBERATE: who drove it, then whether a pass is already running,
+# then the round bound, then the trigger. A chunk nobody drove and a chunk
+# already being validated are different mistakes and deserve different
+# sentences; the round bound comes before the trigger so a chunk out of rounds
+# is told that rather than being asked for a better reason.
+validator_gate_or_die() {
+  local unit="$1" trigger="$2" why="$3" open_v used t
+  VAL_DRIVER="$(chunk_seats "$unit" driver | sed -n 1p)"
+  open_v="$(chunk_seats "$unit" validator | tr '\n' ' ')"
+  open_v="${open_v% }"
+  if [ -z "$VAL_DRIVER" ]; then
+    if [ -n "$open_v" ]; then
+      die "delegate --validate: $unit's only open seat is $open_v, which IS its validation pass — AND A VALIDATION PASS IS NOT ITSELF VALIDATED. Fresh eyes on fresh eyes is the spiral with an extra step in it: what a validator reports goes to the DRIVING sub-ECH as bugs, and after $VALIDATION_MAX_ROUNDS rounds the MAIN ECH decides. If you want a second look at the validator's own judgement, that look is yours and it is a decision, not another seat. Nothing was minted."
+    fi
+    die "delegate --validate: NO OPEN SUB-ECH IS DRIVING $unit, so there is nothing to validate independently. A validation pass is a SECOND pair of eyes on work another sub-ECH drove — with no driving seat there is no first pair, and the seat you want is an ordinary one: \`$SELF_CMD delegate $unit\`, which hands the chunk to a sub-ECH that drives it AND validates it. That is the default. Nothing was minted."
+  fi
+  if [ -n "$open_v" ]; then
+    die "delegate --validate: $open_v IS ALREADY THE VALIDATION PASS on $unit, and there is exactly ONE VALIDATION PASS PER CHUNK PER ROUND. Two validators on one chunk is double validation in its purest form: two seats look at the same work, each files against the same driver, and neither one owns the result. Let $open_v finish and report; its findings go back to $VAL_DRIVER as bugs, and \`$SELF_CMD revalidate $open_v\` opens its next round — the SAME validator, re-checking only what it filed. Nothing was minted."
+  fi
+  used="$(validation_round "$unit")"
+  [ "$used" -lt "$VALIDATION_MAX_ROUNDS" ] 2>/dev/null || validation_cap_die "$unit"
+  VAL_ROUND=$((used + 1))
+  if [ -n "$trigger" ]; then
+    local okt=0
+    for t in $VALIDATION_TRIGGERS; do [ "$trigger" = "$t" ] && okt=1; done
+    if [ "$okt" = 0 ]; then
+      die "delegate --validate: '$trigger' IS NOT ONE OF THE THREE DECLARED TRIGGERS. They are, and they are the industry's own axes rather than invented ones — can the error be DETECTED, and what does it COST: \`undetectable\` (the chunk carries an acceptance criterion its own tests cannot fail on — \"it looks right\", \"the error reads clearly\"; S163 had 1,162 tests green while the board was blank in a real browser), \`irreversible\` (it does something that cannot be taken back — a migration, a destructive operation, anything touching the forge or published state), \`wide\` (the declared keystone, or machinery other chunks depend on). TWO THINGS LOOK LIKE TRIGGERS AND ARE DELIBERATELY NOT. Size: size-as-proxy — a big diff buying a second pass — is widely used and widely criticised as weak, and this rule does not use it. And a VISUAL change: a button moving four pixels is a visual change a test asserts perfectly well, so \"it changes something on screen\" would fire on every UI chunk and re-create the double validation this rule exists to prevent (the captain, 2026-11-20). If neither axis fits, the DRIVING sub-ECH validates — that is the default, and the main ECH's whole-job check is the backstop. Nothing was minted."
+    fi
+    [ -n "$why" ] || die "delegate --validate: \`--trigger $trigger\` with no \`--why\`. The reason is half the record: a trigger NAME says which axis fired and only the reason says what fired it, and the judgement is recorded the way \`tier\`'s already is so a reader a week later can tell a real trigger from a habit. Say it in one line: \`--why \"the acceptance criterion is 'the error reads clearly' and no test can fail on it\"\`. Nothing was minted."
+    VAL_TRIGGER="$trigger"
+    VAL_WHY="$why"
+    VAL_COVERAGE=true
+    return 0
+  fi
+  # THE WEAKER LANE. A recorded request from THIS chunk's own driver, and
+  # nobody else's: one seat's uncertainty must not buy a validator over
+  # somebody else's work, which would be a reach across chunks by the back door.
+  if [ -n "$(ap_j "delegates.$VAL_DRIVER.validatorRequested.at")" ]; then
+    VAL_TRIGGER="driver-request"
+    VAL_WHY="$(ap_j "delegates.$VAL_DRIVER.validatorRequested.why")"
+    VAL_COVERAGE=false
+    return 0
+  fi
+  die "delegate --validate: $unit HAS NEITHER A DECLARED TRIGGER NOR A RECORDED REQUEST, so there is nothing to spend a separate validator on. THE DEFAULT IS THAT THE DRIVING SUB-ECH VALIDATES ITS OWN CHUNK, and that is not marking its own homework: the factory's gates — the flip-flop proof, the declared-test-edits contract, the post-commit check — are independent machinery that already ran, and $VAL_DRIVER's job is to confirm they really passed and take its own live look. A SEPARATE SIBLING IS SPENT ON ONE OF THREE DECLARED TRIGGERS, recorded with its reason: \`--trigger undetectable --why …\` (an acceptance criterion its own tests cannot fail on), \`--trigger irreversible --why …\` (something that cannot be taken back), \`--trigger wide --why …\` (the declared keystone, or machinery other chunks depend on). OR ON THE WEAKER LANE: $VAL_DRIVER itself may ask — \`request-validator \"<why>\"\` from its own seat — which is always honoured and NEVER counted as coverage, because it only ever fires when a driver happens to notice. Nothing was minted."
+}
 
 # ==========================================================================
 # AND THE SECOND HALF OF THE SAME DOOR — S365 fix round 3.
@@ -928,7 +1180,14 @@ subech_boundary_or_die() {
     push-gated)
       why=" \`push-gated\` moves work toward a merge, which is the landing decision by another route." ;;
     record|tier|delegate)
-      why=" THIS ONE IN PARTICULAR: \`record\`, \`tier\` and \`delegate\` are the escalation chain — three of them in a row and a seat has MINTED ITSELF a seat over a chunk nobody handed it, with a brief it issued to itself. \`record\` also writes the very field the accept gates read." ;;
+      why=" THIS ONE IN PARTICULAR: \`record\`, \`tier\` and \`delegate\` are the escalation chain — three of them in a row and a seat has MINTED ITSELF a seat over a chunk nobody handed it, with a brief it issued to itself. \`record\` also writes the very field the accept gates read."
+      # AND THE CAP RIDES THE VERB THAT WOULD BREACH IT (S366). `record` and
+      # `tier` are refused for the chain reason above; neither of them MINTS
+      # anything, so a depth sentence on them would be noise — and a refusal
+      # that says everything says nothing. One extra sentence, appended to the
+      # one refusal, never a second check.
+      [ "$verb" = delegate ] && why="$why$SUBECH_DEPTH_CAP_WHY"
+      ;;
   esac
   die "$verb: NOT A VERB A SUB-ECH MAY RUN. It is the MAIN ECH's, which owns the overall ask.$why You are sub-ECH $seat and your chunk is $(subech_chunk_root "$seat"); the verbs your brief gives you are the only ones you have, and they are: $SUBECH_VERBS. This is deny-by-default on purpose, so a verb added to LCARS tomorrow is refused to you until somebody grants it. Your route is one beat the main ECH reads at once: \`$SELF_CMD beat $seat \"BLOCKED: <what you need from the main ECH>\"\`. Nothing was read, written or advanced."
 }
@@ -5953,6 +6212,10 @@ cmd_file_bug() {
   # out-of-chunk filing costs nothing and leaves nothing behind.
   subech_scope_or_die file-bug "$parent"
   local filer; filer="$(subech_seat)" || exit $?
+  # S366 — who the ownership row will NAME, and whether this filer is a
+  # validation pass. Declared here, at function scope, so the per-bug loop below
+  # assigns rather than re-declares.
+  local owner="" vunit=""
   [ -x "$LOG_SCRIPT" ] || [ -f "$LOG_SCRIPT" ] || die "file-bug: no lcars log at $LOG_SCRIPT"
 
   # VALIDATE EVERY PRD FIRST, so a bad second PRD does not leave a filed first.
@@ -6005,10 +6268,43 @@ cmd_file_bug() {
     # driving, so the ownership is RECORDED rather than inferred later — and it
     # is what stops this filing from ending the parent's run.
     if [ -n "$filer" ]; then
-      if lcars_chunk_own "$LCARS_DIR" "$c" "$filer"; then
+      # S366 — A VALIDATOR'S FINDINGS BELONG TO THE DRIVER. "A validating
+      # sub-ECH's findings go back to the DRIVING sub-ECH as bugs to fix." So
+      # the ownership row names the driver, not the filer: the driver is the
+      # seat that drives the fix, and an owner that does not drive is exactly
+      # the stale claim the accept gates refuse to honour. The validator's own
+      # record keeps WHAT IT FILED, which is what bounds its next round.
+      owner="$filer"
+      vunit="$(delegate_validates "$filer")"
+      if [ -n "$vunit" ]; then
+        owner="$(ap_j "delegates.$filer.validatorFor")"
+        [ -n "$owner" ] || owner="$filer"
+        ap_set "delegates.$filer.filed" "$("$PY" - "$APJSON" "$filer" "$c" <<'PYFILED'
+import json, sys
+try:
+    d = json.load(open(sys.argv[1]))
+except Exception:
+    d = {}
+v = (d.get("delegates") or {}).get(sys.argv[2]) or {}
+cur = [m for m in (v.get("filed") or []) if isinstance(m, str)]
+if sys.argv[3] not in cur:
+    cur.append(sys.argv[3])
+print(json.dumps(cur))
+PYFILED
+)"
+      fi
+      if lcars_chunk_own "$LCARS_DIR" "$c" "$owner"; then
+        if [ "$owner" != "$filer" ]; then
+          say "  OWNER: $owner — THE DRIVER. You are the validation pass for $vunit, so what you"
+          say "    find goes back to the driving sub-ECH as a bug IT drives; you do not fix this"
+          say "    chunk. It does NOT block the parent's accept while $owner drives it. Recorded"
+          say "    as yours-filed at delegates.$filer.filed, which is what your next round is"
+          say "    bounded to — a re-validation re-checks only what it filed."
+        else
         say "  OWNER: $filer — you filed it in your own chunk, so you drive it, and it does"
         say "    NOT block the parent's accept while you do. It blocks again the moment"
         say "    nobody owns it (\`$SELF_CMD delegate close $filer\` releases the claim)."
+        fi
       else
         say "  ⚠ OWNER NOT RECORDED: $c was filed, but the ownership record at"
         say "    $LCARS_DIR/chunk-owners could not be written. Until it is, this bug"
@@ -7473,13 +7769,26 @@ cmd_delegate() {
   # `delegate <unit> <other>` minted only the first. `tier` already refuses
   # both, and a verb that accepts an argument it ignores teaches the caller a
   # lie. EVERY REFUSAL HAPPENS BEFORE ANY WRITE.
-  local more=""
+  local more="" validate=0 trigger="" vwhy=""
   while [ $# -gt 0 ]; do
     case "$1" in
-      -*) die "delegate: '$1' is not an argument this verb has, and it will not be ignored. \`delegate\` takes ONE unit id and mints that unit's brief from artifact paths alone — it carries no verdict, no tier and no flags. The tier is \`$SELF_CMD tier <unit> --tier … --why …\`; the verdict is \`$SELF_CMD live-check\` and \`$SELF_CMD policy\`, which are yours. Usage: \`$SELF_CMD delegate <unit-id>\`." ;;
+      # S366 — THE ONLY THREE FLAGS THIS VERB HAS, and all three are the
+      # VALIDATION pass. A plain mint still takes a bare unit id and nothing
+      # else, which is what keeps every pre-S366 invocation byte-identical.
+      --validate)  validate=1; shift ;;
+      --trigger)   [ $# -ge 2 ] || die "delegate: \`--trigger\` needs a value — one of: $VALIDATION_TRIGGERS."
+                   trigger="$2"; shift 2 ;;
+      --trigger=*) trigger="${1#--trigger=}"; shift ;;
+      --why)       [ $# -ge 2 ] || die "delegate: \`--why\` needs a value — the reason the trigger applies, in one line."
+                   vwhy="$2"; shift 2 ;;
+      --why=*)     vwhy="${1#--why=}"; shift ;;
+      -*) die "delegate: '$1' is not an argument this verb has, and it will not be ignored. \`delegate\` takes ONE unit id and mints that unit's brief from artifact paths alone — it carries no verdict and no tier. The tier is \`$SELF_CMD tier <unit> --tier … --why …\`; the verdict is \`$SELF_CMD live-check\` and \`$SELF_CMD policy\`, which are yours. Its ONLY flags are the validation pass: \`--validate --trigger $(printf '%s' "$VALIDATION_TRIGGERS" | tr ' ' '|') --why \"<reason>\"\`. Usage: \`$SELF_CMD delegate <unit-id>\`." ;;
       *)  more="$more $1"; shift ;;
     esac
   done
+  if [ "$validate" = 0 ] && { [ -n "$trigger" ] || [ -n "$vwhy" ]; }; then
+    die "delegate: \`--trigger\` and \`--why\` belong to the VALIDATION pass and mean nothing without \`--validate\`. A plain mint hands a chunk to a sub-ECH that then drives it AND validates it — that is the default and it is not a trigger. If you mean to spend a separate validating sibling on this chunk, say so: \`$SELF_CMD delegate $unit --validate --trigger $(printf '%s' "$VALIDATION_TRIGGERS" | tr ' ' '|') --why \"<reason>\"\`. Nothing was minted."
+  fi
   [ -z "$more" ] || die "delegate: one unit per call — you named $unit and$more. Only $unit would have been minted and the rest silently skipped, which is worse than a refusal: two briefs for one unit, or no brief for a unit you think is handed off, is how two delegates end up doing the same work. Mint them one at a time."
   unit_id_ok "$unit" || die "delegate: '$unit' will not do as a unit id — no dots, slashes, spaces or tabs."
   require_state
@@ -7491,11 +7800,21 @@ cmd_delegate() {
   fi
   budget_check delegate "$unit" || return $?
 
+  # S366 — THE VALIDATION PASS TAKES A DIFFERENT DOOR, because the chunk it
+  # validates ALREADY has an open seat and the double-mint refusal below is
+  # exactly right about a second DRIVER. Every refusal happens in there, before
+  # any write; it sets VAL_* for the record and the brief.
+  local VAL_DRIVER="" VAL_TRIGGER="" VAL_WHY="" VAL_ROUND="" VAL_COVERAGE=""
+  if [ "$validate" = 1 ]; then
+    validator_gate_or_die "$unit" "$trigger" "$vwhy"
+  fi
+
   # MINTING TWICE IS THE DEFECT, NOT AN ERROR. Two briefs for one unit is how
   # two delegates end up doing the same work, which is the exact failure the
   # four-things rule exists to prevent — so a second mint names the first and
   # rewrites nothing.
-  local existing; existing="$(delegate_find "$unit")"
+  local existing=""
+  [ "$validate" = 1 ] || existing="$(delegate_find "$unit")"
   if [ -n "$existing" ]; then
     local etier; etier="$(ap_j "delegates.$existing.tier")"
     say "ALREADY MINTED: $existing owns $unit (tier $etier, status $(ap_j "delegates.$existing.status"))"
@@ -7713,7 +8032,7 @@ how two seats do the same work twice and neither one owns the result, so the
 refusal names whose chunk it is. If work you need really sits outside yours,
 the **main ECH re-chunks it** — raise that, do not take it.
 
-### THE BOUNDARY: THESE EIGHT VERBS, AND NOTHING ELSE
+### THE BOUNDARY: THESE NINE VERBS, AND NOTHING ELSE
 
 **You may run exactly these, and every other \`$SELF_CMD\` verb is REFUSED to
 you before its arguments are even read:**
@@ -7727,9 +8046,27 @@ brief it issued to itself. So the list is a boundary, not a set of checks: a
 verb you do not see above is the MAIN ECH's, and a verb added to LCARS tomorrow
 is refused to you until somebody grants it on purpose.
 
-Four of the eight are **also** scoped to your chunk — \`file-bug\`,
+Four of the nine are **also** scoped to your chunk — \`file-bug\`,
 \`live-check\`, \`policy\` and \`drive\`. The boundary says WHICH VERBS; the chunk
 says WHICH MISSIONS.
+
+\`delegate\` is NOT one of yours, and the limit behind that is a DEPTH:
+**sub-ECHs are exactly ONE LAYER deep and you are already on it**, so you may
+not mint a sub-ECH — not a helper ECH, not a second opinion, not one to take a
+piece off you. Two things are legal instead and between them they cover every
+reason you would reach for it: **hand it back up** in a \`BLOCKED:\` beat, or
+**chunk it into more Missions for the factory**, which you may do freely (see
+§ 3, *subdivide the work as it makes sense*).
+
+**AND THE NINTH VERB IS YOURS: \`request-validator \"<why>\"\`.** You validate
+your own chunk — that is the default and it is your job, not a formality. But if
+there is something you genuinely cannot tell from any test or any look of your
+own, say so: \`$SELF_CMD request-validator \"<why>\"\` records that on your seat
+and the MAIN ECH decides whether to bring in a separate pair of eyes. It is
+always honoured and it mints nothing, so it is not a way round the cap; it is
+also **not counted as validation coverage**, because it only fires when you
+happen to notice. You are not blocked while you wait — keep driving. If you are
+actually STUCK, that is the \`BLOCKED:\` beat, not this.
 
 The ECH keeps these to ITSELF and you do not run them: \`land\`, \`approve\`,
 \`push-gated\`, \`ask\`, \`record\`, \`tier\`, \`delegate\`, \`grant\`, \`answered\`,
@@ -7775,6 +8112,38 @@ evidence and its bug list.
   own live check, and still files its OWN bugs with \`file-bug\` (§ 5)."
   fi
 
+  # S366 — AND IF THIS SEAT *IS* THE VALIDATION PASS, its contract travels with
+  # the hand-off, exactly as the beat limit and the engine stamp do. A seat
+  # cannot obey a bound it was never told, and the three things below are the
+  # whole anti-spiral half of the rule.
+  if [ "$validate" = 1 ]; then
+    verbs="$verbs
+
+### YOU ARE THE VALIDATION PASS FOR THIS CHUNK — READ THIS BEFORE § 4
+
+**You did not drive this work: $VAL_DRIVER did, and it is still driving it.** You
+are a SIBLING the main ECH minted for ONE pass over chunk \`$unit\`, and this is
+**round $VAL_ROUND of $VALIDATION_MAX_ROUNDS**. Your job is a real look of your
+own at work somebody else drove.
+
+- **YOUR FINDINGS GO BACK TO THE DRIVING SUB-ECH AS BUGS.** File them with
+  \`$SELF_CMD file-bug --parent <mission> --prd <bug-prd.md>\` and they are
+  recorded as **$VAL_DRIVER's** to drive — not yours to fix, and not a verdict.
+  You do not fix this chunk, you do not merge it and you do not mark it
+  verified.
+- **ON RE-REPORT YOU RE-CHECK ONLY THE BUGS YOU FILED — never the whole chunk
+  again.** Round 1 is the whole chunk; from round 2 the harness bounds you to
+  what you filed and refuses anything wider, by name. That is not a slight on
+  your judgement: a pass that creeps wider every round never terminates, and a
+  finding genuinely outside what you filed is a new judgement that belongs to
+  the main ECH.
+- **VALIDATION IS NEVER RE-DELEGATED.** You may not mint a seat (no sub-ECH
+  may), you may not open a validation round, and nobody validates a validation
+  pass. After $VALIDATION_MAX_ROUNDS rounds the **main ECH decides** — it reads
+  what you filed, what $VAL_DRIVER fixed and what is still open, and it does not
+  validate the chunk again."
+  fi
+
   local others=""
   if [ -d "$MISSIONS" ]; then
     local md oid
@@ -7804,9 +8173,11 @@ evidence and its bug list.
   gate and it **does not replace** the ECH's own check in § 5 — a higher tier
   buys more eyes, never the ECH's own eyes back. Your tester does not merge,
   approve, land or mark anything verified either.
-- **Division is a means, not the point.** You may divide this unit between
-  sub-delegates, but if dividing it does not buy the extra independent pair of
-  eyes at the gate, it buys nothing."
+- **Division is a means, not the point, and it goes to the FACTORY.** Divide
+  this chunk into as many Missions as the work divides into — that is yours to
+  decide and it is not rationed — but **you may not mint a sub-ECH**: sub-ECHs
+  are exactly ONE LAYER deep and you are already on it. If dividing does not
+  buy the extra independent pair of eyes at the gate, it buys nothing."
   fi
   bounds="$bounds
 - Do not touch the LCARS source itself. If you hit an LCARS bug, work around it
@@ -7985,6 +8356,7 @@ PYALLOC
   if [ "$tier" = "T2" ]; then
     parts="$parts,\"fresh-tester\",\"tester-deliverable\",\"t1-inherited\""
   fi
+  [ "$validate" = 1 ] && parts="$parts,\"validation-contract\""
   parts="[$parts]"
 
   local ddir="$DELEGATES_DIR/$did"
@@ -8118,10 +8490,13 @@ engine nobody agreed to is a bill nobody agreed to. If you believe this is the
 wrong engine for this unit, that is a question **up to the ECH** (§ 4), not a
 substitution you make quietly.
 
-**EVERY SEAT YOU OPEN TAKES THIS SAME ROW.** You may divide this unit between
-sub-delegates — your tier contract allows it — and there is no separate row for
-one: **every seat you open, whether you call it a sub-delegate, a helper or just
-a second window, runs on \`$(inert "$deleng")\`, model \`$(inert "$delmodel")\`.**
+**EVERY SEAT YOU OPEN TAKES THIS SAME ROW.** You will open seats of your own —
+a worker, a tester, a second window — and there is no separate row for one:
+**every seat you open, whether you call it a sub-delegate, a helper or just a
+second window, runs on \`$(inert "$deleng")\`, model \`$(inert "$delmodel")\`.**
+(This is about the WINDOWS you open and what they bill. **Minting another
+sub-ECH is a different thing and it is refused**: sub-ECHs are exactly one layer
+deep.)
 Three seats on an engine nobody stamped is three bills nobody agreed to, and the
 rule is not about which engine YOU prefer — it is about every seat this unit
 pays for. If a seat genuinely has to be a different engine, **you may not open
@@ -8399,12 +8774,48 @@ PYREND
   rm -f "$tfile"
   [ -s "$bpath" ] || die "delegate: the brief at $bpath came out empty — refusing to record a delegate whose brief says nothing."
 
+  # S366 — WHO MINTED WHOM, AND AT WHAT DEPTH. Recorded by the minter, because
+  # nothing downstream can work it out: a seat's parent is not inferable from
+  # anything the brief or the record used to carry, and "the cap holds" was a
+  # claim about the refusal rather than a fact on disk. The main ECH is depth 0
+  # and every seat it mints is depth 1 — INCLUDING a validating sibling, which
+  # is the whole point of calling it a sibling. A sub-ECH cannot reach this line
+  # (the boundary refuses `delegate` before its arguments are parsed), so
+  # `mintedBy` is `main` in every run today; it is recorded anyway, because a
+  # field that only ever holds one value is also the field that would SHOW a
+  # second layer the day anything produced one.
+  local minter mdepth
+  minter="${ECH_AS:-main}"
+  if [ "$minter" = main ]; then
+    mdepth=0
+  else
+    mdepth="$(ap_j "delegates.$minter.depth")"
+    [ -n "$mdepth" ] || mdepth=1
+  fi
+  local ddepth=$((mdepth + 1))
+  # AND THE VALIDATION FIELDS, AS ONE MERGED OBJECT. `null` for an ordinary
+  # mint, so an ordinary record is byte-for-byte what it was before S366.
+  local valrec="null"
+  if [ "$validate" = 1 ]; then
+    valrec="$("$PY" - "$unit" "$VAL_DRIVER" "$VAL_TRIGGER" "$VAL_WHY" "$VAL_ROUND" "$VAL_COVERAGE" <<'PYVAL'
+import json, sys
+u, drv, trig, why, rnd, cov = sys.argv[1:7]
+print(json.dumps({"validates": u, "validatorFor": drv,
+                  "validationTrigger": trig, "validationWhy": why,
+                  "validationRound": int(rnd),
+                  "countsAsCoverage": cov == "true",
+                  "filed": []}))
+PYVAL
+)"
+  fi
   ap_lock
   "$PY" - "$APJSON" "$did" "$unit" "$tier" "$bpath" "$at" "$parts" "$gsrc" "$mid" "$brel" "$BEAT_LIMIT" \
-        "$deleng" "$delmodel" "$delrec" "$delsub" "$budget_record" "$tester_budget_record" <<'PY'
+        "$deleng" "$delmodel" "$delrec" "$delsub" "$budget_record" "$tester_budget_record" \
+        "$minter" "$ddepth" "$valrec" <<'PY'
 import json, os, sys
 (f, did, unit, tier, bpath, at, parts, gsrc, mid, brel, blim,
- deleng, delmodel, delrec, delsub, budget, tester_budget) = sys.argv[1:18]
+ deleng, delmodel, delrec, delsub, budget, tester_budget,
+ minter, ddepth, valrec) = sys.argv[1:21]
 try:
     d = json.load(open(f))
 except Exception:
@@ -8452,7 +8863,16 @@ ds[did] = {"id": did, "unit": unit, "tier": tier, "briefPath": bpath,
            "beatLimit": int(blim),
            # WHICH MISSION THE UNIT RESOLVED TO — a unit id is a milestone
            # label, so the mapping belongs in the record, not in a re-derivation.
-           "mission": mid}
+           "mission": mid,
+           # S366 — THE SHAPE OF THE RUN, ON DISK. `main`, or the seat that
+           # minted this one; and the layer it sits at. The cap is that nothing
+           # here is ever 2.
+           "mintedBy": minter, "depth": int(ddepth)}
+# AND THE VALIDATION PASS'S OWN FIELDS, merged rather than written in a second
+# place, so one record describes one seat.
+_val = json.loads(valrec)
+if isinstance(_val, dict):
+    ds[did].update(_val)
 d["delegates"] = ds
 tmp = f + ".tmp.%d" % os.getpid()
 with open(tmp, "w") as fh:
@@ -8474,8 +8894,34 @@ PY
     say "  both gates read that file to decide whether the seat is open. That is the safe"
     say "  way round, not a silent pass. Fix the directory and re-mint."
   fi
+  # S366 — THE CHUNK'S ROUND COUNTER, ON THE UNIT. Written after the seat
+  # exists, and on the UNIT rather than the seat so closing this validator and
+  # minting a fresh one cannot reset the three-round bound.
+  if [ "$validate" = 1 ]; then
+    ap_set "units.$unit.validationRound" "$VAL_ROUND" \
+      || say "⚠ ROUND NOT RECORDED: units.$unit.validationRound could not be written, so the three-round bound cannot be enforced on $unit. Repair $APJSON before this pass reports."
+  fi
   say "MINTED: $did for $unit at tier $tier"
   say "BRIEF: $bpath"
+  if [ "$validate" = 1 ]; then
+    say "VALIDATION PASS: $did is a SIBLING validator of chunk $unit (driven by $VAL_DRIVER)."
+    say "  Minted by the main ECH at LAYER 1 — a validating sub-ECH is a sibling, never a"
+    say "  child, so the one-layer cap holds. Round $VAL_ROUND of $VALIDATION_MAX_ROUNDS."
+    if [ "$VAL_COVERAGE" = true ]; then
+      say "  TRIGGER: $VAL_TRIGGER — $VAL_WHY"
+      say "  Recorded with its reason at delegates.$did, and it COUNTS AS VALIDATION COVERAGE"
+      say "  for this chunk."
+    else
+      say "  ON $VAL_DRIVER's OWN REQUEST: $VAL_WHY"
+      say "  A request is the weaker lane: always honoured, and it does NOT count as validation coverage."
+      say "  It only ever fires when a driver happens to notice, so counting it would be"
+      say "  counting the chunks that got lucky. This chunk still has NO triggered pass."
+    fi
+    say "  ITS FINDINGS GO BACK TO $VAL_DRIVER as bugs — $VAL_DRIVER drives its own fixes."
+    say "  On re-report, \`$SELF_CMD revalidate $did\` opens the next round and bounds it to"
+    say "  ONLY what $did filed. Validation is never re-delegated, and after"
+    say "  $VALIDATION_MAX_ROUNDS rounds YOU decide — you do not validate the chunk again."
+  fi
   # D14: THE SKIP IS SAID OUT LOUD. A mint that quietly starts at d2 is a mint
   # whose operator does not know there is an unclaimed brief beside it.
   if [ -n "$skipped" ]; then
@@ -8534,6 +8980,103 @@ PY
   say "  One's verdict, run \`$SELF_CMD live-check $unit\` YOURSELF, take \`$SELF_CMD policy\`'s"
   say "  action and file what you find with \`$SELF_CMD file-bug\`. Then \`$SELF_CMD delegate"
   say "  close $did\`."
+}
+
+# ==========================================================================
+# S366 — request-validator: THE WEAKER OF THE TWO VALIDATION LANES
+# ==========================================================================
+# "A driving sub-ECH that is unsure may REQUEST a validator; the request is
+# always honoured and always recorded. It is NOT a trigger — it is the
+# equivalent of a developer requesting review without a rule forcing one.
+# Self-declared uncertainty is cheap and worth having, but it only fires when
+# the driver notices, so it may NEVER be counted as coverage."
+#
+# IT MINTS NOTHING, which is why it is a verb a sub-ECH may run at all: it
+# writes ONE field on the seat's OWN record and the MAIN ECH still decides
+# whether to spend a sibling. A seat cannot vote itself a colleague.
+cmd_request_validator() {
+  local why="${1:-}"
+  [ $# -le 1 ] || die "request-validator: one reason per call, quoted. Usage: \`$SELF_CMD request-validator \"<why you are unsure>\"\`."
+  require_state
+  local seat; seat="$(subech_seat)" || exit $?
+  [ -n "$seat" ] || die "request-validator: this is a SUB-ECH's verb — it is how a DRIVING seat says it is unsure, and you are the main ECH. You do not request a validator from yourself: you decide, and you spend one on a declared trigger — \`$SELF_CMD delegate <unit> --validate --trigger $(printf '%s' "$VALIDATION_TRIGGERS" | tr ' ' '|') --why \"<reason>\"\`. The default, with no trigger, is that the driving sub-ECH validates its own chunk."
+  local vof; vof="$(delegate_validates "$seat")"
+  [ -z "$vof" ] || die "request-validator: you ARE the validation pass for $vof, and VALIDATION IS NEVER RE-DELEGATED — nobody validates a validation pass. Report what you found to the main ECH; after $VALIDATION_MAX_ROUNDS rounds it decides, and it does not validate the chunk again. Nothing was recorded."
+  [ -n "$why" ] || die "request-validator: say WHY in one line. The reason IS the record — an unexplained request tells the main ECH nothing it can act on, and this lane is honoured precisely because it is cheap and specific: \`$SELF_CMD request-validator \"I cannot tell from any test whether the river renders\"\`."
+  local payload
+  payload="$("$PY" - "$(now)" "$why" <<'PYRV'
+import json, sys
+print(json.dumps({"at": int(sys.argv[1]), "why": sys.argv[2]}))
+PYRV
+)"
+  ap_set "delegates.$seat.validatorRequested" "$payload" \
+    || die "request-validator: the request could NOT be recorded in $APJSON, so nothing asked for one. Repair that file and ask again."
+  say "REQUESTED: a validating sibling for your chunk $(subech_chunk_root "$seat")."
+  say "  Recorded at delegates.$seat.validatorRequested, with your reason:"
+  say "    $why"
+  say ""
+  say "THIS IS NOT A TRIGGER, and it matters that it is not. The three declared triggers"
+  say "  ($VALIDATION_TRIGGERS) are properties of the WORK and fire whether anyone"
+  say "  notices or not; a request fires only when YOU notice. So it is always honoured"
+  say "  and it is NOT counted as validation coverage for this chunk — the record says"
+  say "  so, and so does the board. That is deliberate: counting it would be counting"
+  say "  the chunks that got lucky."
+  say ""
+  say "KEEP GOING. The main ECH decides whether to spend a sibling and you are not"
+  say "  blocked on it — carry on driving, validating and filing in your chunk. If you"
+  say "  are actually STUCK, that is a different channel and it is read at once:"
+  say "    $SELF_CMD beat $seat \"BLOCKED: <what you need from the main ECH>\""
+}
+
+# ==========================================================================
+# S366 — revalidate: THE NEXT VALIDATION ROUND, BOUNDED TO WHAT WAS FILED
+# ==========================================================================
+# THE MAIN ECH's VERB, and deliberately not a sub-ECH's: `revalidate` is what
+# turns a report into another round, and a seat that could open its own round
+# could run for ever. It is not on `SUBECH_VERBS`, so the boundary refuses it to
+# every seat — the driver AND the validator — before its arguments are parsed.
+#
+# WHAT IT DOES IS SNAPSHOT A SCOPE. The validator filed bugs in the round that
+# just finished; this records them as the ONLY thing its next round may touch,
+# and `validator_recheck_or_die` enforces that at the one scope choke point.
+# The producer records the list — nothing greps for it afterwards.
+cmd_revalidate() {
+  local vid="${1:-}"
+  [ -n "$vid" ] || die "revalidate: usage is \`$SELF_CMD revalidate <validator-id>\` — the id of the VALIDATING sibling whose next round you are opening (ids come from \`$SELF_CMD delegates\`)."
+  shift
+  [ $# -eq 0 ] || die "revalidate: one validator per call — it opens ONE round on ONE chunk, and a verb that accepted more would silently open one and ignore the rest."
+  require_state
+  [ -n "$(ap_j "delegates.$vid.id")" ] || die "revalidate: there is no delegate $vid in $APJSON. Ids come from \`$SELF_CMD delegates\`."
+  local unit; unit="$(delegate_validates "$vid")"
+  [ -n "$unit" ] || die "revalidate: $vid IS NOT A VALIDATOR — it is the seat DRIVING $(ap_j "delegates.$vid.unit"), and a driving seat has no validation rounds to open. A driver that keeps finding and fixing its own bugs is just doing its job; it files and drives inside its chunk and reports when the chunk meets the ask. If you mean to spend a separate pair of eyes on that chunk, mint one: \`$SELF_CMD delegate $(ap_j "delegates.$vid.unit") --validate --trigger $(printf '%s' "$VALIDATION_TRIGGERS" | tr ' ' '|') --why \"<reason>\"\`."
+  delegate_is_open "$vid" || die "revalidate: $vid's seat is NOT OPEN — its \`delegates/$vid/OPEN\` marker is gone, which is what \`$SELF_CMD delegate close\` removes. A closed validator re-checks nothing. If chunk $unit needs another pass and it has rounds left, mint a fresh sibling: \`$SELF_CMD delegate $unit --validate --trigger … --why …\`."
+  local used; used="$(validation_round "$unit")"
+  [ "$used" -lt "$VALIDATION_MAX_ROUNDS" ] 2>/dev/null || validation_cap_die "$unit"
+  local filed; filed="$(ap_j "delegates.$vid.filed")"
+  local nfiled; nfiled="$(printf '%s' "$filed" | tr -d '[] ' | tr ',' '\n' | grep -c '"' || true)"
+  [ "${nfiled:-0}" -gt 0 ] 2>/dev/null || die "revalidate: $vid HAS FILED NOTHING, so there is nothing for a second round to re-check. A re-validation re-checks ONLY the bugs the validator filed — that is the whole bound — so an empty list means this pass is finished, not that it needs repeating. If it found nothing, that is a clean validation of chunk $unit: close it (\`$SELF_CMD delegate close $vid\`) and make your own whole-job call. If it found something and did not FILE it, the finding does not exist as far as the factory is concerned — it files with \`file-bug\` first."
+  local nxt=$((used + 1))
+  ap_set "units.$unit.validationRound" "$nxt" \
+    || die "revalidate: the round could not be recorded in $APJSON — refusing to open a round the three-round bound cannot see."
+  ap_set "delegates.$vid.validationRound" "$nxt"
+  ap_set "delegates.$vid.recheckScope" "$filed"
+  say "ROUND $nxt of $VALIDATION_MAX_ROUNDS opened for chunk $unit, validator $vid."
+  say "BOUNDED TO WHAT IT FILED — and to nothing else:"
+  local m
+  for m in $(val_scope "$vid"); do
+    say "  $m"
+  done
+  say ""
+  say "A RE-VALIDATION RE-CHECKS ONLY WHAT IT FILED, never the whole chunk again. Every"
+  say "  verb $vid runs on anything wider is refused by name, at the same gate that keeps"
+  say "  it inside its chunk — so the pass terminates instead of creeping outward a round"
+  say "  at a time. Its findings still go to $(ap_j "delegates.$vid.validatorFor") to fix."
+  if [ "$nxt" -ge "$VALIDATION_MAX_ROUNDS" ]; then
+    say ""
+    say "THIS IS THE LAST ROUND. There is no round $((VALIDATION_MAX_ROUNDS + 1)): after this"
+    say "  one YOU decide — what is cured, what is still open, and whether the chunk meets"
+    say "  the ask — and you do NOT validate the chunk again."
+  fi
 }
 
 # delegate close <delegate-id> — THE DELEGATE IS DONE. NOTHING ELSE IS.
@@ -8729,9 +9272,30 @@ for k in sorted((d.get("delegates") or {})):
         continue
     # NO BRIEF COLUMN (D13). The recorded absolute path belongs to the
     # checkout that minted it; the shell resolves the brief for THIS repo.
-    print("\t".join(report_text_safe(value) for value in
+    # S366 — AND THE SHAPE OF THE RUN. Five more columns, every one of them
+    # EMPTY for an ordinary layer-one seat minted by the main ECH, which is why
+    # the screen below stays byte-identical on a repo that never minted a
+    # validator (the known-good control in
+    # tests/one-layer-validation.test.sh § 9).
+    shape = ""
+    if (v.get("mintedBy") and v.get("mintedBy") != "main") or \
+       (v.get("depth") and int(v.get("depth")) != 1) or v.get("validates"):
+        shape = "minted by %s, layer %s" % (v.get("mintedBy") or "?",
+                                            v.get("depth") or "?")
+    # AND AN OUTSTANDING REQUEST, because this screen is where the main ECH
+    # DECIDES whether to spend a sibling — a request it cannot see is a request
+    # it will not honour. Empty on every seat that has not asked.
+    asked = ((v.get("validatorRequested") or {}).get("why") or "") \
+        if isinstance(v.get("validatorRequested"), dict) else ""
+    print("\x1f".join(report_text_safe(str(value)) for value in
                    (k, v.get("unit") or "-", v.get("tier") or "-",
-                    v.get("status") or "-")))
+                    v.get("status") or "-",
+                    v.get("validates") or "", shape,
+                    v.get("validationTrigger") or "",
+                    v.get("validationRound") or "",
+                    "" if v.get("countsAsCoverage") is None
+                       else ("yes" if v.get("countsAsCoverage") else "no"),
+                    asked)))
 PY
 )"
   if [ -z "$rows" ]; then
@@ -8742,7 +9306,8 @@ PY
   fi
   say "DELEGATES"
   local id unit tier status brief now_tier
-  while IFS="$(printf '\t')" read -r id unit tier status; do
+  local validates shape vtrig vround vcov asked
+  while IFS="$(printf '\037')" read -r id unit tier status validates shape vtrig vround vcov asked; do
     [ -n "${id:-}" ] || continue
     # THE BRIEF COLUMN IS RESOLVED FOR *THIS* REPO (D13). The recorded absolute
     # path belongs to the checkout that minted it; printing it in a copy, a
@@ -8750,6 +9315,29 @@ PY
     # dead path — with nothing said about it. `brief_say` names the one this
     # repo has, and names the disagreement when there is one.
     printf '  %-5s unit=%-28s tier=%-3s status=%s\n' "$id" "$unit" "$tier" "$status"
+    # S366 — THE SHAPE, ONLY WHERE THERE IS ONE. A flat run of layer-one seats
+    # minted by the main ECH says so once, in the footer; printing "minted by
+    # main, layer 1" against every row would be noise AND would change a screen
+    # that this session has no business changing. A VALIDATION PASS is the case
+    # worth seeing, and it says the three things an operator decides on: which
+    # chunk, on what grounds, and whether it COUNTS.
+    if [ -n "${validates:-}" ]; then
+      printf '        VALIDATOR of chunk %s — %s — round %s of %s\n' \
+        "$validates" "${shape:-?}" "${vround:-?}" "$VALIDATION_MAX_ROUNDS"
+      if [ "${vcov:-}" = yes ]; then
+        printf '        trigger: %s — COUNTS AS COVERAGE\n' "${vtrig:-?}"
+      else
+        printf '        trigger: %s — REQUESTED by the driver, so it DOES NOT COUNT AS COVERAGE\n' \
+          "${vtrig:-?}"
+      fi
+    elif [ -n "${shape:-}" ]; then
+      printf '        %s\n' "$shape"
+    fi
+    if [ -n "${asked:-}" ]; then
+      printf '        REQUESTED A VALIDATOR (not a trigger, so it does not count as coverage): %s\n' "$asked"
+      printf '        your call: %s delegate %s --validate   # honours a recorded request\n' \
+        "$SELF_CMD" "$unit"
+    fi
     brief_say '        ' "$id"
     # The delegate's tier is the one it was MINTED at. If the unit has been
     # re-tiered since, its brief carries the older contract — say so here
@@ -9496,6 +10084,8 @@ case "$SUB" in
   tier)        cmd_tier "$@" ;;
   delegate)    cmd_delegate "$@" ;;
   delegates)   cmd_delegates "$@" ;;
+  request-validator) cmd_request_validator "$@" ;;
+  revalidate)  cmd_revalidate "$@" ;;
   beat)        cmd_beat "$@" ;;
   grant)       cmd_grant "$@" ;;
   answered)    cmd_answered "$@" ;;

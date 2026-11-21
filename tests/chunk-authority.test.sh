@@ -1043,8 +1043,8 @@ pg11="$(xech d1 "$R11" push-gated 2>&1)"; pg11rc=$?
 check "11c. [F6] \`push-gated\` is refused, as \`DELEGATION.md\`'s table already said" \
   "[ $pg11rc -ne 0 ] && printf '%s' \"\$pg11\" | grep -q 'NOT A VERB A SUB-ECH MAY RUN'"
 check "11c2. …and the doc and the code agree on the allow-list, from ONE constant" \
-  "grep -q 'SUBECH_VERBS=\"beat exec budget ledger file-bug live-check policy drive\"' '$REPO_ROOT/skills/lcars-eeh/ech.sh' \
-   && grep -q 'beat exec budget ledger file-bug live-check policy drive' '$DOC'"
+  "grep -q 'SUBECH_VERBS=\"beat exec budget ledger file-bug live-check policy drive request-validator\"' '$REPO_ROOT/skills/lcars-eeh/ech.sh' \
+   && grep -q 'beat exec budget ledger file-bug live-check policy drive request-validator' '$DOC'"
 # ---- 11d: the allow-list still WORKS — the control that matters ---------
 # A boundary that refuses everything is not a cure, it is an outage.
 ok11=0
@@ -1060,7 +1060,7 @@ check "11d2. [control] …and the MAIN ECH's own verbs are all untouched" \
    && xech - '$R11' tier theirs --tier T1 --why 'the main ECH chunking' >/dev/null 2>&1"
 # ---- 11e: and the brief TELLS the seat its boundary ---------------------
 check "11e. the minted brief states the allow-list, rendered from the same constant" \
-  "grep -q 'beat exec budget ledger file-bug live-check policy drive' '$B7'"
+  "grep -q 'beat exec budget ledger file-bug live-check policy drive request-validator' '$B7'"
 check "11e2. …and says it is deny-by-default, with the reason" \
   "grep -qi 'deny-by-default' '$B7' && grep -qi 'mint ITSELF' '$B7'"
 echo
@@ -1366,9 +1366,27 @@ check "10p. [delegation 4] §2 does not carry the flat prohibition that contradi
 check "10q. [delegation 4] §3 still says the T2 bug list is FILED THROUGH a verb" \
   "grep -q 'The bug list is FILED THROUGH' '$BT2'"
 # DELEGATION.md's own gate section, as delegation.test.sh § D10 pins it.
-GATE="$(awk '/^## THE UNCONDITIONAL GATE/,/^## The verbs/' "$DOC")"
+#
+# THE RANGE ENDS AT THE NEXT `##` HEADING, NOT AT `## The verbs` (S366). D10's
+# rule is about THE GATE SECTION — that it POINTS at HOLOGRAM-COMMAND-MODE.md
+# § 6 instead of restating § 6's numbered sequence in its own words. The old
+# end marker was four sections and 438 lines downstream, so the slice also
+# carried `## AUTHORITY TRAVELS WITH THE CHUNK` and everything under it, and
+# the first numbered list anybody wrote there — S366's two legal alternatives
+# to minting a sub-ECH — failed a guard about a section it is not in. Narrowed,
+# the guard tests exactly the 51 lines it is named for, and 10r2 below proves
+# it can still FAIL: a numbered line planted IN the gate section is caught.
+GATE="$(awk '/^## THE UNCONDITIONAL GATE/,/^## AUTHORITY TRAVELS WITH THE CHUNK/' "$DOC")"
 check "10r. [delegation D10] the gate section restates no numbered sequence of its own" \
   "[ \"\$(printf '%s\\n' \"\$GATE\" | grep -cE '^[0-9]+\. ' | tr -d ' ')\" = 0 ]"
+# AND THE KNOWN-BAD CONTROL FOR THE NARROWED RANGE ITSELF. A guard that cannot
+# fail is decoration, and narrowing a range is exactly the edit that quietly
+# turns one into decoration.
+GATE_BAD="$(awk '/^## THE UNCONDITIONAL GATE/,/^## AUTHORITY TRAVELS WITH THE CHUNK/' "$DOC" \
+  | sed '3i\
+1. do the thing')"
+check "10r2. [known-bad control] a numbered line planted IN the gate section IS caught" \
+  "[ \"\$(printf '%s\\n' \"\$GATE_BAD\" | grep -cE '^[0-9]+\. ' | tr -d ' ')\" != 0 ]"
 check "10s. [delegation D10] it still POINTS at HOLOGRAM-COMMAND-MODE.md § 6" \
   "printf '%s' \"\$GATE\" | grep -q 'HOLOGRAM-COMMAND-MODE.md'"
 check "10t. [delegation D10] it keeps the sentence that is DELEGATION.md's OWN" \

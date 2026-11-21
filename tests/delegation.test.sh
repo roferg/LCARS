@@ -1464,10 +1464,23 @@ check "a READABLE estimate still records both criticalities unchanged" \
 
 printf '\n== D10. DELEGATION.md keeps no second copy of HCM 6 sequence ==\n'
 
-GATE="$(awk '/^## THE UNCONDITIONAL GATE/,/^## The verbs/' "$DOC")"
+# THE RANGE ENDS AT THE NEXT `##` HEADING, NOT AT `## The verbs` (S366). D10's
+# rule is about THE GATE SECTION — that it POINTS at HOLOGRAM-COMMAND-MODE.md
+# § 6 instead of keeping a second copy of § 6's numbered sequence. The old end
+# marker was four sections and 438 lines downstream, so the slice also carried
+# `## AUTHORITY TRAVELS WITH THE CHUNK` and everything under it, and the first
+# numbered list anybody wrote there — S366's two legal alternatives to minting
+# a sub-ECH — failed a guard about a section it is not in. Narrowed, the guard
+# tests exactly the lines it is named for, and the known-bad control below
+# proves it can still FAIL.
+GATE="$(awk '/^## THE UNCONDITIONAL GATE/,/^## AUTHORITY TRAVELS WITH THE CHUNK/' "$DOC")"
 nsteps="$(printf '%s\n' "$GATE" | grep -cE '^[0-9]+\. ' | tr -d ' ')"
 check "the gate section no longer restates a numbered sequence of its own" \
   "[ \"\$nsteps\" = 0 ]"
+nsteps_bad="$(printf '%s\n' "$GATE" | sed '3i\
+1. do the thing' | grep -cE '^[0-9]+\. ' | tr -d ' ')"
+check "[known-bad control] a numbered line planted IN the gate section IS caught" \
+  "[ \"\$nsteps_bad\" != 0 ]"
 check "it POINTS AT HOLOGRAM-COMMAND-MODE.md § 6 for that sequence" \
   "printf '%s' \"\$GATE\" | grep -q 'HOLOGRAM-COMMAND-MODE.md'"
 check "it keeps the sentence that is DELEGATION.md's OWN" \

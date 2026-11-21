@@ -122,10 +122,12 @@ those sections; do not paraphrase them into its brief.
 That tester is **additive** to the ECH's own check (§ *The unconditional
 gate*) and **does not replace** it.
 
-A T2 delegate **may** also divide the unit between sub-delegates, but
-**division is a means, not the point**. The point is the extra independent pair
-of eyes at the gate. If dividing the unit does not buy you that, it buys you
-nothing.
+A T2 delegate **may** also divide the unit — into **Missions it hands to the
+factory**, as many as the work divides into — but **division is a means, not the
+point**. The point is the extra independent pair of eyes at the gate. If
+dividing the unit does not buy you that, it buys you nothing. What it may
+**not** do is mint a sub-ECH of its own: see § *ONE LAYER, AND WHAT STILL GOES
+UP*.
 <!-- /tier:T2 -->
 
 ---
@@ -476,10 +478,10 @@ is the very field the accept gates read.
 refuses everything else before the verb's arguments are read:**
 
 ```
-beat exec budget ledger file-bug live-check policy drive
+beat exec budget ledger file-bug live-check policy drive request-validator
 ```
 
-Four of those eight are **also** scoped to the chunk. **The boundary says which
+Four of those nine are **also** scoped to the chunk. **The boundary says which
 VERBS; the chunk says which MISSIONS.** The list lives in ONE constant
 (`SUBECH_VERBS` in `ech.sh`) and the minted brief is rendered from it, so the
 rule a delegate is held to and the rule it is told cannot drift. **A verb added
@@ -712,11 +714,90 @@ is every repo before this rule — the degradation is the known-good control.
 
 ### ONE LAYER, AND WHAT STILL GOES UP
 
-A sub-ECH owns a chunk; it is **not** a licence to re-delegate authority
-downward without end. What goes **up** to the main ECH is unchanged: a scope
-change, a product call the captain owns, a conflict with a standing rule, a
-question only the main ECH can settle, and anything needing a chunk it does not
-own. The channel is the `BLOCKED:` beat, which `stalled` surfaces at once.
+**SUB-ECHS ARE EXACTLY ONE LAYER DEEP, AND A SUB-ECH MAY NOT MINT A SUB-ECH.**
+Captain's ruling, 2026-11-20, and it is enforced rather than advised: `delegate`
+is not on `SUBECH_VERBS`, so the boundary refuses it to every seat — a driving
+one and a validating one alike — before its arguments are parsed. Every mint
+records **`mintedBy`** and **`depth`**, so the shape of a run is a fact on disk
+and not a claim about the refusal; the main ECH is depth 0 and everything it
+mints is depth 1, **including a sibling validator**, which is the whole reason
+it is called a sibling.
+
+**TWO THINGS ARE LEGAL INSTEAD**, and the refusal names both, because a refusal
+with no door in it is one a live seat will go round:
+
+1. **Hand the work back up.** A chunk it was not handed, or a judgement only the
+   main ECH can make, goes up in one `BLOCKED:` beat and the main ECH re-chunks.
+2. **Chunk it into more Missions for the factory.** A sub-ECH subdivides its
+   **own** chunk **freely** — as many Missions as the work divides into, filed
+   through `exec lcars-file/file.sh`, each one joining its chunk (his tweak the
+   same morning: *"they can sub divide the missions they feed the factory as it
+   makes sense"*). **This is not rationed.** What is refused is minting another
+   ECH, never dividing the work.
+
+What goes **up** to the main ECH is unchanged: a scope change, a product call
+the captain owns, a conflict with a standing rule, a question only the main ECH
+can settle, and anything needing a chunk it does not own. The channel is the
+`BLOCKED:` beat, which `stalled` surfaces at once.
+
+### THE VALIDATION RULE — one pass, on a declared trigger, three rounds
+
+**The captain's open worry, 2026-11-20:** *"I worry about how the main ech
+chooses when to use that vs letting the sub ech that drove the work to validate
+it. I also don't want to end up with spiralling double validation."* This is the
+answer, and both halves of it are enforced.
+
+**DEFAULT: THE DRIVING SUB-ECH VALIDATES ITS OWN CHUNK.** This is not marking
+its own homework. The factory's gates — the flip-flop proof, the
+declared-test-edits contract, the post-commit check — are independent machinery
+that has already run; the sub-ECH's job is to confirm they really passed and to
+take its own live look. Every real finding of the 2026-11-18 capstone came from
+an ECH's own look, and none from an extra reviewer.
+
+**A SEPARATE VALIDATING SIBLING IS SPENT ONLY ON A DECLARED TRIGGER**, recorded
+with its reason the way the tier judgement already is. The triggers are the
+industry's own axes — *can the error be detected*, and *what does it cost*:
+
+| trigger | what fires it |
+|---|---|
+| `undetectable` | the chunk carries an acceptance criterion **its own tests cannot fail on**. The test is mechanical: does each criterion map to a test that could fail on it? *"the fish appear in the river"*, asserted against the entity list, does **not** trigger. *"it looks right"*, *"a player can see it"*, *"the error reads clearly"* do. The precedent is **S163** — 1,162 tests green while the board was blank in a real browser. |
+| `irreversible` | it does something **that cannot be taken back**: a migration, a destructive operation, anything touching the forge or already-published state. This is where four-eyes is mandatory in every other industry. |
+| `wide` | the **declared keystone**, or it touches machinery other chunks depend on — the blast-radius axis, and the argument `CODEOWNERS` makes. |
+
+**AND TWO THINGS THAT LOOK LIKE TRIGGERS AND ARE DELIBERATELY NOT.**
+**Size-as-proxy** — a big diff buying a second pass — is widely used, widely
+criticised as weak, and **not used here**. And **"it changes something on
+screen"** is excluded by name (the captain, 2026-11-20): a button moving four
+pixels is a visual change a test asserts perfectly well, and that trigger would
+fire on every UI chunk and re-create the double validation this rule exists to
+prevent. S163's lesson is not *the change was visual* — it is that **no test
+could fail on what a person would have seen immediately.**
+
+**AND A SEPARATE, WEAKER LANE — THE DRIVER MAY ASK.** A driving sub-ECH that is
+unsure runs `request-validator "<why>"`; the request is **always honoured** and
+**always recorded**. It is **not a trigger**, and a pass granted on it may
+**never be counted as coverage** — self-declared uncertainty is cheap and worth
+having, but it only fires when the driver happens to notice.
+
+**AND IT TERMINATES — THIS IS THE ANTI-SPIRAL HALF:**
+
+- A validating sub-ECH is a **SIBLING**: minted by the **main ECH**, at **layer
+  one**. Fresh eyes on a chunk are a new layer-one seat, so the cap still holds.
+- Its findings go **back to the driving sub-ECH as bugs** — recorded as the
+  driver's to drive, because the driver is the seat that fixes them. A validator
+  does not fix, merge or mark anything verified.
+- **One validation pass per chunk per round.** Two validators on one chunk is
+  refused by name.
+- On re-report the **same validator re-checks ONLY the bugs it filed** — never
+  the whole chunk again. `revalidate` snapshots that list and the scope gate
+  refuses anything wider.
+- **Validation is never re-delegated**, and **a validation pass is not itself
+  validated.**
+- **At most three rounds**, then the **main ECH decides** — it reads what was
+  filed, what was fixed and what is open, and **it does not validate the chunk
+  again**. Its final check is **whole-job**: do the chunks fit together and is
+  the ask met. This mirrors `ORCHESTRATION.md` § *Three fix rounds, then STOP*
+  and rests on the same evidence.
 
 ---
 
@@ -725,6 +806,10 @@ own. The channel is the `BLOCKED:` beat, which `stalled` surfaces at once.
 ```bash
 lcars-ech tier <unit-id> --tier T0|T1|T2 --why "<reason>"   # record the judgement
 lcars-ech delegate <unit-id>                                 # mint the brief
+lcars-ech delegate <unit-id> --validate --trigger undetectable|irreversible|wide --why "<r>"
+                                                             # a SIBLING validator, layer one
+lcars-ech request-validator "<why>"                          # a DRIVER asks (never coverage)
+lcars-ech revalidate <validator-id>                          # its next round, bounded to what it filed
 lcars-ech beat <delegate-id> "<one line of progress>"         # one per step; no silent hours
 lcars-ech delegate close <delegate-id>                       # the delegate is done
 lcars-ech delegates                                          # the list
@@ -965,9 +1050,12 @@ brief now names the staged `bug-prd.md` to copy.
 
 ### EVERY SEAT A DELEGATE OPENS TAKES THE `delegate` ROW
 
-A delegate may divide its unit between sub-delegates, and **there is no
-`subdelegate` row**: every seat it opens — sub-delegate, helper, or just a
-second window — runs on the engine and model stamped in its own brief. The
+A delegate opens seats of its own — a worker, a tester, a second window — and
+**there is no `subdelegate` row**: every seat it opens — sub-delegate, helper, or
+just a second window — runs on the engine and model stamped in its own brief.
+(This row is about the WINDOWS it opens and what they bill. **Minting another
+sub-ECH is a different thing and it is refused** — § *ONE LAYER, AND WHAT STILL
+GOES UP*.) The
 prohibition is not "do not pick the engine you are fluent in", which a T2
 delegate could obey while opening three Claude seats; it is **every seat this
 unit pays for**. A seat that genuinely has to be a different engine **may not be
