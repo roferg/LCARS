@@ -1002,7 +1002,22 @@ out="$(cd "$FOREIGN" && bash "$FARM/lcars-eeh/eeh.sh" docs delegation 2>&1)"; rc
 check "it exits 0 through the install symlink from a foreign cwd" "[ $rc -eq 0 ]"
 check "it prints DELEGATION.md's own first line" \
   "printf '%s' \"\$out\" | head -1 | grep -q 'DELEGATION.md'"
-check "it prints the T1 contract fence" "printf '%s' \"\$out\" | grep -q '<!-- tier:T1 -->'"
+# NO PIPE HERE, AND THAT IS LOAD-BEARING — see § the measurement at S352/9b,
+# whose datum for THIS line is now out of date and corrected there. `$out` is the
+# WHOLE of DELEGATION.md (69,351 bytes as of S366 fix round 1) and the match sits
+# near the top, so **66,304 bytes remain to be written after it** — past the pipe
+# capacity. `grep -q` exits on the match, bash's `printf` is still mid-write,
+# takes SIGPIPE, and `pipefail` fails the pipeline THOUGH THE MATCH WAS FOUND.
+# MEASURED UNDER BASH, 40 runs each, at that real geometry:
+#   printf … | grep -q          PASS  1 / FAIL 39   <- the shipped form
+#   printf … | grep >/dev/null  PASS 40 / FAIL  0
+#   grep -q <<<"$out"           PASS 40 / FAIL  0   <- this, and it has NO pipe
+# A here-string removes the race rather than making it unlikely, which is why it
+# is preferred over `>/dev/null` on the ONE assertion in this file whose tail is
+# this large. (Its neighbour above is `head -1 | grep -q`, measured 40/0 — and
+# `head -1 | grep >/dev/null` measured 39/1, so that one is deliberately NOT
+# "fixed" to match.)
+check "it prints the T1 contract fence" "grep -q '<!-- tier:T1 -->' <<<\"\$out\""
 pout="$(cd "$FOREIGN" && bash "$FARM/lcars-eeh/eeh.sh" docs --path delegation 2>&1)"
 check "--path resolves beside the script it was invoked through" \
   "[ \"\$pout\" = '$REPO_ROOT/skills/lcars-eeh/DELEGATION.md' ]"
@@ -3120,6 +3135,17 @@ printf '\n== S352/9b. the ABSORPTION ROUTE is named BY VERB, and so is what is N
 #   * `awk '/…/,0' … | grep -qi`, 2.5 KB after the match (line ~2571)  60/0 safe
 #   * `printf '%s' "$var" | grep -q`, 30.5 KB after the match — the
 #     suite's LARGEST, at "it prints the T1 contract fence"            60/0 safe
+#     ** CORRECTED, S366 fix round 1: THAT DATUM EXPIRED. ** DELEGATION.md grew
+#     (S365 + S366 added the chunk-authority, one-layer and validation-rule
+#     sections), and the tail after that match is now **66,304 bytes**, not
+#     30.5 KB. Re-measured under bash at the new geometry: **PASS 1 / FAIL 39**
+#     — the same regime this note already recorded for the chained form. So the
+#     predictor is the write pattern AND the tail against the pipe's capacity:
+#     a single `write()` is safe only while it FITS. That assertion now uses a
+#     here-string (no pipe at all, 40/0) and the guard below was widened to keep
+#     the whole-document reads out of pipes. A datum with a size in it goes stale
+#     when the thing it measured grows, so it is dated and corrected rather than
+#     left to be trusted.
 #   * `printf '%s' "$var" | grep -i X | grep -q Y`, 5.7 KB after       60/0 safe
 # SIZE ALONE IS NOT THE PREDICTOR — the producer's WRITE PATTERN is. bash's
 # `printf` builtin hands the whole variable over in one write and exits before
@@ -3141,6 +3167,38 @@ S352_SIGPIPE_SHAPE="awk .[/][^/]*[/],0.[^|]*[|] *grep +-[a-zA-Z]*q"
 check "no \`awk\` range-to-EOF in this suite's CODE is piped into a \`grep -q\` (the SIGPIPE flake)" \
   "! sed '/^[[:space:]]*#/d' '$DIR/delegation.test.sh' \
      | grep -E \"\$S352_SIGPIPE_SHAPE\" >/dev/null"
+# AND THE SECOND SHAPE, ADDED S366 FIX ROUND 1 BECAUSE IT CAME TRUE. The note
+# above measured `printf "$var" | grep -q` safe at 30.5 KB of tail and said
+# nothing in the file was near the risk; DELEGATION.md then grew and the one
+# assertion that reads the WHOLE document went to PASS 1 / FAIL 39. A guard that
+# only knows the first shape cannot see the second, and "nothing is near it" is
+# a statement about sizes that change.
+# A FIXED STRING, NOT AN ERE, AND CHECKED AGAINST A REAL FILE — both measured.
+# Two earlier attempts at this guard were decoration, and each one said so only
+# because it HAD a control. The first was a `grep -E` pattern whose known-bad
+# control matched NOTHING: the shape carries `\"` and `\$` escapes and an ERE
+# written by eye does not survive them. The second matched its control and NOT
+# the file, because the control string and the pattern shared the same wrong
+# escaping — the exact "greps a string the test itself inserted" fault. So the
+# pattern is the text AS IT APPEARS IN THIS FILE, and the control writes the
+# retired line into a real file with a quoted heredoc and greps THAT.
+S366_SIGPIPE_SHAPE='out\" | grep -q '"'"'<!--'
+check "no WHOLE-DOCUMENT read in this suite's CODE is piped into a \`grep -q\` either" \
+  "! sed '/^[[:space:]]*#/d' '$DIR/delegation.test.sh' | grep -F \"\$S366_SIGPIPE_SHAPE\" >/dev/null"
+# AND THE FIXTURE IS BUILT FROM THE PATTERN, not written out longhand. A quoted
+# heredoc carrying the retired line put a REAL instance of the shape into this
+# file's own code, and the guard — correctly — flagged its own control fixture.
+# Composing the line from `$S366_SIGPIPE_SHAPE` leaves only `%s` placeholders in
+# the source, so the guard stays clean while the control still greps a file that
+# genuinely holds the shape.
+S366_RETIRED_FILE="$TMPROOT/s366-retired-shape.txt"
+printf 'check "a retired assertion" "printf %s tier:T1 -->%s"\n' \
+  "$S366_SIGPIPE_SHAPE" "'" >"$S366_RETIRED_FILE"
+check "[known-bad control] the guard CATCHES that retired line in a real file" \
+  "grep -F \"\$S366_SIGPIPE_SHAPE\" \"\$S366_RETIRED_FILE\" >/dev/null"
+check "[control] …and the file it was given really holds a grep -q on a doc read" \
+  "grep -q 'grep -q' \"\$S366_RETIRED_FILE\" && grep -q 'tier:T1' \"\$S366_RETIRED_FILE\""
+
 # ==== S358: THE BRIEF MAY NOT NAME A VERB THE PRODUCT DOES NOT HAVE =======
 # IT USED TO READ:
 #   check "a contradicted premise → \`lcars replan\`" \
