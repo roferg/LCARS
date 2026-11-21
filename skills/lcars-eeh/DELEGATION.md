@@ -784,8 +784,41 @@ having, but it only fires when the driver happens to notice.
 - A validating sub-ECH is a **SIBLING**: minted by the **main ECH**, at **layer
   one**. Fresh eyes on a chunk are a new layer-one seat, so the cap still holds.
 - Its findings go **back to the driving sub-ECH as bugs** — recorded as the
-  driver's to drive, because the driver is the seat that fixes them. A validator
-  does not fix, merge or mark anything verified.
+  driver's to drive, because the driver is the seat that fixes them.
+
+**AND A VALIDATION PASS IS BOUNDED BY THE *ACT*, NOT BY A VERB NAME.** It
+performs exactly **two** acts and every other one is refused:
+
+| | |
+|---|---|
+| **LOOK** | `live-check <mission> --type <types>` — its own eyes on the real product. The whole reason it exists. |
+| **FILE** | `file-bug`, or `exec lcars-log/log.sh`. Either door records the bug as the **driver's**, through one resolver, so the two cannot disagree. |
+
+| refused act | what it is |
+|---|---|
+| **VERDICT** | `live-check done --verdict` — the record `policy` reads. A pass that marks its own chunk verified has decided the thing it was brought in to examine. |
+| **DECIDE** | `policy` — the action for the verdict pair, whose `merge` branch prints the `land` command. |
+| **FIX** | `drive`, **and `run.sh` / `respond.sh` / `resolve-logs.sh` through `exec`** — the same act by another route. |
+| **SUBDIVIDE** | `exec lcars-file/file.sh` — filing Missions into a chunk it does not own. |
+
+**WHY THE ACT AND NOT THE NAME.** S366's first build wrote the rule at
+`[ "$verb" = drive ]`; `cmd_exec` hands the same gate the string
+`exec lcars-run/run.sh --mission`, so a validation pass was refused `drive` and
+**ran the identical act one `exec` away** — measured by effect by a fresh
+tester, together with a three-step route to `ACTION: merge` on a verdict it
+wrote itself. That is the class S365 fix round 3 had already cured for
+`land`/`approve`/`push-gated`, in its own words: *"a boundary that bounds only
+the VERB NAMES bounds nothing."* The acts are one constant (`VALIDATOR_ACTS`),
+one classifier and one decider, asked at **both** gates — and deny-by-default,
+so a verb or script added to LCARS tomorrow is refused to a validation pass
+until somebody classifies it on purpose.
+
+**AND THE BRIEF CANNOT SAY OTHERWISE.** § 5 of the minted brief is a **slot**,
+filled by role exactly once: a driving seat gets the four steps (`live-check`,
+`policy`'s action, `file-bug`, drive them); a validation pass gets the two acts
+above and the three refusals. Before that it was fixed text telling every seat
+to do all four while another section told a validator it must not — one brief,
+two contracts, and the seat reading top-down met the wrong one last.
 - **One validation pass per chunk per round.** Two validators on one chunk is
   refused by name.
 - On re-report the **same validator re-checks ONLY the bugs it filed** — never

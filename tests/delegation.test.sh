@@ -1,6 +1,17 @@
 #!/usr/bin/env bash
 #
 # tests/delegation.test.sh — the ECH's DELEGATION seam (S350)
+#
+# RUNTIME, MEASURED (2026-11-20): **ELAPSED 4382.9s — about 73 minutes** for
+# its full row set. It is not hung at 40 minutes; it is working. Cage it with
+# room:
+#
+#     python3 tests/lib/cage.py 5400 bash tests/delegation.test.sh
+#
+# Two S366 runs caged at 2400s and 3300s were killed mid-suite and read as
+# hangs. A short budget on a long suite is reported as a timeout, which looks
+# exactly like the thing the cage exists to catch — so the figure is written
+# down here rather than rediscovered.
 # (skill source: skills/lcars-eeh/ech.sh § tier/delegate/delegates
 #              + skills/lcars-eeh/DELEGATION.md
 #              + skills/lcars-eeh/delegate-brief.md
@@ -1479,8 +1490,11 @@ check "the gate section no longer restates a numbered sequence of its own" \
   "[ \"\$nsteps\" = 0 ]"
 nsteps_bad="$(printf '%s\n' "$GATE" | sed '3i\
 1. do the thing' | grep -cE '^[0-9]+\. ' | tr -d ' ')"
-check "[known-bad control] a numbered line planted IN the gate section IS caught" \
-  "[ \"\$nsteps_bad\" != 0 ]"
+nsteps_wide="$(awk '/^## THE UNCONDITIONAL GATE/,/^## The verbs/' "$DOC" | grep -cE '^[0-9]+\. ' | tr -d ' ')"
+check "[known-bad control] ONE planted numbered line in the gate section = EXACTLY one" \
+  "[ \"\$nsteps_bad\" = 1 ]"
+check "[why it was narrowed] the OLD wide range is polluted by other sections" \
+  "[ \"\$nsteps_wide\" != 0 ]"
 check "it POINTS AT HOLOGRAM-COMMAND-MODE.md § 6 for that sequence" \
   "printf '%s' \"\$GATE\" | grep -q 'HOLOGRAM-COMMAND-MODE.md'"
 check "it keeps the sentence that is DELEGATION.md's OWN" \
@@ -2119,6 +2133,39 @@ d = json.load(open(f))
 d["delegates"][did][field] = int(time.time()) - int(ago)
 json.dump(d, open(f, "w"), indent=2)
 PY
+}
+
+# set_rec <repo> <delegate-id> <field> <value> — THE FIXTURE'S OWN WRITER, for
+# a field a test needs to set to an ABSOLUTE value (`backdate` above takes
+# seconds-ago).
+#
+# WHY A FIXTURE MAY NOT USE `record` FOR THIS ANY MORE, AND WHAT IT COST. The
+# S354 section below set up nine of its cases with
+# `ech record delegates.d1.lastBeatAt <epoch>`. S365 fix round 3 narrowed
+# `record` to REFUSE `delegates.*` on purpose — a seat that could write that
+# key could open and close any seat at will — and that refusal is correct. But
+# the fixtures went on calling it, the write silently did nothing, the delegate
+# was therefore never quiet, and **14 watchdog rows went red against a product
+# that was working**. Reproduced deterministically on the tip AND on the
+# baseline, so it is a live collateral break from S365 and not an inheritance
+# from `main`.
+#
+# The suite already writes `drivers` and `lastBeatAt` straight into the record
+# where that is what a fixture needs; this is that same route, NAMED, so the
+# next person does not reach for a verb the product has deliberately closed.
+set_rec() {
+  python3 - "$1/.git/lcars/autopilot.json" "$2" "$3" "$4" <<'PYSETREC'
+import json, sys
+f, did, field, val = sys.argv[1:5]
+d = json.load(open(f))
+d.setdefault("delegates", {}).setdefault(did, {})
+try:
+    val = int(val)
+except ValueError:
+    pass
+d["delegates"][did][field] = val
+json.dump(d, open(f, "w"), indent=2)
+PYSETREC
 }
 
 # ech_lim <limit-seconds> <repo> <args…> — the same driver as `ech`, with the
@@ -4456,7 +4503,7 @@ if s354_case 6; then
   check "S354/6 next does NOT invent a motion banner for a legacy delegate" \
     "! printf '%s' \"\$out\" | grep -q 'DELEGATE NOT-MOVING'"
   backdate354="$(python3 -c 'import time; print(int(time.time()) - 7200)')"
-  ech "$r354" record delegates.d1.lastBeatAt "$backdate354" >"$TMPROOT/record.log" 2>&1
+  set_rec "$r354" d1 lastBeatAt "$backdate354"
   out="$(ech "$r354" stalled 2>&1)"
   check "S354/6 a silent legacy delegate is SILENT, never NOT-MOVING" \
     "printf '%s' \"\$out\" | grep -q 'SILENT DELEGATE: d1' && ! printf '%s' \"\$out\" | grep -q 'NOT-MOVING'"
@@ -4532,7 +4579,7 @@ if s354_case 9; then
   check "S354/9 a fresh not-moving delegate is NOT also called silent" \
     "printf '%s' \"\$out\" | grep -q 'NOT-MOVING DELEGATE: d1' && ! printf '%s' \"\$out\" | grep -q 'SILENT DELEGATE:'"
   backdate354="$(python3 -c 'import time; print(int(time.time()) - 7200)')"
-  ech "$r354" record delegates.d1.lastBeatAt "$backdate354" >"$TMPROOT/record.log" 2>&1
+  set_rec "$r354" d1 lastBeatAt "$backdate354"
   out="$(ech "$r354" stalled 2>&1)"
   check "S354/9 a delegate both stuck AND quiet reports BOTH lanes and BOTH tallies" \
     "printf '%s' \"\$out\" | grep -q 'NOT-MOVING DELEGATE: d1' && printf '%s' \"\$out\" | grep -q 'SILENT DELEGATE: d1' && printf '%s' \"\$out\" | grep -q '1 delegate(s) are beating but not moving' && printf '%s' \"\$out\" | grep -q '1 delegate(s) have gone quiet'"
@@ -4675,7 +4722,7 @@ if s354_case fix1-3; then
     ech "$r354" beat d1 "$lane354"$': progress\r\e[2J\e[H\b\v\f\177' >"$TMPROOT/beat.log" 2>&1
     check "S354fix1/3 beat acknowledgement also renders controls inertly ($lane354)" \
       "s354_fix1_inert '$TMPROOT/beat.log' '$lane354: progress\\r\\x1b[2J\\x1b[H\\b\\x0b\\f\\x7f'"
-    ech "$r354" record delegates.d1.lastBeatAt "$(($(date +%s) - 7200))" >"$TMPROOT/record.log" 2>&1
+    set_rec "$r354" d1 lastBeatAt "$(($(date +%s) - 7200))"
     for verb354 in stalled next; do
       ech "$r354" $verb354 >"$TMPROOT/report.out" 2>"$TMPROOT/report.err"
       check "S354fix1/3 inherited $lane354 lane renders controls inertly on $verb354" \
@@ -4724,8 +4771,8 @@ PY
       fi
     done
   done
-  ech "$r354" record delegates.d1.unit $'closed\r\e' >"$TMPROOT/record.log" 2>&1
-  ech "$r354" record delegates.d1.status done >>"$TMPROOT/record.log" 2>&1
+  set_rec "$r354" d1 unit $'closed\r\e'
+  set_rec "$r354" d1 status done
   ech "$r354" beat d1 "late progress" >"$TMPROOT/beat.log" 2>&1
   check "S354fix1/3 a closed delegate's beat notes also render metadata inertly" \
     "s354_fix1_inert '$TMPROOT/beat.log' 'closed\\r\\x1b'"
@@ -4746,7 +4793,7 @@ fi
 if s354_case fix1-5; then
   r354="$(s354_repo)"
   ech "$r354" beat d1 "working" >"$TMPROOT/beat.log" 2>&1
-  ech "$r354" record delegates.d1.lastBeatAt "$(($(date +%s) - 7200))" >"$TMPROOT/record.log" 2>&1
+  set_rec "$r354" d1 lastBeatAt "$(($(date +%s) - 7200))"
   ( export LCARS_ECH_BEAT_LIMIT=$'garbage\nFORGED DELEGATE LINE: limit\r\e'; ech "$r354" stalled ) >"$TMPROOT/report.out" 2>"$TMPROOT/report.err"; rc=$?
   check "S354fix1/5 malformed BEAT_LIMIT warns, degrades to 1800, exits 0" \
     "[ $rc -eq 0 ] && grep -q '1800s (30m).*DEFAULT' '$TMPROOT/report.out' && grep -q 'WARNING.*1800s default' '$TMPROOT/report.err'"
@@ -4826,7 +4873,7 @@ r = json.load(open(sys.argv[1]))['delegates']['d1']
 stored = r['beats'][-1]['line'].encode('utf-8', 'surrogateescape')
 assert stored == os.fsencode(sys.argv[2]), repr(stored)
 PY"
-      ech "$r354" record delegates.d1.lastBeatAt 1700000000 >"$TMPROOT/record.log" 2>&1
+      set_rec "$r354" d1 lastBeatAt 1700000000
       ech "$r354" stalled >"$TMPROOT/report.out" 2>"$TMPROOT/report.err"; rc=$?
       escaped354="progress:\\x$c1354[2J:end"
       check "S354fix3/1 $encoding354 C1 0x$c1354 stalled emits visible escape and no raw control byte" \
@@ -4859,7 +4906,7 @@ r = json.load(open(sys.argv[1]))['delegates']['d1']
 stored = r['beats'][-1]['line'].encode('utf-8', 'surrogateescape')
 assert stored == b'C0 control:\x1b[2J\r:end', repr(stored)
 PY"
-  ech "$r354" record delegates.d1.lastBeatAt 1700000000 >"$TMPROOT/record.log" 2>&1
+  set_rec "$r354" d1 lastBeatAt 1700000000
   ech "$r354" stalled >"$TMPROOT/report.out" 2>"$TMPROOT/report.err"; rc=$?
   check "S354fix3/2 CONTROL stalled visibly escapes C0 with no raw ESC or CR bytes" \
     "[ $rc -eq 0 ] && grep -q '^NOT-MOVING DELEGATE: d1' '$TMPROOT/report.out' && grep -q '^SILENT DELEGATE: d1' '$TMPROOT/report.out' && python3 - '$TMPROOT/report.out' <<'PY'
@@ -4883,7 +4930,7 @@ r = json.load(open(sys.argv[1]))['delegates']['d1']
 stored = r['beats'][-1]['line'].encode('utf-8', 'surrogateescape')
 assert stored == sys.argv[2].encode('utf-8'), repr(stored)
 PY"
-  ech "$r354" record delegates.d1.lastBeatAt 1700000000 >"$TMPROOT/record.log" 2>&1
+  set_rec "$r354" d1 lastBeatAt 1700000000
   ech "$r354" stalled >"$TMPROOT/report.out" 2>"$TMPROOT/report.err"; rc=$?
   check "S354fix3/3 stalled preserves the exact multilingual and shell-literal UTF-8 bytes" \
     "[ $rc -eq 0 ] && grep -q '^NOT-MOVING DELEGATE: d1' '$TMPROOT/report.out' && grep -q '^SILENT DELEGATE: d1' '$TMPROOT/report.out' && python3 - '$TMPROOT/report.out' \"\$ordinary354\" <<'PY'

@@ -1379,14 +1379,22 @@ check "10q. [delegation 4] §3 still says the T2 bug list is FILED THROUGH a ver
 GATE="$(awk '/^## THE UNCONDITIONAL GATE/,/^## AUTHORITY TRAVELS WITH THE CHUNK/' "$DOC")"
 check "10r. [delegation D10] the gate section restates no numbered sequence of its own" \
   "[ \"\$(printf '%s\\n' \"\$GATE\" | grep -cE '^[0-9]+\. ' | tr -d ' ')\" = 0 ]"
-# AND THE KNOWN-BAD CONTROL FOR THE NARROWED RANGE ITSELF. A guard that cannot
-# fail is decoration, and narrowing a range is exactly the edit that quietly
-# turns one into decoration.
+# AND THE KNOWN-BAD CONTROL FOR THE NARROWED RANGE ITSELF, WITH EXACT COUNTS.
+# The first version asserted `!= 0` on an injected line — but the WIDE pre-fix
+# range already contains two numbered lines, so `!= 0` passed on the buggy range
+# too and the control proved nothing about the narrowing. Three exact counts
+# settle it: the real narrowed slice has NONE, the narrowed slice plus one
+# planted line has EXACTLY ONE (so the slice is live and the count is not
+# saturated), and the WIDE slice is polluted — which is why the range was
+# narrowed at all.
 GATE_BAD="$(awk '/^## THE UNCONDITIONAL GATE/,/^## AUTHORITY TRAVELS WITH THE CHUNK/' "$DOC" \
   | sed '3i\
 1. do the thing')"
-check "10r2. [known-bad control] a numbered line planted IN the gate section IS caught" \
-  "[ \"\$(printf '%s\\n' \"\$GATE_BAD\" | grep -cE '^[0-9]+\. ' | tr -d ' ')\" != 0 ]"
+GATE_WIDE="$(awk '/^## THE UNCONDITIONAL GATE/,/^## The verbs/' "$DOC")"
+check "10r2. [known-bad control] ONE planted numbered line in the gate section = EXACTLY one" \
+  "[ \"\$(printf '%s\\n' \"\$GATE_BAD\" | grep -cE '^[0-9]+\. ' | tr -d ' ')\" = 1 ]"
+check "10r3. [why it was narrowed] the OLD wide range is polluted by other sections" \
+  "[ \"\$(printf '%s\\n' \"\$GATE_WIDE\" | grep -cE '^[0-9]+\. ' | tr -d ' ')\" != 0 ]"
 check "10s. [delegation D10] it still POINTS at HOLOGRAM-COMMAND-MODE.md § 6" \
   "printf '%s' \"\$GATE\" | grep -q 'HOLOGRAM-COMMAND-MODE.md'"
 check "10t. [delegation D10] it keeps the sentence that is DELEGATION.md's OWN" \

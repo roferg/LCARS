@@ -38,6 +38,7 @@ four, delegates duplicate each other's work and leave gaps between them.
 | `{{TIER_DELIVERABLE}}` | what THIS tier adds to the hand-back. Empty at T0/T1; at T2 it asks for the tester's evidence and bug list (**D4**) |
 | `{{TIER_CONTRACT}}` | the `<!-- tier:<T> -->` block of `DELEGATION.md`, verbatim |
 | `{{VERBS}}` | the LCARS verbs in scope for this unit — and, **S365**, § *YOUR CHUNK, AND THE AUTHORITY THAT COMES WITH IT*: the chunk this sub-ECH owns **by Mission id**, the `LCARS_ECH_AS` export that makes its authority resolvable, the verbs that are **its own inside that chunk** (`file-bug`, `live-check`, `policy`, `drive`), that the same verbs are **refused by name outside it**, and the limit — `land`, `approve`, `push-gated` and `ask` stay the MAIN ECH's, each with the reason. The ONE statement of all of it is `DELEGATION.md` § *AUTHORITY TRAVELS WITH THE CHUNK*; this slot carries it to a reader who will never open that file, which is S359's lesson: a brief that does not state the rule it holds a delegate to manufactures its own false positives |
+| `{{VERIFY_ROLE}}` | **S366 fix round 1** — § 5's body, and it is slotted precisely so a brief CANNOT CARRY BOTH ROLES. For a DRIVING seat it is the four steps it always was (read Number One, `live-check`, take `policy`'s action, `file-bug` and drive them). For a VALIDATION PASS it is that pass's contract: it LOOKS and it FILES, and the verdict, the action and the fix are **not its acts** — the harness refuses all three by name. Before this slot existed, § 5 was fixed text telling every seat to run `policy` and drive its own bugs, while the S366 section in `{{VERBS}}` told a validator it must not: one brief, two contracts, no override stated. The contradiction is now structurally impossible rather than patched by wording, because the slot is filled exactly once |
 | `{{BOUNDARIES}}` | what this unit does not cover |
 | `{{CREATED_AT}}` | when it was minted |
 | `{{SIGNOFF}}` | who minted it and under which recorded judgement |
@@ -194,21 +195,7 @@ Also, and without exception:
 
 **Each ECH verifies its own chunk, and the one above it verifies the whole.**
 
-**YOUR CHUNK IS YOURS TO VERIFY.** When its work is done, you verify it
-yourself, independently of whatever the factory or any helper reports — every
-time, and § 3 gives you the verbs:
-
-1. you read **Number One's** verdict, if one was run,
-2. you run **`lcars-ech live-check`** on your chunk — your own eyes on the real
-   product,
-3. you take the one action **`lcars-ech policy`** gives for that verdict pair,
-4. you file what you found with **`lcars-ech file-bug`** — your own bugs, in
-   your own words, inside your chunk — and you **drive them**.
-
-On the modelled run Number One filed **0 of 31** bugs and every one came from
-an ECH's own live check. So this is not a formality and it is not a fallback: a
-robot reviewer's verdict is no substitute for a real look, which is why the look
-is **yours** for the scope you own rather than something you wait for.
+{{VERIFY_ROLE}}
 
 **AND THE WHOLE IS NOT YOURS.** When you hand back,
 **the ECH will verify the work itself** at the level of the whole ask — do the

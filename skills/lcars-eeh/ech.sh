@@ -790,6 +790,9 @@ subech_scope_or_die() {
   # the same choke point, because two places to decide a seat's reach is two
   # answers. Silent for a driving seat.
   if mission_in_chunk "$seat" "$m"; then
+    # THE ACT FIRST, THEN THE RE-CHECK NARROWING. Both are a validation pass's
+    # bound and both are silent for a driving seat.
+    validator_act_or_die "$verb" "$seat"
     validator_recheck_or_die "$verb" "$m" "$seat"
     return 0
   fi
@@ -892,7 +895,25 @@ SUBECH_VERBS="beat exec budget ledger file-bug live-check policy drive request-v
 # S365 deleted a second copy of exactly this rule from `cmd_ask`/`cmd_land`,
 # because the boundary fires first and a second copy is both unreachable and a
 # second place to drift. This is a SENTENCE on the existing refusal.
-SUBECH_DEPTH_CAP_WHY=" AND THE LIMIT IS A DEPTH: SUB-ECHS ARE EXACTLY ONE LAYER DEEP, so a sub-ECH may not mint a sub-ECH — ever, and that includes a sibling brought in to validate, which the MAIN ECH mints at layer one like every other seat. Every record carries \`mintedBy\` and \`depth\`, so the shape of a run is readable on disk rather than taken on trust. TWO THINGS ARE LEGAL INSTEAD, and between them they cover every reason a seat reaches for this verb: (1) HAND THE WORK BACK UP — if it needs a chunk you were not handed, or a judgement only the main ECH can make, say so in one beat and it re-chunks; (2) CHUNK IT INTO MORE MISSIONS FOR THE FACTORY — you may subdivide your OWN chunk FREELY, into as many Missions as the work divides into, and each one you file through \`exec lcars-file/file.sh --prd <f>\` JOINS your chunk and is yours to drive. That second one is the captain's own ruling of 2026-11-20 and it is not rationed: what is refused here is minting another ECH, never dividing the work."
+# AND IT IS READ THROUGH ONE FUNCTION, NOT INTERPOLATED RAW (fix round 1). The
+# second legal alternative — *"chunk it into more Missions for the factory …
+# yours to drive"* — is TRUE for a driving seat and FALSE for a validation pass,
+# which is refused both `exec lcars-file/file.sh` (it does not subdivide
+# somebody else's chunk) and `drive` (it does not fix). A refusal that hands a
+# seat an alternative it is also refused is a refusal with no door in it, which
+# is the exact fault this text was written to remove. One constant, one reader,
+# one seat-shaped correction appended.
+#
+# subech_depth_cap_why <seat> → the cap, with the alternatives that are actually
+# that seat's.
+subech_depth_cap_why() {
+  local seat="$1"
+  printf '%s' "$SUBECH_DEPTH_CAP_WHY"
+  [ -n "$(delegate_validates "$seat")" ] || return 0
+  printf '%s' " AND ALTERNATIVE (2) IS NOT YOURS EITHER, because you are a VALIDATION PASS, not the seat that drove this chunk: filing Missions into it and driving them are both refused to you by name. A validation pass LOOKS and FILES — \`$SELF_CMD live-check\` and \`$SELF_CMD file-bug\`, whose findings go to $(ap_j "delegates.$seat.validatorFor") to fix. So for you the whole answer is alternative (1): one beat, and the main ECH decides."
+}
+
+SUBECH_DEPTH_CAP_WHY=" AND THE LIMIT IS A DEPTH: SUB-ECHS ARE EXACTLY ONE LAYER DEEP, so a sub-ECH may not mint a sub-ECH — ever, and that includes a sibling brought in to validate, which the MAIN ECH mints at layer one like every other seat. Every record minted since S366 carries \`mintedBy\` and \`depth\`, so the shape of a run is readable on disk rather than taken on trust — a seat minted before it has neither and reads as UNKNOWN on the board, never as layer one, because there is no migration and a guessed depth is worse than an absent one. TWO THINGS ARE LEGAL INSTEAD, and between them they cover every reason a seat reaches for this verb: (1) HAND THE WORK BACK UP — if it needs a chunk you were not handed, or a judgement only the main ECH can make, say so in one beat and it re-chunks; (2) CHUNK IT INTO MORE MISSIONS FOR THE FACTORY — you may subdivide your OWN chunk FREELY, into as many Missions as the work divides into, and each one you file through \`exec lcars-file/file.sh --prd <f>\` JOINS your chunk and is yours to drive. That second one is the captain's own ruling of 2026-11-20 and it is not rationed: what is refused here is minting another ECH, never dividing the work."
 
 # ==========================================================================
 # S366 — THE VALIDATION RULE: one pass, on a declared trigger, three rounds
@@ -944,13 +965,19 @@ VALIDATION_MAX_ROUNDS=3
 # one thing everywhere.
 delegate_validates() { ap_j "delegates.$1.validates"; }
 
-# chunk_seats <unit> <driver|validator> → the OPEN seats of that kind on that
-# unit, one id per line. OPEN is `delegate_is_open` — the same two-file test
+# chunk_seats <mission> <driver|validator> → the OPEN seats of that kind on that
+# CHUNK, one id per line. OPEN is `delegate_is_open` — the same two-file test
 # both accept gates use — so a seat the gates call closed is closed here too.
+#
+# KEYED ON THE MISSION, NOT THE UNIT LABEL (S366 fix round 1). A unit id is a
+# label in the ECH's own id space and two labels may resolve to ONE Mission;
+# `units.<unit>.validationRound` and a per-unit seat lookup therefore bought two
+# simultaneous "round 1 of 3" validators on the same work and 3N rounds,
+# silently. Both bounds now key on the WORK.
 chunk_seats() {
-  local unit="$1" want="$2" d v
+  local mission="$1" want="$2" d v
   for d in $(ap_keys delegates); do
-    [ "$(ap_j "delegates.$d.unit")" = "$unit" ] || continue
+    [ "$(ap_j "delegates.$d.mission")" = "$mission" ] || continue
     delegate_is_open "$d" || continue
     v="$(delegate_validates "$d")"
     case "$want" in
@@ -961,11 +988,13 @@ chunk_seats() {
   done
 }
 
-# validation_round <unit> → how many validation passes that CHUNK has had.
-# RECORDED ON THE UNIT, not on the seat, so closing a validator and minting a
-# fresh one cannot reset the bound — which is the obvious way round it.
+# validation_round <mission> → how many validation passes that CHUNK has had.
+# RECORDED ON THE MISSION — not on the seat, so closing a validator and minting
+# a fresh one cannot reset the bound (the obvious way round it); and not on the
+# UNIT LABEL, so two labels pointing at one Mission cannot buy two counters
+# (measured: two simultaneous round-1 validators and 3N rounds).
 validation_round() {
-  local r; r="$(ap_j "units.$1.validationRound")"
+  local r; r="$(ap_j "validations.$1.round")"
   [ -n "$r" ] || r=0
   printf '%s' "$r"
 }
@@ -974,7 +1003,139 @@ validation_round() {
 # into a new round (a fresh `delegate --validate` and `revalidate`) call this,
 # so the bound cannot say two different things.
 validation_cap_die() {
-  die "validation: $1 HAS HAD ALL $VALIDATION_MAX_ROUNDS VALIDATION ROUNDS, and there is no fourth. THREE ROUNDS, THEN THE MAIN ECH DECIDES — it reads what the validator filed, what the driver fixed and what is still open, and it makes the call. IT DOES NOT VALIDATE THE CHUNK AGAIN: a fourth pass over the same work is the spiral this rule exists to prevent, and its own whole-job check at the end is the backstop. This is ORCHESTRATION.md § *Three fix rounds, then STOP* applied to validation, and for the same measured reason: every session that went past three rounds was cured by deleting or restructuring something, never by the next patch. What is in front of you is a decision, not another round."
+  die "validation: chunk $1 HAS HAD ALL $VALIDATION_MAX_ROUNDS VALIDATION ROUNDS, and there is no fourth. THREE ROUNDS, THEN THE MAIN ECH DECIDES — it reads what the validator filed, what the driver fixed and what is still open, and it makes the call. IT DOES NOT VALIDATE THE CHUNK AGAIN: a fourth pass over the same work is the spiral this rule exists to prevent, and its own whole-job check at the end is the backstop. This is ORCHESTRATION.md § *Three fix rounds, then STOP* applied to validation, and for the same measured reason: every session that went past three rounds was cured by deleting or restructuring something, never by the next patch. What is in front of you is a decision, not another round."
+}
+
+# ==========================================================================
+# S366 fix round 1, CURE 1 — A VALIDATION PASS IS BOUNDED BY THE *ACT*
+# ==========================================================================
+# WHAT SHIPPED AND WHAT IT COST. Round 1 wrote the rule at a verb NAME:
+# `[ "$verb" = drive ]`. `cmd_exec` calls the same choke point with the string
+# `"exec lcars-run/run.sh --mission"`, so it never matched, and a fresh tester
+# measured it by effect in one step:
+#
+#     validator: drive bug-001                                 -> REFUSED
+#     validator: exec lcars-run/run.sh drive --mission bug-001 -> RAN
+#
+# THIS IS THE CLASS S365 FIX ROUND 3 ALREADY CURED for `land`/`approve`/
+# `push-gated`, and `subech_exec_target_or_die`'s own comment says why: *"a
+# boundary that bounds only the VERB NAMES bounds nothing, because the same act
+# is one `exec` away."* A new rule at a new verb name repeated the mistake the
+# function next door exists to document.
+#
+# AND THE ACT IS WIDER THAN `drive`. The tester drove a validation pass all the
+# way to a merge recommendation on a green it had supplied itself:
+#
+#     validator: live-check done m-mine --verdict pass -> liveChecks.m-mine.verdict = pass
+#     validator: policy --mission m-mine …             -> ACTION: merge / THEN: … land m-mine
+#
+# `land` is refused, so it cannot execute the merge — but the sentence it is
+# handed IS the merge command, resting on a verdict it wrote. `DELEGATION.md`
+# says *"A validator does not fix, merge or mark anything verified"*; two of
+# those three were measured false. That settles the open `policy` question: for
+# a validation pass `policy` is not inert, it is the last step of a three-step
+# route.
+#
+# SO THE RULE IS KEYED ON THE ACT, DENY BY DEFAULT, ALLOW BY LIST — the same
+# shape as `SUBECH_VERBS` and `SUBECH_EXEC_SCRIPTS`:
+#
+#   look       prepare a live check: read-only, and it is the whole job
+#   file       file what it found — `file-bug`, or `lcars log` through the front
+#              door. Recorded as the DRIVER's bug either way.
+#   ---------- everything below is REFUSED to a validation pass ----------
+#   verdict    `live-check done --verdict` — writing the record that decides
+#   decide     `policy` — the action for the verdict pair, incl. the merge line
+#   fix        `drive`, and `run.sh` / `respond.sh` / `resolve-logs.sh` through
+#              `exec`, which are the same act by another route
+#   subdivide  `exec lcars-file/file.sh` — filing Missions INTO a chunk it does
+#              not own
+VALIDATOR_ACTS="look file"
+
+# validator_act_of <verb-string> → the act, for every string either gate passes.
+# ONE classifier, so the two gates cannot disagree about what an act is.
+validator_act_of() {
+  case "$1" in
+    "live-check done"*)                 printf 'verdict' ;;
+    live-check*)                        printf 'look' ;;
+    file-bug*)                          printf 'file' ;;
+    policy*)                            printf 'decide' ;;
+    drive*)                             printf 'fix' ;;
+    *lcars-run/run.sh*)                 printf 'fix' ;;
+    *lcars-respond/respond.sh*)         printf 'fix' ;;
+    *lcars-resolve-logs/resolve-logs.sh*) printf 'fix' ;;
+    *lcars-log/log.sh*)                 printf 'file' ;;
+    *lcars-file/file.sh*)               printf 'subdivide' ;;
+    # DENY BY DEFAULT. A verb or script added to LCARS tomorrow is refused to a
+    # validation pass until somebody classifies it on purpose — which is the
+    # whole difference between a boundary and a patch.
+    *)                                  printf 'unclassified' ;;
+  esac
+}
+
+# validator_act_or_die <verb-string> <seat> — THE ONE DECIDER. Silent for a
+# driving seat and for the main ECH. Called from `subech_exec_target_or_die`
+# (which runs for EVERY exec, with or without `--mission`) and from
+# `subech_scope_or_die` (which runs for every scoped verb).
+validator_act_or_die() {
+  local verb="$1" seat="$2" unit act a why driver
+  unit="$(delegate_validates "$seat")"
+  [ -n "$unit" ] || return 0
+  act="$(validator_act_of "$verb")"
+  for a in $VALIDATOR_ACTS; do
+    [ "$act" = "$a" ] && return 0
+  done
+  driver="$(ap_j "delegates.$seat.validatorFor")"
+  case "$act" in
+    fix)
+      why="That is a FIX, and a validation pass does not fix. A validator that cured what it found would be the one seat in this model with nobody looking at its work, and $driver would be reporting on a chunk somebody else had edited underneath it." ;;
+    verdict)
+      why="That WRITES THE VERDICT — the record \`policy\` then reads to recommend a merge. A validation pass that marks its own chunk verified has decided the thing it was brought in to examine; your finding is a FILING, never a verdict." ;;
+    decide)
+      why="That is THE DECISION the verdict pair produces, and its \`merge\` branch prints the \`land\` command. Deciding on a green you supplied yourself is the whole failure a separate pair of eyes exists to prevent — and it is the main ECH's call in any case." ;;
+    subdivide)
+      why="That FILES A MISSION, and the chunk is $driver's to divide, not yours. A Mission you filed into somebody else's chunk is work nobody agreed to and nobody owns." ;;
+    *)
+      why="It is not one of the two acts a validation pass performs, and this boundary is deny-by-default: an act nobody has classified is refused rather than guessed at." ;;
+  esac
+  die "$verb: YOU ARE THE VALIDATION PASS FOR CHUNK $unit, AND THIS IS NOT AN ACT A VALIDATION PASS MAY PERFORM. $why A VALIDATION PASS DOES EXACTLY TWO THINGS: it LOOKS (\`$SELF_CMD live-check <mission> --type <types>\` — your own eyes on the real product, and the whole reason you were minted) and it FILES what it found (\`$SELF_CMD file-bug --parent <mission> --prd <bug-prd.md>\`, or \`exec lcars-log/log.sh\`). Everything you file is recorded as ${driver:-the driver}'s to drive, because the seat that drove this chunk is the seat that fixes it. Then you report, and on re-report you re-check ONLY what you filed. If you believe this chunk needs something neither of those two acts reaches, that is a judgement for the MAIN ECH: \`$SELF_CMD beat $seat \"BLOCKED: <what you need>\"\`. Nothing was read, written, run or advanced."
+}
+
+# chunk_owner_for <seat> → the seat that OWNS, and therefore DRIVES, a bug this
+# seat files. For a driving seat that is itself. For a VALIDATION PASS it is the
+# DRIVER: *"a validating sub-ECH's findings go back to the driving sub-ECH as
+# bugs to fix"*, and an owner that cannot drive is exactly the stale claim the
+# accept gates refuse to honour.
+#
+# ONE RESOLVER, BOTH ROUTES (S366 fix round 1). Round 1 resolved this inside
+# `cmd_file_bug` only, so the OTHER filing door — `exec lcars-log/log.sh`, which
+# also creates a linked bug Mission — recorded a validation pass as the owner
+# and told it *"you filed it, you drive it"* on a verb it is refused.
+chunk_owner_for() {
+  local seat="$1" v d
+  v="$(delegate_validates "$seat")"
+  if [ -z "$v" ]; then printf '%s' "$seat"; return 0; fi
+  d="$(ap_j "delegates.$seat.validatorFor")"
+  printf '%s' "${d:-$seat}"
+}
+
+# validator_record_filed <validator-id> <mission> — APPEND to the list its next
+# round is bounded to. The producer records it; nothing greps for it later.
+validator_record_filed() {
+  local seat="$1" m="$2"
+  [ -n "$(delegate_validates "$seat")" ] || return 0
+  ap_set "delegates.$seat.filed" "$("$PY" - "$APJSON" "$seat" "$m" <<'PYFILED2'
+import json, sys
+try:
+    d = json.load(open(sys.argv[1]))
+except Exception:
+    d = {}
+v = (d.get("delegates") or {}).get(sys.argv[2]) or {}
+cur = [m for m in (v.get("filed") or []) if isinstance(m, str)]
+if sys.argv[3] not in cur:
+    cur.append(sys.argv[3])
+print(json.dumps(cur))
+PYFILED2
+)"
 }
 
 # val_scope <validator-id> → the Missions its re-check is bounded to, one per
@@ -1014,21 +1175,26 @@ validator_recheck_or_die() {
   local verb="$1" m="$2" seat="$3" unit round scope cur hops=0
   unit="$(delegate_validates "$seat")"
   [ -n "$unit" ] || return 0
-  # A VALIDATION PASS LOOKS AND FILES; IT DOES NOT FIX. "A validating sub-ECH's
-  # findings go back to the DRIVING sub-ECH as bugs to fix" — so `drive`, which
-  # is how a seat works its own fixes, is not a validator's verb at any round.
-  # A validator that fixed what it found would be the only seat in the model
-  # with no second pair of eyes on its work, and the driver would be reporting
-  # on a chunk somebody else had edited underneath it. It is checked HERE, in
-  # the one function that already decides a validator's reach, rather than in
-  # `cmd_drive` — a second place to decide is a second answer.
-  if [ "$verb" = drive ]; then
-    die "drive: YOU ARE THE VALIDATION PASS FOR $unit, AND A VALIDATION PASS DOES NOT FIX. What you find goes back to $(ap_j "delegates.$seat.validatorFor") — the sub-ECH that drove this chunk — as bugs, with \`$SELF_CMD file-bug --parent <mission> --prd <bug-prd.md>\`, and IT drives them. That is not a formality: a validator that fixed its own findings would be the one seat in this model with nobody looking at its work, and the driver would be reporting on a chunk somebody else had edited underneath it. File what you found, say so in a beat, and on re-report you re-check ONLY what you filed. Nothing was driven."
-  fi
+  # THE ACT CHECK IS NOT HERE ANY MORE — it is `validator_act_or_die`, called
+  # from BOTH gates, because a rule keyed on a verb NAME bounds nothing (S365
+  # fix round 3's own lesson, which round 1 of S366 re-learned the hard way).
+  #
+  # THE NARROWING KEYS ON A RECORDED FACT, NOT ON THE ROUND NUMBER (fix round 1,
+  # CURE 3). It used to narrow whenever `validationRound > 1`, and a legally
+  # minted FRESH validator on round 2 — the main ECH's own route after closing a
+  # round-1 pass — has a round of 2 and has filed nothing, so every scoped verb
+  # died naming an EMPTY list and the seat could do nothing but beat. A whole
+  # validation round was burnt by the state, not by the rule.
+  #
+  # `recheckScope` is written by `revalidate` and by nothing else, so its
+  # PRESENCE is exactly the fact the narrowing is about: this seat has reported
+  # once and is re-checking. A fresh pass, whatever round the chunk is on, is
+  # not re-reporting and gets the whole chunk — which is what a validation pass
+  # IS.
   round="$(ap_j "delegates.$seat.validationRound")"
   [ -n "$round" ] || round=1
-  [ "$round" -gt 1 ] 2>/dev/null || return 0
   scope="$(val_scope "$seat")"
+  [ -n "$scope" ] || return 0
   cur="$m"
   while [ -n "$cur" ] && [ "$hops" -lt 32 ]; do
     printf '%s\n' "$scope" | grep -qx "$cur" && return 0
@@ -1049,8 +1215,11 @@ validator_recheck_or_die() {
 # is told that rather than being asked for a better reason.
 validator_gate_or_die() {
   local unit="$1" trigger="$2" why="$3" open_v used t
-  VAL_DRIVER="$(chunk_seats "$unit" driver | sed -n 1p)"
-  open_v="$(chunk_seats "$unit" validator | tr '\n' ' ')"
+  # THE CHUNK IS THE MISSION, NOT THE LABEL. Every bound below keys on it.
+  VAL_MISSION="$(unit_mission "$unit")"
+  [ -n "$VAL_MISSION" ] || die "delegate --validate: unit $unit does not resolve to a Mission (\`missions.$unit.id\` is empty in $APJSON), so there is no chunk to validate. A validation pass is a second look at REAL WORK a driving sub-ECH landed; with no Mission on disk there is nothing to look at. Record it first (\`$SELF_CMD record missions.$unit.id <mission-id>\`) or check the unit id. Nothing was minted."
+  VAL_DRIVER="$(chunk_seats "$VAL_MISSION" driver | sed -n 1p)"
+  open_v="$(chunk_seats "$VAL_MISSION" validator | tr '\n' ' ')"
   open_v="${open_v% }"
   if [ -z "$VAL_DRIVER" ]; then
     if [ -n "$open_v" ]; then
@@ -1061,8 +1230,8 @@ validator_gate_or_die() {
   if [ -n "$open_v" ]; then
     die "delegate --validate: $open_v IS ALREADY THE VALIDATION PASS on $unit, and there is exactly ONE VALIDATION PASS PER CHUNK PER ROUND. Two validators on one chunk is double validation in its purest form: two seats look at the same work, each files against the same driver, and neither one owns the result. Let $open_v finish and report; its findings go back to $VAL_DRIVER as bugs, and \`$SELF_CMD revalidate $open_v\` opens its next round — the SAME validator, re-checking only what it filed. Nothing was minted."
   fi
-  used="$(validation_round "$unit")"
-  [ "$used" -lt "$VALIDATION_MAX_ROUNDS" ] 2>/dev/null || validation_cap_die "$unit"
+  used="$(validation_round "$VAL_MISSION")"
+  [ "$used" -lt "$VALIDATION_MAX_ROUNDS" ] 2>/dev/null || validation_cap_die "$VAL_MISSION"
   VAL_ROUND=$((used + 1))
   if [ -n "$trigger" ]; then
     local okt=0
@@ -1079,11 +1248,22 @@ validator_gate_or_die() {
   # THE WEAKER LANE. A recorded request from THIS chunk's own driver, and
   # nobody else's: one seat's uncertainty must not buy a validator over
   # somebody else's work, which would be a reach across chunks by the back door.
-  if [ -n "$(ap_j "delegates.$VAL_DRIVER.validatorRequested.at")" ]; then
+  # AND A REQUEST IS SPENT WHEN IT IS HONOURED (S366 fix round 1). It was never
+  # consumed, so ONE request bought all three rounds — three no-trigger siblings
+  # off one line of self-declared uncertainty, which is the spiral the trigger
+  # list exists to bound, entered through the lane that is explicitly NOT
+  # coverage. `consumedBy` is written by the mint below; its presence means the
+  # driver must ask again if it is still unsure, which costs it one line and
+  # keeps the record honest about how many passes were actually asked for.
+  if [ -n "$(ap_j "delegates.$VAL_DRIVER.validatorRequested.at")" ] \
+     && [ -z "$(ap_j "delegates.$VAL_DRIVER.validatorRequested.consumedBy")" ]; then
     VAL_TRIGGER="driver-request"
     VAL_WHY="$(ap_j "delegates.$VAL_DRIVER.validatorRequested.why")"
     VAL_COVERAGE=false
     return 0
+  fi
+  if [ -n "$(ap_j "delegates.$VAL_DRIVER.validatorRequested.consumedBy")" ]; then
+    die "delegate --validate: $VAL_DRIVER's request was ALREADY SPENT on $(ap_j "delegates.$VAL_DRIVER.validatorRequested.consumedBy"), and a request buys ONE pass, not a standing permission. One line of self-declared uncertainty must not buy every round a chunk has — that is the spiral the trigger list exists to bound, entered through the lane that is explicitly NOT coverage. If $VAL_DRIVER is still unsure after that pass it asks again (\`request-validator \"<why>\"\` from its own seat), and if the WORK itself warrants a second look then name the axis: \`--trigger $(printf '%s' "$VALIDATION_TRIGGERS" | tr ' ' '|') --why \"<reason>\"\`. Nothing was minted."
   fi
   die "delegate --validate: $unit HAS NEITHER A DECLARED TRIGGER NOR A RECORDED REQUEST, so there is nothing to spend a separate validator on. THE DEFAULT IS THAT THE DRIVING SUB-ECH VALIDATES ITS OWN CHUNK, and that is not marking its own homework: the factory's gates — the flip-flop proof, the declared-test-edits contract, the post-commit check — are independent machinery that already ran, and $VAL_DRIVER's job is to confirm they really passed and take its own live look. A SEPARATE SIBLING IS SPENT ON ONE OF THREE DECLARED TRIGGERS, recorded with its reason: \`--trigger undetectable --why …\` (an acceptance criterion its own tests cannot fail on), \`--trigger irreversible --why …\` (something that cannot be taken back), \`--trigger wide --why …\` (the declared keystone, or machinery other chunks depend on). OR ON THE WEAKER LANE: $VAL_DRIVER itself may ask — \`request-validator \"<why>\"\` from its own seat — which is always honoured and NEVER counted as coverage, because it only ever fires when a driver happens to notice. Nothing was minted."
 }
@@ -1135,8 +1315,22 @@ subech_exec_target_or_die() {
   [ -n "$ECH_AS" ] || return 0
   seat="$(subech_seat)" || exit $?
   [ -n "$seat" ] || return 0
+  # S366 fix round 1, CURE 1 — AND THE ACT, FOR A VALIDATION PASS. THIS GATE,
+  # not the scope one, because this gate runs for EVERY `exec` while the scope
+  # check runs only when a `--mission` is present and resolves: without it here,
+  # `exec lcars-file/file.sh --prd <f>` — which takes no `--mission` at all —
+  # would still let a validation pass file Missions into a chunk it does not own.
+  #
+  # IT IS ASKED ONLY OF AN *ALLOWED* SCRIPT, on purpose: a script off the list
+  # is refused below for a stronger reason, and that refusal is deliberately
+  # byte-identical for an existing and a nonexistent script (S365 round 3's
+  # existence-leak property). Asking the act first would have given a validation
+  # pass a different refusal for a denied script and leaked exactly that.
   for t in $SUBECH_EXEC_SCRIPTS; do
-    [ "$script" = "$t" ] && return 0
+    if [ "$script" = "$t" ]; then
+      validator_act_or_die "exec $script" "$seat"
+      return 0
+    fi
   done
   case "$script" in
     lcars-approve/*)
@@ -1186,7 +1380,7 @@ subech_boundary_or_die() {
       # anything, so a depth sentence on them would be noise — and a refusal
       # that says everything says nothing. One extra sentence, appended to the
       # one refusal, never a second check.
-      [ "$verb" = delegate ] && why="$why$SUBECH_DEPTH_CAP_WHY"
+      [ "$verb" = delegate ] && why="$why$(subech_depth_cap_why "$seat")"
       ;;
   esac
   die "$verb: NOT A VERB A SUB-ECH MAY RUN. It is the MAIN ECH's, which owns the overall ask.$why You are sub-ECH $seat and your chunk is $(subech_chunk_root "$seat"); the verbs your brief gives you are the only ones you have, and they are: $SUBECH_VERBS. This is deny-by-default on purpose, so a verb added to LCARS tomorrow is refused to you until somebody grants it. Your route is one beat the main ECH reads at once: \`$SELF_CMD beat $seat \"BLOCKED: <what you need from the main ECH>\"\`. Nothing was read, written or advanced."
@@ -6274,32 +6468,30 @@ cmd_file_bug() {
       # seat that drives the fix, and an owner that does not drive is exactly
       # the stale claim the accept gates refuse to honour. The validator's own
       # record keeps WHAT IT FILED, which is what bounds its next round.
-      owner="$filer"
       vunit="$(delegate_validates "$filer")"
-      if [ -n "$vunit" ]; then
-        owner="$(ap_j "delegates.$filer.validatorFor")"
-        [ -n "$owner" ] || owner="$filer"
-        ap_set "delegates.$filer.filed" "$("$PY" - "$APJSON" "$filer" "$c" <<'PYFILED'
-import json, sys
-try:
-    d = json.load(open(sys.argv[1]))
-except Exception:
-    d = {}
-v = (d.get("delegates") or {}).get(sys.argv[2]) or {}
-cur = [m for m in (v.get("filed") or []) if isinstance(m, str)]
-if sys.argv[3] not in cur:
-    cur.append(sys.argv[3])
-print(json.dumps(cur))
-PYFILED
-)"
-      fi
+      owner="$(chunk_owner_for "$filer")"
+      validator_record_filed "$filer" "$c"
       if lcars_chunk_own "$LCARS_DIR" "$c" "$owner"; then
         if [ "$owner" != "$filer" ]; then
           say "  OWNER: $owner — THE DRIVER. You are the validation pass for $vunit, so what you"
           say "    find goes back to the driving sub-ECH as a bug IT drives; you do not fix this"
-          say "    chunk. It does NOT block the parent's accept while $owner drives it. Recorded"
-          say "    as yours-filed at delegates.$filer.filed, which is what your next round is"
-          say "    bounded to — a re-validation re-checks only what it filed."
+          say "    chunk. Recorded as yours-filed at delegates.$filer.filed, which is what your"
+          say "    next round is bounded to — a re-validation re-checks only what it filed."
+          # AND THE REPORT DOES NOT CONTRADICT THE GATES (S366 fix round 1). The
+          # ownership row names the driver whether or not that seat is still
+          # OPEN, and the accept gates honour a claim only while both its
+          # `BRIEF.md` and its `OPEN` marker are there — the safe direction. So
+          # a closed driver means this bug BLOCKS, and saying "it does not
+          # block" there would be the exact report-vs-enforcement falsehood this
+          # round is clearing out.
+          if delegate_is_open "$owner"; then
+            say "    It does NOT block the parent's accept while $owner drives it."
+          else
+            say "  ⚠ BUT $owner's SEAT IS CLOSED, so nobody is driving this bug and IT BLOCKS the"
+            say "    parent's accept — which is correct, not a fault: the accept gates honour an"
+            say "    ownership claim only while that seat is open. The chunk needs a driver again."
+            say "    That is the MAIN ECH's call: \`$SELF_CMD delegate $vunit\` mints one beside you."
+          fi
         else
         say "  OWNER: $filer — you filed it in your own chunk, so you drive it, and it does"
         say "    NOT block the parent's accept while you do. It blocks again the moment"
@@ -7029,9 +7221,23 @@ cmd_exec() {
         say "  one. Raise it with \`$SELF_CMD beat $seat \"BLOCKED: <what you need>\"\`."
         continue
       fi
-      if lcars_chunk_own "$LCARS_DIR" "$nm" "$seat"; then
+      # S366 fix round 1: THE OWNER IS RESOLVED BY THE SAME FUNCTION `file-bug`
+      # USES, so the two filing doors cannot disagree about whose bug it is —
+      # and a VALIDATION PASS is told the truth instead of "you drive it" on a
+      # verb it is refused.
+      local nowner; nowner="$(chunk_owner_for "$seat")"
+      if lcars_chunk_own "$LCARS_DIR" "$nm" "$nowner"; then
+        if [ "$nowner" != "$seat" ]; then
+          validator_record_filed "$seat" "$nm"
+          say "CHUNK: $nm is recorded as $nowner's — THE DRIVER's. You are the validation pass"
+          say "  for $(delegate_validates "$seat"), so what you file goes back to the seat that drove this"
+          say "  chunk and IT drives it; \`drive\`, \`policy\` and \`live-check done\` are refused to"
+          say "  you by name. It is in scope for your own \`live-check\` and \`file-bug\`, and it is"
+          say "  recorded at delegates.$seat.filed — which is what your next round is bounded to."
+        else
         say "CHUNK: $nm is now yours ($seat) — you filed it, you drive it, and it is"
         say "  inside your chunk for \`file-bug\`, \`live-check\`, \`policy\` and \`drive\`."
+        fi
       else
         say "⚠ CHUNK NOT RECORDED: $nm was created, but the ownership record at"
         say "  $LCARS_DIR/chunk-owners could not be written. Until it is, $nm is OUTSIDE"
@@ -7601,8 +7807,14 @@ except Exception:
     sys.exit(0)
 for k in sorted((d.get("delegates") or {})):
     v = (d.get("delegates") or {})[k]
+    # A VALIDATION PASS IS NOT THE UNIT'S SEAT (S366 fix round 1). Without this
+    # a closed driver plus an open validator made a plain `delegate <unit>`
+    # report "ALREADY MINTED: <the validator>", so the chunk could not be
+    # re-driven at all and § 8e's own advised cure — mint an ordinary seat —
+    # was refused. A validator does not drive; it cannot stand in for the seat
+    # that does.
     if isinstance(v, dict) and v.get("unit") == sys.argv[2] \
-       and v.get("status") != "done":
+       and v.get("status") != "done" and not v.get("validates"):
         sys.stdout.write(k)
         break
 PYFIND
@@ -7804,7 +8016,7 @@ cmd_delegate() {
   # validates ALREADY has an open seat and the double-mint refusal below is
   # exactly right about a second DRIVER. Every refusal happens in there, before
   # any write; it sets VAL_* for the record and the brief.
-  local VAL_DRIVER="" VAL_TRIGGER="" VAL_WHY="" VAL_ROUND="" VAL_COVERAGE=""
+  local VAL_DRIVER="" VAL_TRIGGER="" VAL_WHY="" VAL_ROUND="" VAL_COVERAGE="" VAL_MISSION=""
   if [ "$validate" = 1 ]; then
     validator_gate_or_die "$unit" "$trigger" "$vwhy"
   fi
@@ -8730,17 +8942,82 @@ from."
   # delegate has to guess at.
   # The template goes to a FILE, not to stdin: this call's own script arrives on
   # stdin as a heredoc, so the two would collide.
+  # ==== S366 fix round 1, CURE 2: § 5's BODY IS A SLOT, FILLED BY ROLE =====
+  # A VALIDATOR'S BRIEF USED TO SAY BOTH THINGS AT ONCE, and a fresh tester read
+  # them off one real minted brief: the S366 section in § 3 said *"not yours to
+  # fix … you do not merge it and you do not mark it verified"*, and § 5 — fixed
+  # template text, 150 lines further down, with no override stated — said *"YOUR
+  # CHUNK IS YOURS TO VERIFY … you take the one action `policy` gives … you file
+  # what you found … and you drive them."* Those are exactly the three acts the
+  # harness now refuses a validation pass. A brief that states two contracts has
+  # no contract, and a seat reading it top-down meets the wrong one last.
+  #
+  # SO IT IS A SLOT, filled EXACTLY ONCE. The driver's text is the four steps
+  # verbatim — byte-identical to the shipped brief, which is what keeps every
+  # existing assertion about § 5 true of a driving seat — and a validation pass
+  # gets its own. The contradiction is now impossible by construction rather
+  # than patched by wording.
+  local vrole
+  if [ "$validate" = 1 ]; then
+    vrole="**YOU ARE A VALIDATION PASS, AND THIS SECTION IS YOURS — NOT THE DRIVER'S.**
+$VAL_DRIVER drove chunk \`$unit_i\`; you were minted to take an independent look
+at it. **A validation pass performs exactly TWO acts, and the harness refuses
+every other one by name:**
+
+1. **YOU LOOK.** \`$SELF_CMD live-check <mission-in-this-chunk> --type <types>\` —
+   your own eyes on the real product. This is the whole reason you exist, and it
+   is not a formality: on the modelled run Number One filed **0 of 31** bugs and
+   every one came from an ECH's own live check.
+2. **YOU FILE WHAT YOU FOUND.** \`$SELF_CMD file-bug --parent <mission> --prd
+   <bug-prd.md>\` (or \`exec lcars-log/log.sh\`). Every bug you file is recorded
+   as **$VAL_DRIVER's** to drive. You do not fix it.
+
+**AND THESE THREE ARE NOT YOURS, AND ARE REFUSED:**
+
+- **\`live-check done --verdict …\`** — the VERDICT. A pass that marks the chunk
+  it is examining verified has decided the thing it was brought in to look at.
+  What you found is a FILING, never a verdict.
+- **\`policy\`** — the ACTION the verdict pair produces, whose \`merge\` branch
+  prints the \`land\` command. Deciding on a green you supplied yourself is the
+  exact failure a separate pair of eyes exists to prevent.
+- **\`drive\`, and \`run.sh\` / \`respond.sh\` / \`resolve-logs.sh\` through
+  \`exec\`** — the FIX, by any route. $VAL_DRIVER fixes what you file; a
+  validator that cured its own findings would be the one seat here with nobody
+  looking at its work.
+
+**THEN YOU REPORT, AND YOU STOP.** On re-report the main ECH opens your next
+round with \`$SELF_CMD revalidate $did\`, and that round re-checks **ONLY the
+bugs you filed** — never the whole chunk again. Validation is never
+re-delegated, and after $VALIDATION_MAX_ROUNDS rounds the main ECH decides."
+  else
+    vrole="**YOUR CHUNK IS YOURS TO VERIFY.** When its work is done, you verify it
+yourself, independently of whatever the factory or any helper reports — every
+time, and § 3 gives you the verbs:
+
+1. you read **Number One's** verdict, if one was run,
+2. you run **\`lcars-ech live-check\`** on your chunk — your own eyes on the real
+   product,
+3. you take the one action **\`lcars-ech policy\`** gives for that verdict pair,
+4. you file what you found with **\`lcars-ech file-bug\`** — your own bugs, in
+   your own words, inside your chunk — and you **drive them**.
+
+On the modelled run Number One filed **0 of 31** bugs and every one came from
+an ECH's own live check. So this is not a formality and it is not a fallback: a
+robot reviewer's verdict is no substitute for a real look, which is why the look
+is **yours** for the scope you own rather than something you wait for."
+  fi
+
   local tfile="$ddir/.template"
   printf '%s\n' "$tpl" >"$tfile" || die "delegate: could not stage the template in $ddir"
   "$PY" - "$bpath" "$tfile" "$did" "$unit_i" "$tier" "$why" "$est" "$goal" "$mission" \
         "$statepath" "$contract" "$verbs" "$bounds" "$stamp" "$signoff" \
         "$arts" "$wbase" "$tdeliver" "$blimit" "bash $SELF" "$estamp" "$front" \
-        "$climit" <<'PYREND' \
+        "$climit" "$vrole" <<'PYREND' \
     || die "delegate: could not render the brief to $bpath"
 import sys
 (out, tfile, did, unit, tier, why, est, goal, mission, statepath,
  contract, verbs, bounds, stamp, signoff, arts, wbase, tdeliver, blimit,
- launcher, estamp, front, climit) = sys.argv[1:24]
+ launcher, estamp, front, climit, vrole) = sys.argv[1:25]
 tpl = open(tfile).read()
 slots = {
     "DELEGATE_ID": did, "UNIT": unit, "TIER": tier, "TIER_WHY": why,
@@ -8766,6 +9043,10 @@ slots = {
     # S351. The absolute launcher, so the beat command in § 2 is runnable as it
     # stands rather than a placeholder the delegate has to go and resolve.
     "LAUNCHER": launcher,
+    # S366 fix round 1. § 5's body, filled by ROLE and exactly once, so one
+    # brief cannot carry a driver's contract and a validation pass's at the
+    # same time.
+    "VERIFY_ROLE": vrole,
 }
 for k, v in slots.items():
     tpl = tpl.replace("{{%s}}" % k, v)
@@ -8894,12 +9175,17 @@ PY
     say "  both gates read that file to decide whether the seat is open. That is the safe"
     say "  way round, not a silent pass. Fix the directory and re-mint."
   fi
-  # S366 — THE CHUNK'S ROUND COUNTER, ON THE UNIT. Written after the seat
-  # exists, and on the UNIT rather than the seat so closing this validator and
-  # minting a fresh one cannot reset the three-round bound.
+  # S366 — THE CHUNK'S ROUND COUNTER, ON THE MISSION. Written after the seat
+  # exists. On the MISSION and not the seat so closing this validator and
+  # minting a fresh one cannot reset the three-round bound, and on the MISSION
+  # and not the UNIT LABEL so two labels resolving to one Mission cannot buy two
+  # counters (fix round 1).
   if [ "$validate" = 1 ]; then
-    ap_set "units.$unit.validationRound" "$VAL_ROUND" \
-      || say "⚠ ROUND NOT RECORDED: units.$unit.validationRound could not be written, so the three-round bound cannot be enforced on $unit. Repair $APJSON before this pass reports."
+    ap_set "validations.$VAL_MISSION.round" "$VAL_ROUND" \
+      || say "⚠ ROUND NOT RECORDED: validations.$VAL_MISSION.round could not be written, so the three-round bound cannot be enforced on this chunk. Repair $APJSON before this pass reports."
+    # AND THE REQUEST IS SPENT, if that is the lane this pass came down.
+    [ "$VAL_TRIGGER" = driver-request ] \
+      && ap_set "delegates.$VAL_DRIVER.validatorRequested.consumedBy" "$did"
   fi
   say "MINTED: $did for $unit at tier $tier"
   say "BRIEF: $bpath"
@@ -9050,16 +9336,49 @@ cmd_revalidate() {
   local unit; unit="$(delegate_validates "$vid")"
   [ -n "$unit" ] || die "revalidate: $vid IS NOT A VALIDATOR — it is the seat DRIVING $(ap_j "delegates.$vid.unit"), and a driving seat has no validation rounds to open. A driver that keeps finding and fixing its own bugs is just doing its job; it files and drives inside its chunk and reports when the chunk meets the ask. If you mean to spend a separate pair of eyes on that chunk, mint one: \`$SELF_CMD delegate $(ap_j "delegates.$vid.unit") --validate --trigger $(printf '%s' "$VALIDATION_TRIGGERS" | tr ' ' '|') --why \"<reason>\"\`."
   delegate_is_open "$vid" || die "revalidate: $vid's seat is NOT OPEN — its \`delegates/$vid/OPEN\` marker is gone, which is what \`$SELF_CMD delegate close\` removes. A closed validator re-checks nothing. If chunk $unit needs another pass and it has rounds left, mint a fresh sibling: \`$SELF_CMD delegate $unit --validate --trigger … --why …\`."
-  local used; used="$(validation_round "$unit")"
-  [ "$used" -lt "$VALIDATION_MAX_ROUNDS" ] 2>/dev/null || validation_cap_die "$unit"
-  local filed; filed="$(ap_j "delegates.$vid.filed")"
-  local nfiled; nfiled="$(printf '%s' "$filed" | tr -d '[] ' | tr ',' '\n' | grep -c '"' || true)"
-  [ "${nfiled:-0}" -gt 0 ] 2>/dev/null || die "revalidate: $vid HAS FILED NOTHING, so there is nothing for a second round to re-check. A re-validation re-checks ONLY the bugs the validator filed — that is the whole bound — so an empty list means this pass is finished, not that it needs repeating. If it found nothing, that is a clean validation of chunk $unit: close it (\`$SELF_CMD delegate close $vid\`) and make your own whole-job call. If it found something and did not FILE it, the finding does not exist as far as the factory is concerned — it files with \`file-bug\` first."
+  local root; root="$(ap_j "delegates.$vid.mission")"
+  local used; used="$(validation_round "$root")"
+  [ "$used" -lt "$VALIDATION_MAX_ROUNDS" ] 2>/dev/null || validation_cap_die "$root"
+  # WHAT IT FILED, SANITY-CHECKED BEFORE IT BECOMES A SCOPE (fix round 1). The
+  # scope used to be whatever `filed` said, verbatim — so a hand-edited `filed`
+  # containing the CHUNK ROOT snapshotted the whole chunk as the "re-check", and
+  # the narrowing narrowed nothing. A scope is only ever the bugs this pass
+  # filed: a Mission that exists, and never the root itself.
+  local filed scope_json
+  filed="$(ap_j "delegates.$vid.filed")"
+  scope_json="$("$PY" - "$APJSON" "$vid" "$root" "$MISSIONS" <<'PYSCOPE'
+import json, os, sys
+f, vid, root, missions = sys.argv[1:5]
+try:
+    d = json.load(open(f))
+except Exception:
+    d = {}
+v = (d.get("delegates") or {}).get(vid) or {}
+out, dropped = [], []
+for m in (v.get("filed") or []):
+    if not isinstance(m, str) or not m:
+        continue
+    if m == root:
+        dropped.append("%s (the chunk ROOT — a re-check is the BUGS it filed, never the chunk)" % m)
+        continue
+    if not os.path.isdir(os.path.join(missions, m)):
+        dropped.append("%s (no such Mission on disk)" % m)
+        continue
+    if m not in out:
+        out.append(m)
+print(json.dumps({"scope": out, "dropped": dropped}))
+PYSCOPE
+)"
+  local nfiled; nfiled="$("$PY" -c 'import json,sys; print(len(json.loads(sys.argv[1])["scope"]))' "$scope_json")"
+  local dropped; dropped="$("$PY" -c 'import json,sys; print("; ".join(json.loads(sys.argv[1])["dropped"]))' "$scope_json")"
+  [ "${nfiled:-0}" -gt 0 ] 2>/dev/null || die "revalidate: $vid HAS NO FILED BUGS A ROUND COULD RE-CHECK${dropped:+ — and what its record did claim will not do: $dropped}. A re-validation re-checks ONLY the bugs the validator filed — that is the whole bound — so an empty list means this pass is FINISHED, not that it needs repeating. If it found nothing, that is a clean validation of chunk $root: close it (\`$SELF_CMD delegate close $vid\`) and make your own whole-job call. If it found something and did not FILE it, the finding does not exist as far as the factory is concerned — it files with \`file-bug\` first."
+  filed="$("$PY" -c 'import json,sys; print(json.dumps(json.loads(sys.argv[1])["scope"]))' "$scope_json")"
   local nxt=$((used + 1))
-  ap_set "units.$unit.validationRound" "$nxt" \
+  ap_set "validations.$root.round" "$nxt" \
     || die "revalidate: the round could not be recorded in $APJSON — refusing to open a round the three-round bound cannot see."
   ap_set "delegates.$vid.validationRound" "$nxt"
   ap_set "delegates.$vid.recheckScope" "$filed"
+  [ -z "$dropped" ] || say "DROPPED FROM THE SCOPE: $dropped"
   say "ROUND $nxt of $VALIDATION_MAX_ROUNDS opened for chunk $unit, validator $vid."
   say "BOUNDED TO WHAT IT FILED — and to nothing else:"
   local m
@@ -9350,6 +9669,66 @@ PY
   done <<EOF
 $rows
 EOF
+  # ==== S366 fix round 1 — THE COVERAGE FOOTER, AND IT HAS A CONSUMER ======
+  # `countsAsCoverage` was a WRITER and a PRINTER and nothing else: a label that
+  # implied a rule nobody applied. This is the rule's consumer — the screen the
+  # main ECH reads BEFORE it decides whether to spend a sibling, and the one
+  # place the comment above promised a flat run would state its shape once.
+  #
+  # IT COUNTS ONLY TRIGGERED PASSES. A pass granted on a driver's request is
+  # always honoured and never counted, so a chunk whose only pass came down that
+  # lane reads as UNVALIDATED here — which is the whole point of the weaker
+  # lane, said where it changes a decision.
+  local cov; cov="$("$PY" - "$APJSON" "$VALIDATION_MAX_ROUNDS" <<'PYCOV'
+import json, sys
+f, maxr = sys.argv[1], int(sys.argv[2])
+try:
+    d = json.load(open(f))
+except Exception:
+    sys.exit(0)
+ds = d.get("delegates") or {}
+vals = d.get("validations") or {}
+chunks = {}
+for k, v in ds.items():
+    if not isinstance(v, dict):
+        continue
+    m = v.get("mission")
+    if not m:
+        continue
+    c = chunks.setdefault(m, {"triggered": [], "requested": [], "driver": None})
+    if v.get("validates"):
+        (c["triggered"] if v.get("countsAsCoverage") else c["requested"]).append(k)
+    else:
+        c["driver"] = k
+for m in sorted(chunks):
+    c = chunks[m]
+    if not c["triggered"] and not c["requested"]:
+        continue
+    rounds = (vals.get(m) or {}).get("round") or 0
+    if c["triggered"]:
+        state = "VALIDATED by %s on a declared trigger" % ", ".join(sorted(c["triggered"]))
+        if c["requested"]:
+            state += " (plus %s on request, which does not count)" % ", ".join(sorted(c["requested"]))
+    else:
+        state = ("NOT VALIDATED — %s came down the REQUEST lane, which is honoured and "
+                 "never counted as coverage" % ", ".join(sorted(c["requested"])))
+    print("%s\t%s\t%s/%s" % (m, state, rounds, maxr))
+PYCOV
+)"
+  if [ -n "$cov" ]; then
+    say ""
+    say "VALIDATION COVERAGE  (triggered passes only — a requested one never counts)"
+    local cm cstate crounds
+    while IFS="$(printf '\037')" read -r cm cstate crounds; do
+      [ -n "${cm:-}" ] || continue
+      printf '  %s: %s  ·  rounds %s\n' "$cm" "$cstate" "$crounds"
+    done <<EOF
+$(printf '%s\n' "$cov" | tr '\t' '\037')
+EOF
+    say "  Coverage is a fact about the WORK, not about effort: the driving sub-ECH"
+    say "  validates every chunk by default, and this line only tracks the separate"
+    say "  passes. A chunk with no line here was validated by its driver, as designed."
+  fi
   say ""
   say "A delegate's hand-back is a report, never a verdict — your own live check still runs."
 }
