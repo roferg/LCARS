@@ -206,6 +206,20 @@ PARENT="lcars-20260601-001"
 echo "lcars resolve-logs"
 [ -f "$SCRIPT" ] || { echo "script under test not found at $SCRIPT"; exit 1; }
 
+# --- Behaviour 0: the script parses on EVERY bash, not just /bin/bash 3.2 ----
+# `${#ORDERED[@]:-0}` (a default on an array LENGTH) is accepted by macOS's
+# /bin/bash 3.2 but is a `bad substitution` on GNU bash 5.3. With
+# `#!/usr/bin/env bash` a Homebrew bash 5 wins PATH, the wave-schedule guard
+# errors, NO wave is built, nothing is driven, and the run ends with the
+# misleading "nothing reached a Verify gate — nothing to ask." The behaviour
+# tests below only catch that when THIS suite happens to run under bash 5, so
+# this guard is static and version-independent: no length-with-default form
+# anywhere in the script.
+len_default_hits="$(grep -nE '\$\{#[A-Za-z_][A-Za-z0-9_]*(\[[@*]\])?:[-=+?]' "$SCRIPT" || true)"
+check "0. no \${#name[@]:-default} expansions (bad substitution on bash 5.3)" \
+  "[ -z \"\$len_default_hits\" ]"
+[ -z "$len_default_hits" ] || printf '       offending line(s):\n%s\n' "$len_default_hits"
+
 # --- Behaviour 1: 3 linked bugs -> all driven, ONE consolidated gate + notify
 repo="$(new_repo_with_linked_bugs 3)"
 make_gh_stub "$repo/gh"; make_notify_stub "$repo/notify"; make_run_stub "$repo/run"; make_worker_stub "$repo/worker"

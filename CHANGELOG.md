@@ -4,6 +4,12 @@ All notable changes to LCARS are recorded here, newest first. The version
 scheme is `YYYY.M.N` (calendar year, month with no leading zero, per-month
 counter). Every PR into `main` bumps `VERSION` and adds its entry here.
 
+## 2026.11.3 — 2026-11-21
+
+### `lcars resolve-logs` works with newer versions of bash
+
+On bash 5.3 (for example, Homebrew's bash), `lcars resolve-logs` exited without working on any of the logged bugs, because of an expression that only older bash accepts. It now behaves the same on old and new bash, and a new test catches that kind of expression.
+
 ## 2026.11.2 — 2026-11-05
 
 A hands-off Mission can no longer land half-missing work, and a Mission you

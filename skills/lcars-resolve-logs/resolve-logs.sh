@@ -1280,7 +1280,10 @@ case "$CONCURRENCY" in ''|*[!0-9]*) CONCURRENCY=2 ;; esac
 [ "$CONCURRENCY" -ge 1 ] || CONCURRENCY=1
 
 WAVE_LINES=""
-if [ "${#ORDERED[@]:-0}" -gt 0 ]; then
+# ORDERED is always declared above (ORDERED=()), so the plain length is set -u
+# safe on bash 3.2 AND 5.x. Adding a `:-0` default to this array-length
+# expansion is a `bad substitution` on bash 5.3 and silently skipped every wave.
+if [ "${#ORDERED[@]}" -gt 0 ]; then
   WAVE_LINES="$(compute_bug_waves "${ORDERED[@]}")"
   emit_resolve_waves_json <<<"$WAVE_LINES" >"$PARENT_DIR/resolve-waves.json"
   # Append the wave grouping to the human-readable order record (best-effort).
