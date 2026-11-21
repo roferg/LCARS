@@ -55,7 +55,7 @@
 # fail on a known-bad build proves nothing; four of those shipped on 2026-11-18.
 #
 # Usage: bash tests/one-layer-validation.test.sh
-#    or: python3 tests/lib/cage.py 2400 bash tests/one-layer-validation.test.sh
+#    or: python3 tests/lib/cage.py 3000 bash tests/one-layer-validation.test.sh
 set -uo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -1492,6 +1492,7 @@ check "18f. [control] the DRIVER still gets all three of its own next steps" \
 # `filed`, and `revalidate` then snapshotted the WIDER list.
 rc18g=0; xech - "$R18" revalidate "$V18" >"$TMPROOT/out18g.txt" 2>&1 || rc18g=$?
 apj "$R18" "delegates.$V18.recheckScope" >"$TMPROOT/scope18.before"
+apj "$R18" "delegates.$V18.filed"        >"$TMPROOT/filed18.before"
 check "18g. round 2 opens, bounded to what it filed" \
   "[ $rc18g -eq 0 ] && grep -q 'bug-' '$TMPROOT/scope18.before'"
 : >"$R18/exec-ran.log"
@@ -1503,11 +1504,20 @@ check "18i. AND SO DOES THE OTHER DOOR — the one with no \`--mission\`" \
   "[ $rc18i -ne 0 ] && grep -q 'RE-CHECKS ONLY WHAT IT FILED' '$TMPROOT/out18i.txt'"
 check "18j. …and \`log.sh\` was NEVER INVOKED (measured, not inferred)" \
   "[ -z \"\$(ran_log '$R18')\" ]"
+# 18k COMPARED THE WRONG KEY UNDER A NAME CLAIMING TO MEASURE THE SPIRAL, and
+# it passed on the Cure-C-deleted mutant AND on the full red baseline:
+# `recheckScope` is written by `revalidate` and by nothing else, so it is
+# CONSTANT across a single `exec` on every build. **The widening is in `filed`** —
+# that is what the door appends to and what `revalidate` then snapshots into the
+# next scope. 18k now compares `filed`, and 18k3 is the mutant it fails on.
+apj "$R18" "delegates.$V18.filed" >"$TMPROOT/filed18.after"
+check "18k. …so the FILED list did not grow — which is where a widening shows" \
+  "cmp -s '$TMPROOT/filed18.before' '$TMPROOT/filed18.after'"
+check "18k2. [control] …and the list compared was a real, non-empty one" \
+  "grep -q 'bug-' '$TMPROOT/filed18.before' && grep -q 'bug-' '$TMPROOT/filed18.after'"
 apj "$R18" "delegates.$V18.recheckScope" >"$TMPROOT/scope18.after"
-check "18k. …so the scope did not widen, byte for byte" \
+check "18k4. …and the re-check scope is unchanged too (true on every build)" \
   "cmp -s '$TMPROOT/scope18.before' '$TMPROOT/scope18.after'"
-check "18k2. [control] …and the scope compared was a real, non-empty one" \
-  "[ -s '$TMPROOT/scope18.before' ] && grep -q 'bug-' '$TMPROOT/scope18.after'"
 # [CONTROLS] NOT AN OUTAGE, THREE WAYS: in-scope on that door works, the driver
 # on that door works, and a validator in ROUND 1 on that door works.
 : >"$R18/exec-ran.log"
@@ -1526,6 +1536,279 @@ V18B="$(validator_of "$R18B")"
 rc18n=0; xech "$V18B" "$R18B" exec lcars-log/log.sh --parent m-mine >/dev/null 2>&1 || rc18n=$?
 check "18n. [control] a validator in ROUND 1 reaches that door — round 1 IS the chunk" \
   "[ $rc18n -eq 0 ] && [ -n \"\$(ran_log '$R18B')\" ]"
+echo
+
+# =========================================================================
+printf '== 19. THE METHOD, NOT THE ANSWERS: every section classified by role ==\n'
+# =========================================================================
+# THIS IS THE ROW THAT MAKES THE CLASS NON-RECURRING, and it exists because the
+# suite was **242/0 at a tip where `## 3. The LCARS verbs in scope` was
+# byte-identical between a driver's brief and a validation pass's** — and that
+# section instructs `run.sh drive`, `respond.sh` and `resolve-logs.sh` in the
+# imperative, every one of them refused. § 17 greps eight sentences a tester had
+# named; it encodes the ANSWERS, so it was blind to the ninth, tenth, eleventh
+# and twelfth. Proven empirically, not argued.
+#
+# SO THIS ROW CARRIES THE METHOD. It splits a REAL driver brief and a REAL
+# validation pass's brief into sections on their own headings, normalises seat
+# ids and the mint stamp, and holds every section against a DECLARED
+# classification:
+#
+#   MUST_DIFFER  role-bearing: it grants, instructs or describes an act, and the
+#                two roles do not have the same acts.
+#   MAY_MATCH    role-neutral: it says the same true thing to either seat.
+#
+# A section in NEITHER list fails the row. So a new template section cannot be
+# added without someone deciding which it is, a MUST_DIFFER that goes identical
+# fails (the § 3 bug), and a MAY_MATCH that starts differing fails too — which
+# forces the decision rather than letting it drift.
+SEC_DRIVER="$TMPROOT/sec-driver"
+SEC_VALID="$TMPROOT/sec-valid"
+R19="$(new_repo)"; ap_init "$R19"; new_mission "$R19" m-19 verify
+ech "$R19" record 'missions.u19.id' m-19 >/dev/null 2>&1
+ech "$R19" tier u19 --tier T1 --why "one owner end to end" >/dev/null 2>&1
+ech "$R19" delegate u19 >/dev/null 2>&1
+ech "$R19" delegate u19 --validate --trigger wide --why "the declared keystone" >/dev/null 2>&1
+V19="$(validator_of "$R19")"
+# section_verdicts <driver-brief> <validator-brief> -> "VERDICT<TAB>heading"
+section_verdicts() {
+  python3 - "$1" "$2" <<'PYSEC'
+import re, sys
+def secs(path):
+    t = open(path).read()
+    t = re.sub(r'\bd[0-9]+\b', '@SEAT@', t)
+    t = re.sub(r'Minted .*', 'Minted @WHEN@', t)
+    out, cur, buf = {}, '(preamble)', []
+    for line in t.splitlines():
+        if re.match(r'^#{2,3} ', line):
+            out[cur] = '\n'.join(buf); cur = line.strip(); buf = []
+        else:
+            buf.append(line)
+    out[cur] = '\n'.join(buf)
+    return out
+a, b = secs(sys.argv[1]), secs(sys.argv[2])
+for k in a:
+    print("%s\t%s" % ("IDENTICAL" if (k in b and a[k] == b[k])
+                      else ("DIFFERS" if k in b else "DRIVER-ONLY"), k))
+for k in b:
+    if k not in a:
+        print("VALID-ONLY\t%s" % k)
+PYSEC
+}
+section_verdicts "$R19/.git/lcars/delegates/d1/BRIEF.md" \
+                 "$R19/.git/lcars/delegates/$V19/BRIEF.md" >"$SEC_DRIVER" 2>&1
+check "19a. [control] both briefs are real mints and the split found every section" \
+  "[ \"\$(wc -l <'$SEC_DRIVER' | tr -d ' ')\" -ge 20 ]"
+# ---- THE DECLARED CLASSIFICATION. Changing it is a decision, on the record. --
+# MUST_DIFFER — each one grants, instructs or describes an ACT:
+MUST_DIFFER='### T1 — one delegate owns the unit end-to-end, and ABSORBS ITS OWN STUMBLES
+## 2. The output format expected back
+## 3. The LCARS verbs in scope
+### YOUR CHUNK, AND THE AUTHORITY THAT COMES WITH IT
+### THE BOUNDARY: THESE NINE VERBS, AND NOTHING ELSE
+### The front door, and it is not optional
+### What you decide alone, and what goes UP
+## 5. YOU verify your chunk; the MAIN ECH verifies the whole'
+# MAY_MATCH — each one says the same TRUE thing to either seat, and the reason is
+# recorded so the next reader can disagree with a specific claim:
+#   (preamble)            the title, unit, tier and mint stamp
+#   ## Your tier          the recorded tier judgement and the estimate it saw
+#   ## Where you work     repo, branch, launcher, and the brief's self-check
+#   ## 1. The goal        the ask — both roles are pointed at the same chunk
+#   ### Read these …      the artifacts actually on disk
+#   ### And while you …   the beat, the silence limit, the circle limit
+#   ### RAISING IT …      the BLOCKED beat — the same channel for either seat
+#   ### The two-list …    the ledger sign-off on exit
+#   ## 4. The boundaries  this unit and not another; no LCARS source; no merge
+#   ## 6. The engine …    the role -> engine matrix row and the seat check
+#   ## Sign-off           who minted it, under which recorded judgement
+MAY_MATCH='(preamble)
+## Your tier: T1
+## Where you work
+## 1. The goal
+### Read these before you write anything
+### And while you work: BEAT
+### RAISING IT — THIS IS THE CHANNEL, and it is the only one you have
+### The two-list sign-off, on exit
+## 4. The boundaries
+## 6. The engine you run on
+## Sign-off'
+# ROLE-EXCLUSIVE sections are correct by construction — a section only one role
+# has cannot be identical — but they are still declared, so one appearing or
+# vanishing is a decision too.
+ROLE_ONLY='### ABSORBING A STUMBLE — by using the factory, never by going round it
+### YOU ARE THE VALIDATION PASS FOR THIS CHUNK — READ THIS BEFORE § 4
+### YOU DO NOT ABSORB — YOU REPORT. (This section is a driver'"'"'s; here is yours.)'
+classify_misses() {   # <verdict-file> -> one line per section the table gets wrong
+  python3 - "$1" "$MUST_DIFFER" "$MAY_MATCH" "$ROLE_ONLY" <<'PYCL'
+import sys
+rows = [l.rstrip("\n").split("\t", 1) for l in open(sys.argv[1]) if "\t" in l]
+must = set(l for l in sys.argv[2].splitlines() if l)
+may  = set(l for l in sys.argv[3].splitlines() if l)
+only = set(l for l in sys.argv[4].splitlines() if l)
+seen = set()
+for verdict, head in rows:
+    seen.add(head)
+    if head in must:
+        if verdict != "DIFFERS":
+            print("MUST_DIFFER but %s: %s" % (verdict, head))
+    elif head in may:
+        if verdict != "IDENTICAL":
+            print("MAY_MATCH but %s: %s" % (verdict, head))
+    elif head in only:
+        if verdict not in ("DRIVER-ONLY", "VALID-ONLY"):
+            print("ROLE_ONLY but %s: %s" % (verdict, head))
+    else:
+        print("UNCLASSIFIED SECTION: %s" % head)
+for head in must | may | only:
+    if head not in seen:
+        print("DECLARED BUT ABSENT: %s" % head)
+PYCL
+}
+check "19b. EVERY SECTION matches its declared role classification, and none is unclassified" \
+  "[ -z \"\$(classify_misses '$SEC_DRIVER')\" ]"
+if [ -n "$(classify_misses "$SEC_DRIVER")" ]; then
+  printf '       --- the sections the table gets wrong ---\n'
+  classify_misses "$SEC_DRIVER" | sed 's/^/       /'
+fi
+check "19c. [control] the table really classifies all three kinds, not one" \
+  "grep -c DIFFERS '$SEC_DRIVER' | grep -qv '^0\$' && grep -q IDENTICAL '$SEC_DRIVER' \
+   && grep -qE 'DRIVER-ONLY|VALID-ONLY' '$SEC_DRIVER'"
+# ---- AND THE MUTANT IT MUST FAIL ON: one fragment reverted to the driver text.
+# `$v_verbs` is § 3's role branch; emptying it makes § 3 identical again, which
+# is EXACTLY the state the suite was 242/0 in.
+SEC_BAD="$EXEC_SKILLS/lcars-eeh/sec-blind.sh"
+sed 's@^    v_verbs="Run each one through the launcher that minted this brief, by its absolute path:$@    v_verbs="" # § 3'"'"'s role branch, reverted on purpose\n    unused_verbs="Run each one through the launcher that minted this brief, by its absolute path:@' \
+  "$SCRIPT" >"$SEC_BAD"
+check "19d. the section-blind build really differs from this one, by that one line" \
+  "! diff -q '$SCRIPT' '$SEC_BAD' >/dev/null && grep -q \"reverted on purpose\" '$SEC_BAD'"
+R19B="$(new_repo)"; ap_init "$R19B"; new_mission "$R19B" m-19b verify
+ech_at "$SEC_BAD" "$R19B" record 'missions.u19b.id' m-19b >/dev/null 2>&1
+ech_at "$SEC_BAD" "$R19B" tier u19b --tier T1 --why "one owner" >/dev/null 2>&1
+ech_at "$SEC_BAD" "$R19B" delegate u19b >/dev/null 2>&1
+ech_at "$SEC_BAD" "$R19B" delegate u19b --validate --trigger wide --why "k" >/dev/null 2>&1
+V19B="$(validator_of "$R19B")"
+section_verdicts "$R19B/.git/lcars/delegates/d1/BRIEF.md" \
+                 "$R19B/.git/lcars/delegates/$V19B/BRIEF.md" >"$SEC_VALID" 2>&1
+check "19e. [control] the mutant minted both briefs, so the row below can run" \
+  "[ -n '$V19B' ] && [ \"\$(wc -l <'$SEC_VALID' | tr -d ' ')\" -ge 20 ]"
+check "19f. [discrimination] § 19b FAILS on the section-blind build" \
+  "[ -n \"\$(classify_misses '$SEC_VALID')\" ]"
+check "19g. [discrimination] …and it names § 3 as the section that went identical" \
+  "classify_misses '$SEC_VALID' | grep -q 'MUST_DIFFER but IDENTICAL: ## 3. The LCARS verbs in scope'"
+# ---- AND THE FOUR SECTIONS THIS ROUND BRANCHED, each with the sentence that
+# was false. These are § 17's shape — answers, not method — and they are kept
+# only as a readable record of WHAT was wrong; § 19b is what stops the next one.
+BV19="$R19/.git/lcars/delegates/$V19/BRIEF.md"
+BD19="$R19/.git/lcars/delegates/d1/BRIEF.md"
+for n19 in \
+  "lcars-run/run.sh drive --mission" \
+  "This is the front door." \
+  "answer a stage's own grill" \
+  "AND THOSE ARE THE ONLY SCRIPTS" \
+  "What you cured yourself" \
+  "how to do the work, which order, which files"; do
+  check "19h. the VALIDATOR brief does not say: $n19" \
+    "! grep -qF \"$n19\" \"$BV19\""
+  check "19i. [control] …and the DRIVER brief does" \
+    "grep -qF \"$n19\" \"$BD19\""
+done
+check "19j. the validator's § 3 names the ONE script it may reach, and the four refused" \
+  "grep -q 'THERE IS EXACTLY ONE SCRIPT' \"$BV19\" \
+   && grep -q 'AND THE OTHER FOUR ARE REFUSED TO YOU BY NAME' \"$BV19\""
+check "19k. …and requires the EXACT id, naming what is refused instead" \
+  "grep -q 'Name the Mission by its EXACT id' \"$BV19\" \
+   && grep -q 'a title fragment or a second' \"$BV19\""
+# THE TIER FENCE IS THE ONE EXCEPTION TO § 19h's SHAPE, deliberately. It is
+# DELEGATION.md's own definition of T1, quoted verbatim by contract, so the cure
+# is a RIDER beside it rather than a deletion from it — the sentence SURVIVES in
+# both briefs and is retracted only in the validator's. 19l is that claim; a row
+# in the 19h loop demanding its absence would have demanded a forked fence.
+check "19l0. the fence sentence survives in BOTH briefs, because it is quoted verbatim" \
+  "grep -qF 'It cures those itself' \"$BD19\" && grep -qF 'It cures those itself' \"$BV19\""
+check "19l. the tier fence is RIDDEN, not rewritten — the fence text survives" \
+  "grep -q 'It cures those itself' \"$BD19\" \
+   && grep -q 'two of that contract' \"$BV19\" \
+   && grep -q 'applies to you unchanged' \"$BV19\""
+echo
+
+# =========================================================================
+printf '== 20. THE GATE FAILS CLOSED: every spelling of a selector it cannot resolve ==\n'
+# =========================================================================
+# FOUND 1, and the CLASS behind it. Round 2's gate was
+# `[ -n "$xseat" ] && mexists "$xparent"`, and `mexists` is
+# `[ -f "$MISSIONS/<exact-name>/state.json" ]` while `lcars-log/log.sh` resolves
+# `--parent` by exact id OR issue number OR case-insensitive substring of the id
+# OR of the title. The gate and the target disagreed about what the argument
+# MEANS, and on anything the gate could not resolve it SKIPPED ITSELF.
+#
+# MEASURED AT `ad34d78` with a loosely-resolving stand-in, narrowed pass:
+# the canonical spelling refused, EIGHT others ran, and `filed` grew 1 -> 9.
+R20="$(fast_chunk_repo)"
+xech - "$R20" delegate mine --validate --trigger wide --why "the keystone" >/dev/null 2>&1
+V20="$(validator_of "$R20")"
+xech "$V20" "$R20" file-bug --parent m-mine --prd "$PRD_GOOD" >/dev/null 2>&1
+xech - "$R20" revalidate "$V20" >/dev/null 2>&1
+apj "$R20" "delegates.$V20.filed" >"$TMPROOT/filed20.before"
+check "20a. [control] the pass is narrowed and has something in its scope" \
+  "apj '$R20' delegates.$V20.recheckScope | grep -q 'bug-' && grep -q 'bug-' '$TMPROOT/filed20.before'"
+# EVERY SPELLING, one row each. The point is not the list — it is that each one
+# is a selector the GATE cannot resolve and the TARGET can.
+spell20() {   # spell20 <label> <args…>
+  local label="$1"; shift
+  : >"$R20/exec-ran.log"
+  local rc=0
+  xech "$V20" "$R20" "$@" >"$TMPROOT/out20.txt" 2>&1 || rc=$?
+  check "20b. REFUSED, and nothing ran: $label" \
+    "[ $rc -ne 0 ] && [ -z \"\$(ran_log '$R20')\" ]"
+}
+spell20 "--parent m-mine (canonical)"       exec lcars-log/log.sh --parent m-mine
+spell20 "--parent mine (unit label)"        exec lcars-log/log.sh --parent mine
+spell20 "--parent=mine (equals form)"       exec lcars-log/log.sh --parent=mine
+spell20 "two-argument exec form"            exec lcars-log log.sh --parent mine
+spell20 "repeated --parent"                 exec lcars-log/log.sh --parent m-mine --parent mine
+spell20 "a TITLE substring"                 exec lcars-log/log.sh --parent "mission m-mine"
+spell20 "a SIBLING's chunk"                 exec lcars-log/log.sh --parent theirs
+spell20 "UPPER CASE (filesystem-dependent)" exec lcars-log/log.sh --parent M-MINE
+spell20 "no selector at all"                exec lcars-log/log.sh
+spell20 "--mission, loosely"                exec lcars-log/log.sh --mission mine
+spell20 "both selectors at once"            exec lcars-log/log.sh --parent m-mine --mission m-mine
+apj "$R20" "delegates.$V20.filed" >"$TMPROOT/filed20.after"
+check "20c. …and across all eleven the FILED list never grew" \
+  "cmp -s '$TMPROOT/filed20.before' '$TMPROOT/filed20.after'"
+check "20d. the refusal says it will not guess, rather than naming one spelling" \
+  "grep -qE 'WILL NOT GUESS|NAMED NO MISSION|RE-CHECKS ONLY WHAT IT FILED' '$TMPROOT/out20.txt'"
+# ---- NOT AN OUTAGE, FOUR WAYS. Each of these must still go through.
+: >"$R20/exec-ran.log"
+INS20="$(tr -d '[]" ' <"$TMPROOT/filed20.before" | cut -d, -f1)"
+rc20e=0; xech "$V20" "$R20" exec lcars-log/log.sh --parent "$INS20" >/dev/null 2>&1 || rc20e=$?
+check "20e. [control] the in-scope EXACT id still goes through" \
+  "[ -n '$INS20' ] && [ $rc20e -eq 0 ] && [ -n \"\$(ran_log '$R20')\" ]"
+: >"$R20/exec-ran.log"
+rc20f=0; xech d1 "$R20" exec lcars-log/log.sh --parent mine >/dev/null 2>&1 || rc20f=$?
+check "20f. [control] a DRIVER's loose selector is UNTOUCHED — parked D1 not widened" \
+  "[ $rc20f -eq 0 ] && [ -n \"\$(ran_log '$R20')\" ]"
+: >"$R20/exec-ran.log"
+rc20g=0; xech - "$R20" exec lcars-log/log.sh --parent mine >/dev/null 2>&1 || rc20g=$?
+check "20g. [control] the MAIN ECH's loose selector is untouched" \
+  "[ $rc20g -eq 0 ] && [ -n \"\$(ran_log '$R20')\" ]"
+R20B="$(fast_chunk_repo)"
+xech - "$R20B" delegate mine --validate --trigger wide --why "round one" >/dev/null 2>&1
+V20B="$(validator_of "$R20B")"
+: >"$R20B/exec-ran.log"
+rc20h=0; xech "$V20B" "$R20B" exec lcars-log/log.sh --parent mine >/dev/null 2>&1 || rc20h=$?
+check "20h. [control] a ROUND-1 validator's loose selector is untouched — round 1 IS the chunk" \
+  "[ $rc20h -eq 0 ] && [ -n \"\$(ran_log '$R20B')\" ]"
+# ---- AND THE CLASS, STATED AS A PROPERTY: the four scoped VERBS fail closed on
+# a selector they cannot resolve, by DESIGN now rather than by accident of a
+# stricter target. The tester noted they were safe only because `cmd_*` calls
+# `mexists … || die` before the scope check; these rows pin that.
+for v20 in "file-bug --parent" "live-check" "drive"; do
+  rc=0; xech "$V20" "$R20" ${v20% *} ${v20##* } mine --prd "$PRD_GOOD" >"$TMPROOT/out20v.txt" 2>&1 || rc=$?
+  check "20i. a loose selector on \`${v20% *}\` fails CLOSED too" "[ $rc -ne 0 ]"
+done
+check "20j. …and that refusal is the strict resolve, not a scope decision" \
+  "grep -qiE 'no (parent )?mission|not in your chunk|OUTSIDE YOUR RE-CHECK|NOT AN ACT' '$TMPROOT/out20v.txt'"
 echo
 
 # --- zero spend, every run ------------------------------------------------

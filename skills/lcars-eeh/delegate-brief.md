@@ -38,6 +38,7 @@ four, delegates duplicate each other's work and leave gaps between them.
 | `{{TIER_DELIVERABLE}}` | what THIS tier adds to the hand-back. Empty at T0/T1; at T2 it asks for the tester's evidence and bug list (**D4**) |
 | `{{TIER_CONTRACT}}` | the `<!-- tier:<T> -->` block of `DELEGATION.md`, verbatim |
 | `{{VERBS}}` | the LCARS verbs in scope for this unit — and, **S365**, § *YOUR CHUNK, AND THE AUTHORITY THAT COMES WITH IT*: the chunk this sub-ECH owns **by Mission id**, the `LCARS_ECH_AS` export that makes its authority resolvable, the verbs that are **its own inside that chunk** (`file-bug`, `live-check`, `policy`, `drive`), that the same verbs are **refused by name outside it**, and the limit — `land`, `approve`, `push-gated` and `ask` stay the MAIN ECH's, each with the reason. The ONE statement of all of it is `DELEGATION.md` § *AUTHORITY TRAVELS WITH THE CHUNK*; this slot carries it to a reader who will never open that file, which is S359's lesson: a brief that does not state the rule it holds a delegate to manufactures its own false positives |
+| `{{HANDBACK}}` | **S366 fix round 3** — § 2's hand-back list, by role. A driver reports what it CURED (that bullet "is the measure of whether the tier earned anything"); a validation pass cures nothing, and reports what it LOOKED AT, what it SAW and what it FILED. One of four sections a section-by-section driver/validator diff caught still identical after round 2 branched the seven a tester had named |
 | `{{VERIFY_ROLE}}` | **S366 fix round 1** — § 5's body, and it is slotted precisely so a brief CANNOT CARRY BOTH ROLES. For a DRIVING seat it is the four steps it always was (read Number One, `live-check`, take `policy`'s action, `file-bug` and drive them). For a VALIDATION PASS it is that pass's contract: it LOOKS and it FILES, and the verdict, the action and the fix are **not its acts** — the harness refuses all three by name. Before this slot existed, § 5 was fixed text telling every seat to run `policy` and drive its own bugs, while the S366 section in `{{VERBS}}` told a validator it must not: one brief, two contracts, no override stated. The contradiction is now structurally impossible rather than patched by wording, because the slot is filled exactly once |
 | `{{BOUNDARIES}}` | what this unit does not cover |
 | `{{CREATED_AT}}` | when it was minted |
@@ -117,15 +118,7 @@ have shown.
 
 Your hand-back states, in this order:
 
-- **What is now true** — the goal above, answered, or the part of it that is.
-- **What you ran, and what it printed** — the commands and their real output,
-  with the real identifiers (ids, paths, field names). Not a paraphrase.
-- **What you cured yourself** — each stumble you absorbed and how. At T1 and T2
-  this section is the measure of whether the tier earned anything.
-- **What is still open** — anything you could not resolve, and what it is
-  blocked on.
-- **What you did NOT touch** — so the ECH can tell an untested area from a
-  working one.
+{{HANDBACK}}
 
 {{TIER_DELIVERABLE}}
 **Your hand-back is a report, never a verdict.** See § 5.

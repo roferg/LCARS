@@ -1186,6 +1186,67 @@ for m in (v.get("recheckScope") or []):
 PYVS
 }
 
+# validator_exec_reach_or_die <script> <seat> <mission> <mcount> <parent> <pcount>
+# — THE OTHER HALF OF THE SAME BOUND, AND IT FAILS CLOSED.
+#
+# S366 FIX ROUND 3. Round 2's gate was `[ -n "$xseat" ] && mexists "$xparent"`,
+# and `mexists` is `[ -f "$MISSIONS/<exact-name>/state.json" ]` — an EXACT
+# directory name. `skills/lcars-log/log.sh` resolves `--parent` by exact id OR
+# issue number OR case-insensitive substring of the id OR of the title. So the
+# gate and the target disagreed about what the argument MEANS, and on anything
+# the gate could not resolve it SKIPPED ITSELF — it failed OPEN. Measured at
+# `ad34d78`, a narrowed validation pass with scope ["xbug-1"]:
+#
+#   --parent m-mine (canonical)        rc 1  refused   <- round 2's cure
+#   --parent mine                      rc 0  RAN
+#   --parent=mine                      rc 0  RAN
+#   exec lcars-log log.sh --parent …   rc 0  RAN       (two-argument form)
+#   --parent m-mine --parent mine      rc 0  RAN       (repeated)
+#   --parent "the river"               rc 0  RAN       (a TITLE substring)
+#   --parent theirs                    rc 0  RAN       (a SIBLING's chunk)
+#   no selector at all                 rc 0  RAN
+#   --mission mine                     rc 0  RAN
+#
+# `filed` grew 1 -> 9 and `revalidate` snapshots `filed`, so the re-check scope
+# widened every round: `validator_recheck_or_die`'s own documented failure.
+#
+# THE CLASS, AND WHY THE FIX IS SHAPED THIS WAY. "I cannot resolve this" must
+# mean REFUSE, not SKIP — deny-by-default, which is the rule everywhere else in
+# this file. And the authoritative test is a STRING comparison against the
+# recorded scope, never a filesystem probe: `--parent M-MINE` was refused at
+# `ad34d78` only because APFS is case-insensitive, and on a case-sensitive
+# filesystem it took the open route. Nothing below touches the disk to decide.
+#
+# IT IS SCOPED TO A NARROWED VALIDATION PASS AND NOTHING ELSE. It returns 0 for
+# the main ECH, for every driving seat, and for a validator in round 1 — so
+# parked D1 (a driver's `--parent` is unchecked for the CHUNK) is untouched by
+# construction, which a control in § 18 measures both ways.
+validator_exec_reach_or_die() {
+  local script="$1" seat="$2" mission="$3" mcount="$4" parent="$5" pcount="$6"
+  local unit scope n sel
+  unit="$(delegate_validates "$seat")"
+  [ -n "$unit" ] || return 0
+  scope="$(val_scope "$seat")"
+  [ -n "$scope" ] || return 0
+  n=$((mcount + pcount))
+  if [ "$n" -eq 0 ]; then
+    die "exec $script: YOU NAMED NO MISSION, AND A NARROWED RE-CHECK MAY NOT REACH A SIBLING SCRIPT BLIND. You are the validation pass for chunk $unit and this round re-checks ONLY what you filed: $(printf '%s' "$scope" | tr '\n' ' '). A script run with no \`--parent\` and no \`--mission\` resolves its own target, and this gate cannot know which one — so it refuses rather than guesses. Name one of the Missions above, exactly as it is written. Nothing was run."
+  fi
+  if [ "$n" -gt 1 ]; then
+    die "exec $script: YOU NAMED $n MISSION SELECTORS, AND THIS GATE WILL NOT GUESS WHICH ONE THE SCRIPT WILL USE. One \`--parent\` or one \`--mission\`, never several and never both: a gate that reads the last while the script reads the first is a gate that agrees with nothing, and that disagreement is exactly how a re-check widened. You are the validation pass for chunk $unit and this round re-checks ONLY what you filed: $(printf '%s' "$scope" | tr '\n' ' '). Nothing was run."
+  fi
+  if [ "$mcount" = 1 ]; then sel="$mission"; else sel="$parent"; fi
+  # THE EXACT STRING, AGAINST THE RECORDED SCOPE. Not `mexists`, not a
+  # lower-cased compare, not a substring — the same literal this pass's own
+  # record carries.
+  printf '%s\n' "$scope" | grep -qx "$sel" && return 0
+  # …or a descendant of something it filed (a bug logged beneath its own
+  # finding is still that finding). Decided by the ONE decider, which refuses
+  # anything else — including a selector that resolves to nothing here at all.
+  validator_recheck_or_die "exec $script <selector>" "$sel" "$seat"
+  return 0
+}
+
 # validator_recheck_or_die <verb> <mission> <seat> — THE ANTI-SPIRAL HALF OF THE
 # SCOPE CHECK, and it hangs off the SAME choke point as the chunk check so there
 # is one place a seat's reach is decided.
@@ -7154,7 +7215,7 @@ cmd_exec() {
   subech_exec_target_or_die "$script"
   local target="$SKILLS_DIR/$script"
   [ -f "$target" ] || die "exec: no such script in this LCARS clone: $target"
-  local role="" mission="-" prev="" arg xparent=""
+  local role="" mission="-" prev="" arg xparent="" xmcount=0 xpcount=0
   case "$script:${1:-}" in
     lcars-run/run.sh:plan-review) role=reviewer ;;
     lcars-run/run.sh:drive|lcars-run/run.sh:research|lcars-run/run.sh:validate|lcars-run/run.sh:estimate|lcars-run/run.sh:plan|lcars-run/run.sh:implement|lcars-run/run.sh:implement-ticket)
@@ -7166,8 +7227,8 @@ cmd_exec() {
   # below needs it whether or not a budget row applies. It used to be read only
   # when a billed role was resolved AND a ceiling was set.
   for arg in "$@"; do
-    [ "$prev" != --mission ] || mission="$arg"
-    case "$arg" in --mission=*) mission="${arg#--mission=}" ;; esac
+    [ "$prev" != --mission ] || { mission="$arg"; xmcount=$((xmcount + 1)); }
+    case "$arg" in --mission=*) mission="${arg#--mission=}"; xmcount=$((xmcount + 1)) ;; esac
     # S366 FIX ROUND 2, CURE C — `--parent` IS READ, FOR ONE REASON ONLY.
     # `exec lcars-log/log.sh --parent <chunk root>` classifies as `file`, which a
     # validation pass MAY do, and it carries NO `--mission` — so
@@ -7188,8 +7249,8 @@ cmd_exec() {
     # here: `validator_recheck_or_die` returns 0 for a driving seat, for a
     # validator in round 1, and for any seat with no recorded `recheckScope`, so
     # nothing outside a narrowed validation pass changes.
-    [ "$prev" != --parent ] || xparent="$arg"
-    case "$arg" in --parent=*) xparent="${arg#--parent=}" ;; esac
+    [ "$prev" != --parent ] || { xparent="$arg"; xpcount=$((xpcount + 1)); }
+    case "$arg" in --parent=*) xparent="${arg#--parent=}"; xpcount=$((xpcount + 1)) ;; esac
     prev="$arg"
   done
   if [ -n "$role" ] && [ -n "$CLAUDE_CEILING" ]; then
@@ -7212,15 +7273,20 @@ cmd_exec() {
       subech_scope_or_die "exec $script --mission" "$mission"
     fi
   fi
-  # CURE C's OTHER HALF: A NARROWED VALIDATION PASS OBEYS ITS SCOPE ON EVERY
-  # DOOR, INCLUDING THE ONE WITH NO `--mission`. The SAME decider the scope gate
-  # calls — one function, so the two doors cannot bound a re-check differently.
-  if [ -n "$ECH_AS" ] && [ -n "$xparent" ]; then
+  # A NARROWED VALIDATION PASS OBEYS ITS SCOPE ON EVERY DOOR, WHATEVER THE
+  # SELECTOR IS SPELLED LIKE — AND THE GATE FAILS CLOSED (fix round 3).
+  #
+  # NO `mexists` GUARD, and that removal is the whole cure: it made the check
+  # skip itself on every selector that is not an exact directory name, while the
+  # target resolved those perfectly well. Nine spellings are measured in
+  # `validator_exec_reach_or_die`'s own header. The decider is role-aware and
+  # round-aware, so running it unconditionally for a seat changes nothing for a
+  # driver or for round 1.
+  if [ -n "$ECH_AS" ]; then
     require_state
     local xseat; xseat="$(subech_seat)" || exit $?
-    if [ -n "$xseat" ] && mexists "$xparent"; then
-      validator_recheck_or_die "exec $script --parent" "$xparent" "$xseat"
-    fi
+    [ -z "$xseat" ] || validator_exec_reach_or_die "$script" "$xseat" \
+      "$([ "$mission" = "-" ] || printf '%s' "$mission")" "$xmcount" "$xparent" "$xpcount"
   fi
 
   # ==== S365 fix round 1: A MISSION A SUB-ECH FILES JOINS ITS CHUNK ========
@@ -8263,8 +8329,92 @@ or a wrong unit id. Confirm which with the ECH before you write anything."
   # way § 5 was done: each block below is filled ONCE, by role, so a brief
   # cannot carry both contracts. The driver branches are the shipped text
   # verbatim, which is what keeps every existing assertion true of a driver.
-  local a_own a_subdiv a_yours b_depth b_ninth f_file f_absorb
+  # FIX ROUND 3 ADDS FOUR MORE, AND THEY WERE FOUND BY ENUMERATION RATHER THAN
+  # BY BEING NAMED. Round 2 branched the seven sections a tester had quoted; a
+  # section-by-section diff of a real driver brief against a real validation
+  # pass's — the method § 19 now carries — showed FOUR still identical and all
+  # four role-bearing:
+  #
+  #   ## 3. The LCARS verbs in scope      the exec bullets instruct `run.sh
+  #                                       drive`, `respond.sh` and
+  #                                       `resolve-logs.sh` in the imperative,
+  #                                       and claim all five scripts are
+  #                                       reachable. Four of the five are
+  #                                       refused to a validation pass by name.
+  #   ## 2. The output format expected back
+  #                                       "What you CURED yourself … the measure
+  #                                       of whether the tier earned anything".
+  #                                       A validation pass cures nothing.
+  #   ### What you decide alone, and what goes UP
+  #                                       "how to do the work, which order,
+  #                                       which files, how to test it, and every
+  #                                       stumble you can cure".
+  #   ### T1 — … ABSORBS ITS OWN STUMBLES  the tier fence: "It cures those
+  #                                       itself" and "A delegate that escalates
+  #                                       every stumble is worth nothing over
+  #                                       T0".
+  #
+  # The last is DELEGATION.md's own fence, quoted verbatim by contract, so it is
+  # not rewritten per role — a RIDER is appended saying which of its clauses do
+  # not apply, which keeps the fence the single statement of what T1 is.
+  local a_own a_subdiv a_yours b_depth b_ninth f_file f_absorb f_decide
+  local v_verbs v_handback v_decide v_tier
   if [ "$validate" = 1 ]; then
+    v_verbs="Run each one through the launcher that minted this brief, by its absolute path:
+
+    bash $SELF exec <skill>/<script>
+
+**THERE IS EXACTLY ONE SCRIPT \`exec\` WILL REACH FOR YOU, and it is the one
+that FILES:**
+
+- \`lcars-log/log.sh --parent <mission-in-your-scope> --prd <f>\`
+  file a bug you found. The PRD is a file YOU write first; it needs a
+  \`# Mission: <title>\` line and a \`**Type:** bug\` line, and the shape to copy
+  is staged at \`$LCARS_DIR/bug-prd.md\` (its source is
+  \`$SKILLS_DIR/lcars-eeh/bug-prd.md\`) — read that file before you write one.
+  Lead its Acceptance Criteria with \`Observed live: <the exact output you
+  saw>\`, with the real command, ids and paths: that is the single thing that
+  gets a fix through first time, because the worker can reproduce it.
+  **Name the Mission by its EXACT id**, as this brief and \`$SELF_CMD delegates\`
+  write it — a unit label, an issue number, a title fragment or a second
+  \`--parent\` is REFUSED, because this gate will not guess which one the script
+  would have used.
+
+**AND THE OTHER FOUR ARE REFUSED TO YOU BY NAME**, because each of them is an
+act a validation pass does not perform:
+
+- \`lcars-run/run.sh\` — the stage machine. That is the FIX, and $VAL_DRIVER
+  drives it.
+- \`lcars-respond/respond.sh\` — answering a stage's grill is part of driving.
+- \`lcars-resolve-logs/resolve-logs.sh\` — working the bugs is the FIX.
+- \`lcars-file/file.sh\` — SUBDIVIDING a chunk that is not yours.
+
+\`lcars-approve\`, \`lcars-answer\`, \`lcars-feedback\`, \`lcars-init\`,
+\`lcars-xo\` and \`lcars-eeh\` are refused to every seat, driver or validator.
+
+An allowed script still obeys your scope: a selector outside it is refused
+exactly as the verb would be."
+    v_handback="- **What you LOOKED AT, and what you SAW** — each target you checked, the
+  detector you used, and the real output. Not a paraphrase. This is the section
+  the pass exists to produce.
+- **What you FILED** — every bug, by id, with one line on what you saw. They are
+  $VAL_DRIVER's to fix; your list is what your next round is bounded to.
+- **What you could NOT tell** — anything you could not settle by looking, and
+  what would settle it."
+    v_decide="**Decide alone:** what to look at, in what order, with which detector, and
+whether what you saw is a defect worth filing. That judgement is the whole
+reason a separate pass was spent.
+
+**You do NOT decide:** whether the chunk passes, what action follows, or when it
+is fixed. Those are $VAL_DRIVER's and the main ECH's, and the verbs that carry
+them are refused to you by name."
+    v_tier="> **AND THIS PASS IS NOT DRIVING THE UNIT, so two of that contract's clauses
+> are not yours.** *\"It cures those itself\"* and *\"a delegate that escalates
+> every stumble is worth nothing over T0\"* are written for the seat that DRIVES
+> a unit — $VAL_DRIVER, here. You are the separate look: you do not cure, and
+> reporting what you found is not escalation, it is the deliverable. The rest of
+> the contract above — absorbing your own stumbles IN LOOKING, the beat, the
+> sign-off — applies to you unchanged."
     a_own="**You are a VALIDATION PASS over a chunk somebody else drove.** The chunk
 starts at Mission \`${mid:-$unit_i}\`, and it is that Mission plus every Mission
 and bug Mission beneath it. $VAL_DRIVER drove it and is still driving it. Inside
@@ -8313,6 +8463,7 @@ Report what you found; after $VALIDATION_MAX_ROUNDS rounds the main ECH decides.
   how a defect you found gets fixed, and **$VAL_DRIVER is the seat that fixes
   it**. (\`lcars file\` is NOT yours: filing a Mission into this chunk is
   refused.)"
+    f_decide="$v_decide"
     f_absorb="### YOU DO NOT ABSORB — YOU REPORT. (This section is a driver's; here is yours.)
 
 A driving sub-ECH absorbs its own stumbles rather than sending every red test
@@ -8378,6 +8529,10 @@ actually STUCK, that is the \`BLOCKED:\` beat, not this."
   hand-writing a mission record.
 - \`lcars log\` — file a bug you found against this Mission. This is how a defect
   gets fixed; you do not fix it by editing around it."
+    v_verbs=""; v_handback=""; v_decide=""; v_tier=""
+    f_decide="**Decide alone:** how to do the work, which order, which files, how to test it,
+and every stumble you can cure with the verbs above. That is what your tier
+bought."
     f_absorb="### ABSORBING A STUMBLE — by using the factory, never by going round it
 
 A delegate that sends every red test back up is worth nothing over the ECH doing
@@ -8408,7 +8563,18 @@ against. If you are stuck and the only way forward you can see is one of the
 three, **you are not stuck on the work — you are at a question for the ECH.**"
   fi
 
-  local verbs; verbs="Run each one through the launcher that minted this brief, by its absolute path:
+  # AND A RIDER, NOT A REWRITE, FOR A VALIDATION PASS. The fence is
+  # DELEGATION.md's own definition of the tier, quoted verbatim by contract — the
+  # ONE statement of what T1 is — so rewriting it per role would fork it. Two of
+  # its clauses are written for the seat that DRIVES the unit; the rider names
+  # them and leaves the fence intact.
+  [ -z "$v_tier" ] || contract="$contract
+
+$v_tier"
+
+  local verbs
+  if [ -n "$v_verbs" ]; then verbs="$v_verbs"; else
+  verbs="Run each one through the launcher that minted this brief, by its absolute path:
 
     bash $SELF exec <skill>/<script>
 
@@ -8445,7 +8611,9 @@ OFF. If your chunk genuinely needs a verifier, that is a call for the main ECH
 and the route is a \`BLOCKED:\` beat.
 
 An allowed script still obeys your chunk: a \`--mission\` outside it is refused
-exactly as the verb would be.
+exactly as the verb would be."
+  fi
+  verbs="$verbs
 
 ### YOUR CHUNK, AND THE AUTHORITY THAT COMES WITH IT
 
@@ -9025,9 +9193,7 @@ away and hands back something that merely looks finished.
 
 ### What you decide alone, and what goes UP
 
-**Decide alone:** how to do the work, which order, which files, how to test it,
-and every stumble you can cure with the verbs above. That is what your tier
-bought.
+$f_decide
 
 **Goes UP to the ECH** — never the captain: a scope change, a product call he
 owns, a conflict with a standing rule, or a question only the ECH can settle.
@@ -9115,6 +9281,23 @@ either kind is missing, and an incomplete hand-back is a unit nobody can learn
 from."
   fi
 
+  # § 2's HAND-BACK LIST IS ROLE-BEARING TOO — "What you CURED yourself … the
+  # measure of whether the tier earned anything" is a driver's deliverable, and
+  # a validation pass cures nothing. Found by enumerating the template's
+  # sections, not by being told.
+  local handback
+  if [ -n "$v_handback" ]; then handback="$v_handback"; else
+    handback="- **What is now true** — the goal above, answered, or the part of it that is.
+- **What you ran, and what it printed** — the commands and their real output,
+  with the real identifiers (ids, paths, field names). Not a paraphrase.
+- **What you cured yourself** — each stumble you absorbed and how. At T1 and T2
+  this section is the measure of whether the tier earned anything.
+- **What is still open** — anything you could not resolve, and what it is
+  blocked on.
+- **What you did NOT touch** — so the ECH can tell an untested area from a
+  working one."
+  fi
+
   # S352 fills these two. A renderer leaves an unsupported slot EMPTY rather
   # than printing its token: a brief with a raw {{TOKEN}} in it is a brief a
   # delegate has to guess at.
@@ -9192,12 +9375,12 @@ is **yours** for the scope you own rather than something you wait for."
   "$PY" - "$bpath" "$tfile" "$did" "$unit_i" "$tier" "$why" "$est" "$goal" "$mission" \
         "$statepath" "$contract" "$verbs" "$bounds" "$stamp" "$signoff" \
         "$arts" "$wbase" "$tdeliver" "$blimit" "bash $SELF" "$estamp" "$front" \
-        "$climit" "$vrole" <<'PYREND' \
+        "$climit" "$vrole" "$handback" <<'PYREND' \
     || die "delegate: could not render the brief to $bpath"
 import sys
 (out, tfile, did, unit, tier, why, est, goal, mission, statepath,
  contract, verbs, bounds, stamp, signoff, arts, wbase, tdeliver, blimit,
- launcher, estamp, front, climit, vrole) = sys.argv[1:25]
+ launcher, estamp, front, climit, vrole, handback) = sys.argv[1:26]
 tpl = open(tfile).read()
 slots = {
     "DELEGATE_ID": did, "UNIT": unit, "TIER": tier, "TIER_WHY": why,
@@ -9227,6 +9410,9 @@ slots = {
     # brief cannot carry a driver's contract and a validation pass's at the
     # same time.
     "VERIFY_ROLE": vrole,
+    # § 2's hand-back list, by role: a driver reports what it CURED, a
+    # validation pass reports what it LOOKED AT, SAW and FILED.
+    "HANDBACK": handback,
 }
 for k, v in slots.items():
     tpl = tpl.replace("{{%s}}" % k, v)
