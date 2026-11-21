@@ -282,6 +282,36 @@ JSON'
 mkdir -p "$EXEC_SKILLS/lcars-run"
 stub "$STUBS/run-makes.sh" 0 "$RUNMAKES"
 cp "$STUBS/run-makes.sh" "$EXEC_SKILLS/lcars-run/run.sh"
+# S365 fix round 3. THE SCRIPTS THE TESTER REACHED, each one an ACT rather than
+# a name. The approve stand-in MERGES for real in fixture terms: it records a
+# pr-merge and sets the Mission's stage to done, which is exactly what the
+# measured bypass did. If the allow-list leaks, these leave evidence.
+for sk3 in lcars-approve lcars-answer lcars-feedback lcars-init lcars-xo lcars-respond lcars-resolve-logs; do
+  mkdir -p "$EXEC_SKILLS/$sk3"
+done
+APPROVEMERGES='mission=""
+while [ $# -gt 0 ]; do
+  case "$1" in --mission) mission="$2"; shift ;; esac
+  shift
+done
+printf "pr-merge %s\n" "$mission" >>"$LCARS_ECH_CWD/merged.log"
+d="$LCARS_ECH_CWD/.git/lcars/missions/$mission"
+[ -d "$d" ] && printf "{\"id\":\"%s\",\"stage\":\"done\",\"type\":\"feature\",\"title\":\"t\"}\n" "$mission" >"$d/state.json"'
+stub "$STUBS/approve-merges.sh" 0 "$APPROVEMERGES"
+cp "$STUBS/approve-merges.sh" "$EXEC_SKILLS/lcars-approve/approve.sh"
+RAN3='printf "RAN %s\n" "$0" >>"$LCARS_ECH_CWD/ran.log"'
+for pair3 in lcars-answer/answer.sh lcars-feedback/feedback.sh lcars-init/init.sh \
+             lcars-xo/xo.sh lcars-respond/respond.sh lcars-resolve-logs/resolve-logs.sh; do
+  stub "$STUBS/ran3.sh" 0 "$RAN3"
+  cp "$STUBS/ran3.sh" "$EXEC_SKILLS/$pair3"
+done
+# A run.sh that REPORTS THE SEAT IT INHERITED, so the env-inheritance property
+# is measured rather than assumed. It is the same script `exec` resolves for
+# `lcars-run/run.sh`, so one of the two has to win: this one is used only by the
+# inheritance rows, through its own copy.
+mkdir -p "$EXEC_SKILLS/lcars-run"
+SEATECHO='printf "SEAT=%s\n" "${LCARS_ECH_AS:-NONE}" >"$LCARS_ECH_CWD/seat.txt"'
+stub "$STUBS/seat-echo.sh" 0 "$SEATECHO"
 # `live-check` resolves its checklists at $SKILLS_DIR/lcars-run/live-check/, so
 # a tree without them refuses for a reason that has nothing to do with
 # authority — the first run of this section failed three rows on exactly that.
@@ -1143,6 +1173,149 @@ X14B="$(xech d1 "$R14B" exec lcars-file/file.sh --id m-fresh 2>&1)"
 check "14f. the fresh Mission is attributed and the stale one is not" \
   "[ \"\$(. '$CHUNK_LIB'; lcars_chunk_owner '$R14B/.git/lcars' m-fresh)\" = d1 ] \
    && [ -z \"\$(. '$CHUNK_LIB'; lcars_chunk_claim '$R14B/.git/lcars' m-stale)\" ]"
+echo
+
+# =========================================================================
+printf '== 16. THE BOUNDARY BOUNDS WHAT A SEAT *DOES* (fix round 3, cure 1) ==\n'
+# =========================================================================
+# ROUND 2 BOUNDED THE VERB NAMES. `exec` reaches a sibling script, and the ACTS
+# those scripts perform were not bounded at all. Measured by a fresh tester,
+# same fixture, `LCARS_ECH_AS=d1` whose chunk is NOT the Mission it merged:
+#
+#     lcars-ech land m-land                                 -> DENIED
+#     lcars-ech exec lcars-approve/approve.sh --mission m-land
+#         -> pr-merge calls = 1 ; stage AFTER = "done"
+#
+# IT MERGED A MISSION IT WAS NEVER HANDED. `land`, `approve` and `push-gated`
+# are each refused BY NAME with their own sentence about landing being the main
+# ECH's one decision — and the identical decision was one `exec` away.
+R16="$(fast_chunk_repo)"
+: >"$R16/merged.log"; : >"$R16/ran.log"
+# ---- 16a: THE PAIR, IN ONE ROW, so they can never drift apart again -----
+l16="$(xech d1 "$R16" land m-theirs 2>&1)"; l16rc=$?
+x16="$(xech d1 "$R16" exec lcars-approve/approve.sh --mission m-theirs 2>&1)"; x16rc=$?
+check "16a. \`land\` IS DENIED **AND** \`exec approve.sh\` IS DENIED — the name and the act" \
+  "[ $l16rc -ne 0 ] && [ $x16rc -ne 0 ]"
+check "16a2. …and NOTHING MERGED: no pr-merge, and the Mission is still at verify" \
+  "[ ! -s '$R16/merged.log' ] && grep -q '\"stage\": *\"verify\"' '$R16/.git/lcars/missions/m-theirs/state.json'"
+check "16a3. the \`exec\` refusal says WHY — that it is the same decision by another route" \
+  "printf '%s' \"\$x16\" | grep -qi 'MERGES' && printf '%s' \"\$x16\" | grep -qi 'one decision'"
+check "16a4. …and names the MAIN ECH as the owner, with the route back" \
+  "printf '%s' \"\$x16\" | grep -qi 'main ECH' && printf '%s' \"\$x16\" | grep -q 'BLOCKED'"
+# IT IS DENIED IN ITS OWN CHUNK TOO: landing is not a scope question.
+x16b="$(xech d1 "$R16" exec lcars-approve/approve.sh --mission m-mine 2>&1)"; x16brc=$?
+check "16a5. …and it is refused on its OWN chunk as well — landing is never a scope question" \
+  "[ $x16brc -ne 0 ] && [ ! -s '$R16/merged.log' ]"
+# ---- 16b: one row per denied script -------------------------------------
+for pair16 in "lcars-answer/answer.sh:the Review decision" \
+              "lcars-feedback/feedback.sh:the Review decision" \
+              "lcars-init/init.sh:the reset that releases its own claims" \
+              "lcars-xo/xo.sh:Number One, which the captain has ruled OFF" \
+              "lcars-eeh/ech.sh:this program itself"; do
+  sc16="${pair16%%:*}"; wh16="${pair16#*:}"
+  o16="$(xech d1 "$R16" exec "$sc16" 2>&1)"; r16=$?
+  check "16b. \`exec $sc16\` is REFUSED ($wh16)" \
+    "[ $r16 -ne 0 ] && printf '%s' \"\$o16\" | grep -q 'IS NOT A SCRIPT A SUB-ECH MAY REACH'"
+done
+check "16b2. …and none of them RAN: no script left a mark" \
+  "[ ! -s '$R16/ran.log' ]"
+check "16b3. the xo refusal names the captain's standing ruling, not just 'denied'" \
+  "printf '%s' \"\$(xech d1 '$R16' exec lcars-xo/xo.sh 2>&1)\" | grep -qi 'Number One is OFF'"
+# ---- 16c: NOT AN OUTAGE — the documented scripts still reach their work --
+# This is the control that matters: the coordinator declined an allow-list in
+# round 2 because it would break `respond.sh`, `resolve-logs.sh` and `xo.sh`.
+# That was a reason to put them ON the list, and here they are.
+n16=0; n16names=""
+for sc16 in lcars-file/file.sh lcars-log/log.sh lcars-run/run.sh \
+            lcars-respond/respond.sh lcars-resolve-logs/resolve-logs.sh; do
+  o16="$(xech d1 "$R16" exec "$sc16" --mission m-mine 2>&1)"
+  if printf '%s' "$o16" | grep -q 'IS NOT A SCRIPT A SUB-ECH MAY REACH'; then
+    n16=$((n16+1)); n16names="$n16names $sc16"
+  fi
+done
+check "16c. [control] all five documented delegate scripts still REACH their work" \
+  "[ $n16 -eq 0 ]    # refused:$n16names"
+check "16c2. [control] …and the MAIN ECH still reaches every script, including approve" \
+  "xech - '$R16' exec lcars-approve/approve.sh --mission m-theirs >/dev/null 2>&1; [ -s '$R16/merged.log' ]"
+check "16c3. the brief names the exec allow-list, from the same ONE constant" \
+  "grep -q 'lcars-file/file.sh lcars-log/log.sh lcars-run/run.sh lcars-respond/respond.sh lcars-resolve-logs/resolve-logs.sh' '$B7' \
+   && grep -q 'SUBECH_EXEC_SCRIPTS=\"lcars-file/file.sh lcars-log/log.sh lcars-run/run.sh lcars-respond/respond.sh lcars-resolve-logs/resolve-logs.sh\"' '$REPO_ROOT/skills/lcars-eeh/ech.sh'"
+check "16c4. …and the brief no longer hands a delegate Number One" \
+  "! grep -q 'lcars-xo/xo.sh\`$' '$B7'"
+# ---- 16d: an ALLOWED script still obeys the chunk ----------------------
+R16D="$(fast_chunk_repo)"
+d16="$(xech d1 "$R16D" exec lcars-run/run.sh drive --mission m-theirs 2>&1)"; d16rc=$?
+check "16d. an allowed script with a \`--mission\` OUTSIDE the chunk is refused" \
+  "[ $d16rc -ne 0 ] && printf '%s' \"\$d16\" | grep -q 'NOT IN YOUR CHUNK'"
+check "16d2. …and it names the sibling that owns it" \
+  "printf '%s' \"\$d16\" | grep -q 'd2'"
+check "16d3. [control] …and the SAME script on its OWN chunk still runs" \
+  "xech d1 '$R16D' exec lcars-run/run.sh drive --mission m-mine >/dev/null 2>&1"
+# ---- 16e: LCARS_ECH_AS IS INHERITED, DELIBERATELY AND MEASURED ----------
+# It was the only reason `exec lcars-eeh/ech.sh delegate theirs` was ever
+# refused, and nothing stated or tested it. Measured here through an ALLOWED
+# script that reports the seat it was handed.
+R16E="$(fast_chunk_repo)"
+cp "$STUBS/seat-echo.sh" "$EXEC_SKILLS/lcars-run/run.sh"
+xech d1 "$R16E" exec lcars-run/run.sh --mission m-mine >/dev/null 2>&1
+check "16e. a script \`exec\` runs INHERITS \`LCARS_ECH_AS\` — the property is real" \
+  "[ -f '$R16E/seat.txt' ] && grep -q '^SEAT=d1$' '$R16E/seat.txt'"
+: >"$R16E/seat.txt"
+xech - "$R16E" exec lcars-run/run.sh --mission m-mine >/dev/null 2>&1
+check "16e2. [control] …and the MAIN ECH passes no seat, so inheritance is not a leak" \
+  "grep -q '^SEAT=NONE$' '$R16E/seat.txt'"
+cp "$STUBS/run-makes.sh" "$EXEC_SKILLS/lcars-run/run.sh"
+check "16e3. and the doc STATES the property, so it is no longer an accident" \
+  "grep -qi 'inherited by a re-entered' '$DOC'"
+echo
+
+# =========================================================================
+printf '== 17. ONE READER OF \"OPEN\", EVERYWHERE (fix round 3, cure 2) ==\n'
+# =========================================================================
+# `delegate_is_open` read the record's `status` AND the marker; both accept
+# gates read the marker only. Measured disagreeing in OPPOSITE DIRECTIONS at
+# once, with the permissive side on the GATES:
+#
+#   main ECH: record delegates.d1.status done   (instead of `delegate close`)
+#     -> marker still present
+#     -> both accept gates see owner d1   -> the bug STOPS BLOCKING
+#     -> the seat itself: "that sub-ECH is CLOSED" -> refused
+R17="$(fast_chunk_repo)"
+xech d1 "$R17" file-bug --parent m-mine --prd "$PRD_GOOD" >/dev/null 2>&1
+r17="$(xech - "$R17" record 'delegates.d1.status' done 2>&1)"; r17rc=$?
+check "17a. \`record delegates.*\` is REFUSED — a seat's record is not a field to edit" \
+  "[ $r17rc -ne 0 ] && printf '%s' \"\$r17\" | grep -qi 'not a key this verb writes'"
+check "17a2. …and it names the verbs that DO own a seat" \
+  "printf '%s' \"\$r17\" | grep -q 'delegate close'"
+check "17a3. …and it wrote nothing: the status is untouched" \
+  "! grep -q '\"status\": *\"done\"' '$R17/.git/lcars/autopilot.json'"
+# AND THE TWO SURFACES NOW GIVE THE SAME ANSWER, on every documented route.
+# Route 1 — `delegate close`.
+R17B="$(fast_chunk_repo)"
+xech d1 "$R17B" file-bug --parent m-mine --prd "$PRD_GOOD" >/dev/null 2>&1
+xech - "$R17B" delegate close d1 >/dev/null 2>&1
+seat17b=0; xech d1 "$R17B" live-check m-mine --type cli >/dev/null 2>&1 || seat17b=1
+gate17b=0; printf '%s' "$(xech - "$R17B" land m-mine 2>&1)" | grep -q 'BLOCKED BY UNOWNED LOGGED BUG' && gate17b=1
+check "17b. after \`delegate close\`: the SEAT reads closed AND the GATE blocks — one answer" \
+  "[ $seat17b -eq 1 ] && [ $gate17b -eq 1 ]"
+# Route 2 — the marker removed on its own (what `init --force` does).
+R17C="$(fast_chunk_repo)"
+xech d1 "$R17C" file-bug --parent m-mine --prd "$PRD_GOOD" >/dev/null 2>&1
+rm -f "$R17C/.git/lcars/delegates/d1/OPEN"
+seat17c=0; xech d1 "$R17C" live-check m-mine --type cli >/dev/null 2>&1 || seat17c=1
+gate17c=0; printf '%s' "$(xech - "$R17C" land m-mine 2>&1)" | grep -q 'BLOCKED BY UNOWNED LOGGED BUG' && gate17c=1
+check "17c. marker gone: the SEAT reads closed AND the GATE blocks — the same one answer" \
+  "[ $seat17c -eq 1 ] && [ $gate17c -eq 1 ]"
+check "17c2. …and the seat's refusal names the marker, not a record field" \
+  "printf '%s' \"\$(xech d1 '$R17C' live-check m-mine --type cli 2>&1)\" | grep -q 'OPEN'"
+# THE CONTROL: with the seat genuinely open, BOTH surfaces say open.
+R17D="$(fast_chunk_repo)"
+xech d1 "$R17D" file-bug --parent m-mine --prd "$PRD_GOOD" >/dev/null 2>&1
+check "17d. [control] seat open: the SEAT works AND the GATE lets it through" \
+  "xech d1 '$R17D' live-check m-mine --type cli >/dev/null 2>&1 \
+   && ! printf '%s' \"\$(xech - '$R17D' land m-mine 2>&1)\" | grep -q 'BLOCKED BY UNOWNED LOGGED BUG'"
+check "17e. \`delegate_is_open\` has NO reader of its own any more" \
+  "[ \"\$(awk '/^delegate_is_open\(\) \{/,/^\}/' '$SCRIPT' | grep -c 'ap_j')\" = 0 ]"
 echo
 
 # =========================================================================

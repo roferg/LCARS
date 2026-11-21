@@ -445,7 +445,8 @@ a live Mission had ended that Mission's run.**
 | its own verify gate | `live-check`, `live-check done` | **yes** — § 6's standing job, per ECH | **refused** |
 | the action for the verdict pair | `policy` | **yes** | **refused** |
 | drives its own fixes | `drive` | **yes** | **refused** |
-| the factory's front door | `lcars file`, `lcars log`, `lcars answer` | **yes** (unchanged) | n/a |
+| the factory's front door | `exec lcars-file/file.sh`, `lcars-log/log.sh`, `lcars-run/run.sh`, `lcars-respond/respond.sh`, `lcars-resolve-logs/resolve-logs.sh` | **yes** — and a `--mission` outside the chunk is refused | **refused** |
+| every other sibling script | `lcars-approve`, `lcars-answer`, `lcars-feedback`, `lcars-init`, `lcars-xo`, `lcars-eeh` | **never** — `exec` has its own allow-list | **never** |
 | subdivides its own chunk into Missions | `exec lcars-file/file.sh` | **yes** — each one JOINS its chunk | n/a |
 | raises it with the ECH | `beat … "BLOCKED: …"` | **yes** — the only channel up | n/a |
 | the captain's attention | `ask` | **never** | **never** |
@@ -484,6 +485,57 @@ VERBS; the chunk says which MISSIONS.** The list lives in ONE constant
 rule a delegate is held to and the rule it is told cannot drift. **A verb added
 to LCARS tomorrow is denied to a sub-ECH until somebody grants it on purpose** —
 that is the whole difference between a boundary and a twenty-first check.
+
+### AND IT BOUNDS WHAT A SEAT *DOES*, NOT JUST WHAT IT NAMES
+
+**S365 fix round 3, and it is the same restructure applied to the other half of
+the same door.** Round 2's boundary bounded the verb names. `exec` reaches a
+sibling script, and the acts those scripts perform were not bounded at all.
+Measured, same fixture, `LCARS_ECH_AS=d1` whose chunk is `m-other`:
+
+> `lcars-ech land m-land` → **DENIED**, "NOT A VERB A SUB-ECH MAY RUN".
+> `lcars-ech exec lcars-approve/approve.sh --mission m-land` → `pr-merge` calls
+> **1**, and `m-land`'s stage afterwards **`done`**.
+
+**It merged a Mission it was never handed.** `land`, `approve` and `push-gated`
+are each refused by name, each with its own sentence about landing being the
+main ECH's one decision — and the identical decision was one `exec` away. And
+not one door: as `d1`, `exec` also reached `lcars-init/init.sh` (the reset that
+drops delegate records and releases claims), `lcars-xo/xo.sh` (Number One —
+billed model spend the captain has ruled OFF), `lcars-run/run.sh` on any Mission
+with no chunk check, and `lcars-answer` / `lcars-feedback` as further routes to
+the Review decision. Only `lcars-eeh/ech.sh` was safe, and **by accident of
+environment inheritance rather than by design.**
+
+**So `exec` has its own allow-list, in its own one constant
+(`SUBECH_EXEC_SCRIPTS`), rendered into the brief the same way:**
+
+```
+lcars-file/file.sh  lcars-log/log.sh  lcars-run/run.sh
+lcars-respond/respond.sh  lcars-resolve-logs/resolve-logs.sh
+```
+
+Those are the scripts the brief actually hands a delegate. Everything else is
+refused by name, with the reason: `approve` merges, `init` resets,
+`answer`/`feedback` are the Review decision, and **`xo.sh` is DENIED because it
+is billed model spend and Number One is OFF by the captain's standing ruling of
+2026-11-20** — it was in the delegate's own verb list until this round and is
+not any more. A seat that needs a verifier raises a `BLOCKED:` beat.
+
+**AND AN ALLOWED SCRIPT STILL OBEYS THE CHUNK.** `lcars-run/run.sh` is on the
+list because it *is* the delegate's front door, and it takes `--mission` — so
+without this, the chunk check on `drive` was one `exec` away. A `--mission`
+outside the chunk is refused exactly as the verb would be. (`--parent` is
+deliberately not checked up front: a creation under a foreign parent is caught
+after the fact, where it is recorded to nobody and said out loud, so the Mission
+exists and belongs to no chunk rather than `lcars log` being stopped mid-write.)
+
+**`LCARS_ECH_AS` IS INHERITED BY A RE-ENTERED `ech.sh`, ON PURPOSE.** That is
+the only reason `exec lcars-eeh/ech.sh delegate theirs` was ever refused, and
+until this round it was an accident of environment inheritance that nothing
+stated or tested. It is now a declared, tested property: a seat does not shed
+its identity by re-entering this program, and `exec`'s own allow-list refuses
+`lcars-eeh/*` besides, so the property is a belt rather than the only strap.
 
 **`ask` and `land` STAY WITH THE MAIN ECH, and the refusal names it.** `ask`
 prints *QUESTION FOR THE CAPTAIN* and fires his notifier: the interrupt budget
@@ -605,6 +657,25 @@ and `init --force` remove it. `land` reads the record only to say WHY it
 blocked, never to decide, and `lcars_chunk_claim` exists so a refusal can still
 name the id it refused. **A seat minted before the marker existed reads as
 closed, and its bugs block** — the safe direction, as every ambiguity here is.
+
+**AND ROUND 2 LEFT A SECOND READER BEHIND, WHICH ROUND 3 REMOVES (Cure 2).**
+`delegate_is_open` consulted the record's `status` *as well as* the marker, so
+"is this seat open" was two questions again — and a fresh tester measured them
+disagreeing **in opposite directions at once**:
+
+> `record delegates.d1.status done`, instead of `delegate close` → the marker is
+> still there, so **both accept gates see owner `d1` and the bug STOPS
+> BLOCKING**, while the seat itself is refused as closed.
+
+The permissive side was **the accept gates**, which is the side that must never
+be permissive. So `delegate_is_open` is now *exactly* `lcars_chunk_seat_open`
+and nothing else: one reader, asked by the seat, by `land`, by
+`chunk_owners_of` and by `approve.sh`. **And the route that could desynchronise
+it is closed at source: `record` refuses `delegates.*`** and names
+`delegate close`, which maintains the record and the marker together — so
+`delegate close` is the only documented writer of `status: done`. `init`'s own
+refusal text used to recommend `record` for exactly this kind of edit, which is
+how the door was reachable without anybody hand-editing JSON.
 
 **Ownership is recorded, released, and checked.** It is written to
 `.git/lcars/chunk-owners` (`<mission-id>` TAB `<delegate-id>`, append-only,

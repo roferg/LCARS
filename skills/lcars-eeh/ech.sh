@@ -671,22 +671,29 @@ open_children_of() {
 # a typo in the one variable that carries authority silently buys full
 # authority.
 
-# delegate_is_open <delegate-id> — is there a record for it, is it still OPEN,
-# and does the SEAT MARKER both accept gates read agree? `delegate close` writes
-# `status: done` plus a `closedAt` (it does not write "closed"), and
-# `delegate_closed` already reads it that way; this is the same discriminator so
-# the two can never disagree.
+# delegate_is_open <delegate-id> — is that seat open?
 #
-# S365 fix round 2 (F1): it ALSO asks `lcars_chunk_seat_open`, the two-file test
-# `approve.sh` uses. "This seat is open" now means ONE thing on every surface
-# that asks — the ECH's verbs, `land`, and the product's own merge gate — and
-# the record and the marker have to agree. Either one missing is a closed seat,
-# which is the safe direction.
+# S365 fix round 3, CURE 2: IT IS NOW EXACTLY `lcars_chunk_seat_open` AND
+# NOTHING ELSE. Round 2 had it read the record's `status` AS WELL, which made
+# "is this seat open" two questions again — the very shape F1 was about — and a
+# fresh tester measured them disagreeing IN OPPOSITE DIRECTIONS AT ONCE:
+#
+#     main ECH: record delegates.d1.status done   (instead of `delegate close`)
+#       -> the marker: still present
+#       -> both accept gates: owner d1  -> THE BUG STOPS BLOCKING
+#       -> the seat itself: "that sub-ECH is CLOSED" -> refused
+#
+# The permissive side was the ACCEPT GATES, which is the side that must never be
+# the permissive one. So there is one reader, the two-file test both gates
+# already used, and every surface asks it: this function, `land`,
+# `approve.sh`'s pre-merge gate and `chunk_owners_of`.
+#
+# AND THE ROUTE THAT COULD DESYNCHRONISE IT IS CLOSED AT SOURCE: `record`
+# refuses `delegates.*` and names `delegate close`, which maintains the record
+# AND the marker together. `delegate close` is therefore the only documented
+# writer of `status: done`, which is the other half of the same cure.
 delegate_is_open() {
-  [ -n "$(ap_j "delegates.$1.id")" ] || return 1
-  [ "$(ap_j "delegates.$1.status")" = "done" ] && return 1
-  lcars_chunk_seat_open "$LCARS_DIR" "$1" || return 1
-  return 0
+  lcars_chunk_seat_open "$LCARS_DIR" "$1"
 }
 
 # subech_seat → the sub-ECH id this invocation is running as, or nothing at all
@@ -698,7 +705,7 @@ subech_seat() {
     die "LCARS_ECH_AS is set to '$ECH_AS', and there is no delegate $ECH_AS in $APJSON. A seat claiming an id nobody minted is NOT promoted to the main ECH — that variable is the one thing that carries authority, so a typo in it must refuse rather than hand over everything. Mint the sub-ECH (\`$SELF_CMD delegate <unit>\`), use the id \`$SELF_CMD delegates\` prints, or unset LCARS_ECH_AS to run as the main ECH."
   fi
   if ! delegate_is_open "$ECH_AS"; then
-    die "LCARS_ECH_AS is set to '$ECH_AS', and that sub-ECH is CLOSED (status done) — it handed its chunk back, so it owns nothing and drives nothing. A closed seat may not file, verify or drive. If the chunk needs another pass, the main ECH mints a fresh sub-ECH beside it: \`$SELF_CMD delegate $(ap_j "delegates.$ECH_AS.unit")\`."
+    die "LCARS_ECH_AS is set to '$ECH_AS', and THAT SEAT IS NOT OPEN — its \`delegates/$ECH_AS/OPEN\` marker is gone, which is what \`$SELF_CMD delegate close\` and \`$SELF_CMD init --force\` both remove. It handed its chunk back, so it owns nothing and drives nothing, and a closed seat may not file, verify or drive. This is the SAME ONE READER the accept gates use, so the seat and the gates cannot give different answers about it. If the chunk needs another pass, the main ECH mints a fresh sub-ECH beside it: \`$SELF_CMD delegate $(ap_j "delegates.$ECH_AS.unit")\`."
   fi
   printf '%s' "$ECH_AS"
 }
@@ -828,6 +835,71 @@ subech_scope_or_die() {
 # summaries; it does not read the main ECH's board. `--help` is always allowed,
 # because a seat that cannot ask what it may run is a seat that improvises.
 SUBECH_VERBS="beat exec budget ledger file-bug live-check policy drive"
+
+# ==========================================================================
+# AND THE SECOND HALF OF THE SAME DOOR — S365 fix round 3.
+# ==========================================================================
+# THE BOUNDARY BOUNDED THE NAMES, NOT THE ACTS. `land`, `approve` and
+# `push-gated` are each denied by name, each with its own sentence about
+# landing being the main ECH's one decision — and the identical decision was
+# ONE `exec` away. Measured, same fixture, `LCARS_ECH_AS=d1` whose chunk is
+# `m-other`:
+#
+#     lcars-ech land m-land                      -> DENIED
+#     lcars-ech exec lcars-approve/approve.sh --mission m-land
+#         -> pr-merge calls = 1
+#         -> m-land/state.json stage AFTER = "done"
+#
+# **It merged a Mission it was never handed.** And not one door: as `d1`, `exec`
+# reached `lcars-init/init.sh` (the reset that drops delegate records and
+# releases claims), `lcars-xo/xo.sh` (Number One — model spend the captain has
+# ruled OFF), `lcars-run/run.sh` on any mission, and `lcars-answer/answer.sh`
+# and `lcars-feedback/feedback.sh` as further routes to the Review decision.
+# Only `lcars-eeh/ech.sh` was safe, and BY ACCIDENT of environment inheritance
+# rather than by design (see `LCARS_ECH_AS` below).
+#
+# So the same one-constant shape as the verb list, applied to the target. The
+# mechanism was already in this file: `exec` discriminates the two
+# Mission-creating scripts for attribution. These are the scripts the brief
+# actually hands a delegate, and nothing else resolves:
+#
+#   lcars-file/file.sh           subdivide its chunk into Missions
+#   lcars-log/log.sh             file a bug it found
+#   lcars-run/run.sh             advance a Mission's own stage machine
+#   lcars-respond/respond.sh     answer a stage's own grill
+#   lcars-resolve-logs/…         work the bugs logged against its Mission
+#
+# `lcars-xo/xo.sh` IS THE ONE JUDGEMENT CALL AND IT IS DENIED: it is model
+# spend, and the captain's standing ruling of 2026-11-20 is Number One OFF. A
+# seat that needs it raises a `BLOCKED:` beat. It was in the brief's own verb
+# list until this round; it is not any more.
+SUBECH_EXEC_SCRIPTS="lcars-file/file.sh lcars-log/log.sh lcars-run/run.sh lcars-respond/respond.sh lcars-resolve-logs/resolve-logs.sh"
+
+# subech_exec_target_or_die <script> — the allow-list on what `exec` may reach.
+# Silent for the main ECH. Named reasons for the scripts that are a decision in
+# disguise, so the refusal teaches instead of just stopping.
+subech_exec_target_or_die() {
+  local script="$1" seat t why=""
+  [ -n "$ECH_AS" ] || return 0
+  seat="$(subech_seat)" || exit $?
+  [ -n "$seat" ] || return 0
+  for t in $SUBECH_EXEC_SCRIPTS; do
+    [ "$script" = "$t" ] && return 0
+  done
+  case "$script" in
+    lcars-approve/*)
+      why=" \`approve.sh\` MERGES. Landing is ONE decision about the WHOLE ask and the main ECH makes it, which is exactly why \`land\`, \`approve\` and \`push-gated\` are refused to you by name — reaching the same act through \`exec\` is the same decision by another route, and it was how a seat merged a Mission it was never handed." ;;
+    lcars-answer/*|lcars-feedback/*)
+      why=" that is the Review decision — ship it or send it back — and it belongs to the seat that verifies the WHOLE." ;;
+    lcars-init/*)
+      why=" \`init\` RESETS the run: it discards the tier judgements and the delegate records, and releases every chunk claim they held, including yours." ;;
+    lcars-xo/*)
+      why=" Number One is OFF by the captain's standing ruling of 2026-11-20, and it is billed model spend either way. If a chunk genuinely needs a verifier, that is a call for the main ECH." ;;
+    lcars-eeh/*)
+      why=" that is this program. Your verb boundary is \`$SUBECH_VERBS\`, and re-entering it through \`exec\` does not widen it — \`LCARS_ECH_AS\` is inherited on purpose, so the re-entered process is still you." ;;
+  esac
+  die "exec: $script IS NOT A SCRIPT A SUB-ECH MAY REACH. It is the MAIN ECH's.$why You are sub-ECH $seat and your chunk is $(subech_chunk_root "$seat"); the scripts your brief gives you are the only ones you have, and they are: $SUBECH_EXEC_SCRIPTS. This is deny-by-default on purpose: a boundary that bounds only the VERB NAMES bounds nothing, because the same act is one \`exec\` away. Your route is one beat the main ECH reads at once: \`$SELF_CMD beat $seat \"BLOCKED: <what you need from the main ECH>\"\`. Nothing was run."
+}
 
 # subech_boundary_or_die <verb> — the whole boundary, called from the dispatcher
 # before any verb runs. Silent for the main ECH, so every pre-existing
@@ -3384,6 +3456,23 @@ cmd_record() {
       ;;
     captainOnlySteps.*)
       die "record: replace the complete array with \`$SELF_CMD record captainOnlySteps '<json-array>'\` so neededBy can be checked."
+      ;;
+    delegates|delegates.*)
+      # S365 fix round 3, CURE 2's OTHER HALF. A SEAT'S RECORD IS NOT A FIELD
+      # TO EDIT. `record delegates.<id>.status done` left the seat's `OPEN`
+      # marker in place, and a fresh tester measured the result: BOTH accept
+      # gates still saw an owner, so the bug STOPPED BLOCKING, while the seat
+      # itself was refused as closed — two answers to "is this seat open", in
+      # opposite directions, with the permissive one on the gates. That is the
+      # F1 defect returning through a different door, and this verb was the
+      # door: `init`'s own refusal text recommends `record` for exactly this
+      # kind of edit.
+      #
+      # So `delegate` and `delegate close` are the only writers of a seat, and
+      # they maintain the record AND the marker together. The ONE reader of
+      # "open" (`lcars_chunk_seat_open`) then cannot be contradicted by a
+      # record nobody else can write.
+      die "record: $1 is NOT a key this verb writes. A seat's record and its \`OPEN\` marker are ONE fact, and the verbs that own a seat maintain both together — editing the record alone leaves them disagreeing, which is how a logged bug stopped blocking a merge while its own seat read as closed. Open a seat with \`$SELF_CMD delegate <unit>\` and close one with \`$SELF_CMD delegate close <id>\`; discard every seat at once with \`$SELF_CMD init --force\`, which releases their claims too. Nothing was written."
       ;;
     engines|engines.*)
       # S352. IT GOES THROUGH `ap_set` LIKE EVERY OTHER KEY — there is no new
@@ -6525,6 +6614,10 @@ cmd_exec() {
   case "$script" in
     *..*|/*) die "exec: refusing an out-of-tree path: $script" ;;
   esac
+  # ==== S365 fix round 3, CURE 1: WHAT THIS SEAT MAY REACH ================
+  # Asked BEFORE the file is even looked for, so a denied script cannot be
+  # confirmed or denied to exist by the refusal it gets.
+  subech_exec_target_or_die "$script"
   local target="$SKILLS_DIR/$script"
   [ -f "$target" ] || die "exec: no such script in this LCARS clone: $target"
   local role="" mission="-" prev="" arg
@@ -6535,14 +6628,33 @@ cmd_exec() {
     lcars-xo/xo.sh:on|lcars-xo/xo.sh:evaluate|lcars-xo/xo.sh:recheck)
       role=numberOne ;;
   esac
+  # THE MISSION ARGUMENT IS PARSED UNCONDITIONALLY NOW, because the scope check
+  # below needs it whether or not a budget row applies. It used to be read only
+  # when a billed role was resolved AND a ceiling was set.
+  for arg in "$@"; do
+    [ "$prev" != --mission ] || mission="$arg"
+    case "$arg" in --mission=*) mission="${arg#--mission=}" ;; esac
+    prev="$arg"
+  done
   if [ -n "$role" ] && [ -n "$CLAUDE_CEILING" ]; then
     require_state
-    for arg in "$@"; do
-      [ "$prev" != --mission ] || mission="$arg"
-      case "$arg" in --mission=*) mission="${arg#--mission=}" ;; esac
-      prev="$arg"
-    done
     budget_check "$role" "$mission" || return $?
+  fi
+  # ==== CURE 1's OTHER HALF: AN ALLOWED SCRIPT STILL OBEYS THE CHUNK =======
+  # `lcars-run/run.sh` is on the allow-list because it IS the delegate's front
+  # door — and it takes `--mission`, so without this an allowed script drove any
+  # Mission in the repo and the chunk check on `drive` was one `exec` away. The
+  # boundary says WHICH SCRIPTS; the chunk still says WHICH MISSIONS.
+  #
+  # `--parent` is deliberately NOT checked here: a creation under a parent
+  # outside the chunk is caught AFTER the fact, where it is recorded to nobody
+  # and said out loud (F2), so the Mission exists and belongs to no chunk rather
+  # than being refused before `lcars log` has written anything.
+  if [ -n "$ECH_AS" ] && [ "$mission" != "-" ] && [ -n "$mission" ]; then
+    require_state
+    if mexists "$mission"; then
+      subech_scope_or_die "exec $script --mission" "$mission"
+    fi
   fi
 
   # ==== S365 fix round 1: A MISSION A SUB-ECH FILES JOINS ITS CHUNK ========
@@ -7540,8 +7652,23 @@ or a wrong unit id. Confirm which with the ECH before you write anything."
   worker can reproduce it.
 - \`lcars-resolve-logs/resolve-logs.sh --parent ${mid:-$unit}\`
   work the bugs already logged against it.
-- \`lcars-xo/xo.sh\`
-  Number One, the verifier.
+
+**AND THOSE ARE THE ONLY SCRIPTS \`exec\` WILL REACH FOR YOU:**
+
+    $SUBECH_EXEC_SCRIPTS
+
+Anything else is refused by name, because a boundary that bounds only the verb
+NAMES bounds nothing: \`land\`, \`approve\` and \`push-gated\` are refused to you
+and \`exec lcars-approve/approve.sh\` was the same decision one step away — it
+MERGED a Mission a seat was never handed. \`lcars-init/init.sh\` resets the run
+and releases your own claims; \`lcars-answer\` and \`lcars-feedback\` are the
+Review decision; and **\`lcars-xo/xo.sh\` — Number One — is DENIED**: it is
+billed model spend and the captain's standing ruling of 2026-11-20 is Number One
+OFF. If your chunk genuinely needs a verifier, that is a call for the main ECH
+and the route is a \`BLOCKED:\` beat.
+
+An allowed script still obeys your chunk: a \`--mission\` outside it is refused
+exactly as the verb would be.
 
 ### YOUR CHUNK, AND THE AUTHORITY THAT COMES WITH IT
 
