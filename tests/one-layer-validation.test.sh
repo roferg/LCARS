@@ -1630,22 +1630,32 @@ MUST_DIFFER='### T1 — one delegate owns the unit end-to-end, and ABSORBS ITS O
 ## 5. YOU verify your chunk; the MAIN ECH verifies the whole
 ## Where you work
 ## 4. The boundaries
-## 6. The engine you run on'
+## 6. The engine you run on
+### And while you work: BEAT
+## 1. The goal'
 # MAY_MATCH — each one says the same TRUE thing to either seat, and the reason is
 # recorded so the next reader can disagree with a specific claim:
 #   (preamble)            the title, unit, tier and mint stamp
 #   ## Your tier          the recorded tier judgement and the estimate it saw
-#   ## 1. The goal        the ask — both roles are pointed at the same chunk
-#   ### Read these …      the artifacts actually on disk
-#   ### And while you …   the beat, the silence limit, the circle limit
 #   ### RAISING IT …      the BLOCKED beat — the same channel for either seat
 #   ### The two-list …    the ledger sign-off on exit
 #   ## Sign-off           who minted it, under which recorded judgement
+# S368 FIX ROUND 1 TOOK THREE MORE OUT OF THIS LIST, and the reason each was
+# wrong is recorded so the next reader can disagree with a specific claim:
+#   ### And while you work: BEAT   its single worked example of good beating was
+#       *"removed it, re-running the gate"* — a WRITE to the working tree, in the
+#       brief of a seat whose § 4 says it writes nothing. One section modelled
+#       the act another forbids, and it was the ONLY worked example the seat got.
+#   ## 1. The goal                 two of its four `goalSource` branches said
+#       *"before you write anything"*, and a validation pass does not write. It
+#       now also carries a rider that the goal is a thing to JUDGE, which fires
+#       on every branch — a section that is role-correct on only some fixtures is
+#       a section nothing is asserting.
+#   ### Read these before you write anything   the HEADING is the instruction;
+#       the body under it genuinely is role-neutral, which is exactly why a
+#       body-diff could not see it. It is ROLE_ONLY now, one heading per role.
 MAY_MATCH='(preamble)
 ## Your tier: T1
-## 1. The goal
-### Read these before you write anything
-### And while you work: BEAT
 ### RAISING IT — THIS IS THE CHANNEL, and it is the only one you have
 ### The two-list sign-off, on exit
 ## Sign-off'
@@ -1653,6 +1663,8 @@ MAY_MATCH='(preamble)
 # has cannot be identical — but they are still declared, so one appearing or
 # vanishing is a decision too.
 ROLE_ONLY='### ABSORBING A STUMBLE — by using the factory, never by going round it
+### Read these before you write anything
+### Read these before you look at anything
 ### YOU ARE THE VALIDATION PASS FOR THIS CHUNK — READ THIS BEFORE § 4
 ### YOU DO NOT ABSORB — YOU REPORT. (This section is a driver'"'"'s; here is yours.)'
 classify_misses() {   # <verdict-file> [must] [may] [only] -> one line per miss
@@ -1795,16 +1807,20 @@ MUST_DIFFER_T2='### T1 — one delegate owns the unit end-to-end, and ABSORBS IT
 ## 5. YOU verify your chunk; the MAIN ECH verifies the whole
 ## Where you work
 ## 4. The boundaries
-## 6. The engine you run on'
-MAY_MATCH_T2='(preamble)
-## Your tier: T2
-## 1. The goal
-### Read these before you write anything
+## 6. The engine you run on
 ### And while you work: BEAT
+## 1. The goal
+## Your tier: T2'
+# `## Your tier: T2` carries the CONTRACT PREAMBLE — *"Both contracts below are
+# yours"*, granted unqualified, on the wrong side of the brief's own retraction.
+# At T1 there is no preamble, so `## Your tier: T1` stays MAY_MATCH.
+MAY_MATCH_T2='(preamble)
 ### RAISING IT — THIS IS THE CHANNEL, and it is the only one you have
 ### The two-list sign-off, on exit
 ## Sign-off'
 ROLE_ONLY_T2='### ABSORBING A STUMBLE — by using the factory, never by going round it
+### Read these before you write anything
+### Read these before you look at anything
 ### Standing up your fresh-context tester (T2)
 ### THE T2 TESTER IS NOT YOURS TO STAND UP — YOU *ARE* THE SECOND LOOK
 ### YOU ARE THE VALIDATION PASS FOR THIS CHUNK — READ THIS BEFORE § 4
@@ -1889,9 +1905,170 @@ check "19x. [discrimination] § 19n FAILS on it — the rider missed the T1 fenc
   "t2misses '$SEC_T2BAD' | grep -qF 'MUST_DIFFER but IDENTICAL: ### T1 — one delegate owns the unit end-to-end, and ABSORBS ITS OWN STUMBLES'"
 check "19y. [discrimination] …and the tester section went identical in both briefs" \
   "t2misses '$SEC_T2BAD' | grep -qF 'ROLE_ONLY but IDENTICAL: ### Standing up your fresh-context tester (T2)'"
-if [ -n "$(t2misses "$SEC_T2BAD")" ]; then
-  printf '       --- what the T2-blind build gets wrong (expected) ---\n'
-  t2misses "$SEC_T2BAD" | sed 's/^/       /'
+# ---- CURE 3: § 19 ASSERTED *DIFFERENCE*, NEVER *CORRECTNESS* ------------
+# A fresh tester built five mutants and ran them through the shipped tables.
+# **M3 is why this block exists:** revert § 4's write fence to the DRIVER's
+# permission and add a cosmetic parenthetical, so the validator's § 4 reads
+# *"Everything you write stays inside … the mission's own branch. (A validation
+# pass works to the same fence.)"* — and § 19b PASSED, and § 19n PASSED. The
+# section still DIFFERED, so every row stayed green while the cure was silently
+# withdrawn. It matters more than it looks: the tester found **no harness
+# enforcement of the write fence at all** — nothing seat-related in `ech.sh`
+# matches `git (commit|diff|status)|dirty|working tree|uncommitted`, and
+# `VALIDATOR_ACTS` is keyed on verb strings only. **The brief is the sole
+# control on a validation pass editing the branch.**
+#
+# SO EVERY MUST_DIFFER SECTION DECLARES ITS RETRACTION, and three things are
+# checked per entry: the needle is in the VALIDATOR'S OWN SECTION (not merely
+# somewhere in the file — the S368 § 19p lesson), it is **absent from the whole
+# driver brief** (which is what makes it a retraction and not boilerplate), and
+# the table is complete in BOTH directions, so a new MUST_DIFFER section cannot
+# be added without someone writing down what it retracts.
+#
+# WHAT THIS STILL CANNOT SEE, stated plainly because the next reader will
+# assume otherwise: a **paraphrase or an injection inside an already-DIFFERS
+# section**. The tester's M4 (a reworded tester instruction) passes all four of
+# § 19r's literal greps, and its M5 (a fix instruction added inside a section
+# that already differs) is invisible to § 19b, § 19n and all six § 19h greps —
+# and it is invisible to these rows too, because the retraction it demands is
+# still present. That is a judgement about new prose, not a diff, and no
+# grep-shaped control will settle it; `ORCHESTRATION.md` § *the infer-vs-record
+# check* is why this suite does not try to build one.
+RETRACT='### T1 — one delegate owns the unit end-to-end, and ABSORBS ITS OWN STUMBLES	two of that contract
+## 2. The output format expected back	What you FILED
+## 3. The LCARS verbs in scope	THERE IS EXACTLY ONE SCRIPT
+### YOUR CHUNK, AND THE AUTHORITY THAT COMES WITH IT	You are a VALIDATION PASS over a chunk somebody else drove
+### THE BOUNDARY: THESE NINE VERBS, AND NOTHING ELSE	IS NOT YOURS EITHER
+### The front door, and it is not optional	is NOT yours: filing a Mission into this chunk is
+### What you decide alone, and what goes UP	You do NOT decide:
+## 5. YOU verify your chunk; the MAIN ECH verifies the whole	YOU ARE A VALIDATION PASS, AND THIS SECTION IS YOURS
+## Where you work	YOU DO NOT WRITE TO IT
+## 4. The boundaries	YOU WRITE NO CODE AND YOU COMMIT NOTHING
+## 6. The engine you run on	AND YOU DO NOT OPEN SEATS OF YOUR OWN
+### And while you work: BEAT	LOOK, NARROW, FILE
+## 1. The goal	IT IS TO FIND OUT WHETHER IT IS'
+RETRACT_T2='### T1 — one delegate owns the unit end-to-end, and ABSORBS ITS OWN STUMBLES	two of that contract
+## 2. The output format expected back	What you FILED
+## 3. The LCARS verbs in scope	THERE IS EXACTLY ONE SCRIPT
+### YOUR CHUNK, AND THE AUTHORITY THAT COMES WITH IT	You are a VALIDATION PASS over a chunk somebody else drove
+### THE BOUNDARY: THESE NINE VERBS, AND NOTHING ELSE	IS NOT YOURS EITHER
+### The front door, and it is not optional	is NOT yours: filing a Mission into this chunk is
+### What you decide alone, and what goes UP	You do NOT decide:
+## 5. YOU verify your chunk; the MAIN ECH verifies the whole	YOU ARE A VALIDATION PASS, AND THIS SECTION IS YOURS
+## Where you work	YOU DO NOT WRITE TO IT
+## 4. The boundaries	YOU WRITE NO CODE AND YOU COMMIT NOTHING
+## 6. The engine you run on	AND YOU DO NOT OPEN SEATS OF YOUR OWN
+### And while you work: BEAT	LOOK, NARROW, FILE
+## 1. The goal	IT IS TO FIND OUT WHETHER IT IS
+### T2 — T1, plus an independent FRESH-CONTEXT tester at the gate	TWO ACTS ARE NOT YOURS EITHER
+## Your tier: T2	BOTH FENCES BELOW CARRY A RIDER'
+# retract_misses <driver-brief> <validator-brief> <must-table> <retract-table>
+retract_misses() {
+  python3 - "$1" "$2" "$3" "$4" <<'PYRT'
+import re, sys
+drv = open(sys.argv[1]).read()
+val = open(sys.argv[2]).read()
+must = [l for l in sys.argv[3].splitlines() if l]
+pairs = {}
+for l in sys.argv[4].splitlines():
+    if "\t" in l:
+        h, n = l.split("\t", 1)
+        pairs[h] = n
+def body(text, head):
+    out, cur, buf = {}, None, []
+    for line in text.splitlines():
+        if re.match(r'^#{2,3} ', line):
+            if cur is not None:
+                out[cur] = "\n".join(buf)
+            cur, buf = line.strip(), []
+        else:
+            buf.append(line)
+    if cur is not None:
+        out[cur] = "\n".join(buf)
+    return out.get(head)
+for h in must:
+    n = pairs.get(h)
+    if n is None:
+        print("NO DECLARED RETRACTION: %s" % h)
+        continue
+    b = body(val, h)
+    if b is None:
+        print("SECTION ABSENT FROM THE VALIDATOR BRIEF: %s" % h)
+    elif n not in b:
+        print("RETRACTION MISSING from the validator's own section: %s [wanted: %s]" % (h, n))
+    if n in drv:
+        print("NOT A RETRACTION — the DRIVER brief says it too: %s [%s]" % (h, n))
+for h in pairs:
+    if h not in must:
+        print("DECLARED A RETRACTION FOR A SECTION THAT IS NOT MUST_DIFFER: %s" % h)
+PYRT
+}
+check "19za. [control] a retraction is declared for EVERY MUST_DIFFER section, both tiers" \
+  "[ \"\$(printf '%s\\n' \"\$MUST_DIFFER\" | wc -l)\" = \"\$(printf '%s\\n' \"\$RETRACT\" | wc -l)\" ] \
+   && [ \"\$(printf '%s\\n' \"\$MUST_DIFFER_T2\" | wc -l)\" = \"\$(printf '%s\\n' \"\$RETRACT_T2\" | wc -l)\" ]"
+check "19zb. EVERY MUST_DIFFER section's VALIDATOR SIDE SAYS ITS RETRACTION (T1)" \
+  "[ -z \"\$(retract_misses '$BD19' '$BV19' \"\$MUST_DIFFER\" \"\$RETRACT\")\" ]"
+if [ -n "$(retract_misses "$BD19" "$BV19" "$MUST_DIFFER" "$RETRACT")" ]; then
+  printf '       --- retractions the T1 validator brief does not carry ---\n'
+  retract_misses "$BD19" "$BV19" "$MUST_DIFFER" "$RETRACT" | sed 's/^/       /'
+fi
+check "19zc. …and the same of the T2 pair" \
+  "[ -z \"\$(retract_misses '$BD19T2' '$BV19T2' \"\$MUST_DIFFER_T2\" \"\$RETRACT_T2\")\" ]"
+if [ -n "$(retract_misses "$BD19T2" "$BV19T2" "$MUST_DIFFER_T2" "$RETRACT_T2")" ]; then
+  printf '       --- retractions the T2 validator brief does not carry ---\n'
+  retract_misses "$BD19T2" "$BV19T2" "$MUST_DIFFER_T2" "$RETRACT_T2" | sed 's/^/       /'
+fi
+# ---- MUTANT M3: the tester's own. The cure withdrawn, the difference kept. --
+M3_BAD="$EXEC_SKILLS/lcars-eeh/m3-fence-withdrawn.sh"
+# BUILT WITH PYTHON, NOT SED: M3 is the DRIVER'S OWN SENTENCE verbatim plus a
+# cosmetic parenthetical, and that sentence carries backticks and an apostrophe
+# that no single-quoted sed replacement can hand to a double-quoted shell
+# string without an escape this suite would then be testing instead of the fix.
+python3 - "$SCRIPT" "$M3_BAD" <<'PYM3'
+import sys
+lines = open(sys.argv[1]).read().split("\n")
+for i, l in enumerate(lines):
+    if l.startswith('    v_wfence="- **YOU WRITE NO CODE'):
+        lines[i] = ('    v_wfence="- Everything you write stays inside \\`.git/lcars/\\` '
+                    "or the mission's own branch. "
+                    '(A validation pass works to the same fence.)" # reverted on purpose'
+                    '\n    unused_wfence="x')
+        break
+else:
+    raise SystemExit("M3: anchor not found in the script under test")
+open(sys.argv[2], "w").write("\n".join(lines))
+PYM3
+check "19zd. the M3 build differs from this one, by that one line" \
+  "! diff -q '$SCRIPT' '$M3_BAD' >/dev/null \
+   && [ \"\$(grep -c 'reverted on purpose' '$M3_BAD')\" = 1 ] \
+   && grep -q 'works to the same fence' '$M3_BAD'"
+SEC_M3="$TMPROOT/sec-m3"
+RV19M3="$(mint_pair "$M3_BAD" T1 19m3 "$SEC_M3")"
+R19M3="${RV19M3%	*}"; V19M3="${RV19M3##*	}"
+BD19M3="$R19M3/.git/lcars/delegates/d1/BRIEF.md"
+BV19M3="$R19M3/.git/lcars/delegates/$V19M3/BRIEF.md"
+check "19ze. [control] M3 minted both briefs, so the rows below can run" \
+  "[ -n '$V19M3' ] && [ -s \"$BV19M3\" ] && [ \"\$(wc -l <'$SEC_M3' | tr -d ' ')\" -ge 20 ]"
+check "19zf. [control] …and its § 4 STILL DIFFERS — the parenthetical is enough" \
+  "grep -q \"^DIFFERS.*## 4. The boundaries\$\" '$SEC_M3'"
+check "19zg. [the point] § 19b PASSES on M3 — difference is not correctness" \
+  "[ -z \"\$(classify_misses '$SEC_M3')\" ]"
+check "19zh. [discrimination] …and § 19zb FAILS on it, naming § 4" \
+  "retract_misses \"$BD19M3\" \"$BV19M3\" \"\$MUST_DIFFER\" \"\$RETRACT\" \
+     | grep -q 'RETRACTION MISSING.*## 4. The boundaries'"
+# AND THE HELPER'S OTHER DIAGNOSTIC HAS ITS OWN KNOWN-BAD CONTROL. "NOT A
+# RETRACTION" guards the TABLE rather than the product: it fires when a declared
+# needle is boilerplate both briefs carry, which M3 cannot trigger because M3
+# REMOVES the needle. So it is proven on a deliberately bad one-entry table.
+check "19zi. [control] the NON-retraction branch fires on a needle BOTH briefs carry" \
+  "retract_misses \"$BD19\" \"$BV19\" '## 4. The boundaries' \
+     \"\$(printf '## 4. The boundaries\\tAlso, and without exception:')\" \
+     | grep -q 'NOT A RETRACTION'"
+check "19zj. [control] …and that same needle really is in BOTH briefs, so the row is honest" \
+  "grep -qF 'Also, and without exception:' \"$BD19\" && grep -qF 'Also, and without exception:' \"$BV19\""
+if [ -n "$(retract_misses "$BD19M3" "$BV19M3" "$MUST_DIFFER" "$RETRACT")" ]; then
+  printf '       --- what M3 gets wrong (expected) ---\n'
+  retract_misses "$BD19M3" "$BV19M3" "$MUST_DIFFER" "$RETRACT" | sed 's/^/       /'
 fi
 echo
 
@@ -1962,6 +2139,40 @@ for rx20 in "${RX20/-/.}" "${RX20%%-*}.*" '.*' "${RX20%?}." "^$RX20\$" \
      && ! printf '%s\\n' '$RX20' | grep -qxF -- '$rx20'"
   spell20 "a REGEX, not a literal: --parent $rx20" \
     exec lcars-log/log.sh --parent "$rx20"
+done
+# ---- AND A SELECTOR IS ONE STRING, NOT A LIST OF LINES (S368 fix round 1).
+# `-F` fixed the PATTERN and left the OTHER separator semantic: POSIX grep takes
+# its pattern operand as a **NEWLINE-SEPARATED LIST OF PATTERNS**, so a selector
+# that merely CONTAINS an in-scope id on a line of its own satisfied the
+# compare — and a selector ENDING in a newline contributes an EMPTY pattern,
+# which matches everything. Measured at `cabbb36` on /usr/bin/grep (BSD grep
+# 2.6.0-FreeBSD), the one the script resolves: through this same `exec` door,
+# narrowed pass, five newline forms all RAN and FILED and `filed` grew 1 -> 7.
+#
+# THE CLASS, AND WHY THIS IS THE LAST GENERATION: a string equality test was
+# implemented with a LINE-MATCHING TOOL. `-qx` was wrong, `-qxF` was wrong,
+# `-qxF --` was wrong — each fix tried to make grep behave like `=`. The decider
+# is `scope_has` now, which IS `=`, and there is no grep left in it.
+check "20b2. [control] the harness's own grep DOES read its pattern as a LINE LIST" \
+  "printf '%s\\n' '$RX20' | grep -qxF -- \"\$(printf 'm-theirs\\n%s' '$RX20')\""
+check "20b3. [negative control] …and it is the NEWLINE, not whitespace — a CR does NOT match" \
+  "! printf '%s\\n' '$RX20' | grep -qxF -- \"\$(printf '%s\\r' '$RX20')\""
+NL20_1=$'m-theirs\n'"$RX20"
+NL20_2="$RX20"$'\nm-theirs'
+NL20_3=$'mine\n'"$RX20"
+NL20_4=$'.*\n'"$RX20"
+NL20_5="$RX20"$'\n'
+for i20 in 1 2 3 4 5; do
+  eval "nl20=\$NL20_$i20"
+  # BOTH HALVES COMPUTED HERE, never inside an eval'd condition: a newline in a
+  # `check` string would be the harness lying to itself about what it ran.
+  if printf '%s\n' "$RX20" | grep -qxF -- "$nl20"; then g20=MATCH; else g20=no; fi
+  if [ "$nl20" = "$RX20" ]; then e20=equal; else e20=notequal; fi
+  lbl20="$(printf '%s' "$nl20" | tr '\n' '/')"
+  check "20b4. [control] grep ACCEPTS it as a line list while \`=\` says NOT equal: $lbl20" \
+    "[ '$g20' = MATCH ] && [ '$e20' = notequal ]"
+  spell20 "a LINE LIST, not one string: $lbl20" \
+    exec lcars-log/log.sh --parent "$nl20"
 done
 apj "$R20" "delegates.$V20.filed" >"$TMPROOT/filed20.after"
 check "20c. …and across every spelling the FILED list never grew" \

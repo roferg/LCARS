@@ -1186,6 +1186,49 @@ for m in (v.get("recheckScope") or []):
 PYVS
 }
 
+# scope_has <scope> <needle> — TRUE when ONE ENTRY of the recorded re-check
+# scope IS the needle. It compares strings with `=` and it is the ONLY decider
+# of that question.
+#
+# S368 FIX ROUND 1 — AND IT USES `=` BECAUSE THIS IS AN EQUALITY TEST AND EVERY
+# GREP-SHAPED ATTEMPT AT IT HAS BEEN WRONG. Three generations, each beaten by a
+# different separator semantic of a LINE-MATCHING TOOL:
+#
+#   `grep -qx`        compiled the SELECTOR as a basic regular expression, so
+#                     `bug.001`, `bug-00.`, `.*`, `^bug-001$`, `[b]ug-001` and
+#                     more reached the gate. Fixed by `-F`.
+#   `grep -qxF --`    fixed the pattern and left the OTHER one: POSIX grep takes
+#                     its pattern operand as a NEWLINE-SEPARATED LIST OF
+#                     PATTERNS, so a selector that merely CONTAINS an in-scope
+#                     id on a line of its own satisfied the compare. Measured on
+#                     /usr/bin/grep (BSD grep 2.6.0-FreeBSD), which is what this
+#                     script resolves:
+#                       printf 'bug-001\n' | grep -qxF -- $'m-theirs\nbug-001'
+#                         -> MATCH
+#                       printf 'bug-001\n' | grep -qxF -- $'bug-001\r'
+#                         -> no match   (the negative control: it is the
+#                                        NEWLINE, not whitespace)
+#                     Through the `exec` door the brief hands a validator, with
+#                     recheckScope=["bug-001"], five newline forms all RAN and
+#                     FILED and `filed` grew 1 -> 7. `revalidate` snapshots
+#                     `filed`, so the next round's scope was the widened list.
+#
+# THE CLASS: a string equality test implemented with a line-matching tool. A
+# line matcher HAS separator semantics by definition; an equality test must have
+# none. So there is no grep in this decision any more — `=` compares ONE string
+# to ONE string and has no notion of a line at all. A multi-line selector equals
+# no single scope entry, which is the right answer.
+scope_has() {
+  local _entry
+  [ -n "$2" ] || return 1
+  while IFS= read -r _entry; do
+    [ "$_entry" = "$2" ] && return 0
+  done <<EOF
+$1
+EOF
+  return 1
+}
+
 # validator_exec_reach_or_die <script> <seat> <mission> <mcount> <parent> <pcount>
 # — THE OTHER HALF OF THE SAME BOUND, AND IT FAILS CLOSED.
 #
@@ -1238,17 +1281,10 @@ validator_exec_reach_or_die() {
   if [ "$mcount" = 1 ]; then sel="$mission"; else sel="$parent"; fi
   # THE EXACT STRING, AGAINST THE RECORDED SCOPE. Not `mexists`, not a
   # lower-cased compare, not a substring — the same literal this pass's own
-  # record carries.
-  #
-  # AND `-F` IS THE WHOLE POINT OF THAT SENTENCE (S368). Without it `grep -qx`
-  # compiles the SELECTOR as a basic regular expression, so a narrowed pass with
-  # `recheckScope=["bug-001"]` was reached by `bug.001`, `bug-00.`, `.*`,
-  # `^bug-001$`, `[b]ug-001` and more — and `lcars-log/log.sh` resolves
-  # `--parent` by case-insensitive SUBSTRING, so `bug.001` lands on the CHUNK
-  # ROOT, `filed` grows and the next `revalidate` snapshots the widened scope.
-  # That is the documented spiral, reached through a plausible typo. `--` goes
-  # with it: a selector beginning with `-` is an argument, never an option.
-  printf '%s\n' "$scope" | grep -qxF -- "$sel" && return 0
+  # record carries, compared by `scope_has`, which is `=` and nothing else.
+  # See its header for the three grep generations this replaced and why a line
+  # matcher can never be an equality test.
+  scope_has "$scope" "$sel" && return 0
   # …or a descendant of something it filed (a bug logged beneath its own
   # finding is still that finding). Decided by the ONE decider, which refuses
   # anything else — including a selector that resolves to nothing here at all.
@@ -1299,7 +1335,7 @@ validator_recheck_or_die() {
   [ -n "$scope" ] || return 0
   cur="$m"
   while [ -n "$cur" ] && [ "$hops" -lt 32 ]; do
-    printf '%s\n' "$scope" | grep -qxF -- "$cur" && return 0
+    scope_has "$scope" "$cur" && return 0
     cur="$(mstate "$cur" parentMission)"
     hops=$((hops + 1))
   done
@@ -7780,14 +7816,18 @@ PYART
 # driver/validator pair was byte-identical in `### T1 — … ABSORBS ITS OWN
 # STUMBLES` while a T1 pair differed there. Each fence takes its own rider, or
 # none.
-contract_for_tier() {   # <tier> [rider for T1's fence] [rider for T2's fence]
-  local r1="${2:-}" r2="${3:-}"
+contract_for_tier() {   # <tier> [T1-fence rider] [T2-fence rider] [preamble rider]
+  local r1="${2:-}" r2="${3:-}" rp="${4:-}"
   case "$1" in
     T2)
       printf '%s\n' "T2 INHERITS T1 IN FULL. Both contracts below are yours — T1's first," \
                     "because T2 is defined as \"T1, plus a tester\", and the absorption" \
-                    "obligation in it is the part a T2 delegate most often never hears." \
-                    ""
+                    "obligation in it is the part a T2 delegate most often never hears."
+      # S368 FIX ROUND 1 — THE PREAMBLE GRANTED BOTH CONTRACTS UNQUALIFIED, on
+      # the wrong side of the brief's own retraction, and `## Your tier: T2` was
+      # byte-identical between the roles because of it.
+      [ -z "$rp" ] || printf '\n%s\n' "$rp"
+      printf '\n'
       tier_contract T1 || return 1
       [ -z "$r1" ] || printf '\n%s\n' "$r1"
       printf '\n'
@@ -8284,6 +8324,13 @@ $grec
 EOF
   [ -n "$gsrc" ] || gsrc="none"
 
+  # S368 FIX ROUND 1 — "BEFORE YOU WRITE ANYTHING" IS ADDRESSED TO A SEAT THAT
+  # WRITES NOTHING. Two of the goal branches below said it, and a validation
+  # pass's own § 4 says it writes no code and commits nothing. The phrase is a
+  # slot; the act it names is the role's.
+  local gbefore="before you write anything"
+  [ "$validate" != 1 ] || gbefore="before you look at anything"
+
   case "$gsrc" in
     prd-acceptance)
       goal="**Done means:** $ggoal
@@ -8315,7 +8362,7 @@ guess for you."
 
 ⚠ THAT IS THE MISSION'S TITLE, NOT A CHECKABLE STATEMENT OF DONE. There is
 **no prd.md on disk** for this unit, so nothing here tells you what \"done\"
-tests against. Establish it with the ECH before you write anything: a delegate
+tests against. Establish it with the ECH $gbefore: a delegate
 guessing at its own goal is the gap this brief exists to close."
       ;;
     *)
@@ -8325,9 +8372,22 @@ Unit \`$unit_i\` does not resolve to a Mission with a record on disk. The ECH's
 own map says \`missions.$unit_i.id\` = \`${mid:-(nothing)}\`, and there is no
 \`state.json\` at \`$statepath\`, so nothing on disk states what done means. That
 is either a milestone the ECH has not FILED yet — in which case file it first —
-or a wrong unit id. Confirm which with the ECH before you write anything."
+or a wrong unit id. Confirm which with the ECH $gbefore."
       ;;
   esac
+
+  # AND THE GOAL IS A THING TO JUDGE, NOT A THING TO PRODUCE (S368 fix round 1).
+  # This rider fires for a validation pass whatever `goalSource` was, because
+  # `gbefore` only reaches two of the four branches above and a section that is
+  # role-correct only on some fixtures is a section nothing is asserting.
+  if [ "$validate" = 1 ]; then
+    goal="$goal
+
+**AND YOUR JOB IS NOT TO MAKE THAT TRUE — IT IS TO FIND OUT WHETHER IT IS.** The
+statement above is what $VAL_DRIVER was handed and what you judge its work
+against. PRODUCING it is $VAL_DRIVER's; the acts that would are refused to you
+by name in § 4 and § 5. You LOOK and you FILE."
+  fi
 
   # NOT column-aligned: a real mission id is `lcars-YYYY-MM-DD-NNN-<fp>`, which
   # blows any hand-set column out the moment it is substituted in. The
@@ -8396,6 +8456,9 @@ or a wrong unit id. Confirm which with the ECH before you write anything."
   # tester hand-off, which told the independent look to stand up an independent
   # look. Each is a SLOT filled by role, never a sentence patched per reader.
   local v_tier2 v_wbranch v_wfence v_seatrow v_t2tester v_t2deliver
+  # S368 FIX ROUND 1 adds two more: the BEAT section's only worked example, and
+  # the T2 contract preamble. Both were byte-identical and both are role-bearing.
+  local v_climitex v_t2pre
   if [ "$validate" = 1 ]; then
     v_verbs="Run each one through the launcher that minted this brief, by its absolute path:
 
@@ -8452,6 +8515,19 @@ them are refused to you by name."
 > reporting what you found is not escalation, it is the deliverable. The rest of
 > the contract above — absorbing your own stumbles IN LOOKING, the beat, the
 > sign-off — applies to you unchanged."
+    v_climitex="**Repeating a STEP is fine — repeating your ACCOUNT of it is the problem.** A long
+look should produce several beats, each saying what moved in it (\"live-check red: three
+cards blank on the board\" → \"narrowed it to the renderer, not the data\" → \"filed
+bug-004 with the console output\"). **LOOK, NARROW, FILE is the whole shape of your
+progress, and notice what that example never does: it never CHANGES anything.** A beat
+reporting that you fixed it, removed it or re-ran it green is a beat reporting an act § 4
+refuses you — and it is $VAL_DRIVER's to report, not yours. The run restarts on an
+advancing \`--step K/N\`, and **one beat describing different work clears the line**. The
+ECH compares your own words and nothing else, so a look you are genuinely grinding on is
+indistinguishable from a loop unless you say what is happening inside it."
+    v_t2pre="**AND BOTH FENCES BELOW CARRY A RIDER.** You are the VALIDATION PASS over this
+chunk, not the seat that drives it, so some clauses of each are not yours. The rider
+under each fence names which, and it is as much the contract as the fence is."
     v_tier2="> **AND THE T2 FENCE'S TWO ACTS ARE NOT YOURS EITHER.** Standing up the
 > fresh-context tester at the gate, and dividing the unit into Missions, are
 > written for the seat that DRIVES a T2 unit — $VAL_DRIVER, here. **You ARE the
@@ -8619,7 +8695,7 @@ actually STUCK, that is the \`BLOCKED:\` beat, not this."
   gets fixed; you do not fix it by editing around it."
     v_verbs=""; v_handback=""; v_decide=""; v_tier=""
     v_tier2=""; v_wbranch=""; v_wfence=""; v_seatrow=""; v_t2tester=""
-    v_t2deliver=""
+    v_t2deliver=""; v_climitex=""; v_t2pre=""
     f_decide="**Decide alone:** how to do the work, which order, which files, how to test it,
 and every stumble you can cure with the verbs above. That is what your tier
 bought."
@@ -8658,7 +8734,7 @@ three, **you are not stuck on the work — you are at a question for the ECH.**"
   # ONE statement of what T1 is — so rewriting it per role would fork it. Two of
   # its clauses are written for the seat that DRIVES the unit; the rider names
   # them and leaves the fence intact.
-  [ -z "$v_tier" ] || contract="$(contract_for_tier "$tier" "$v_tier" "$v_tier2")"
+  [ -z "$v_tier" ] || contract="$(contract_for_tier "$tier" "$v_tier" "$v_tier2" "$v_t2pre")"
 
   local verbs
   if [ -n "$v_verbs" ]; then verbs="$v_verbs"; else
@@ -8898,6 +8974,11 @@ own at work somebody else drove.
   # disk. A brief that points at a file which is not there teaches a delegate to
   # distrust it. Names and glosses are this function's structure; the paths come
   # off the filesystem and go through `inert()`.
+  # THE HEADING IS AN INSTRUCTION (S368 fix round 1). *"Read these before you
+  # write anything"* is addressed to a seat whose § 4 forbids writing; a
+  # validation pass reads them before it LOOKS.
+  local ahead="### Read these before you write anything"
+  [ "$validate" != 1 ] || ahead="### Read these before you look at anything"
   local arts="" aline aname apath agloss
   while IFS= read -r aline; do
     [ -n "$aline" ] || continue
@@ -9136,6 +9217,22 @@ is gone."
   # handed states the limit it is held to". A brief minted under an overridden
   # LCARS_ECH_CIRCLE_BEATS states the figure IT was minted under, never the
   # default, for the same reason the beat limit does.
+  # THE ONLY WORKED EXAMPLE OF GOOD BEATING THE SEAT IS GIVEN — AND IT MODELLED A
+  # WRITE (S368 fix round 1). *"removed it, re-running the gate"* is a change to
+  # the working tree, in a section declared role-neutral, in the brief of a seat
+  # whose § 4 says *"YOU WRITE NO CODE AND YOU COMMIT NOTHING … leaving it
+  # exactly as you found it is the whole of your use for it."* One section
+  # modelled the act another forbids. The example is a slot now; the driver's is
+  # the shipped text verbatim.
+  local climitex="$v_climitex"
+  [ -n "$climitex" ] || climitex="**Repeating a STEP is fine — repeating your ACCOUNT of it is the problem.** A long step
+should produce several beats, each saying what moved in it (\"scope gate red on
+src/other.py\" → \"narrowed it to a stale symlink\" → \"removed it, re-running the gate\").
+The run restarts on an advancing \`--step K/N\`, and **one beat describing different work
+clears the line**. The ECH compares your own words and nothing else — it has no process,
+no path and no working tree of yours to look at, so a step you are genuinely grinding on
+is indistinguishable from a loop unless you say what is happening inside it."
+
   local climit
   climit="**Say what CHANGED, not just which step you are on.** The same work reported in the
 same words **$CIRCLE_BEATS times running** is named **GOING IN CIRCLES** by
@@ -9144,13 +9241,7 @@ tier beside it (\`$CIRCLE_BEATS\` beats; the ECH sets it with \`LCARS_ECH_CIRCLE
 Nothing kills you for it and it is not a verdict: the ECH re-briefs you with a different
 approach, replaces you, or raises the call you are circling on with the captain.
 
-**Repeating a STEP is fine — repeating your ACCOUNT of it is the problem.** A long step
-should produce several beats, each saying what moved in it (\"scope gate red on
-src/other.py\" → \"narrowed it to a stale symlink\" → \"removed it, re-running the gate\").
-The run restarts on an advancing \`--step K/N\`, and **one beat describing different work
-clears the line**. The ECH compares your own words and nothing else — it has no process,
-no path and no working tree of yours to look at, so a step you are genuinely grinding on
-is indistinguishable from a loop unless you say what is happening inside it."
+$climitex"
 
   local signoff="Minted by the ECH for unit **$unit** at tier **$tier**.
 The judgement is recorded at \`units.$unit\` in \`$APJSON\`; its reason was:
@@ -9509,12 +9600,12 @@ is **yours** for the scope you own rather than something you wait for."
   "$PY" - "$bpath" "$tfile" "$did" "$unit_i" "$tier" "$why" "$est" "$goal" "$mission" \
         "$statepath" "$contract" "$verbs" "$bounds" "$stamp" "$signoff" \
         "$arts" "$wbase" "$tdeliver" "$blimit" "bash $SELF" "$estamp" "$front" \
-        "$climit" "$vrole" "$handback" "$wfence" <<'PYREND' \
+        "$climit" "$vrole" "$handback" "$wfence" "$ahead" <<'PYREND' \
     || die "delegate: could not render the brief to $bpath"
 import sys
 (out, tfile, did, unit, tier, why, est, goal, mission, statepath,
  contract, verbs, bounds, stamp, signoff, arts, wbase, tdeliver, blimit,
- launcher, estamp, front, climit, vrole, handback, wfence) = sys.argv[1:27]
+ launcher, estamp, front, climit, vrole, handback, wfence, ahead) = sys.argv[1:28]
 tpl = open(tfile).read()
 slots = {
     "DELEGATE_ID": did, "UNIT": unit, "TIER": tier, "TIER_WHY": why,
@@ -9550,6 +9641,9 @@ slots = {
     # S368. § 4's write fence, by role: a driver may write to the mission's
     # branch, a validation pass writes nothing but the bug PRDs it files.
     "WRITE_FENCE": wfence,
+    # S368 fix round 1. The artifacts heading, by role — a driver reads them
+    # before it WRITES, a validation pass before it LOOKS.
+    "ARTIFACTS_HEADING": ahead,
 }
 for k, v in slots.items():
     tpl = tpl.replace("{{%s}}" % k, v)
