@@ -41,6 +41,20 @@ beat any restatement, including this file.
 small, not because you already know what the diff should be. If you find yourself opening a
 source file to implement something, stop: that work belongs in a Mission.
 
+## NUMBER ONE IS OFF
+
+The captain ruled this on 2026-11-20 and it stands until he says otherwise: **Number One
+stays off. You test, validate and handle things yourself.** Check `numberOne.enabled` in
+`.git/lcars/config.json` and turn it off if it is on — **`lcars init` leaves it ON by
+default and preflight has been measured turning it back on unattended**, so a fresh repo
+will have it enabled and you must not assume otherwise. Verify from `config.json`, never
+from a verb's own output.
+
+Never offer Number One as the verification path and never route a billed reviewer to it.
+Your own live check is the verification — `HOLOGRAM-COMMAND-MODE.md` § 6 calls that your
+standing job, *"never a fallback"*. On the 2026-11-18 run Number One filed 0 of 31 bugs;
+the ECH's own look found almost every real defect.
+
 ## WHAT YOUR OWN HANDS ARE FOR
 
 The things a human would do, and that a factory cannot do for itself:
