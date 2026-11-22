@@ -726,6 +726,39 @@ launcher_verdict() {
 #  D5: that line also printed verbatim two lines under "✗ NOT READY", so a
 #      failed install ended "you are broken" / "Done." The sign-off is now
 #      conditional on the verdict it follows.
+# ---------------------------------------------------------------------------
+# AGENT DEFINITIONS — the same golden rule as skills: authored HERE, symlinked
+# out, so `git pull` delivers updates with no re-install.
+#
+# WHY THIS EXISTS. Measured 2026-11-22, three capstone runs: handed a spec with
+# no process words, an agent used LCARS **zero** times — at BOTH job sizes,
+# including a five-feature job with colliding files where splitting was
+# obviously right. It did not refuse the factory; it never saw it. `lcars init`
+# writes only into `.git/lcars`, deliberately, so the target repo stays clean —
+# and that same decision is exactly what makes the factory invisible to an
+# agent walking into the repo.
+#
+# The captain's ruling, same day, and it is the reason this is ONE file and not
+# a marker written into every repo: LCARS is purpose-built, not something a
+# generic orchestrator has to go discovering. The rule — look for `.git/lcars`,
+# `init` if it is missing, then always build through the factory — is one piece
+# of knowledge and belongs in one place.
+install_agents() {
+  local src dest name
+  src="$REPO_ROOT/agents"
+  [ -d "$src" ] || return 0
+  dest="$HOME/.claude/agents"
+  mkdir -p "$dest" || { echo "could not create $dest" >&2; return 1; }
+  for f in "$src"/*.md; do
+    [ -e "$f" ] || continue
+    name="$(basename "$f")"
+    ln -sfn "$f" "$dest/$name" || { echo "could not link $name" >&2; return 1; }
+    echo "Linked agent '${name%.md}' -> $dest/$name"
+  done
+}
+
+install_agents
+
 final_note() {
   local verdict=""
   verdict="$(launcher_verdict || true)"
