@@ -1601,6 +1601,25 @@ check "19a. [control] both briefs are real mints and the split found every secti
   "[ \"\$(wc -l <'$SEC_DRIVER' | tr -d ' ')\" -ge 20 ]"
 # ---- THE DECLARED CLASSIFICATION. Changing it is a decision, on the record. --
 # MUST_DIFFER — each one grants, instructs or describes an ACT:
+#
+# THE LAST THREE WERE MAY_MATCH UNTIL S368, AND ALL THREE WERE WRONG. Each was
+# byte-identical to the driver's and each INSTRUCTS OR PERMITS an act a
+# validation pass cannot perform, while the same brief's § 3 says *"You do not
+# fix this chunk, you do not merge it and you do not mark it verified."* A table
+# that blesses both sides of a contradiction is the § 3 bug again, one section
+# over — so the reason each one is role-bearing is recorded here:
+#   ## Where you work     *"Work on it. Do not work on `main`."* — a validation
+#                         pass does not work on the branch; it reads it and
+#                         leaves it as it found it. The driver owns that branch.
+#   ## 4. The boundaries  *"Everything you write stays inside `.git/lcars/` or
+#                         the mission's own branch."* — a PERMISSION to write to
+#                         the branch, and at T2 the same section hands the seat
+#                         a tester to stand up and a chunk to divide.
+#   ## 6. The engine …    *"EVERY SEAT YOU OPEN TAKES THIS SAME ROW. You will
+#                         open seats of your own — a worker, a tester…"* — a
+#                         validation pass opens none: a tester of its own is
+#                         fresh eyes on fresh eyes, and validation is never
+#                         re-delegated.
 MUST_DIFFER='### T1 — one delegate owns the unit end-to-end, and ABSORBS ITS OWN STUMBLES
 ## 2. The output format expected back
 ## 3. The LCARS verbs in scope
@@ -1608,30 +1627,27 @@ MUST_DIFFER='### T1 — one delegate owns the unit end-to-end, and ABSORBS ITS O
 ### THE BOUNDARY: THESE NINE VERBS, AND NOTHING ELSE
 ### The front door, and it is not optional
 ### What you decide alone, and what goes UP
-## 5. YOU verify your chunk; the MAIN ECH verifies the whole'
+## 5. YOU verify your chunk; the MAIN ECH verifies the whole
+## Where you work
+## 4. The boundaries
+## 6. The engine you run on'
 # MAY_MATCH — each one says the same TRUE thing to either seat, and the reason is
 # recorded so the next reader can disagree with a specific claim:
 #   (preamble)            the title, unit, tier and mint stamp
 #   ## Your tier          the recorded tier judgement and the estimate it saw
-#   ## Where you work     repo, branch, launcher, and the brief's self-check
 #   ## 1. The goal        the ask — both roles are pointed at the same chunk
 #   ### Read these …      the artifacts actually on disk
 #   ### And while you …   the beat, the silence limit, the circle limit
 #   ### RAISING IT …      the BLOCKED beat — the same channel for either seat
 #   ### The two-list …    the ledger sign-off on exit
-#   ## 4. The boundaries  this unit and not another; no LCARS source; no merge
-#   ## 6. The engine …    the role -> engine matrix row and the seat check
 #   ## Sign-off           who minted it, under which recorded judgement
 MAY_MATCH='(preamble)
 ## Your tier: T1
-## Where you work
 ## 1. The goal
 ### Read these before you write anything
 ### And while you work: BEAT
 ### RAISING IT — THIS IS THE CHANNEL, and it is the only one you have
 ### The two-list sign-off, on exit
-## 4. The boundaries
-## 6. The engine you run on
 ## Sign-off'
 # ROLE-EXCLUSIVE sections are correct by construction — a section only one role
 # has cannot be identical — but they are still declared, so one appearing or
@@ -1639,8 +1655,8 @@ MAY_MATCH='(preamble)
 ROLE_ONLY='### ABSORBING A STUMBLE — by using the factory, never by going round it
 ### YOU ARE THE VALIDATION PASS FOR THIS CHUNK — READ THIS BEFORE § 4
 ### YOU DO NOT ABSORB — YOU REPORT. (This section is a driver'"'"'s; here is yours.)'
-classify_misses() {   # <verdict-file> -> one line per section the table gets wrong
-  python3 - "$1" "$MUST_DIFFER" "$MAY_MATCH" "$ROLE_ONLY" <<'PYCL'
+classify_misses() {   # <verdict-file> [must] [may] [only] -> one line per miss
+  python3 - "$1" "${2-$MUST_DIFFER}" "${3-$MAY_MATCH}" "${4-$ROLE_ONLY}" <<'PYCL'
 import sys
 rows = [l.rstrip("\n").split("\t", 1) for l in open(sys.argv[1]) if "\t" in l]
 must = set(l for l in sys.argv[2].splitlines() if l)
@@ -1730,6 +1746,153 @@ check "19l. the tier fence is RIDDEN, not rewritten — the fence text survives"
   "grep -q 'It cures those itself' \"$BD19\" \
    && grep -q 'two of that contract' \"$BV19\" \
    && grep -q 'applies to you unchanged' \"$BV19\""
+# ---- AND THE SAME METHOD AT T2 (S368, CURE 3). § 19 minted a T1 PAIR ONLY, so
+# it could not see T2 at all — and a real T2 pair gets four more sections wrong,
+# including one that tells a validation pass to stand up its own reviewer, which
+# is the double validation this whole rule exists to prevent. Measured at
+# `b726a3e`:
+#   ### T1 — … ABSORBS ITS OWN STUMBLES           IDENTICAL at T2, DIFFERS at T1
+#       the role RIDER is appended to the END of the contract, and at T2 the end
+#       is the T2 fence — so the T1 fence it names goes unridden in the only
+#       brief that carries both.
+#   ### T2 — T1, plus an independent FRESH-CONTEXT tester at the gate
+#       …DIFFERS for that same wrong reason, and the T2 fence's own role-bearing
+#       clauses (stand up a tester; divide the unit) were never ridden.
+#   ### Standing up your fresh-context tester (T2)  IDENTICAL — byte for byte,
+#       the instruction to stand up a fresh-context reviewer, in the brief of the
+#       seat that IS the fresh-context reviewer.
+#   ## 4. The boundaries  carries two more T2-only bullets at T2 — "Your T2
+#       tester is ADDITIVE" and "Division is a means" — both driver acts.
+#
+# ONE HELPER, used by the T2 pair and by both mutants below, so a row cannot
+# quietly mint a different shape than the one it is compared against. The T1
+# block above keeps its own inline mint: $R19/$V19/$BD19/$BV19 are read by
+# 19h–19l and re-pointing them is a change those rows did not ask for.
+mint_pair() {   # mint_pair <script> <tier> <suffix> <verdict-out> -> "<repo>\t<validator>"
+  local scr="$1" tr="$2" sfx="$3" out="$4" r v
+  r="$(new_repo)"; ap_init "$r"; new_mission "$r" "m-$sfx" verify
+  ech_at "$scr" "$r" record "missions.u$sfx.id" "m-$sfx"            >/dev/null 2>&1
+  ech_at "$scr" "$r" tier "u$sfx" --tier "$tr" --why "one owner"    >/dev/null 2>&1
+  ech_at "$scr" "$r" delegate "u$sfx"                               >/dev/null 2>&1
+  ech_at "$scr" "$r" delegate "u$sfx" --validate --trigger wide --why "keystone" >/dev/null 2>&1
+  v="$(validator_of "$r")"
+  section_verdicts "$r/.git/lcars/delegates/d1/BRIEF.md" \
+                   "$r/.git/lcars/delegates/$v/BRIEF.md" >"$out" 2>&1
+  printf '%s\t%s' "$r" "$v"
+}
+# ---- THE T2 CLASSIFICATION. Same three kinds, declared separately because a T2
+# brief is not a T1 brief with a section bolted on: it carries BOTH tier fences
+# (T2 is defined as a strict superset) and a tester hand-off, and every one of
+# those is role-bearing.
+MUST_DIFFER_T2='### T1 — one delegate owns the unit end-to-end, and ABSORBS ITS OWN STUMBLES
+### T2 — T1, plus an independent FRESH-CONTEXT tester at the gate
+## 2. The output format expected back
+## 3. The LCARS verbs in scope
+### YOUR CHUNK, AND THE AUTHORITY THAT COMES WITH IT
+### THE BOUNDARY: THESE NINE VERBS, AND NOTHING ELSE
+### The front door, and it is not optional
+### What you decide alone, and what goes UP
+## 5. YOU verify your chunk; the MAIN ECH verifies the whole
+## Where you work
+## 4. The boundaries
+## 6. The engine you run on'
+MAY_MATCH_T2='(preamble)
+## Your tier: T2
+## 1. The goal
+### Read these before you write anything
+### And while you work: BEAT
+### RAISING IT — THIS IS THE CHANNEL, and it is the only one you have
+### The two-list sign-off, on exit
+## Sign-off'
+ROLE_ONLY_T2='### ABSORBING A STUMBLE — by using the factory, never by going round it
+### Standing up your fresh-context tester (T2)
+### THE T2 TESTER IS NOT YOURS TO STAND UP — YOU *ARE* THE SECOND LOOK
+### YOU ARE THE VALIDATION PASS FOR THIS CHUNK — READ THIS BEFORE § 4
+### YOU DO NOT ABSORB — YOU REPORT. (This section is a driver'"'"'s; here is yours.)'
+t2misses() { classify_misses "$1" "$MUST_DIFFER_T2" "$MAY_MATCH_T2" "$ROLE_ONLY_T2"; }
+SEC_T2="$TMPROOT/sec-t2"
+RV19T2="$(mint_pair "$SCRIPT" T2 19t2 "$SEC_T2")"
+R19T2="${RV19T2%%	*}"; V19T2="${RV19T2##*	}"
+BD19T2="$R19T2/.git/lcars/delegates/d1/BRIEF.md"
+BV19T2="$R19T2/.git/lcars/delegates/$V19T2/BRIEF.md"
+check "19m. [control] a real T2 pair was minted and the split found every section" \
+  "[ -n '$V19T2' ] && [ \"\$(wc -l <'$SEC_T2' | tr -d ' ')\" -ge 22 ]"
+check "19m2. [control] …and it really is a T2 pair — BOTH tier fences, in both briefs" \
+  "grep -q '^### T1 — ' \"$BD19T2\" && grep -q '^### T2 — ' \"$BD19T2\" \
+   && grep -q '^### T1 — ' \"$BV19T2\" && grep -q '^### T2 — ' \"$BV19T2\""
+check "19n. EVERY SECTION of the T2 pair matches its declared classification" \
+  "[ -z \"\$(t2misses '$SEC_T2')\" ]"
+if [ -n "$(t2misses "$SEC_T2")" ]; then
+  printf '       --- the sections the T2 table gets wrong ---\n'
+  t2misses "$SEC_T2" | sed 's/^/       /'
+fi
+check "19o. [control] the T2 table really classifies all three kinds, not one" \
+  "grep -q DIFFERS '$SEC_T2' && grep -q IDENTICAL '$SEC_T2' \
+   && grep -qE 'DRIVER-ONLY|VALID-ONLY' '$SEC_T2'"
+# THE RIDER IS ASSERTED *POSITIONALLY*, between the two fence headings. Asking
+# only whether the sentence is in the FILE passed at `b726a3e` — it was there,
+# in the T2 fence's section instead of the T1 one, which is the whole defect.
+check "19p. the T1 fence is ridden IN A T2 BRIEF too — inside that fence's own section" \
+  "grep -q 'It cures those itself' \"$BV19T2\" \
+   && awk '/^### T1 — /{f=1} /^### T2 — /{f=0} f' \"$BV19T2\" | grep -q 'two of that contract'"
+check "19q. …and the T2 fence is ridden as well, in ITS section: no tester, no division" \
+  "awk '/^### T2 — /{f=1} /^## Where you work/{f=0} f' \"$BV19T2\" \
+     | grep -q \"T2 FENCE'S TWO ACTS ARE NOT YOURS\" \
+   && awk '/^### T2 — /{f=1} /^## Where you work/{f=0} f' \"$BV19T2\" \
+     | grep -qF 'exec lcars-file/file.sh'"
+check "19q2. [control] …and the DRIVER's T2 brief carries NEITHER rider" \
+  "! grep -q \"T2 FENCE'S TWO ACTS\" \"$BD19T2\" \
+   && ! grep -q 'two of that contract' \"$BD19T2\""
+check "19r. the validator's T2 brief never tells it to stand up a tester" \
+  "! grep -qF 'Standing up your fresh-context tester' \"$BV19T2\" \
+   && ! grep -qF 'ALSO IN YOUR SCOPE, BECAUSE THIS UNIT IS T2' \"$BV19T2\" \
+   && ! grep -qF 'What you hand it' \"$BV19T2\" \
+   && ! grep -qF 'A hand-back with no tester section' \"$BV19T2\""
+check "19r2. [control] …and the DRIVER's T2 brief does, all four ways" \
+  "grep -qF 'Standing up your fresh-context tester' \"$BD19T2\" \
+   && grep -qF 'ALSO IN YOUR SCOPE, BECAUSE THIS UNIT IS T2' \"$BD19T2\" \
+   && grep -qF 'What you hand it' \"$BD19T2\" \
+   && grep -qF 'A hand-back with no tester section' \"$BD19T2\""
+# ---- MUTANT B: THE THREE SECTIONS S368 RECLASSIFIED, each role branch reverted
+# to the driver's text. This is the state the suite was 288/0 in.
+ROLE_BAD="$EXEC_SKILLS/lcars-eeh/role-blind.sh"
+sed -e 's@^    v_wbranch="  \*\*YOU DO NOT WRITE TO IT.*$@    v_wbranch="" # reverted on purpose\n    unused_wbranch="x@' \
+    -e 's@^    v_wfence="- \*\*YOU WRITE NO CODE.*$@    v_wfence="" # reverted on purpose\n    unused_wfence="x@' \
+    -e 's@^    v_seatrow="\*\*AND YOU DO NOT OPEN SEATS OF YOUR OWN.*$@    v_seatrow="" # reverted on purpose\n    unused_seatrow="x@' \
+  "$SCRIPT" >"$ROLE_BAD"
+check "19s. the role-blind build differs from this one, by those three lines" \
+  "! diff -q '$SCRIPT' '$ROLE_BAD' >/dev/null \
+   && [ \"\$(grep -c 'reverted on purpose' '$ROLE_BAD')\" = 3 ]"
+SEC_ROLE="$TMPROOT/sec-role"
+RV19RB="$(mint_pair "$ROLE_BAD" T1 19rb "$SEC_ROLE")"
+check "19t. [control] the role-blind build minted both briefs, so the rows below can run" \
+  "[ -n \"\${RV19RB##*	}\" ] && [ \"\$(wc -l <'$SEC_ROLE' | tr -d ' ')\" -ge 20 ]"
+for s19 in '## Where you work' '## 4. The boundaries' '## 6. The engine you run on'; do
+  check "19u. [discrimination] § 19b FAILS on it, naming: $s19" \
+    "classify_misses '$SEC_ROLE' | grep -qF 'MUST_DIFFER but IDENTICAL: $s19'"
+done
+# ---- MUTANT C: THE T2 HALF. One sed puts the tier RIDER back where `b726a3e`
+# appended it — the end of the whole contract, which at T2 is the T2 fence — and
+# one reverts the validator's tester section to the driver's.
+T2_BAD="$EXEC_SKILLS/lcars-eeh/t2-blind.sh"
+sed -e 's@^  \[ -z "\$v_tier" \] || contract="\$(contract_for_tier .*$@  [ -z "$v_tier" ] || contract="$(printf "%s\\\\n\\\\n%s\\\\n" "$contract" "$v_tier")" # reverted on purpose@' \
+    -e 's@^    v_t2tester="### THE T2 TESTER IS NOT YOURS TO STAND UP.*$@    v_t2tester="" # reverted on purpose\n    unused_t2tester="x@' \
+  "$SCRIPT" >"$T2_BAD"
+check "19v. the T2-blind build differs from this one, by those two lines" \
+  "! diff -q '$SCRIPT' '$T2_BAD' >/dev/null \
+   && [ \"\$(grep -c 'reverted on purpose' '$T2_BAD')\" = 2 ]"
+SEC_T2BAD="$TMPROOT/sec-t2bad"
+RV19TB="$(mint_pair "$T2_BAD" T2 19tb "$SEC_T2BAD")"
+check "19w. [control] the T2-blind build minted both briefs, so the rows below can run" \
+  "[ -n \"\${RV19TB##*	}\" ] && [ \"\$(wc -l <'$SEC_T2BAD' | tr -d ' ')\" -ge 20 ]"
+check "19x. [discrimination] § 19n FAILS on it — the rider missed the T1 fence" \
+  "t2misses '$SEC_T2BAD' | grep -qF 'MUST_DIFFER but IDENTICAL: ### T1 — one delegate owns the unit end-to-end, and ABSORBS ITS OWN STUMBLES'"
+check "19y. [discrimination] …and the tester section went identical in both briefs" \
+  "t2misses '$SEC_T2BAD' | grep -qF 'ROLE_ONLY but IDENTICAL: ### Standing up your fresh-context tester (T2)'"
+if [ -n "$(t2misses "$SEC_T2BAD")" ]; then
+  printf '       --- what the T2-blind build gets wrong (expected) ---\n'
+  t2misses "$SEC_T2BAD" | sed 's/^/       /'
+fi
 echo
 
 # =========================================================================
@@ -1773,8 +1936,35 @@ spell20 "UPPER CASE (filesystem-dependent)" exec lcars-log/log.sh --parent M-MIN
 spell20 "no selector at all"                exec lcars-log/log.sh
 spell20 "--mission, loosely"                exec lcars-log/log.sh --mission mine
 spell20 "both selectors at once"            exec lcars-log/log.sh --parent m-mine --mission m-mine
+# ---- AND THE SELECTOR IS A LITERAL, NOT A PATTERN (S368, CURE 1). The scope
+# compare was `printf '%s\n' "$scope" | grep -qx "$sel"` — a BASIC REGULAR
+# EXPRESSION — two lines below a comment reading *"the same LITERAL this pass's
+# own record carries"*. The same file already gets this right in three other
+# places (`grep -qxF`, `grep -qF`), so the intent was never in doubt.
+#
+# MEASURED AT `b726a3e` with `recheckScope=["bug-001"]`: every selector below
+# PASSED the narrowed gate. `lcars-log/log.sh` resolves `--parent` by
+# case-insensitive SUBSTRING of the id, so `bug.001` lands on the CHUNK ROOT,
+# `filed` grows, and the next `revalidate` snapshots the widened scope — the
+# documented spiral, reached through a plausible TYPO rather than an attack.
+#
+# THE DERIVATION IS FROM THE REAL SCOPE, and each row's known-good control is
+# the pair of greps itself: a BRE compare accepts the selector and a LITERAL
+# compare does not. That is what makes the refusal below mean "literal", rather
+# than "this particular string happens to be refused".
+RX20="$(tr -d '[]" ' <"$TMPROOT/filed20.before" | cut -d, -f1)"
+check "20b0. [control] the re-check scope is ONE entry and the rows derive from it" \
+  "[ -n '$RX20' ] && [ \"\$(apj '$R20' delegates.$V20.recheckScope | tr -cd , )\" = '' ]"
+for rx20 in "${RX20/-/.}" "${RX20%%-*}.*" '.*' "${RX20%?}." "^$RX20\$" \
+            "[${RX20:0:1}]${RX20:1}" "${RX20}1*" "$RX20\\|x"; do
+  check "20b1. [control] \`$rx20\` is a PATTERN a basic-regex compare accepts, and a literal one does not" \
+    "printf '%s\\n' '$RX20' | grep -qx '$rx20' \
+     && ! printf '%s\\n' '$RX20' | grep -qxF -- '$rx20'"
+  spell20 "a REGEX, not a literal: --parent $rx20" \
+    exec lcars-log/log.sh --parent "$rx20"
+done
 apj "$R20" "delegates.$V20.filed" >"$TMPROOT/filed20.after"
-check "20c. …and across all eleven the FILED list never grew" \
+check "20c. …and across every spelling the FILED list never grew" \
   "cmp -s '$TMPROOT/filed20.before' '$TMPROOT/filed20.after'"
 check "20d. the refusal says it will not guess, rather than naming one spelling" \
   "grep -qE 'WILL NOT GUESS|NAMED NO MISSION|RE-CHECKS ONLY WHAT IT FILED' '$TMPROOT/out20.txt'"

@@ -34,18 +34,19 @@ four, delegates duplicate each other's work and leave gaps between them.
 | `{{MISSION}}` | the mission id, and the path to its `state.json` |
 | `{{STATE_PATH}}` | the absolute path to that `state.json` |
 | `{{ARTIFACTS}}` | every artifact ACTUALLY PRESENT under `missions/<id>/`, by absolute path — `prd.md`, `plan.json`, `tickets/`, … (**D1**) |
-| `{{WORKSPACE}}` | the brief's own **self-check** — the absolute path it was minted at, and the instruction not to use it anywhere else but to ask for a re-mint (**D16**) — then the repository root, the Mission's branch and base, and the ABSOLUTE path of the launcher that minted this brief (**D6**) |
+| `{{WORKSPACE}}` | **S368** branches the BRANCH bullet by role — a driver is told *"Work on it"*, a validation pass is told it does not write to it, because reading the work and leaving it as it found it is the whole of its use for the branch. Then: the brief's own **self-check** — the absolute path it was minted at, and the instruction not to use it anywhere else but to ask for a re-mint (**D16**) — then the repository root, the Mission's branch and base, and the ABSOLUTE path of the launcher that minted this brief (**D6**) |
 | `{{TIER_DELIVERABLE}}` | what THIS tier adds to the hand-back. Empty at T0/T1; at T2 it asks for the tester's evidence and bug list (**D4**) |
 | `{{TIER_CONTRACT}}` | the `<!-- tier:<T> -->` block of `DELEGATION.md`, verbatim |
 | `{{VERBS}}` | the LCARS verbs in scope for this unit — and, **S365**, § *YOUR CHUNK, AND THE AUTHORITY THAT COMES WITH IT*: the chunk this sub-ECH owns **by Mission id**, the `LCARS_ECH_AS` export that makes its authority resolvable, the verbs that are **its own inside that chunk** (`file-bug`, `live-check`, `policy`, `drive`), that the same verbs are **refused by name outside it**, and the limit — `land`, `approve`, `push-gated` and `ask` stay the MAIN ECH's, each with the reason. The ONE statement of all of it is `DELEGATION.md` § *AUTHORITY TRAVELS WITH THE CHUNK*; this slot carries it to a reader who will never open that file, which is S359's lesson: a brief that does not state the rule it holds a delegate to manufactures its own false positives |
 | `{{HANDBACK}}` | **S366 fix round 3** — § 2's hand-back list, by role. A driver reports what it CURED (that bullet "is the measure of whether the tier earned anything"); a validation pass cures nothing, and reports what it LOOKED AT, what it SAW and what it FILED. One of four sections a section-by-section driver/validator diff caught still identical after round 2 branched the seven a tester had named |
 | `{{VERIFY_ROLE}}` | **S366 fix round 1** — § 5's body, and it is slotted precisely so a brief CANNOT CARRY BOTH ROLES. For a DRIVING seat it is the four steps it always was (read Number One, `live-check`, take `policy`'s action, `file-bug` and drive them). For a VALIDATION PASS it is that pass's contract: it LOOKS and it FILES, and the verdict, the action and the fix are **not its acts** — the harness refuses all three by name. Before this slot existed, § 5 was fixed text telling every seat to run `policy` and drive its own bugs, while the S366 section in `{{VERBS}}` told a validator it must not: one brief, two contracts, no override stated. The contradiction is now structurally impossible rather than patched by wording, because the slot is filled exactly once |
 | `{{BOUNDARIES}}` | what this unit does not cover |
+| `{{WRITE_FENCE}}` | **S368** — § 4's last bullet, by role. For a DRIVING seat it is the shipped line verbatim: *everything you write stays inside `.git/lcars/` or the mission's own branch*. For a VALIDATION PASS that line is a **permission it does not have** — it writes no code and commits nothing, and the only files it writes are the bug PRDs it hands to `file-bug`. One of three sections a driver/validator diff caught byte-identical while the same brief's § 3 said *"you do not fix this chunk"*; a brief that grants and forbids the same act has no contract |
 | `{{CREATED_AT}}` | when it was minted |
 | `{{SIGNOFF}}` | who minted it and under which recorded judgement |
 | `{{LAUNCHER}}` | **S351** — `bash <absolute path of the launcher that minted this brief>`, the same path § 3 already gives for every other verb. A brief whose commands are runnable as they stand is the difference between a delegate that beats and one that goes looking |
 | `{{BEAT_LIMIT}}` | **S351** — the silence limit this delegate is held to, in minutes and in seconds, and what happens on expiry. The number comes from `BEAT_LIMIT` (`LCARS_ECH_BEAT_LIMIT`), so a brief minted under an overridden limit states the limit it was actually minted under. That figure is also RECORDED at `delegates.<id>.beatLimit`, so `stalled` can report the limit this delegate was briefed under rather than whichever one happens to be set when the report runs |
-| `{{ENGINE_STAMP}}` | **S352** — the engine AND model this delegate's role must run on, by name, from the role → engine matrix (`DELEGATION.md` § *Who runs what*), plus the rule that **another engine may not be chosen**. At T2 it also names the tester's row. Recorded at `delegates.<id>.engine` / `.model`, so nothing greps the brief back to learn what it was stamped with. **S352 fix round 1** adds the three things that rule did not cover: **every seat the delegate opens** takes the same row (there is no `subdelegate` row, and a T2 delegate dividing its unit could otherwise open three Claude seats without breaking a sentence); **the seat it is already in** is checked, because a brief pasted into a window it did not choose bills the unit just the same; and a **FREE→BILLED substitution** is stated in the brief and recorded at `delegates.<id>.engineRecorded` / `.engineSubstituted` rather than being visible only on the `engines` screen |
+| `{{ENGINE_STAMP}}` | **S368** branches the SEAT ROW by role: *"EVERY SEAT YOU OPEN TAKES THIS SAME ROW … a worker, a tester…"* is a grant, and a validation pass opens none of them — a tester of its own is fresh eyes on fresh eyes, and validation is never re-delegated. Then: **S352** — the engine AND model this delegate's role must run on, by name, from the role → engine matrix (`DELEGATION.md` § *Who runs what*), plus the rule that **another engine may not be chosen**. At T2 it also names the tester's row. Recorded at `delegates.<id>.engine` / `.model`, so nothing greps the brief back to learn what it was stamped with. **S352 fix round 1** adds the three things that rule did not cover: **every seat the delegate opens** takes the same row (there is no `subdelegate` row, and a T2 delegate dividing its unit could otherwise open three Claude seats without breaking a sentence); **the seat it is already in** is checked, because a brief pasted into a window it did not choose bills the unit just the same; and a **FREE→BILLED substitution** is stated in the brief and recorded at `delegates.<id>.engineRecorded` / `.engineSubstituted` rather than being visible only on the `engines` screen |
 | `{{FRONT_DOOR}}` | **S352** — the front-door clause: the verbs in scope by name, the Holodeck route for screen work, HCM § 4a's rule stated once, what the delegate decides alone, that a question goes UP to the ECH, **the absorption route and what is NOT absorption**, the T2 tester hand-off, and the two-list sign-off. The ONE statement of those rules is `DELEGATION.md`; this slot carries them to a reader who will never open it. **S352 fix round 1** labels the exit door the prohibitions made necessary: the absorption section used to end on *"raise it"* with no command behind it, and the only escalation verb named was `ask` — which prints *QUESTION FOR THE CAPTAIN*, fires the notifier this same brief forbids four times, and was not even in the reserved list. The channel is now **one runnable command**, a `BLOCKED:` beat, which `stalled` and `status` surface at once; `ask` joins `land` on the reserved list; and the `lcars log` door names the `bug-prd.md` to copy, because a brief that said `--prd <f>` and nothing more sent a stuck delegate at a door with no handle. **S365** re-reads one entry of that list: `file-bug` is the sub-ECH's own verb **inside its own chunk** and is reserved only outside it — see the `{{VERBS}}` row |
 
 **Those two slots were named and left empty by S350 so that S352 would edit ONE
@@ -182,7 +183,7 @@ Also, and without exception:
   landed. That is § 5.
 - You do not reach outside your own chunk. § 3 names what is yours and where it
   stops.
-- Everything you write stays inside `.git/lcars/` or the mission's own branch.
+{{WRITE_FENCE}}
 
 ## 5. YOU verify your chunk; the MAIN ECH verifies the whole
 
@@ -226,3 +227,24 @@ The brief points at `ORCHESTRATION.md` for what a tester is and does — it does
 not restate those rules. A second copy of a rule is a rule that drifts. That
 tester is **additive**: it is an extra independent pair of eyes at the gate and
 it **does not replace** the ECH's own check in § 5.
+
+## The T2 addition is a DRIVER's (S368)
+
+**A validation pass does not stand up a tester**, so none of the three T2
+additions above reaches one. It gets, in their place: the T2 fence's own
+**rider** (standing up the tester, and dividing the unit, are the driving seat's
+two acts); § 3's T2 scope paragraph **withheld**; § 4's two T2 bullets replaced
+by the **refusal** of both; § 2's T2 deliverable replaced by *"its tester is the
+driver's, not yours"*; and, where the driver's *Standing up your fresh-context
+tester* section sits, § *THE T2 TESTER IS NOT YOURS TO STAND UP — YOU ARE THE
+SECOND LOOK*.
+
+Measured at `b726a3e`, before this: a real T2 driver/validator pair was
+**byte-identical** in *Standing up your fresh-context tester* — the instruction
+to stand up a fresh-context reviewer, in the brief of the seat that IS the
+fresh-context reviewer, which is the double validation the one-layer rule exists
+to prevent. The T1 fence went identical in that pair too, because the role
+**rider was appended to the end of the contract** and at T2 the end is the T2
+fence; `contract_for_tier` now takes a rider PER FENCE. `tests/one-layer-validation.test.sh`
+§ 19 mints a **T2 pair as well as a T1 one** and holds every section of both
+against a declared classification, so neither can drift back.

@@ -1239,7 +1239,16 @@ validator_exec_reach_or_die() {
   # THE EXACT STRING, AGAINST THE RECORDED SCOPE. Not `mexists`, not a
   # lower-cased compare, not a substring — the same literal this pass's own
   # record carries.
-  printf '%s\n' "$scope" | grep -qx "$sel" && return 0
+  #
+  # AND `-F` IS THE WHOLE POINT OF THAT SENTENCE (S368). Without it `grep -qx`
+  # compiles the SELECTOR as a basic regular expression, so a narrowed pass with
+  # `recheckScope=["bug-001"]` was reached by `bug.001`, `bug-00.`, `.*`,
+  # `^bug-001$`, `[b]ug-001` and more — and `lcars-log/log.sh` resolves
+  # `--parent` by case-insensitive SUBSTRING, so `bug.001` lands on the CHUNK
+  # ROOT, `filed` grows and the next `revalidate` snapshots the widened scope.
+  # That is the documented spiral, reached through a plausible typo. `--` goes
+  # with it: a selector beginning with `-` is an argument, never an option.
+  printf '%s\n' "$scope" | grep -qxF -- "$sel" && return 0
   # …or a descendant of something it filed (a bug logged beneath its own
   # finding is still that finding). Decided by the ONE decider, which refuses
   # anything else — including a selector that resolves to nothing here at all.
@@ -1290,7 +1299,7 @@ validator_recheck_or_die() {
   [ -n "$scope" ] || return 0
   cur="$m"
   while [ -n "$cur" ] && [ "$hops" -lt 32 ]; do
-    printf '%s\n' "$scope" | grep -qx "$cur" && return 0
+    printf '%s\n' "$scope" | grep -qxF -- "$cur" && return 0
     cur="$(mstate "$cur" parentMission)"
     hops=$((hops + 1))
   done
@@ -7763,7 +7772,16 @@ PYART
 # live Copilot seat handed a T2 brief volunteered exactly that, unprompted:
 # "the full inherited T1 obligations are not included." Composition here, not a
 # second copy of T1's words in the T2 fence, is what keeps the doc single-source.
-contract_for_tier() {
+#
+# S368 — AND A RIDER LANDS ON THE FENCE IT NAMES, not at the end of whatever was
+# composed. A role rider appended to the whole contract is appended to the LAST
+# fence, so at T2 — the only tier that carries two — the T1 rider landed on the
+# T2 fence and the T1 fence it quotes went unridden. Measured: a T2
+# driver/validator pair was byte-identical in `### T1 — … ABSORBS ITS OWN
+# STUMBLES` while a T1 pair differed there. Each fence takes its own rider, or
+# none.
+contract_for_tier() {   # <tier> [rider for T1's fence] [rider for T2's fence]
+  local r1="${2:-}" r2="${3:-}"
   case "$1" in
     T2)
       printf '%s\n' "T2 INHERITS T1 IN FULL. Both contracts below are yours — T1's first," \
@@ -7771,10 +7789,21 @@ contract_for_tier() {
                     "obligation in it is the part a T2 delegate most often never hears." \
                     ""
       tier_contract T1 || return 1
+      [ -z "$r1" ] || printf '\n%s\n' "$r1"
       printf '\n'
       tier_contract T2 || return 1
+      [ -z "$r2" ] || printf '\n%s\n' "$r2"
       ;;
-    *) tier_contract "$1" || return 1 ;;
+    T1)
+      tier_contract T1 || return 1
+      [ -z "$r1" ] || printf '\n%s\n' "$r1"
+      ;;
+    # T0 HAS NO ABSORPTION FENCE, so neither rider is about anything in it. It
+    # keeps the pre-S368 shape — the rider, if any, after the whole block —
+    # because nothing has ever measured a T0 validation pass and a guessed
+    # change there would be a change nobody asked for.
+    *) tier_contract "$1" || return 1
+       [ -z "$r1" ] || printf '\n%s\n' "$r1" ;;
   esac
 }
 
@@ -8359,6 +8388,14 @@ or a wrong unit id. Confirm which with the ECH before you write anything."
   # not apply, which keeps the fence the single statement of what T1 is.
   local a_own a_subdiv a_yours b_depth b_ninth f_file f_absorb f_decide
   local v_verbs v_handback v_decide v_tier
+  # S368 — THE ROLE REACHES *EVERY* SECTION THAT GRANTS OR INSTRUCTS AN ACT.
+  # Three more were byte-identical between a driver's brief and a validation
+  # pass's, and each one permitted an act the harness refuses that pass by name:
+  # the branch to work on (§ *Where you work*), the write fence (§ 4) and the
+  # seats it may open (§ 6). Plus the T2 pair: the T2 fence's rider and the
+  # tester hand-off, which told the independent look to stand up an independent
+  # look. Each is a SLOT filled by role, never a sentence patched per reader.
+  local v_tier2 v_wbranch v_wfence v_seatrow v_t2tester v_t2deliver
   if [ "$validate" = 1 ]; then
     v_verbs="Run each one through the launcher that minted this brief, by its absolute path:
 
@@ -8415,6 +8452,57 @@ them are refused to you by name."
 > reporting what you found is not escalation, it is the deliverable. The rest of
 > the contract above — absorbing your own stumbles IN LOOKING, the beat, the
 > sign-off — applies to you unchanged."
+    v_tier2="> **AND THE T2 FENCE'S TWO ACTS ARE NOT YOURS EITHER.** Standing up the
+> fresh-context tester at the gate, and dividing the unit into Missions, are
+> written for the seat that DRIVES a T2 unit — $VAL_DRIVER, here. **You ARE the
+> independent look**, so a tester of your own would be fresh eyes on fresh eyes,
+> and \`exec lcars-file/file.sh\` is refused to you by name: a Mission filed into
+> somebody else's chunk is work nobody agreed to and nobody owns. What stands for
+> you is the point the fence makes — the extra independent pair of eyes IS the
+> value — and the limit it ends on: nobody here mints a sub-ECH."
+    v_wbranch="  **YOU DO NOT WRITE TO IT.** The work you are looking at is on this branch, and
+  reading it, running it and leaving it exactly as you found it is the whole of
+  your use for it. A validation pass commits nothing — not here, not on the
+  base, not anywhere — because $VAL_DRIVER owns this branch and fixes what you
+  file, and a change of yours on it would be the one change in this run that no
+  independent pair of eyes ever saw. The only files you write are the bug PRDs
+  you hand to \`file-bug\`, and they belong OUTSIDE the working tree: put them
+  under \`$LCARS_DIR\` or a scratch path, so that looking at the work cannot
+  change it."
+    v_wfence="- **YOU WRITE NO CODE AND YOU COMMIT NOTHING.** A validation pass LOOKS and
+  FILES. The only files you write are the bug PRDs you hand to \`file-bug\`, and
+  they belong outside the working tree — under \`$LCARS_DIR\` or a scratch path.
+  The mission's branch is $VAL_DRIVER's and so is the fix."
+    v_seatrow="**AND YOU DO NOT OPEN SEATS OF YOUR OWN.** A DRIVING seat opens them — a
+worker, a tester, a second window — and every one of them takes the row above.
+**You are the second look, and validation is never re-delegated:** no worker of
+your own, no tester of your own, no second opinion on your own judgement, and no
+sub-ECH (they are exactly ONE LAYER deep and you are already on it). A reviewer
+over a reviewer is fresh eyes on fresh eyes, which is the spiral this whole rule
+exists to prevent — and it is also a bill nobody agreed to. If you genuinely
+cannot settle something by looking, that is a \`BLOCKED:\` beat to the main ECH,
+never a seat you open."
+    v_t2tester="### THE T2 TESTER IS NOT YOURS TO STAND UP — YOU *ARE* THE SECOND LOOK
+
+T2 buys the DRIVING seat an independent, fresh-context tester at the unit's gate.
+**$VAL_DRIVER stands that tester up. You do not.**
+
+You were minted as the independent look over this chunk, so a tester of your own
+would be a review of a review — fresh eyes on fresh eyes — which is the exact
+spiral this rule exists to prevent, and \`delegate\` is refused to you by name in
+any case.
+
+- **What you do instead is § 5's two acts:** you LOOK (\`live-check\`) and you
+  FILE (\`file-bug\`). That is the whole of your contract.
+- **$VAL_DRIVER's tester findings are not yours** to collect, to adjudicate or
+  to report. They reach the factory through ITS hand-back and \`lcars log\`.
+- **If you cannot settle something by looking**, that is a \`BLOCKED:\` beat to
+  the main ECH — never another seat."
+    v_t2deliver="**AND THIS UNIT IS T2 — but its tester is $VAL_DRIVER's, not yours.** Do not
+report a tester's evidence or a tester's bug list: you did not stand one up and
+you may not (§ 3). What this section asks of a validation pass is the list
+above — what you looked at, what you saw, and what you filed.
+"
     a_own="**You are a VALIDATION PASS over a chunk somebody else drove.** The chunk
 starts at Mission \`${mid:-$unit_i}\`, and it is that Mission plus every Mission
 and bug Mission beneath it. $VAL_DRIVER drove it and is still driving it. Inside
@@ -8530,6 +8618,8 @@ actually STUCK, that is the \`BLOCKED:\` beat, not this."
 - \`lcars log\` — file a bug you found against this Mission. This is how a defect
   gets fixed; you do not fix it by editing around it."
     v_verbs=""; v_handback=""; v_decide=""; v_tier=""
+    v_tier2=""; v_wbranch=""; v_wfence=""; v_seatrow=""; v_t2tester=""
+    v_t2deliver=""
     f_decide="**Decide alone:** how to do the work, which order, which files, how to test it,
 and every stumble you can cure with the verbs above. That is what your tier
 bought."
@@ -8568,9 +8658,7 @@ three, **you are not stuck on the work — you are at a question for the ECH.**"
   # ONE statement of what T1 is — so rewriting it per role would fork it. Two of
   # its clauses are written for the seat that DRIVES the unit; the rider names
   # them and leaves the fence intact.
-  [ -z "$v_tier" ] || contract="$contract
-
-$v_tier"
+  [ -z "$v_tier" ] || contract="$(contract_for_tier "$tier" "$v_tier" "$v_tier2")"
 
   local verbs
   if [ -n "$v_verbs" ]; then verbs="$v_verbs"; else
@@ -8675,7 +8763,10 @@ inside your chunk \`lcars log\` and \`file-bug\` are both open to you.**"
   # arrive only as a quoted description of what T2 *is* — never as an
   # instruction to this delegate — so a T2 delegate could file a fully
   # §2-conformant hand-back having stood up no tester at all.
-  if [ "$tier" = "T2" ]; then
+  # …AND IT IS THE DRIVER'S. A validation pass does not stand up a tester: its
+  # own counterpart section is in `$front` (S368), and `delegate` is refused to
+  # it by name in any case.
+  if [ "$tier" = "T2" ] && [ "$validate" != 1 ]; then
     verbs="$verbs
 
 ALSO IN YOUR SCOPE, BECAUSE THIS UNIT IS T2: **you stand up the fresh-context
@@ -8755,7 +8846,18 @@ own at work somebody else drove.
 - No sibling Missions are on disk right now. Any Mission that appears while you
   are working is out of bounds until the ECH says otherwise."
   fi
-  if [ "$tier" = "T2" ]; then
+  # THE T2 BULLETS ARE A DRIVER'S TWO ACTS — stand up the tester, divide the
+  # unit — so a validation pass gets the refusal of both instead (S368).
+  if [ "$tier" = "T2" ] && [ "$validate" = 1 ]; then
+    bounds="$bounds
+- **THIS UNIT IS T2, AND ITS TESTER IS NOT YOURS TO STAND UP.** T2 buys the
+  DRIVING seat an extra independent pair of eyes at the gate; $VAL_DRIVER stands
+  that tester up, and **you ARE a second independent look already**. Another one
+  over you would be a review of a review.
+- **AND DIVISION IS NOT YOURS EITHER.** A T2 driver may divide its unit into
+  Missions for the factory; \`exec lcars-file/file.sh\` is refused to you by
+  name. If this chunk needs splitting, that is a FINDING — file it."
+  elif [ "$tier" = "T2" ]; then
     bounds="$bounds
 - Your T2 tester is **ADDITIVE**. It is an extra independent pair of eyes at the
   gate and it **does not replace** the ECH's own check in § 5 — a higher tier
@@ -8770,6 +8872,14 @@ own at work somebody else drove.
   bounds="$bounds
 - Do not touch the LCARS source itself. If you hit an LCARS bug, work around it
   with another verb and report it; fixing LCARS is a different loop."
+
+  # § 4's LAST BULLET IS A PERMISSION, so it is a slot (S368). *"Everything you
+  # write stays inside `.git/lcars/` or the mission's own branch"* grants a write
+  # to the branch, and a validation pass writes nothing: it LOOKS and it FILES.
+  # The driver's text is the shipped line verbatim, which is what keeps every
+  # existing assertion about § 4 true of a driving seat.
+  local wfence="$v_wfence"
+  [ -n "$wfence" ] || wfence="- Everything you write stays inside \`.git/lcars/\` or the mission's own branch."
 
   # The estimate comes OUT OF THE RECORD `tier` wrote, not re-derived here. One
   # producer, one value: if the brief and the record could disagree, the brief
@@ -8813,8 +8923,16 @@ EOF
   # absolute path, so the driver knew it and simply did not pass it on.
   local wbranch wbase
   if [ -n "${branch:-}" ]; then
-    wbranch="- **Branch:** \`$(inert "$branch")\` — the Mission's own branch, from its \`state.json\`.
+    wbranch="- **Branch:** \`$(inert "$branch")\` — the Mission's own branch, from its \`state.json\`."
+    # *"Work on it. Do not work on `main`."* IS AN INSTRUCTION TO WORK (S368), and
+    # a validation pass does not work on the branch — it reads it and leaves it.
+    if [ -n "$v_wbranch" ]; then
+      wbranch="$wbranch
+$v_wbranch"
+    else
+      wbranch="$wbranch
   Work on it. Do not work on \`$(inert "${base:-main}")\`."
+    fi
   else
     wbranch="- **Branch:** NO BRANCH is recorded in this unit's mission record. Do not pick one
   yourself — ask the ECH which branch this unit's work belongs on."
@@ -8852,7 +8970,9 @@ $wbranch
   # WHAT THIS TIER ADDS TO THE HAND-BACK (D4). Empty below T2: a slot a tier
   # does not fill renders EMPTY, never as its token.
   local tdeliver=""
-  if [ "$tier" = "T2" ]; then
+  if [ "$tier" = "T2" ] && [ -n "$v_t2deliver" ]; then
+    tdeliver="$v_t2deliver"
+  elif [ "$tier" = "T2" ]; then
     tdeliver="**AND, BECAUSE THIS UNIT IS T2 — the tester's own output, as its own section:**
 
 - **The tester's evidence** — what the independent, FRESH-CONTEXT tester ran at
@@ -9062,6 +9182,23 @@ moves neither the Mission's stage nor its verdict."
   [ -n "$delrec" ] || delrec="copilot"
   delsub=0
   [ "$delrec" = "$deleng" ] || delsub=1
+  # THE SEAT ROW IS ROLE-BEARING TOO (S368): *"EVERY SEAT YOU OPEN TAKES THIS
+  # SAME ROW. You will open seats of your own — a worker, a tester…"* is a grant,
+  # and a validation pass opens none of them. The driver's paragraph is the
+  # shipped text verbatim. It is composed HERE, after `deleng`/`delmodel` are
+  # resolved, because the fallback text names both.
+  local seatrow="$v_seatrow"
+  [ -n "$seatrow" ] || seatrow="**EVERY SEAT YOU OPEN TAKES THIS SAME ROW.** You will open seats of your own —
+a worker, a tester, a second window — and there is no separate row for one:
+**every seat you open, whether you call it a sub-delegate, a helper or just a
+second window, runs on \`$(inert "$deleng")\`, model \`$(inert "$delmodel")\`.**
+(This is about the WINDOWS you open and what they bill. **Minting another
+sub-ECH is a different thing and it is refused**: sub-ECHs are exactly one layer
+deep.)
+Three seats on an engine nobody stamped is three bills nobody agreed to, and the
+rule is not about which engine YOU prefer — it is about every seat this unit
+pays for. If a seat genuinely has to be a different engine, **you may not open
+it without asking the ECH** first."
   estamp="## 6. The engine you run on
 
 **You run on \`$(inert "$deleng")\`, model \`$(inert "$delmodel")\`.** That is the
@@ -9078,17 +9215,7 @@ engine nobody agreed to is a bill nobody agreed to. If you believe this is the
 wrong engine for this unit, that is a question **up to the ECH** (§ 4), not a
 substitution you make quietly.
 
-**EVERY SEAT YOU OPEN TAKES THIS SAME ROW.** You will open seats of your own —
-a worker, a tester, a second window — and there is no separate row for one:
-**every seat you open, whether you call it a sub-delegate, a helper or just a
-second window, runs on \`$(inert "$deleng")\`, model \`$(inert "$delmodel")\`.**
-(This is about the WINDOWS you open and what they bill. **Minting another
-sub-ECH is a different thing and it is refused**: sub-ECHs are exactly one layer
-deep.)
-Three seats on an engine nobody stamped is three bills nobody agreed to, and the
-rule is not about which engine YOU prefer — it is about every seat this unit
-pays for. If a seat genuinely has to be a different engine, **you may not open
-it without asking the ECH** first.
+$seatrow
 
 **AND CHECK THE SEAT YOU ARE SITTING IN.** A brief pasted into a window you did
 not choose is not a choice you made — and it bills the whole unit just the same,
@@ -9226,6 +9353,11 @@ an answer. Having said it, **stop on that step** and wait; do not reach for one
 of the three above while you wait. The block clears on your NEXT beat, so when
 you are moving again, beat again."
   if [ "$tier" = "T2" ]; then
+    if [ -n "$v_t2tester" ]; then
+    front="$front
+
+$v_t2tester"
+    else
     front="$front
 
 ### Standing up your fresh-context tester (T2)
@@ -9247,7 +9379,9 @@ You stand it up yourself, at this unit's gate, when the work is otherwise done.
 - **Its own rules are already written down: READ THEM, do not paraphrase them.**
   \`ORCHESTRATION.md\` § *The loop* (step 2) and § *The tester opens the real
   product first* — \`bash $SKILLS_DIR/lcars-eeh/eeh.sh docs orchestration\`.
-  A second copy of a rule is a rule that drifts.
+  A second copy of a rule is a rule that drifts."
+    fi
+    front="$front
 
 ### The two-list sign-off, on exit
 
@@ -9375,12 +9509,12 @@ is **yours** for the scope you own rather than something you wait for."
   "$PY" - "$bpath" "$tfile" "$did" "$unit_i" "$tier" "$why" "$est" "$goal" "$mission" \
         "$statepath" "$contract" "$verbs" "$bounds" "$stamp" "$signoff" \
         "$arts" "$wbase" "$tdeliver" "$blimit" "bash $SELF" "$estamp" "$front" \
-        "$climit" "$vrole" "$handback" <<'PYREND' \
+        "$climit" "$vrole" "$handback" "$wfence" <<'PYREND' \
     || die "delegate: could not render the brief to $bpath"
 import sys
 (out, tfile, did, unit, tier, why, est, goal, mission, statepath,
  contract, verbs, bounds, stamp, signoff, arts, wbase, tdeliver, blimit,
- launcher, estamp, front, climit, vrole, handback) = sys.argv[1:26]
+ launcher, estamp, front, climit, vrole, handback, wfence) = sys.argv[1:27]
 tpl = open(tfile).read()
 slots = {
     "DELEGATE_ID": did, "UNIT": unit, "TIER": tier, "TIER_WHY": why,
@@ -9413,6 +9547,9 @@ slots = {
     # § 2's hand-back list, by role: a driver reports what it CURED, a
     # validation pass reports what it LOOKED AT, SAW and FILED.
     "HANDBACK": handback,
+    # S368. § 4's write fence, by role: a driver may write to the mission's
+    # branch, a validation pass writes nothing but the bug PRDs it files.
+    "WRITE_FENCE": wfence,
 }
 for k, v in slots.items():
     tpl = tpl.replace("{{%s}}" % k, v)
