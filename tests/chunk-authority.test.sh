@@ -222,8 +222,8 @@ stub "$STUBS/log-files.sh" 0 "$LOGFILES"
 
 # A `lcars-file/file.sh` stand-in that creates a REAL Mission the way file.sh
 # does — a directory with a `state.json` under `.git/lcars/missions/`. `exec`
-# attributes a Mission by DIFFING that directory, so the fixture has to make a
-# real one; a stub that only exits 0 would prove nothing.
+# attributes the producer's receipt, so the fixture makes a real Mission and
+# reports its id through the same channel as file.sh.
 FILEMAKES='id=""
 while [ $# -gt 0 ]; do
   case "$1" in --id) id="$2"; shift ;; esac
@@ -236,6 +236,7 @@ cat >"$d/state.json" <<JSON
 {"id":"$id","stage":"verify","type":"feature","title":"mission $id",
  "branch":"lcars/$id","issue":"1"}
 JSON
+[ -z "${LCARS_FILING_RECEIPT:-}" ] || printf "%s\n" "$id" >>"$LCARS_FILING_RECEIPT"
 # AND ITS BRANCH, which the real file.sh cuts too — `live-check` prepares a
 # worktree from it, so a Mission record with no branch fails for a reason that
 # has nothing to do with authority (measured: "git worktree add --detach
@@ -267,7 +268,8 @@ mkdir -p "$d"
 cat >"$d/state.json" <<JSON
 {"id":"$id","stage":"align","type":"bug","title":"a filed bug",
  "branch":"lcars/$parent","parentMission":"$parent","parentIssue":"1"}
-JSON'
+JSON
+[ -z "${LCARS_FILING_RECEIPT:-}" ] || printf "%s\n" "$id" >>"$LCARS_FILING_RECEIPT"'
 stub "$STUBS/log-makes.sh" 0 "$LOGMAKES"
 cp "$STUBS/log-makes.sh" "$EXEC_SKILLS/lcars-log/log.sh"
 RUNMAKES='# NOT a Mission creator. It stands in for the documented long-running

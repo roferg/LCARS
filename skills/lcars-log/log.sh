@@ -751,6 +751,9 @@ file_one_bug() { # prd-path [model-override] [per-bug-attach-newline-list]
     printf '  "base": "%s"\n' "$BASE"
     printf '}\n'
   } >"$mdir/state.json"
+  if [ -n "${LCARS_FILING_RECEIPT:-}" ]; then
+    printf '%s\n' "$id" >>"$LCARS_FILING_RECEIPT" || die "cannot write the filing receipt for $id."
+  fi
 
   # --- run the dynamic estimator on the child (S74) ------------------------
   # Now that prd.md + state.json exist, give this bug Mission the SAME dynamic

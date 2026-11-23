@@ -17,6 +17,13 @@ The brief is rendered **from artifact paths alone** — the unit's record in
 not on disk, so a brief built from one cannot be re-minted, reviewed or trusted
 a day later, which is the whole defect this file exists to close.
 
+For a chunk that has no Mission yet, `delegate <unit-id> --goal <file>` carries
+the goal at either tier. The minter snapshots it beside the brief as `GOAL.md`,
+records `goalSource: chunk-goal` and `goalRel`, and renders its text inert in
+section 1. This explicit chunk goal takes precedence over Mission artifacts.
+A sibling validator inherits that same snapshot; without `--goal`, the
+existing Mission-derived goal selection is unchanged.
+
 The four numbered sections are *the four things every hand-off must state*
 (`DELEGATION.md` § *The four things every hand-off must state*). Without all
 four, delegates duplicate each other's work and leave gaps between them.

@@ -615,6 +615,9 @@ do_park() {
     } >"$MISSION_DIR/state.json"
   }
   write_park_state null
+  if [ -n "${LCARS_FILING_RECEIPT:-}" ]; then
+    printf '%s\n' "$ID" >>"$LCARS_FILING_RECEIPT" || die "cannot write the filing receipt for $ID."
+  fi
 
   # Open the GitHub issue — labels lcars:align + lcars:mission ONLY (NO type
   # label; type is unknown until the grill). Body = the idea + a standby note.
@@ -1422,6 +1425,9 @@ write_state() { # issue-json (a number or the literal `null`)
   } >"$MISSION_DIR/state.json"
 }
 write_state null
+if [ -n "${LCARS_FILING_RECEIPT:-}" ]; then
+  printf '%s\n' "$ID" >>"$LCARS_FILING_RECEIPT" || die "cannot write the filing receipt for $ID."
+fi
 
 # --- run the end-of-Align estimator (session 59) --------------------------
 # REORDERED in session 61 to run BEFORE the issue is created, so estimate.json

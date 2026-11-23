@@ -4,6 +4,23 @@ All notable changes to LCARS are recorded here, newest first. The version
 scheme is `YYYY.M.N` (calendar year, month with no leading zero, per-month
 counter). Every PR into `main` bumps `VERSION` and adds its entry here.
 
+## 2026.11.4 — 2026-11-23
+
+### One reader for whose work it is, and a brief carries its goal (S370)
+
+A seedless driving seat can receive its sibling validator after filing:
+validator selection asks the same chunk ownership reader as the authority
+gates, instead of requiring a Mission that existed when the seat was minted.
+
+Concurrent filing no longer transfers a sibling's Mission to the seat that
+finishes last. File and log report their own new ids through a per-invocation
+receipt, replacing the shared-directory before/after attribution window.
+
+`delegate <unit> --goal <file>` carries a chunk goal at T1 or T2, including
+before any Mission exists. The goal is snapshotted beside the brief, recorded
+as `chunk-goal`, rendered inert, and inherited by a sibling validator.
+Without that flag, existing Mission-derived briefs are unchanged.
+
 ## 2026.11.3 — 2026-11-22
 
 ### One resolver for a Mission name (S369)

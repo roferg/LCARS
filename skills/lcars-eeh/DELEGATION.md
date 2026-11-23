@@ -198,6 +198,16 @@ mission's `state.json`, and the tier contract above. Never from the
 orchestrator's transcript: a transcript is not on disk, so a brief built from
 one cannot be re-minted, reviewed, or trusted a day later.
 
+**A chunk need not have a Mission yet.** At either T1 or T2, hand its goal to
+the product with `lcars-ech delegate <unit-id> --goal <file>`. The file must be
+readable and non-empty. Its text is snapshotted as `GOAL.md` beside the brief
+and carried in section 1, escaped like every other artifact-derived value.
+The record says `goalSource: chunk-goal` and names the snapshot in `goalRel`.
+An explicit chunk goal takes precedence over a Mission's narrower PRD; without
+the flag the existing PRD/title/no-goal behavior is unchanged. A sibling
+validator inherits the driver's snapshot, not a later edit to the source file
+and not a replacement goal supplied at validation time.
+
 ---
 
 ## NO SILENT HOURS — the beat
@@ -589,12 +599,13 @@ is **expected** to file several Missions for it — the fish data, the water-lev
 coupling, the cast verb — and drive all of them. With only (1) and (3) it would
 be refused on two of its own three.
 
-**IT IS RECORDED, NOT INFERRED, AND IN THE SAME RECORD.** A Mission created
-while `LCARS_ECH_AS` names a live sub-ECH is written to `chunk-owners` exactly
-as a bug it filed is: the missions directory before the call, the missions
-directory after, and the difference is that seat's. One record and one reader
-for both, because a second notion of ownership is a second answer to *"whose
-work is this"*. Nothing is read from a script's name or its output.
+**IT IS RECORDED, NOT INFERRED, AND IN THE SAME RECORD.** For a live sub-ECH's
+`exec lcars-file/file.sh` or `exec lcars-log/log.sh`, the producer reports each
+new Mission id through a private, per-invocation filing receipt. `exec` writes
+only those ids to `chunk-owners`. Both filing lanes (`--prd` and `--park`) and
+every bug in a log batch use that channel. A completion of an existing parked
+Mission reports no new creation. Nothing is inferred from directory changes or
+console output, and a failure to write a receipt is an explicit filing error.
 
 **AND THE ROUTE MATTERS, WHICH IS A COST THE FRONT-DOOR CONTRACT ALREADY
 CHARGES.** `lcars-ech exec` is the one place a creation can be attributed, so a
@@ -613,25 +624,22 @@ chunk**. Anything else is **recorded to nobody** and said out loud, which leaves
 it outside every chunk — so it blocks its parent's accept and every verb on it
 is refused.
 
-**AND THE WINDOW IS BOUNDED (F3).** Attribution is a before/after of the
-missions directory, so it is only measured around the **two declared
-Mission-creating scripts** (`lcars-file/file.sh`, `lcars-log/log.sh`), and a new
-record older than the call is not attributed. Round 1 measured it around *any*
-script for that script's whole life, and `exec … run.sh drive` is a documented
-long-running use with two concurrent slots by design: a Mission the captain
-filed from another terminal during a six-second call was attributed to the
-sub-ECH. The long-running case now has no window at all. **What it still cannot
-tell:** another seat filing a *parentless* Mission during those few seconds is
-attributed here. It is bounded (seconds, two scripts), it only ever **widens one
-chunk** rather than granting an accept, and every attribution is printed with
-its id — so it is visible, not silent.
+**THERE IS NO ATTRIBUTION WINDOW (S370).** The before/after implementation
+claimed that overlapping filings only widened a chunk. The capstone measured
+the opposite: because `chunk-owners` is latest-line-wins, one seat finishing
+later **transferred the other seat's Mission** to itself. Filing takes minutes,
+and two parallel seats are the default. Separate producer receipts remove that
+window entirely; other seats' and the main ECH's creations are not in this
+call's receipt. Non-creating scripts still take the unchanged `exec` path.
 
 The ascent is bounded at 32 hops, so a `parentMission` pointing in a circle
 cannot hang a verb. **A delegate with no seed can still own what it filed** —
 the seed is one of three ways in, not a precondition. Reaching into a sibling's
 chunk is how two seats do the same work twice and neither owns the result, so it
-is refused **by name**; if the work really belongs elsewhere, the **main ECH
-re-chunks it**.
+is refused **by name**. A refusal is escalated to the main ECH through a
+`BLOCKED:` beat; there is no `re-chunk` verb. The main ECH decides the new
+hand-off using the existing mapping, close and mint verbs, rather than a seat
+repairing ownership records by hand.
 
 ### A BUG A SUB-ECH OWNS AND IS DRIVING DOES NOT BLOCK THE PARENT
 

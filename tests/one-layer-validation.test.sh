@@ -323,7 +323,7 @@ for xp in lcars-respond/respond.sh lcars-resolve-logs/resolve-logs.sh; do
     "$xp" >"$EXEC_SKILLS/$xp"
 done
 # A `log.sh` that FILES FOR REAL the way log.sh does, so the `file` act can be
-# measured end to end (`exec` attributes a Mission by diffing the directory).
+# measured end to end (`exec` consumes the producer's filing receipt).
 cat >"$EXEC_SKILLS/lcars-log/log.sh" <<'XSH'
 #!/usr/bin/env bash
 printf 'RAN lcars-log/log.sh %s\n' "$*" >>"$LCARS_ECH_CWD/exec-ran.log"
@@ -332,6 +332,7 @@ n=1; while [ -d "$LCARS_ECH_CWD/.git/lcars/missions/xbug-$n" ]; do n=$((n+1)); d
 d="$LCARS_ECH_CWD/.git/lcars/missions/xbug-$n"; mkdir -p "$d"
 printf '{"id":"xbug-%s","stage":"align","type":"bug","title":"a filed bug","branch":"lcars/%s","parentMission":"%s","parentIssue":"1"}\n' \
   "$n" "$parent" "$parent" >"$d/state.json"
+[ -z "${LCARS_FILING_RECEIPT:-}" ] || printf '%s\n' "xbug-$n" >>"$LCARS_FILING_RECEIPT"
 XSH
 # …and a `file.sh` that CREATES a Mission, so `subdivide` is a real act too.
 cat >"$EXEC_SKILLS/lcars-file/file.sh" <<'XSH'
@@ -339,6 +340,7 @@ cat >"$EXEC_SKILLS/lcars-file/file.sh" <<'XSH'
 printf 'RAN lcars-file/file.sh %s\n' "$*" >>"$LCARS_ECH_CWD/exec-ran.log"
 id="filed-$$"; d="$LCARS_ECH_CWD/.git/lcars/missions/$id"; mkdir -p "$d"
 printf '{"id":"%s","stage":"verify","type":"feature","title":"m","branch":"lcars/%s","issue":"1"}\n' "$id" "$id" >"$d/state.json"
+[ -z "${LCARS_FILING_RECEIPT:-}" ] || printf '%s\n' "$id" >>"$LCARS_FILING_RECEIPT"
 git -C "$LCARS_ECH_CWD" branch -q "lcars/$id" main 2>/dev/null || true
 XSH
 chmod +x "$EXEC_SKILLS"/lcars-*/*.sh

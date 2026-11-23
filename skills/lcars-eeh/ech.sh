@@ -213,6 +213,7 @@ usage() {
   delegate <unit>      mint the hand-off BRIEF for a T1/T2 unit from artifact paths
                        alone, at .git/lcars/delegates/<id>/BRIEF.md. Refuses a T0 or
                        an untiered unit; a second mint for one unit is a no-op
+                       --goal <file> carries a chunk goal, even before a Mission exists
   delegate <unit> --validate --trigger undetectable|irreversible|wide --why "<r>"
                        mint a SIBLING VALIDATOR for a chunk another sub-ECH drove
                        (at layer one - sub-ECHs are exactly ONE layer deep). The
@@ -992,8 +993,8 @@ delegate_validates() { ap_j "delegates.$1.validates"; }
 chunk_seats() {
   local mission="$1" want="$2" d v
   for d in $(ap_keys delegates); do
-    [ "$(ap_j "delegates.$d.mission")" = "$mission" ] || continue
     delegate_is_open "$d" || continue
+    mission_in_chunk "$d" "$mission" || continue
     v="$(delegate_validates "$d")"
     case "$want" in
       driver)    [ -z "$v" ] || continue ;;
@@ -7378,63 +7379,26 @@ cmd_exec() {
       "$([ "$mission" = "-" ] || printf '%s' "$mission")" "$xmcount" "$xparent" "$xpcount"
   fi
 
-  # ==== S365 fix round 1: A MISSION A SUB-ECH FILES JOINS ITS CHUNK ========
-  # `exec` is the front door the brief hands a delegate for every sibling
-  # script, so it is the one place a Mission created BY a sub-ECH can be
-  # attributed to it — recorded exactly as `file-bug` records a bug it filed:
-  # the missions directory before, the missions directory after, and the
-  # difference is this seat's. Nothing is inferred from a script's name or its
-  # output.
-  #
-  # IT RUNS ONLY FOR A SUB-ECH SEAT. For the main ECH — every invocation that
-  # existed before this and every repo that never minted a sub-ECH — the
-  # `exec` below is reached unchanged, so `exec` keeps replacing this process
-  # and its exit status, signals and stdio are byte-for-byte what they were.
-  # A sub-ECH's call is FORKED instead, because a process that has `exec`d away
-  # cannot record anything afterwards. The exit status is passed straight back.
-  #
-  # AND THE BLIND SPOT, SAID OUT LOUD: a delegate that goes around this verb
-  # (`bash .../file.sh` by hand) gets no ownership recorded, so its Mission is
-  # OUT OF CHUNK and every verb on it is REFUSED. That is the safe direction —
-  # a refusal naming the cure, never a silent grant — and the refusal names the
-  # front door.
-  #
-  # S365 fix round 2 (F3): THE ATTRIBUTION WINDOW IS NARROWED TO THE TWO
-  # DECLARED MISSION-CREATING SCRIPTS. Round 1 diffed the missions directory
-  # around ANY script, for that script's whole life — and `exec … run.sh drive`
-  # is a documented long-running use with two concurrent slots by design, so a
-  # Mission the captain filed from another terminal during a six-second call was
-  # attributed to the sub-ECH. The long-running case now has NO window at all:
-  # only `lcars-file/file.sh` and `lcars-log/log.sh` create Missions, so only
-  # they are measured, and everything else takes the untouched `exec` path.
+  # S370: each filing invocation gets its own receipt. The producer records
+  # only the ids IT created; a directory diff also saw a concurrent seat's
+  # Missions and transferred them here (the ownership ledger is last-wins).
+  # The main ECH still execs unchanged, and non-creating scripts get no channel.
   local creates=0
   case "$script" in
     lcars-file/file.sh|lcars-log/log.sh) creates=1 ;;
   esac
   local seat; seat="$(subech_seat)" || exit $?
   if [ -n "$seat" ] && [ "$creates" = 1 ]; then
-    local before="$APDIR/exec.before.$$" after="$APDIR/exec.after.$$"
     mkdir -p "$APDIR"
-    mission_ids | sort >"$before"
-    # THE WINDOW'S OWN LOWER BOUND, so a record that merely got LISTED late
-    # cannot be claimed: a touched marker, and a new Mission is only attributed
-    # when its own `state.json` is at least as new as it.
-    local mark="$APDIR/exec.mark.$$"
-    : >"$mark"
+    local receipt
+    receipt="$(mktemp "$APDIR/filing.XXXXXX")" || die "exec: cannot create a filing receipt."
     local xrc=0
-    bash "$target" "$@" || xrc=$?
-    mission_ids | sort >"$after"
-    local newm; newm="$(comm -13 "$before" "$after")"
-    rm -f "$before" "$after"
+    LCARS_FILING_RECEIPT="$receipt" bash "$target" "$@" || xrc=$?
     local nm par
-    for nm in $newm; do
-      # F3's LOWER BOUND, and it is one test: a record OLDER than the call did
-      # not come out of the call, however late the listing noticed it.
-      if [ "$MISSIONS/$nm/state.json" -ot "$mark" ]; then
-        say "⚠ NOT ATTRIBUTED: $nm appeared during this call but its record is OLDER than"
-        say "  the call, so it did not come out of it. It is recorded to nobody."
-        continue
-      fi
+    while IFS= read -r nm; do
+      [ -n "$nm" ] || continue
+      [ -f "$MISSIONS/$nm/state.json" ] \
+        || die "exec: filing receipt names $nm but its Mission record is missing."
       # ==== F2: THE SCOPE CHECK, BEFORE ANYTHING IS RECORDED ===============
       # Round 1 recorded ownership of ANY new Mission with no scope test at all,
       # so a sub-ECH running `exec lcars-log/log.sh --parent <a sibling's
@@ -7478,8 +7442,8 @@ cmd_exec() {
         say "  your chunk and every verb on it will be refused — the safe way round, not a"
         say "  silent grant. Fix the directory, then re-run this to record it."
       fi
-    done
-    rm -f "$mark"
+    done <"$receipt"
+    rm -f "$receipt"
     return "$xrc"
   fi
   exec bash "$target" "$@"
@@ -8239,12 +8203,14 @@ cmd_delegate() {
   # `delegate <unit> <other>` minted only the first. `tier` already refuses
   # both, and a verb that accepts an argument it ignores teaches the caller a
   # lie. EVERY REFUSAL HAPPENS BEFORE ANY WRITE.
-  local more="" validate=0 trigger="" vwhy=""
+  local more="" validate=0 trigger="" vwhy="" goal_file="" chunk_goal=""
   while [ $# -gt 0 ]; do
     case "$1" in
-      # S366 — THE ONLY THREE FLAGS THIS VERB HAS, and all three are the
-      # VALIDATION pass. A plain mint still takes a bare unit id and nothing
-      # else, which is what keeps every pre-S366 invocation byte-identical.
+      --goal)      [ $# -ge 2 ] && [ -n "$2" ] || die "delegate: --goal needs a readable, non-empty goal file."
+                   goal_file="$2"; shift 2 ;;
+      --goal=*)    goal_file="${1#--goal=}"
+                   [ -n "$goal_file" ] || die "delegate: --goal needs a readable, non-empty goal file."
+                   shift ;;
       --validate)  validate=1; shift ;;
       --trigger)   [ $# -ge 2 ] || die "delegate: \`--trigger\` needs a value — one of: $VALIDATION_TRIGGERS."
                    trigger="$2"; shift 2 ;;
@@ -8252,7 +8218,7 @@ cmd_delegate() {
       --why)       [ $# -ge 2 ] || die "delegate: \`--why\` needs a value — the reason the trigger applies, in one line."
                    vwhy="$2"; shift 2 ;;
       --why=*)     vwhy="${1#--why=}"; shift ;;
-      -*) die "delegate: '$1' is not an argument this verb has, and it will not be ignored. \`delegate\` takes ONE unit id and mints that unit's brief from artifact paths alone — it carries no verdict and no tier. The tier is \`$SELF_CMD tier <unit> --tier … --why …\`; the verdict is \`$SELF_CMD live-check\` and \`$SELF_CMD policy\`, which are yours. Its ONLY flags are the validation pass: \`--validate --trigger $(printf '%s' "$VALIDATION_TRIGGERS" | tr ' ' '|') --why \"<reason>\"\`. Usage: \`$SELF_CMD delegate <unit-id>\`." ;;
+      -*) die "delegate: '$1' is not an argument this verb has, and it will not be ignored. \`delegate\` takes ONE unit id and mints that unit's brief from artifact paths alone — it carries no verdict and no tier. The tier is \`$SELF_CMD tier <unit> --tier … --why …\`; the verdict is \`$SELF_CMD live-check\` and \`$SELF_CMD policy\`, which are yours. It accepts \`--goal <file>\` for a chunk goal, or the validation pass: \`--validate --trigger $(printf '%s' "$VALIDATION_TRIGGERS" | tr ' ' '|') --why \"<reason>\"\`. Usage: \`$SELF_CMD delegate <unit-id>\`." ;;
       *)  more="$more $1"; shift ;;
     esac
   done
@@ -8262,6 +8228,18 @@ cmd_delegate() {
   [ -z "$more" ] || die "delegate: one unit per call — you named $unit and$more. Only $unit would have been minted and the rest silently skipped, which is worse than a refusal: two briefs for one unit, or no brief for a unit you think is handed off, is how two delegates end up doing the same work. Mint them one at a time."
   unit_id_ok "$unit" || die "delegate: '$unit' will not do as a unit id — no dots, slashes, spaces or tabs."
   require_state
+  if [ "$validate" = 1 ] && [ -n "$goal_file" ]; then
+    die "delegate: a validation pass inherits the driver's goal; --goal belongs to the driving seat."
+  fi
+  if [ -n "$goal_file" ]; then
+    case "$goal_file" in /*) ;; *) goal_file="$CWD/$goal_file" ;; esac
+    [ -f "$goal_file" ] && [ -r "$goal_file" ] \
+      || die "delegate: goal file is not a readable file: $goal_file"
+    [ -n "$(tr -d '[:space:]' <"$goal_file")" ] \
+      || die "delegate: goal file is empty: $goal_file"
+    chunk_goal="$(cat "$goal_file" && printf '.')" || die "delegate: cannot read goal file: $goal_file"
+    chunk_goal="${chunk_goal%.}"
+  fi
 
   local tier; tier="$(ap_j "units.$unit.tier")"
   [ -n "$tier" ] || die "delegate: $unit has no tier recorded, so there is nothing to hand off. Decide it first: \`$SELF_CMD tier $unit --tier T0|T1|T2 --why \"<reason>\"\`. Who does a unit of work is a judgement, not a default."
@@ -8277,6 +8255,12 @@ cmd_delegate() {
   local VAL_DRIVER="" VAL_TRIGGER="" VAL_WHY="" VAL_ROUND="" VAL_COVERAGE="" VAL_MISSION=""
   if [ "$validate" = 1 ]; then
     validator_gate_or_die "$unit" "$trigger" "$vwhy"
+    if [ "$(ap_j "delegates.$VAL_DRIVER.goalSource")" = chunk-goal ]; then
+      goal_file="$DELEGATES_DIR/$VAL_DRIVER/GOAL.md"
+      [ -s "$goal_file" ] || die "delegate: the driver's goal artifact is missing: $goal_file"
+      chunk_goal="$(cat "$goal_file" && printf '.')" || die "delegate: cannot read the driver's goal: $goal_file"
+      chunk_goal="${chunk_goal%.}"
+    fi
   fi
 
   # MINTING TWICE IS THE DEFECT, NOT AN ERROR. Two briefs for one unit is how
@@ -8368,6 +8352,10 @@ cmd_delegate() {
 $grec
 EOF
   [ -n "$gsrc" ] || gsrc="none"
+  if [ -n "$chunk_goal" ]; then
+    gsrc="chunk-goal"
+    ggoal="$(inert "$chunk_goal")"
+  fi
 
   # S368 FIX ROUND 1 — "BEFORE YOU WRITE ANYTHING" IS ADDRESSED TO A SEAT THAT
   # WRITES NOTHING. Two of the goal branches below said it, and a validation
@@ -8377,6 +8365,16 @@ EOF
   [ "$validate" != 1 ] || gbefore="before you look at anything"
 
   case "$gsrc" in
+    chunk-goal)
+      goal="**Done means:**
+
+$ggoal
+
+This is the chunk's handed-off goal, snapshotted beside this brief in
+\`GOAL.md\`. It applies to the whole chunk, including Missions not filed yet.
+Read that artifact for the original text; the text here is escaped so it
+cannot forge a section of this brief."
+      ;;
     prd-acceptance)
       goal="**Done means:** $ggoal
 
@@ -9227,6 +9225,9 @@ $wbase"
   this is a bug in $SELF, not something you did. Move that file aside (do not
   delete it — it is somebody's hand-over) and run \`$SELF_CMD delegate $unit\`
   again."
+  if [ "$gsrc" = chunk-goal ]; then
+    printf '%s' "$chunk_goal" >"$ddir/GOAL.md" || die "delegate: cannot snapshot the goal in $ddir/GOAL.md"
+  fi
 
   # THE SILENCE LIMIT, STATED IN THE BRIEF ITSELF (S351). A delegate cannot obey
   # a limit it was never told, and a brief minted under an overridden
@@ -9759,6 +9760,7 @@ ds[did] = {"id": did, "unit": unit, "tier": tier, "briefPath": bpath,
            # WHERE THE GOAL CAME FROM, not left to be inferred (D1/D5):
            # prd-acceptance | prd-goal | state-title | none.
            "goalSource": gsrc,
+           **({"goalRel": os.path.join(os.path.dirname(brel), "GOAL.md")} if gsrc == "chunk-goal" else {}),
            # THE ENGINE AND MODEL THIS BRIEF WAS STAMPED WITH (S352). The
            # PRODUCER records the fact: `delegate` resolved the matrix, so
            # nothing downstream greps the rendered brief to learn which engine
@@ -9873,6 +9875,9 @@ PY
   # whose delegate cannot say what it is being asked to do — which is what a
   # live Copilot seat did say, verbatim: "NOT IN THE BRIEF."
   case "$gsrc" in
+    chunk-goal)
+      say "GOAL: the chunk goal is carried in this brief and snapshotted at $ddir/GOAL.md."
+      ;;
     none)
       say "⚠ NO GOAL: this brief carries NO statement of what done means. Unit $unit does not"
       say "  resolve to a Mission with a record on disk: missions.$unit.id = ${mid:-(nothing)},"
