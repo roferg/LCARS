@@ -4,6 +4,21 @@ All notable changes to LCARS are recorded here, newest first. The version
 scheme is `YYYY.M.N` (calendar year, month with no leading zero, per-month
 counter). Every PR into `main` bumps `VERSION` and adds its entry here.
 
+## 2026.11.3 — 2026-11-22
+
+### One resolver for a Mission name (S369)
+
+Narrowed validators resolve a filing selector once, bound the resolved Mission,
+and hand that same resolution to `lcars log`. Log and resolve-logs share the
+resolver; zero or ambiguous matches are refused. Drivers and the main ECH keep
+their existing lookup rules.
+
+Re-check scopes travel as JSON instead of line lists, including empty scopes.
+Ancestry and child checks preserve trailing newlines, linked parents are JSON
+escaped, and revalidation reports cannot invent entries through shell splitting.
+Delegate existence, run-wide questions, and heartbeat ownership no longer use
+line-pattern matching as identifier equality.
+
 ## 2026.11.2 — 2026-11-05
 
 A hands-off Mission can no longer land half-missing work, and a Mission you

@@ -166,35 +166,16 @@ if [ -z "$PARENT_SEL" ]; then
   exit 1
 fi
 
-SEL="${PARENT_SEL#\#}"
-lsel="$(printf '%s' "$SEL" | tr '[:upper:]' '[:lower:]')"
-PARENT_ID=""; PARENT_TITLE=""; PARENT_ISSUE=""
-matches=0
-while IFS=$'\t' read -r id title stage issue; do
-  [ -n "$id" ] || continue
-  hid="$(printf '%s' "$id" | tr '[:upper:]' '[:lower:]')"
-  hti="$(printf '%s' "$title" | tr '[:upper:]' '[:lower:]')"
-  hit=0
-  [ "$hid" = "$lsel" ] && hit=1
-  [ "$issue" = "$SEL" ] && hit=1
-  case "$hid" in *"$lsel"*) hit=1 ;; esac
-  case "$hti" in *"$lsel"*) hit=1 ;; esac
-  if [ "$hit" -eq 1 ]; then
-    PARENT_ID="$id"; PARENT_TITLE="$title"; PARENT_ISSUE="$issue"
-    matches=$((matches + 1))
-  fi
-done < <(active_table)
-
-if [ "$matches" -eq 0 ]; then
-  echo "lcars resolve-logs: no active Mission matches \"$PARENT_SEL\"." >&2
+PARENT_RESOLUTION="$("${LCARS_PYTHON_BIN:-python3}" "$SKILL_DIR/../lcars-eeh/mission-selector.py" \
+  "$MISSIONS_DIR" active "$PARENT_SEL")" || {
   list_active
   exit 1
-fi
-if [ "$matches" -gt 1 ]; then
-  echo "lcars resolve-logs: \"$PARENT_SEL\" matches more than one active Mission — be specific." >&2
-  list_active
-  exit 1
-fi
+}
+unset LCARS_MISSION_RESOLUTION
+PARENT_ID="$(printf '%s' "$PARENT_RESOLUTION" | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"], end=".")')"
+PARENT_ID="${PARENT_ID%.}"
+PARENT_TITLE="$(printf '%s' "$PARENT_RESOLUTION" | python3 -c 'import json,sys; print(json.load(sys.stdin)["mission"].get("title", ""))')"
+PARENT_ISSUE="$(printf '%s' "$PARENT_RESOLUTION" | python3 -c 'import json,sys; print(json.load(sys.stdin)["mission"].get("githubIssue") or "")')"
 
 PARENT_DIR="$MISSIONS_DIR/$PARENT_ID"
 PARENT_STATE="$PARENT_DIR/state.json"

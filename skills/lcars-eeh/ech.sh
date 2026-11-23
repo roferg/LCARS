@@ -126,6 +126,8 @@ GIT_BIN="${LCARS_GIT_BIN:-git}"
 GH_BIN="${LCARS_GH_BIN:-gh}"
 PY="${LCARS_PYTHON_BIN:-python3}"
 CRONTAB_BIN="${LCARS_CRONTAB_BIN:-crontab}"
+# Only this invocation's gate may hand a resolution to a sibling target.
+unset LCARS_MISSION_RESOLUTION
 
 RUN_SCRIPT="${LCARS_RUN_SCRIPT:-$SKILLS_DIR/lcars-run/run.sh}"
 APPROVE_SCRIPT="${LCARS_APPROVE_SCRIPT:-$SKILLS_DIR/lcars-approve/approve.sh}"
@@ -641,18 +643,30 @@ notify() { # <mission> <gate-type> <summary>
 mstate()  { jfile "$MISSIONS/$1/state.json" "$2"; }
 mexists() { [ -f "$MISSIONS/$1/state.json" ]; }
 
+# Sets the canonical id and the bound handoff consumed by a sibling target.
+resolve_mission_or_die() {
+  local verb="$1" policy="$2" selector="$3"
+  LCARS_MISSION_RESOLUTION="$("$PY" "$SELF_DIR/mission-selector.py" "$MISSIONS" "$policy" "$selector")" \
+    || die "$verb: no Mission resolved uniquely. WILL NOT GUESS. Nothing was run."
+  export LCARS_MISSION_RESOLUTION
+  RESOLVED_MISSION="$("$PY" -c 'import json,os; print(json.loads(os.environ["LCARS_MISSION_RESOLUTION"])["id"], end=".")')"
+  RESOLVED_MISSION="${RESOLVED_MISSION%.}"
+}
+
 # children_of <mission> → the logged bug Missions linked to it.
 # The discriminator is the one approve.sh uses: `type` is `bug` AND
 # `parentMission` is this Mission. Keeping the two readers in step is what
 # stops the mode from releasing (or blocking on) the wrong records.
 children_of() {
-  local d id
+  local d id parent
   [ -d "$MISSIONS" ] || return 0
   for d in "$MISSIONS"/*; do
     [ -d "$d" ] || continue
     [ -f "$d/state.json" ] || continue
     [ "$(jfile "$d/state.json" type)" = "bug" ] || continue
-    [ "$(jfile "$d/state.json" parentMission)" = "$1" ] || continue
+    parent="$(jfile "$d/state.json" parentMission; printf '.')"
+    parent="${parent%.}"
+    [ "$parent" = "$1" ] || continue
     id="$(basename "$d")"
     printf '%s\n' "$id"
   done
@@ -763,7 +777,8 @@ mission_in_chunk() {
   while [ -n "$m" ] && [ "$hops" -lt 32 ]; do
     [ -n "$root" ] && [ "$m" = "$root" ] && return 0
     [ "$(lcars_chunk_owner "$LCARS_DIR" "$m")" = "$did" ] && return 0
-    m="$(mstate "$m" parentMission)"
+    m="$(mstate "$m" parentMission; printf '.')"
+    m="${m%.}"
     hops=$((hops + 1))
   done
   return 1
@@ -1170,24 +1185,23 @@ PYFILED2
 )"
 }
 
-# val_scope <validator-id> → the Missions its re-check is bounded to, one per
-# line. `recheckScope` is a JSON list written by `revalidate`.
+# val_scope <validator-id> -> a JSON array, or no output for a fresh pass.
+# Absence and an empty narrowed scope are different authority states.
 val_scope() {
   "$PY" - "$APJSON" "$1" <<'PYVS'
 import json, sys
-try:
-    d = json.load(open(sys.argv[1]))
-except Exception:
-    sys.exit(0)
+d = json.load(open(sys.argv[1]))
 v = (d.get("delegates") or {}).get(sys.argv[2]) or {}
-for m in (v.get("recheckScope") or []):
-    if isinstance(m, str):
-        print(m)
+if "recheckScope" in v:
+    scope = v["recheckScope"]
+    if not isinstance(scope, list) or any(not isinstance(m, str) or not m for m in scope):
+        sys.exit("lcars ech: invalid recheckScope — refusing to widen a malformed scope")
+    print(json.dumps(scope))
 PYVS
 }
 
-# scope_has <scope> <needle> — TRUE when ONE ENTRY of the recorded re-check
-# scope IS the needle. It compares strings with `=` and it is the ONLY decider
+# scope_has <scope-json> <needle> — TRUE when ONE ENTRY of the recorded re-check
+# scope IS the needle. It compares JSON strings and it is the ONLY decider
 # of that question.
 #
 # S368 FIX ROUND 1 — AND IT USES `=` BECAUSE THIS IS AN EQUALITY TEST AND EVERY
@@ -1213,20 +1227,12 @@ PYVS
 #                     FILED and `filed` grew 1 -> 7. `revalidate` snapshots
 #                     `filed`, so the next round's scope was the widened list.
 #
-# THE CLASS: a string equality test implemented with a line-matching tool. A
-# line matcher HAS separator semantics by definition; an equality test must have
-# none. So there is no grep in this decision any more — `=` compares ONE string
-# to ONE string and has no notion of a line at all. A multi-line selector equals
-# no single scope entry, which is the right answer.
+# A line matcher HAS separator semantics by definition; an equality test must have
+# none. So there is no grep in this decision any more — equality compares ONE string
+# to ONE string and has no notion of a line at all. JSON preserves entry
+# boundaries, including a newline INSIDE an id; a line-list transport cannot.
 scope_has() {
-  local _entry
-  [ -n "$2" ] || return 1
-  while IFS= read -r _entry; do
-    [ "$_entry" = "$2" ] && return 0
-  done <<EOF
-$1
-EOF
-  return 1
+  "$PY" -c 'import json,sys; sys.exit(0 if sys.argv[2] and sys.argv[2] in json.loads(sys.argv[1]) else 1)' "$1" "$2"
 }
 
 # validator_exec_reach_or_die <script> <seat> <mission> <mcount> <parent> <pcount>
@@ -1269,7 +1275,7 @@ validator_exec_reach_or_die() {
   local unit scope n sel
   unit="$(delegate_validates "$seat")"
   [ -n "$unit" ] || return 0
-  scope="$(val_scope "$seat")"
+  scope="$(val_scope "$seat")" || die "exec $script: cannot read the recorded re-check scope. Nothing was run."
   [ -n "$scope" ] || return 0
   n=$((mcount + pcount))
   if [ "$n" -eq 0 ]; then
@@ -1279,11 +1285,10 @@ validator_exec_reach_or_die() {
     die "exec $script: YOU NAMED $n MISSION SELECTORS, AND THIS GATE WILL NOT GUESS WHICH ONE THE SCRIPT WILL USE. One \`--parent\` or one \`--mission\`, never several and never both: a gate that reads the last while the script reads the first is a gate that agrees with nothing, and that disagreement is exactly how a re-check widened. You are the validation pass for chunk $unit and this round re-checks ONLY what you filed: $(printf '%s' "$scope" | tr '\n' ' '). Nothing was run."
   fi
   if [ "$mcount" = 1 ]; then sel="$mission"; else sel="$parent"; fi
-  # THE EXACT STRING, AGAINST THE RECORDED SCOPE. Not `mexists`, not a
-  # lower-cased compare, not a substring — the same literal this pass's own
-  # record carries, compared by `scope_has`, which is `=` and nothing else.
-  # See its header for the three grep generations this replaced and why a line
-  # matcher can never be an equality test.
+  # The act gate permits only log.sh here. Its own resolver consumes this
+  # binding rather than looking the selector up a second time.
+  resolve_mission_or_die "exec $script" active "$sel"
+  sel="$RESOLVED_MISSION"
   scope_has "$scope" "$sel" && return 0
   # …or a descendant of something it filed (a bug logged beneath its own
   # finding is still that finding). Decided by the ONE decider, which refuses
@@ -1331,12 +1336,13 @@ validator_recheck_or_die() {
   # IS.
   round="$(ap_j "delegates.$seat.validationRound")"
   [ -n "$round" ] || round=1
-  scope="$(val_scope "$seat")"
+  scope="$(val_scope "$seat")" || die "$verb: cannot read the recorded re-check scope. Nothing was read, written or advanced."
   [ -n "$scope" ] || return 0
   cur="$m"
   while [ -n "$cur" ] && [ "$hops" -lt 32 ]; do
     scope_has "$scope" "$cur" && return 0
-    cur="$(mstate "$cur" parentMission)"
+    cur="$(mstate "$cur" parentMission; printf '.')"
+    cur="${cur%.}"
     hops=$((hops + 1))
   done
   die "$verb: $m IS OUTSIDE YOUR RE-CHECK. You are the validation pass for chunk $unit and this is ROUND $round, so A RE-VALIDATION RE-CHECKS ONLY WHAT IT FILED — never the whole chunk again. What you filed, and all this round is for, is: $(printf '%s' "$scope" | tr '\n' ' '). Re-check those, report whether each one is cured, and stop there. Widening back out to the chunk every round is how one validation pass becomes an unbounded one, which is the exact spiral this rule exists to prevent; a finding genuinely outside what you filed is a new judgement and it belongs to the MAIN ECH, which decides after round $VALIDATION_MAX_ROUNDS. Nothing was read, written or advanced."
@@ -4283,7 +4289,16 @@ EOF
     # contradicting the playbook, in the one place a model reads for its next
     # move. § 9's rule is untouched: a question filed against a MILESTONE still
     # parks only that milestone.
-    if open_questions | cut -f2 | grep -qx -- '-'; then
+    local run_wide
+    run_wide="$("$PY" - "$APJSON" <<'PYRUNWIDE'
+import json, sys
+d = json.load(open(sys.argv[1]))
+print("yes" if any(isinstance(q, dict) and not q.get("answeredAt")
+                  and (q.get("mission") or "-") == "-"
+                  for q in (d.get("questions") or {}).values()) else "no")
+PYRUNWIDE
+)" || die "next: cannot read the question ledger."
+    if [ "$run_wide" = yes ]; then
       say "NOTHING ELSE IS OFFERED: that question is a run-wide prerequisite, not one"
       say "  milestone's. Fix the cause (or answer it) and re-run \`$SELF_CMD preflight\`;"
       say "  do not drive a milestone past a preflight stop."
@@ -5637,6 +5652,18 @@ hb_line() {
     "$CWD" "$SELF" "$APDIR" "$HB_MARK" "$CWD"
 }
 hb_current() { "$CRONTAB_BIN" -l 2>/dev/null; }
+# The repo identity is the WHOLE marker suffix, not a path prefix.
+hb_filter() {
+  "$PY" -c '
+import sys
+mode, marker, cwd = sys.argv[1:]
+for line in sys.stdin:
+    _, separator, identity = line.removesuffix("\n").rpartition(marker + " ")
+    owned = bool(separator) and identity == cwd
+    if owned == (mode == "ours"):
+        sys.stdout.write(line)
+' "$1" "$HB_MARK" "$CWD"
+}
 # READ THE WHOLE TABLE INTO MEMORY FIRST, then write. Piping a reader straight
 # into `crontab -` means the writer can truncate the table while the reader is
 # still walking it — which is exactly how a first draft of this ate the
@@ -5644,7 +5671,7 @@ hb_current() { "$CRONTAB_BIN" -l 2>/dev/null; }
 hb_without_ours() {
   local cur; cur="$(hb_current)"
   [ -n "$cur" ] || return 0
-  printf '%s\n' "$cur" | grep -vF -- "$HB_MARK $CWD" || true
+  printf '%s\n' "$cur" | hb_filter others
 }
 
 # hb_hung_say <what> — the actionable message a hung crontab write earns.
@@ -5747,15 +5774,15 @@ cmd_heartbeat() {
         exit 11
       fi
       [ "$rwrc" = 0 ] || die "heartbeat: crontab refused the new table"
-      if hb_current | grep -qF -- "$HB_MARK $CWD"; then
+      if [ -n "$(hb_current | hb_filter ours)" ]; then
         die "heartbeat: the line is still present after remove — refusing to claim it is gone."
       fi
       say "heartbeat removed (the captain's other crontab entries are untouched)."
       ;;
     status)
-      if hb_current | grep -qF -- "$HB_MARK $CWD"; then
+      if [ -n "$(hb_current | hb_filter ours)" ]; then
         say "heartbeat: installed"
-        hb_current | grep -F -- "$HB_MARK $CWD" | sed 's/^/  /'
+        hb_current | hb_filter ours | sed 's/^/  /'
       else
         say "heartbeat: not installed for $CWD"
       fi
@@ -6538,12 +6565,23 @@ cmd_file_bug() {
   bug_prd_stage
   [ -n "$parent" ] || die "file-bug: --parent <mission> is required — a logged bug is always a CHILD of the mission it was found in, and grounding needs the parent's code."
   [ "$n" -gt 0 ] || die "file-bug: --prd <file> is required (once per bug). The template is $BUG_PRD_LOCAL."
-  mexists "$parent" || die "file-bug: no parent mission $parent in $MISSIONS"
+  local parent_selector="$parent" filer scope
+  filer="$(subech_seat)" || exit $?
+  if [ -n "$filer" ] && [ -n "$(delegate_validates "$filer")" ]; then
+    scope="$(val_scope "$filer")" || die "file-bug: cannot read the recorded re-check scope."
+  else
+    scope=""
+  fi
+  if [ -n "$scope" ]; then
+    resolve_mission_or_die file-bug active "$parent"
+    parent="$RESOLVED_MISSION"
+  else
+    mexists "$parent" || die "file-bug: no parent mission $parent in $MISSIONS"
+  fi
   # S365: A SUB-ECH FILES ITS OWN BUGS — INSIDE ITS OWN CHUNK. Silent for the
   # main ECH, which files anywhere. Asked BEFORE any PRD is read, so an
   # out-of-chunk filing costs nothing and leaves nothing behind.
   subech_scope_or_die file-bug "$parent"
-  local filer; filer="$(subech_seat)" || exit $?
   # S366 — who the ownership row will NAME, and whether this filer is a
   # validation pass. Declared here, at function scope, so the per-bug loop below
   # assigns rather than re-declares.
@@ -6570,7 +6608,7 @@ cmd_file_bug() {
   children_of "$parent" | sort >"$before"
 
   local -a ARGS=()
-  ARGS[${#ARGS[@]}]="--parent"; ARGS[${#ARGS[@]}]="$parent"
+  ARGS[${#ARGS[@]}]="--parent"; ARGS[${#ARGS[@]}]="$parent_selector"
   i=0
   while [ "$i" -lt "$n" ]; do
     ARGS[${#ARGS[@]}]="--prd"; ARGS[${#ARGS[@]}]="${PRDS[$i]}"
@@ -6590,10 +6628,12 @@ cmd_file_bug() {
   if [ -z "$new" ]; then
     die "file-bug: \`lcars log\` exited 0 but no linked bug Mission appeared under $parent — refusing to report a filing I cannot see. Check $MISSIONS and the log output above."
   fi
-  local c
+  local c actual_parent
   for c in $new; do
-    if [ "$(mstate "$c" parentMission)" != "$parent" ]; then
-      die "file-bug: the new Mission $c is not linked to $parent (parentMission is '$(mstate "$c" parentMission)') — refusing to report it as filed."
+    actual_parent="$(mstate "$c" parentMission; printf '.')"
+    actual_parent="${actual_parent%.}"
+    if [ "$actual_parent" != "$parent" ]; then
+      die "file-bug: the new Mission $c is not linked to $parent (parentMission is '$actual_parent') — refusing to report it as filed."
     fi
     say "FILED: $c  (parent $parent — linked; \`lcars log\` labels its issue lcars:linked)"
     # S365: AND WHO OWNS IT. A bug a sub-ECH filed is a bug that sub-ECH is
@@ -7399,7 +7439,8 @@ cmd_exec() {
       # the sibling's chunk. A Mission is claimable only when it is a NEW ROOT
       # (no parent — the "subdivide my chunk as I see fit" case the captain
       # asked for) or when its parent chain already reaches this chunk.
-      par="$(mstate "$nm" parentMission)"
+      par="$(mstate "$nm" parentMission; printf '.')"
+      par="${par%.}"
       if [ -n "$par" ] && ! mission_in_chunk "$seat" "$nm"; then
         say "REFUSED TO ATTRIBUTE $nm: its parent $par is NOT IN YOUR CHUNK. You are sub-ECH"
         say "  $seat and your chunk is $(subech_chunk_root "$seat") and what hangs beneath it."
@@ -9978,10 +10019,13 @@ PYSCOPE
   [ -z "$dropped" ] || say "DROPPED FROM THE SCOPE: $dropped"
   say "ROUND $nxt of $VALIDATION_MAX_ROUNDS opened for chunk $unit, validator $vid."
   say "BOUNDED TO WHAT IT FILED — and to nothing else:"
-  local m
-  for m in $(val_scope "$vid"); do
-    say "  $m"
-  done
+  local scope
+  scope="$(val_scope "$vid")" || die "revalidate: cannot read the scope just recorded."
+  "$PY" -c "$REPORT_TEXT_SAFE_PY
+import json, sys
+for m in json.loads(sys.argv[1]):
+    print('  ' + report_text_safe(m))
+" "$scope" || die "revalidate: cannot report the scope just recorded."
   say ""
   say "A RE-VALIDATION RE-CHECKS ONLY WHAT IT FILED, never the whole chunk again. Every"
   say "  verb $vid runs on anything wider is refused by name, at the same gate that keeps"
@@ -10847,7 +10891,7 @@ PY
   # EVERY REFUSAL HAPPENS BEFORE ANY WRITE (the `tier` rule). A half-recorded
   # beat is worse than none: later it reads as progress somebody actually made.
   local known; known="$(ap_keys delegates)"
-  if ! printf '%s\n' "$known" | grep -qxF -- "$did"; then
+  if ! "$PY" -c 'import json,sys; d=json.load(open(sys.argv[1])); sys.exit(0 if sys.argv[2] in (d.get("delegates") or {}) else 1)' "$APJSON" "$did"; then
     local inline; inline="$(printf '%s' "$known" | tr '\n' ' ')"
     die "beat: no delegate $did in $APJSON — nothing was recorded. Known delegates: ${inline:-none}. \`$SELF_CMD delegates\` lists them with their units and tiers; \`$SELF_CMD delegate <unit>\` mints one. A beat against an id that does not exist would otherwise create a delegate nobody minted and no brief backs."
   fi
