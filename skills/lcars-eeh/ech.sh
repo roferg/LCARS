@@ -1264,7 +1264,8 @@ scope_has() {
 # this file. And the authoritative test is a STRING comparison against the
 # recorded scope, never a filesystem probe: `--parent M-MINE` was refused at
 # `ad34d78` only because APFS is case-insensitive, and on a case-sensitive
-# filesystem it took the open route. Nothing below touches the disk to decide.
+# filesystem it took the open route. The shared resolver now reads the Mission
+# records once; authority compares its canonical id with the recorded scope.
 #
 # IT IS SCOPED TO A NARROWED VALIDATION PASS AND NOTHING ELSE. It returns 0 for
 # the main ECH, for every driving seat, and for a validator in round 1 — so
@@ -5658,8 +5659,7 @@ hb_filter() {
 import sys
 mode, marker, cwd = sys.argv[1:]
 for line in sys.stdin:
-    _, separator, identity = line.removesuffix("\n").rpartition(marker + " ")
-    owned = bool(separator) and identity == cwd
+    owned = line.removesuffix("\n").endswith(marker + " " + cwd)
     if owned == (mode == "ours"):
         sys.stdout.write(line)
 ' "$1" "$HB_MARK" "$CWD"

@@ -155,3 +155,9 @@ for flag, test in (
 '''.replace("FLAG", flag)
     run("pattern equality " + flag, [(ECH, lambda s, body=bad_scope: replace(
         s, function(s, "scope_has"), body))], [test])
+run("marker parsed inside repo identity", [(ECH, lambda s: replace(
+    s, '    owned = line.removesuffix("\\n").endswith(marker + " " + cwd)',
+    '    _, separator, identity = line.removesuffix("\\n").rpartition(marker + " ")\n'
+    '    owned = bool(separator) and identity == cwd'))], [
+    "heartbeat_identity_may_itself_contain_the_marker",
+])

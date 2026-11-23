@@ -391,6 +391,29 @@ class MissionSelector(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout)
         self.assertEqual(table.read_text(), neighbor)
 
+    def test_heartbeat_identity_may_itself_contain_the_marker(self):
+        nested = self.repo / "repo # LCARS-ECH nested"
+        nested.mkdir()
+        shutil.move(self.repo / ".git", nested / ".git")
+        self.repo = nested
+        self.env["LCARS_ECH_CWD"] = str(nested)
+        table = nested / "crontab.txt"
+        table.write_text("")
+        cron = self.bin / "crontab"
+        cron.write_text('#!/bin/bash\n'
+                        'if [ "$1" = -l ]; then cat "$LCARS_ECH_CWD/crontab.txt"\n'
+                        'else cat "$1" > "$LCARS_ECH_CWD/crontab.txt"; fi\n')
+        cron.chmod(0o755)
+        self.env["LCARS_CRONTAB_BIN"] = str(cron)
+        result = self.ech("heartbeat", "install", seat=None)
+        self.assertEqual(result.returncode, 0, result.stdout)
+        result = self.ech("heartbeat", "status", seat=None)
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertIn("heartbeat: installed", result.stdout)
+        result = self.ech("heartbeat", "remove", seat=None)
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertEqual(table.read_text(), "")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
