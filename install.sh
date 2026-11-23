@@ -24,10 +24,11 @@
 # only to pick up brand-new skills added since you last installed.
 #
 # ---------------------------------------------------------------------------
-# AN LCARS INSTALL WRITES TO FIVE DESTINATIONS UNDER $HOME — and only the first
+# AN LCARS INSTALL WRITES TO SIX DESTINATIONS UNDER $HOME — and only the first
 # is obvious:
 #
 #   LCARS_SKILLS_DEST          the Claude skills dir (default ~/.claude/skills)
+#   LCARS_AGENTS_DEST          the Claude agents dir (default ~/.claude/agents)
 #   LCARS_BIN_DEST             on-PATH launcher dir  (default ~/.local/bin)
 #                              — lcars-viewscreen, lcars-serve, lcars-launch
 #   LCARS_COPILOT_PLUGINS_DIR  Copilot plugins dir   (default ~/.copilot/installed-plugins/_direct)
@@ -53,11 +54,11 @@
 #
 #   LCARS_INSTALL_PREFIX=/some/scratch/dir ./install.sh
 #
-# which derives ALL FIVE destinations from that prefix:
-#   $PREFIX/claude-skills  $PREFIX/bin  $PREFIX/copilot-plugins
+# which derives ALL SIX destinations from that prefix:
+#   $PREFIX/claude-skills  $PREFIX/claude-agents  $PREFIX/bin  $PREFIX/copilot-plugins
 #   $PREFIX/copilot-config.json  $PREFIX/version-check
 #
-# The five individual variables keep working and still OVERRIDE the prefix, so
+# The six individual variables keep working and still OVERRIDE the prefix, so
 # existing tests and docs that set them directly are unaffected.
 #
 # One more env dependency, which is NOT a destination (nothing is written to it):
@@ -79,24 +80,27 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SRC="$REPO_ROOT/skills"
 
 # Defaults: derived from LCARS_INSTALL_PREFIX when it is set, else $HOME. The
-# prefix exists so ONE variable isolates ALL FIVE destinations (see the block
+# prefix exists so ONE variable isolates ALL SIX destinations (see the block
 # above) — an install that leaks into $HOME is the hazard it was added to close.
 # The fifth, $PREFIX/version-check, is derived in skills/lcars-version/check.sh
 # (the script that writes it) from the same LCARS_INSTALL_PREFIX.
 PREFIX="${LCARS_INSTALL_PREFIX:-}"
 if [ -n "$PREFIX" ]; then
   DEFAULT_SKILLS_DEST="$PREFIX/claude-skills"
+  DEFAULT_AGENTS_DEST="$PREFIX/claude-agents"
   DEFAULT_BIN_DEST="$PREFIX/bin"
   DEFAULT_COPILOT_PLUGINS_DIR="$PREFIX/copilot-plugins"
   DEFAULT_COPILOT_CONFIG="$PREFIX/copilot-config.json"
 else
   DEFAULT_SKILLS_DEST="$HOME/.claude/skills"
+  DEFAULT_AGENTS_DEST="$HOME/.claude/agents"
   DEFAULT_BIN_DEST="$HOME/.local/bin"
   DEFAULT_COPILOT_PLUGINS_DIR="$HOME/.copilot/installed-plugins/_direct"
   DEFAULT_COPILOT_CONFIG="$HOME/.copilot/config.json"
 fi
 
 DEST="${LCARS_SKILLS_DEST:-$DEFAULT_SKILLS_DEST}"
+AGENTS_DEST="${LCARS_AGENTS_DEST:-$DEFAULT_AGENTS_DEST}"
 
 BIN_DEST="${LCARS_BIN_DEST:-$DEFAULT_BIN_DEST}"
 
@@ -747,7 +751,7 @@ install_agents() {
   local src dest name
   src="$REPO_ROOT/agents"
   [ -d "$src" ] || return 0
-  dest="$HOME/.claude/agents"
+  dest="$AGENTS_DEST"
   mkdir -p "$dest" || { echo "could not create $dest" >&2; return 1; }
   for f in "$src"/*.md; do
     [ -e "$f" ] || continue

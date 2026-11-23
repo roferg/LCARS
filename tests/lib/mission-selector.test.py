@@ -147,6 +147,74 @@ class MissionSelector(unittest.TestCase):
                     child["stage"] = "done"
                     self.write(self.data / "missions" / child["id"] / "state.json", child)
 
+    def resolve_logs(self, *args):
+        return subprocess.run(
+            ["bash", str(self.skills / "lcars-resolve-logs/resolve-logs.sh"), *args],
+            cwd=self.repo, env=dict(self.env, LCARS_WORKER_BIN=""),
+            stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=180)
+
+    def linked_align_bugs(self, parent):
+        self.mission(parent, title="Imported parent", issue=500)
+        for mid in ("linked-001", "linked-002"):
+            self.mission(mid, title="Needs an answer", issue=501, parent=parent)
+            path = self.data / "missions" / mid / "state.json"
+            state = json.loads(path.read_text())
+            state.update(stage="align", awaitingHuman=True)
+            self.write(path, state)
+
+    def test_resolve_logs_finds_open_children_of_a_decoded_parent(self):
+        parent = "imported\nmission\n"
+        self.linked_align_bugs(parent)
+        result = self.resolve_logs("--parent", parent)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("paused at linked-001", result.stdout)
+        self.assertNotIn("nothing to resolve", result.stdout)
+        for mid in ("linked-001", "linked-002"):
+            state = json.loads((self.data / "missions" / mid / "state.json").read_text())
+            self.assertEqual(state["stage"], "align")
+
+    def test_resolve_logs_bulk_accept_keeps_decoded_parent_stragglers(self):
+        parent = "imported\nmission\n"
+        self.linked_align_bugs(parent)
+        path = self.data / "missions/linked-001/state.json"
+        state = json.loads(path.read_text())
+        state.update(stage="verify", awaitingHuman=False)
+        self.write(path, state)
+        result = self.resolve_logs("complete", "--parent", parent)
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("linked-002", result.stdout + result.stderr)
+        self.assertEqual(json.loads(path.read_text())["stage"], "verify")
+        pending = self.data / "missions" / parent / "pending.json"
+        self.assertEqual(json.loads(pending.read_text())["kind"], "reverify-blocked")
+
+    def test_resolve_logs_single_accept_compares_decoded_parent_ids(self):
+        parent = "imported\nmission\n"
+        self.linked_align_bugs(parent)
+        result = self.resolve_logs("complete", "--parent", parent, "--bug", "linked-001")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("not at a Verify gate", result.stdout)
+        result = self.resolve_logs("complete", "--parent", "m-theirs",
+                                   "--bug", "linked-001")
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("not linked to parent", result.stdout + result.stderr)
+
+    def test_resolve_logs_paths_do_not_split_at_newlines(self):
+        nested = self.repo / "repo\nwith newline"
+        nested.mkdir()
+        shutil.move(self.repo / ".git", nested / ".git")
+        self.repo = nested
+        self.data = nested / ".git/lcars"
+        self.env["LCARS_ECH_CWD"] = str(nested)
+        self.linked_align_bugs("imported")
+        result = self.resolve_logs("--parent", "imported")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("paused at linked-001", result.stdout)
+        result = self.resolve_logs("complete", "--parent", "imported")
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("linked-001", result.stdout + result.stderr)
+        pending = self.data / "missions/imported/pending.json"
+        self.assertEqual(json.loads(pending.read_text())["kind"], "reverify-blocked")
+
     def test_target_consumes_the_gate_resolution_without_a_second_lookup(self):
         selector = self.skills / "lcars-eeh/mission-selector.py"
         args = ["python3", str(selector), str(self.data / "missions"), "active", "Finding in"]

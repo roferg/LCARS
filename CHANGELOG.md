@@ -19,6 +19,13 @@ escaped, and revalidation reports cannot invent entries through shell splitting.
 Delegate existence, run-wide questions, and heartbeat ownership no longer use
 line-pattern matching as identifier equality.
 
+Resolve-logs compares decoded parent links at all three consumer gates and
+enumerates state paths without newline splitting, so imported parent IDs cannot
+hide open bugs or bypass the bulk-accept completeness guard. The run-wide
+question reader lives outside `cmd_next`, retaining its bounded shape.
+Agent installation now honors `LCARS_AGENTS_DEST` and `LCARS_INSTALL_PREFIX`;
+installer and delegation controls check that fenced agent symlinks resolve.
+
 ## 2026.11.2 — 2026-11-05
 
 A hands-off Mission can no longer land half-missing work, and a Mission you

@@ -12,6 +12,7 @@ BASE = "108bbe45b857d65a444133734bfa03edec29ab27"
 ECH = "lcars-eeh/ech.sh"
 SELECTOR = "lcars-eeh/mission-selector.py"
 LOG = "lcars-log/log.sh"
+RESOLVE_LOGS = "lcars-resolve-logs/resolve-logs.sh"
 
 
 def replace(text, old, new):
@@ -160,4 +161,36 @@ run("marker parsed inside repo identity", [(ECH, lambda s: replace(
     '    _, separator, identity = line.removesuffix("\\n").rpartition(marker + " ")\n'
     '    owned = bool(separator) and identity == cwd'))], [
     "heartbeat_identity_may_itself_contain_the_marker",
+])
+run("raw linked-child parent", [(RESOLVE_LOGS, lambda s: in_function(
+    s, "linked_children", '    child_parent_matches "$s" || continue',
+    '    [ "$(json_str "$s" parentMission)" = "$PARENT_ID" ] || continue'))], [
+    "resolve_logs_bulk_accept_keeps_decoded_parent_stragglers",
+])
+run("raw single-accept parent", [(RESOLVE_LOGS, lambda s: in_function(
+    s, "cmd_complete_single",
+    '  child_parent_matches "$MISSIONS_DIR/$bid/state.json" \\',
+    '  [ "$cparent" = "$PARENT_ID" ] \\'))], [
+    "resolve_logs_single_accept_compares_decoded_parent_ids",
+])
+run("raw gathered parent", [(RESOLVE_LOGS, lambda s: replace(
+    s, '\n  child_parent_matches "$s" || continue',
+    '\n  [ "$(json_str "$s" parentMission)" = "$PARENT_ID" ] || continue'))], [
+    "resolve_logs_finds_open_children_of_a_decoded_parent",
+])
+run("linked-child paths as lines", [(RESOLVE_LOGS, lambda s: in_function(
+    in_function(s, "linked_children",
+                '  for s in "$MISSIONS_DIR"/*/state.json; do',
+                '  while IFS= read -r s; do'),
+    "linked_children", '  done\n',
+    '  done < <(ls -1 "$MISSIONS_DIR"/*/state.json 2>/dev/null | sort)\n'))], [
+    "resolve_logs_paths_do_not_split_at_newlines",
+])
+run("gathered paths as lines", [(RESOLVE_LOGS, lambda s: replace(
+    replace(s, '\nfor s in "$MISSIONS_DIR"/*/state.json; do',
+            '\nwhile IFS= read -r s; do'),
+    '\ndone\n\nif [ "${#linked_open[@]}" -eq 0 ]; then',
+    '\ndone < <(ls -1 "$MISSIONS_DIR"/*/state.json 2>/dev/null | sort)\n'
+    '\nif [ "${#linked_open[@]}" -eq 0 ]; then'))], [
+    "resolve_logs_paths_do_not_split_at_newlines",
 ])

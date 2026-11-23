@@ -4220,6 +4220,19 @@ EOF
   fi
 }
 
+run_wide_question_exists() {
+  local run_wide
+  run_wide="$("$PY" - "$APJSON" <<'PYRUNWIDE'
+import json, sys
+d = json.load(open(sys.argv[1]))
+print("yes" if any(isinstance(q, dict) and not q.get("answeredAt")
+                  and (q.get("mission") or "-") == "-"
+                  for q in (d.get("questions") or {}).values()) else "no")
+PYRUNWIDE
+)" || die "next: cannot read the question ledger."
+  [ "$run_wide" = yes ]
+}
+
 cmd_next() {
   require_state
   # A STOP THE NEW BUILD HAS CURED MUST NOT PARK THE LOOP'S FIRST VERB (S305).
@@ -4290,16 +4303,7 @@ EOF
     # contradicting the playbook, in the one place a model reads for its next
     # move. § 9's rule is untouched: a question filed against a MILESTONE still
     # parks only that milestone.
-    local run_wide
-    run_wide="$("$PY" - "$APJSON" <<'PYRUNWIDE'
-import json, sys
-d = json.load(open(sys.argv[1]))
-print("yes" if any(isinstance(q, dict) and not q.get("answeredAt")
-                  and (q.get("mission") or "-") == "-"
-                  for q in (d.get("questions") or {}).values()) else "no")
-PYRUNWIDE
-)" || die "next: cannot read the question ledger."
-    if [ "$run_wide" = yes ]; then
+    if run_wide_question_exists; then
       say "NOTHING ELSE IS OFFERED: that question is a run-wide prerequisite, not one"
       say "  milestone's. Fix the cause (or answer it) and re-run \`$SELF_CMD preflight\`;"
       say "  do not drive a milestone past a preflight stop."

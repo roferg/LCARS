@@ -3525,6 +3525,10 @@ done
 #      one), and surfacing the delegate when one is silent or blocked.
 nexta="$(fnbody "$TMPROOT/main-ech.sh" cmd_next)"
 nextb="$(fnbody "$REPO_ROOT/skills/lcars-eeh/ech.sh" cmd_next)"
+# S369 replaces only the run-wide question predicate with a decoded-ledger
+# helper. Canonicalize that one shipped line; the +1/-0 reporter pin still
+# rejects an inline implementation or any other growth in cmd_next.
+nexta="$(printf '%s\n' "$nexta" | sed "s/if open_questions | cut -f2 | grep -qx -- '-'; then/if run_wide_question_exists; then/")"
 check "[control] both cmd_next bodies were really read" \
   "[ -n \"\$nexta\" ] && [ -n \"\$nextb\" ]"
 check "cmd_next() is NO LONGER byte-identical to main — S353 taught the LOOP'S verb to see a delegate" \
@@ -4741,14 +4745,18 @@ fi
 if s354_case 12; then
   printf '\n== S354/12. the INSTALLED crontab command itself names not-moving ==\n'
   (
+    export HOME="$TMPROOT/install354-home"
     export LCARS_INSTALL_PREFIX="$TMPROOT/install354"
     export LCARS_SKILLS_DEST="$LCARS_INSTALL_PREFIX/claude-skills"
+    export LCARS_AGENTS_DEST="$LCARS_INSTALL_PREFIX/claude-agents"
     unset LCARS_BIN_DEST LCARS_COPILOT_PLUGINS_DIR LCARS_COPILOT_CONFIG LCARS_VERSION_STAMP
     bash "$REPO_ROOT/install.sh"
   ) >"$TMPROOT/install354.log" 2>&1
   installed354="$TMPROOT/install354/bin/lcars-ech"
   check "S354/12 an ISOLATED install produced the absolute launcher" \
     "[ -x '$installed354' ]"
+  check "S354/12 the fenced agent is a symlink that still resolves to this checkout" \
+    "[ -L '$TMPROOT/install354/claude-agents/ech.md' ] && cmp -s '$REPO_ROOT/agents/ech.md' '$TMPROOT/install354/claude-agents/ech.md'"
   export S354_CRON_TABLE="$TMPROOT/crontab354"
   cat >"$STUBS/crontab" <<'SH'
 #!/usr/bin/env bash

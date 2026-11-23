@@ -70,6 +70,7 @@ run_install() {
   LCARS_INSTALL_PREFIX="$e/inst" \
   LCARS_BIN_DEST="$e/bin" \
   LCARS_SKILLS_DEST="$e/claude-skills" \
+  LCARS_AGENTS_DEST="$e/claude-agents" \
   LCARS_COPILOT_PLUGINS_DIR="$e/copilot/_direct" \
   LCARS_COPILOT_CONFIG="$e/copilot/config.json" \
   LCARS_COPILOT_BIN="$e/definitely-no-copilot" \
@@ -264,7 +265,7 @@ pfx="$(mktemp -d "$TMPROOT/prefix.XXXX")/inst"
 fakehome="$(mktemp -d "$TMPROOT/fakehome.XXXX")"
 pout="$TMPROOT/prefix-out.txt"
 rc8=0
-env -u LCARS_SKILLS_DEST -u LCARS_BIN_DEST -u LCARS_COPILOT_PLUGINS_DIR \
+env -u LCARS_SKILLS_DEST -u LCARS_AGENTS_DEST -u LCARS_BIN_DEST -u LCARS_COPILOT_PLUGINS_DIR \
     -u LCARS_COPILOT_CONFIG \
     HOME="$fakehome" \
     LCARS_INSTALL_PREFIX="$pfx" \
@@ -279,6 +280,8 @@ check "8. all skills are linked under the prefix (count matches)" \
   "[ \"\$(find '$pfx/claude-skills' -maxdepth 1 -type l | wc -l | tr -d ' ')\" -eq '$SKILL_COUNT' ]"
 check "8. launchers land under the prefix (not ~/.local/bin)" \
   "[ -x '$pfx/bin/lcars-viewscreen' ] && [ -x '$pfx/bin/lcars-serve' ] && [ -x '$pfx/bin/lcars-launch' ]"
+check "8. the agent symlink lands under the prefix and still resolves" \
+  "[ -L '$pfx/claude-agents/ech.md' ] && cmp -s '$REPO_ROOT/agents/ech.md' '$pfx/claude-agents/ech.md'"
 if command -v jq >/dev/null 2>&1; then
   check "8. the Copilot plugin symlink lands under the prefix" \
     "[ -L '$pfx/copilot-plugins/lcars' ]"
@@ -306,6 +309,7 @@ rc9=0
 env HOME="$fakehome9" \
     LCARS_INSTALL_PREFIX="$pfx9" \
     LCARS_SKILLS_DEST="$e9/claude-skills" \
+    LCARS_AGENTS_DEST="$e9/claude-agents" \
     LCARS_BIN_DEST="$e9/bin" \
     LCARS_COPILOT_PLUGINS_DIR="$e9/copilot/_direct" \
     LCARS_COPILOT_CONFIG="$e9/copilot/config.json" \
@@ -313,6 +317,8 @@ env HOME="$fakehome9" \
     bash "$INSTALL" >"$e9/out.txt" 2>&1 || rc9=$?
 check "9. an explicit LCARS_SKILLS_DEST still wins over the prefix" \
   "[ -L '$e9/claude-skills/lcars' ] && [ ! -e '$pfx9/claude-skills' ]"
+check "9. an explicit LCARS_AGENTS_DEST wins over the prefix and resolves" \
+  "[ -L '$e9/claude-agents/ech.md' ] && cmp -s '$REPO_ROOT/agents/ech.md' '$e9/claude-agents/ech.md' && [ ! -e '$pfx9/claude-agents' ]"
 check "9. an explicit LCARS_BIN_DEST still wins over the prefix" \
   "[ -x '$e9/bin/lcars-viewscreen' ] && [ ! -e '$pfx9/bin' ]"
 if command -v jq >/dev/null 2>&1; then
@@ -329,8 +335,8 @@ check "9. the override install also leaves \$HOME untouched" \
 # setting only one of them does NOT isolate the install. A rule without its
 # reason gets undone, and this one cost a hand repair.
 # ==========================================================================
-check "10. the header names all FIVE destination variables" \
-  "grep -q 'LCARS_SKILLS_DEST' '$INSTALL' && grep -q 'LCARS_BIN_DEST' '$INSTALL' && grep -q 'LCARS_COPILOT_PLUGINS_DIR' '$INSTALL' && grep -q 'LCARS_COPILOT_CONFIG' '$INSTALL' && grep -q 'LCARS_VERSION_STAMP' '$INSTALL'"
+check "10. the header names all SIX destination variables" \
+  "grep -q 'LCARS_SKILLS_DEST' '$INSTALL' && grep -q 'LCARS_AGENTS_DEST' '$INSTALL' && grep -q 'LCARS_BIN_DEST' '$INSTALL' && grep -q 'LCARS_COPILOT_PLUGINS_DIR' '$INSTALL' && grep -q 'LCARS_COPILOT_CONFIG' '$INSTALL' && grep -q 'LCARS_VERSION_STAMP' '$INSTALL'"
 # S197 fix round: there was a FIFTH $HOME destination nobody had counted —
 # skills/lcars-version/check.sh's throttle stamp, default
 # $HOME/.claude/lcars-version-check. The prefix did not derive it, so under an
@@ -338,8 +344,8 @@ check "10. the header names all FIVE destination variables" \
 # every call ran `git fetch origin main` — which BLOCKS on a credential prompt
 # against a network origin, even with stdin closed (measured: 600 s hung). A
 # header that says "four" is how a sixth one gets missed next time.
-check "10. the header says FIVE destinations, not four" \
-  "grep -qE 'WRITES TO FIVE DESTINATIONS|FIVE DESTINATIONS' '$INSTALL' && ! grep -q 'WRITES TO FOUR DESTINATIONS' '$INSTALL'"
+check "10. the header says SIX destinations, not four or five" \
+  "grep -q 'WRITES TO SIX DESTINATIONS' '$INSTALL' && ! grep -qE 'WRITES TO (FOUR|FIVE) DESTINATIONS' '$INSTALL'"
 check "10. the header says the prefix derives the version-check stamp too" \
   "grep -qE 'version-check' '$INSTALL'"
 check "10. the header warns that setting only ONE does not isolate the install" \

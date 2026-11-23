@@ -89,6 +89,12 @@ VERSION_CHECK="${LCARS_VERSION_CHECK_BIN:-$SKILL_DIR/../lcars-version/check.sh}"
 # --- tiny JSON readers (no jq; same decoding as log.sh / run.sh) -----------
 json_str() { sed -n "s/.*\"$2\"[[:space:]]*:[[:space:]]*\"\([^\"]*\)\".*/\1/p" "$1" | head -1; }
 json_raw() { sed -n "s/.*\"$2\"[[:space:]]*:[[:space:]]*\([^,}\"[:space:]]*\).*/\1/p" "$1" | head -1; }
+child_parent_matches() {
+  python3 - "$1" "$PARENT_ID" <<'PY'
+import json, sys
+sys.exit(0 if json.load(open(sys.argv[1])).get("parentMission") == sys.argv[2] else 1)
+PY
+}
 # JSON-string-safe escape (no surrounding quotes): backslash/quote via bash,
 # then awk escapes every control char (newline/tab/CR → \n \t \r, rest \u00XX)
 # so any multi-line value yields VALID JSON. jq-free. Order: backslash first.
@@ -249,18 +255,17 @@ PARENT_ENGINE="$(json_str "$PARENT_STATE" workerBin)"
 # one "<bug-id>\t<stage>" line per linked, non-done child (type bug, parentMission
 # == PARENT_ID), in id order.
 linked_children() { # -> id<TAB>stage
-  local s bid type parent stage
-  while IFS= read -r s; do
-    [ -n "$s" ] || continue
+  local s bid type stage
+  for s in "$MISSIONS_DIR"/*/state.json; do
+    [ -f "$s" ] || continue
     bid="$(json_str "$s" id)"; [ -n "$bid" ] || bid="$(basename "$(dirname "$s")")"
     type="$(json_str "$s" type)"
-    parent="$(json_str "$s" parentMission)"
     stage="$(json_str "$s" stage)"
     [ "$type" = "bug" ] || continue
-    [ "$parent" = "$PARENT_ID" ] || continue
+    child_parent_matches "$s" || continue
     [ "$stage" = "done" ] && continue
     printf '%s\t%s\n' "$bid" "$stage"
-  done < <(ls -1 "$MISSIONS_DIR"/*/state.json 2>/dev/null | sort)
+  done
 }
 
 # === S73: dependency-aware PARALLEL wave scheduling ========================
@@ -902,7 +907,7 @@ cmd_complete_single() { # bug-id
   cparent="$(json_str "$MISSIONS_DIR/$bid/state.json" parentMission)"
   ctype="$(json_str "$MISSIONS_DIR/$bid/state.json" type)"
   [ "$ctype" = "bug" ] || die "$bid is not a bug Mission."
-  [ "$cparent" = "$PARENT_ID" ] \
+  child_parent_matches "$MISSIONS_DIR/$bid/state.json" \
     || die "$bid is not linked to parent $PARENT_ID (parentMission=$cparent)."
 
   fold_one_child "$bid"; fold_rc=$?
@@ -1059,15 +1064,14 @@ work=()             # open bugs still needing driving (stage != verify)
 resolved=()         # open bugs already at verify
 paused_existing=""  # an open bug already parked at awaiting-human (prior run)
 
-while IFS= read -r s; do
-  [ -n "$s" ] || continue
+for s in "$MISSIONS_DIR"/*/state.json; do
+  [ -f "$s" ] || continue
   bid="$(json_str "$s" id)"; [ -n "$bid" ] || bid="$(basename "$(dirname "$s")")"
   type="$(json_str "$s" type)"
-  parent="$(json_str "$s" parentMission)"
   stage="$(json_str "$s" stage)"
   awaiting="$(json_raw "$s" awaitingHuman)"
   [ "$type" = "bug" ] || continue
-  [ "$parent" = "$PARENT_ID" ] || continue
+  child_parent_matches "$s" || continue
   [ "$stage" = "done" ] && continue
   linked_open+=("$bid")
   if [ "$awaiting" = "true" ]; then
@@ -1077,7 +1081,7 @@ while IFS= read -r s; do
   else
     work+=("$bid")
   fi
-done < <(ls -1 "$MISSIONS_DIR"/*/state.json 2>/dev/null | sort)
+done
 
 if [ "${#linked_open[@]}" -eq 0 ]; then
   case "$PARENT_ISSUE" in ''|null) plabel="$PARENT_ID" ;; *) plabel="#$PARENT_ISSUE" ;; esac
