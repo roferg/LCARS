@@ -196,6 +196,10 @@ usage() {
                        timerless guard; wake on actionable changes, exit 10 for a human
   playbook             the action -> heading table the contract test locks
   record <k.k> <v>     write one key (JSON value if it parses; empty value deletes)
+  chunking --chunks <n> --trigger <axis|none> --why "<reason>"
+                       record the pre-filing chunking decision, including ONE chunk.
+                       Axes: not-estimable, unit-of-work, module-boundary,
+                       parallelism, independence. Size is not a trigger.
   engines              WHO RUNS WHAT: the role -> engine matrix for orchestrator,
                        delegate, worker, tester, reviewer, numberOne — each row's
                        engine, its model, and whether that is the RECORDED value or
@@ -1712,7 +1716,7 @@ playbook_heading_verbatim() {
     captain-step)   printf '%s' "$PB_captain_step" ;;
     foundation)     printf '%s' "$PB_foundation" ;;
     holodeck)       printf '%s' "$PB_holodeck" ;;
-    file)           printf '%s' "$PB_file" ;;
+    chunking|file)  printf '%s' "$PB_file" ;;
     drive)          printf '%s' "$PB_drive" ;;
     verify-gate)    printf '%s' "$PB_verify_gate" ;;
     land)           printf '%s' "$PB_land" ;;
@@ -1729,7 +1733,7 @@ playbook_heading() { playbook_cite "$(playbook_heading_verbatim "$1")"; }
 
 cmd_playbook() {
   local a
-  for a in align captain-step foundation holodeck file drive verify-gate land wait answer-pending done; do
+  for a in align captain-step foundation chunking holodeck file drive verify-gate land wait answer-pending done; do
     printf '%s\t%s\n' "$a" "$(playbook_heading_verbatim "$a")"
   done
 }
@@ -3888,11 +3892,13 @@ PYDROP
   local eng="${engine:-$(jfile "$CFG" engine)}"
   [ -n "$eng" ] || eng="copilot"
 
-  "$PY" - "$APJSON" "$spec" "$scope" "$eng" "$deadline" "$tc" "$(now)" <<'PY'
-import json, os, sys
-f, spec, scope, engine, deadline, testcmd, started = sys.argv[1:8]
+  "$PY" - "$APJSON" "$spec" "$scope" "$eng" "$deadline" "$tc" "$(now)" "$MISSIONS" <<'PY'
+import glob, json, os, sys
+f, spec, scope, engine, deadline, testcmd, started, missions = sys.argv[1:9]
 d = {
   "spec": spec,
+  "chunkingBaseline": sorted(os.path.basename(os.path.dirname(p)) for p in
+                             glob.glob(os.path.join(missions, "*", "state.json"))),
   "scope": [s for s in (x.strip() for x in scope.split(",")) if s],
   "engine": engine,
   # What the captain lets the mode decide alone. These are the weekend's
@@ -3964,7 +3970,7 @@ PY
   # at the gate hours later. A deliberate stop propagates (exit 10): there is no
   # point naming the next step of a run that cannot finish.
   cmd_preflight || return $?
-  cmd_next
+  cmd_next_chunking
 }
 
 # ==========================================================================
@@ -4260,6 +4266,37 @@ print("yes" if any(isinstance(q, dict) and not q.get("answeredAt")
 PYRUNWIDE
 )" || die "next: cannot read the question ledger."
   [ "$run_wide" = yes ]
+}
+
+cmd_next_chunking() {
+  require_state
+  local chunking_needed
+  chunking_needed="$("$PY" - "$APJSON" "$MISSIONS" <<'PY'
+import glob, json, os, sys
+d = json.load(open(sys.argv[1]))
+baseline = set(d.get("chunkingBaseline", []))
+filed = any(os.path.basename(os.path.dirname(p)) not in baseline for p in
+            glob.glob(os.path.join(sys.argv[2], "*", "state.json")))
+print("yes" if "chunkingBaseline" in d and not d.get("chunking") and not filed else "no")
+PY
+)" || die "next: cannot read the chunking decision."
+  if [ "$chunking_needed" = yes ]; then
+    local plan action
+    plan="$(build_plan)" || return $?
+    action="${plan%%	*}"
+    if [ "$action" = file ] || [ "$action" = foundation ]; then
+      say "NEXT: chunking"
+      say "PLAYBOOK: $(playbook_heading chunking)"
+      say "DECIDE BEFORE ANY MISSION IS FILED: how many chunks, on which declared axis?"
+      say "RUN: $SELF_CMD chunking --chunks <n> --trigger <axis|none> --why \"<reason>\""
+      say "AXES: not-estimable (including a spike first), unit-of-work, module-boundary,"
+      say "  parallelism, independence. Size-as-proxy is not a trigger."
+      say "ONE CHUNK is legitimate: --chunks 1 --trigger none --why \"<why one slice fits>\"."
+      say "RULE: lcars-eeh docs delegation — THE CHUNKING DECISION."
+      return 0
+    fi
+  fi
+  cmd_next "$@"
 }
 
 cmd_next() {
@@ -7985,6 +8022,54 @@ contract_for_tier() {   # <tier> [T1-fence rider] [T2-fence rider] [preamble rid
   esac
 }
 
+# --- chunking -------------------------------------------------------------
+cmd_chunking() {
+  require_state
+  local rc
+  ap_lock
+  "$PY" - "$APJSON" "$MISSIONS" "$(now)" "$@" <<'PY'
+import argparse, glob, json, os, sys
+f, missions, at = sys.argv[1:4]
+p = argparse.ArgumentParser(prog="chunking", allow_abbrev=False)
+p.add_argument("--chunks", type=int, required=True)
+p.add_argument("--trigger", choices=(
+    "not-estimable", "unit-of-work", "module-boundary",
+    "parallelism", "independence", "none"), required=True)
+p.add_argument("--why", required=True)
+a = p.parse_args(sys.argv[4:])
+if a.chunks < 1:
+    p.error("--chunks must be a positive whole number")
+if (a.chunks == 1) != (a.trigger == "none"):
+    p.error("--trigger none is only for ONE chunk; a split requires a declared axis")
+if not a.why.strip() or a.why.splitlines() != [a.why]:
+    p.error("--why must be a nonblank, single-line reason, including for ONE chunk")
+d = json.load(open(f))
+baseline = set(d.get("chunkingBaseline", []))
+if any(os.path.basename(os.path.dirname(path)) not in baseline for path in
+       glob.glob(os.path.join(missions, "*", "state.json"))):
+    p.error("decide before any Mission is filed; a retrospective decision is not evidence")
+entry = {"chunks": a.chunks, "trigger": a.trigger, "why": a.why,
+         "spec": d["spec"], "at": int(at)}
+ledger = d.setdefault("chunkingLedger", {})
+n = 1
+while "c%d" % n in ledger:
+    n += 1
+key = "c%d" % n
+ledger[key] = entry
+d["chunking"] = entry
+tmp = f + ".tmp.%d" % os.getpid()
+with open(tmp, "w") as out:
+    json.dump(d, out, indent=2)
+    out.write("\n")
+os.replace(tmp, f)
+print("CHUNKS: %d\nTRIGGER: %s\nWHY: %s" % (a.chunks, a.trigger, a.why))
+print("RECORDED: chunking (ledger entry %s, append-only)" % key)
+PY
+  rc=$?
+  ap_unlock
+  [ "$rc" = 0 ] || die "chunking: decision NOT recorded; correct the error and retry." "$rc"
+}
+
 # --- tier -----------------------------------------------------------------
 cmd_tier() {
   local unit="" tier="" why="" why_set=0
@@ -11266,13 +11351,14 @@ case "$SUB" in
   init)        cmd_init "$@" ;;
   preflight)   cmd_preflight "$@" ;;
   status)      cmd_status "$@" ;;
-  next)        cmd_next "$@" ;;
+  next)        cmd_next_chunking "$@" ;;
   await)       cmd_await "$@" ;;
   watch)       cmd_watch "$@" ;;
   playbook)    cmd_playbook "$@" ;;
   record)      cmd_record "$@" ;;
   engines)     cmd_engines "$@" ;;
   budget)      cmd_budget "$@" ;;
+  chunking)    cmd_chunking "$@" ;;
   tier)        cmd_tier "$@" ;;
   delegate)    cmd_delegate "$@" ;;
   delegates)   cmd_delegates "$@" ;;

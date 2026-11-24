@@ -4,6 +4,20 @@ All notable changes to LCARS are recorded here, newest first. The version
 scheme is `YYYY.M.N` (calendar year, month with no leading zero, per-month
 counter). Every PR into `main` bumps `VERSION` and adds its entry here.
 
+## 2026.11.7 — 2026-11-24
+
+### When to split: record the decision before filing (S373)
+
+Before offering the first Mission, including a foundation or spike, `next`
+asks the ECH for its chunking decision. `chunking` records the count, declared
+trigger and reason, retaining pre-filing revisions in a ledger. One chunk is
+an explicit, reasoned answer, not an omitted decision.
+
+The split axes are not-estimable, unit-of-work, module-boundary, parallelism
+and independence; size-as-proxy is excluded. Shared files require sequencing
+rather than silently collapsing independent outcomes. Existing filed runs,
+driving-seat briefs, validator rules and Mission lookup are unchanged.
+
 ## 2026.11.6 — 2026-11-24
 
 ### Parallel chunks: the cap, the wait, and integration's owner (S372)

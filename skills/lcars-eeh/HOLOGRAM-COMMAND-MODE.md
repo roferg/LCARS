@@ -628,6 +628,13 @@ actually wants.
 
 ## 4. File a milestone through the front door
 
+**CHUNKING DECISION FIRST, before any Mission is filed.** Follow
+`DELEGATION.md` § *THE CHUNKING DECISION*: decide how many chunks, declare the
+trigger and record the reason with `lcars-ech chunking`. ONE chunk is a
+legitimate, reasoned answer, not an omitted decision. `next` asks before
+offering this filing step (including a foundation Mission); the decision is
+the ECH's, not an automatic size rule.
+
 **`file.sh` requires six sections** and refuses the PRD without any one of them.
 Write all six before you call it — they are, exactly: **Mission title**, **Type**,
 **Goal**, **Acceptance Criteria**, **Out of Scope**, **Constraints**. **Mission**

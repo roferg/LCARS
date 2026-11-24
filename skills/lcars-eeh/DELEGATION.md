@@ -46,6 +46,49 @@ and that text is a stale copy — delete the copy and point here.
 
 ---
 
+## THE CHUNKING DECISION
+
+**Stop and decide before any Mission is filed**, including a foundation or
+spike Mission: how many chunks does this spec need, and why? `next` asks for
+this decision before offering filing. Do not go straight from spec to code,
+or confuse shared files with a reason to keep independent outcomes in one
+chunk. Colliding edits require sequencing and integration, not silence about
+decomposition.
+
+Record the judgement, against a declared trigger, with its reason:
+
+```bash
+lcars-ech chunking --chunks <n> --trigger <axis|none> --why "<reason>"
+```
+
+| trigger | what fires it |
+|---|---|
+| `not-estimable` | **NOT ESTIMABLE**: the work cannot yet be estimated or bounded; a spike is needed first. Split out learning before committing to the remaining delivery. |
+| `unit-of-work` | **DOES NOT FIT ONE UNIT OF WORK**: separate acceptable outcomes need separate bounded goals, even when their edits collide in the same files. Sequence those chunks where necessary. |
+| `module-boundary` | **CROSSES A MODULE BOUNDARY**: separate responsibilities or interfaces need distinct chunks with an explicit handoff. |
+| `parallelism` | **PARALLELISM WORTH HAVING**: independently executable chunks buy useful concurrency after accounting for coordination and shared-file collisions. |
+| `independence` | **INDEPENDENCE REQUIRED**: ownership, delivery or assurance must be independent, rather than merely convenient to separate. |
+
+**ONE CHUNK IS A LEGITIMATE ANSWER**, and it also requires its reason:
+`--chunks 1 --trigger none --why "<why one slice fits>"`. `none` is the
+explicit no-split judgement, not a sixth split trigger. A split requires one
+of the five axes above. **Size-as-proxy is not a trigger**: line counts, file
+counts and a large diff do not establish any of these conditions.
+
+The ECH makes this judgement; the driver does not infer a split from the spec
+or force one on every run. The current decision is `chunking` in
+`autopilot.json`; `chunkingLedger` retains each pre-filing revision, with the
+count, trigger, reason, spec and timestamp. A late decision is refused rather
+than backfilled as though it preceded filing. `init` snapshots the IDs of
+pre-existing Missions as `chunkingBaseline`, so a new run still decides even
+in a repo with older Missions. Legacy runs without that snapshot continue
+unchanged; this does not retroactively invent their missing judgement.
+Chunk count is not a worker count or permission for
+recursive delegation: choose each chunk's tier separately and hand its goal
+through `delegate --goal`.
+
+---
+
 ## The three tiers
 
 **A tier is defined by THE JUDGEMENT IT ABSORBS — never by how many writers it
@@ -901,6 +944,8 @@ two contracts, and the seat reading top-down met the wrong one last.
 ## The verbs
 
 ```bash
+lcars-ech chunking --chunks <n> --trigger <axis|none> --why "<reason>"
+                                                             # BEFORE filing, even for one chunk
 lcars-ech tier <unit-id> --tier T0|T1|T2 --why "<reason>"   # record the judgement
 lcars-ech delegate <unit-id>                                 # mint the brief
 lcars-ech delegate <unit-id> --validate --trigger undetectable|irreversible|wide --why "<r>"
