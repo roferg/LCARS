@@ -18894,6 +18894,8 @@ cmd_open_pr() {
   local existing; existing="$(json_str "$STATE" prUrl)"
   case "$existing" in
     http*|*/pull/*)
+      pr_request_reviews "$existing"
+      lcars_state_set_string "$STATE" review "open"
       echo "OPEN-PR: already open — $existing"
       exit 0 ;;
   esac
@@ -25986,6 +25988,12 @@ drive_verify() { # accumulated-summary
         DRIVE_VERIFY_DONE=1
         return 0
       fi
+      local review_out
+      review_out="$(LCARS_GH_BIN="$GH_BIN" LCARS_GIT_BIN="$GIT_BIN" bash "$SELF" open-pr --mission "$MISSION_ID" 2>&1)" || {
+        printf '%s\n' "$review_out"
+        emit_event gate verify "required PR review unresolved"
+        return 1
+      }
       # Still open — in review. Halt, but do NOT re-ping (one ping at open time).
       emit_event gate verify "in review — PR open"
       # S203 — …and if Number One has the conn and has not looked yet, it looks
@@ -26004,7 +26012,12 @@ drive_verify() { # accumulated-summary
   out="$(LCARS_GH_BIN="$GH_BIN" LCARS_GIT_BIN="$GIT_BIN" bash "$SELF" open-pr --mission "$MISSION_ID" 2>&1)" || rc=$?
   local pr2; pr2="$(json_str "$STATE" prUrl)"
   case "$pr2" in
-    http*|*/pull/*) : ;;
+    http*|*/pull/*)
+      if [ "$rc" -ne 0 ]; then
+        printf '%s\n' "$out"
+        emit_event gate verify "required PR review failed"
+        return 1
+      fi ;;
     *) # PR-open degraded (no gh / unauthed / create failed). This is STILL a
        # human gate — the Mission is parked at verify needing attention — so we
        # must fire EXACTLY ONE walk-away notification (never a false Done), and

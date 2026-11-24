@@ -259,6 +259,12 @@ usage() {
   stalled              what the crontab heartbeat calls; decides from recorded pids
   land <mission>       approve.sh --mission + hygiene; exit 10 = a question was written
   push-gated           run the recorded testCommand, push ONLY on exit 0
+  exec --refresh <mission>
+                       test a detached Mission head, then push ONLY that head;
+                       no merge or stage change. Driving seats: own chunk only
+  exec --await [--limit <s>]
+                       bounded wait for one of the TWO shared Mission slots;
+                       seats report expiry by beat, never by polling or asking the captain
   worktree <mission> | worktree --branch <br>
                        git worktree add --detach + a throwaway HOME; prints both.
                        --branch needs no ECH record (Number One passes it)
@@ -1087,7 +1093,7 @@ validator_act_of() {
     live-check*)                        printf 'look' ;;
     file-bug*)                          printf 'file' ;;
     policy*)                            printf 'decide' ;;
-    drive*)                             printf 'fix' ;;
+    drive*|refresh*)                    printf 'fix' ;;
     *lcars-run/run.sh*)                 printf 'fix' ;;
     *lcars-respond/respond.sh*)         printf 'fix' ;;
     *lcars-resolve-logs/resolve-logs.sh*) printf 'fix' ;;
@@ -3610,7 +3616,7 @@ pf_q_engines() {
 }
 
 pf_q_number_one() {
-  local choice eng out rc prior_eng enabled
+  local choice eng out rc prior_eng enabled recorded_enabled
   local what="the preflight Number One choice could not be applied."
   choice="$(ap_j numberOne.choice)"
   if [ -n "$choice" ] && [ -n "$(ap_j numberOne.appliedAt)" ]; then
@@ -3636,7 +3642,29 @@ pf_q_number_one() {
   # never replace or drop one, and the engine it applies is HIS if he recorded
   # one — which is also what the already-settled branch below has always done.
   prior_eng="$(ap_j numberOne.engine)"
+  [ -n "$prior_eng" ] || prior_eng="$(jfile "$CFG" numberOne.engine)"
   eng="$(ap_j engine)"
+  recorded_enabled="$(ap_j numberOne.enabled)"
+  if [ -z "$recorded_enabled" ]; then
+    case "$choice" in
+      off) recorded_enabled=false ;;
+      on)  recorded_enabled=true ;;
+      *)   recorded_enabled="$(jfile "$CFG" numberOne.enabled)" ;;
+    esac
+  fi
+  case "$recorded_enabled" in
+    false) choice=off ;;
+    true)  choice=on ;;
+    "") ;;
+    *) die "preflight: numberOne.enabled must be true or false; refusing to replace a recorded ruling." ;;
+  esac
+  if [ -n "$recorded_enabled" ]; then
+    [ -z "$prior_eng" ] || eng="$prior_eng"
+    [ -n "$(ap_j numberOne.engine)" ] || ap_set numberOne.engine "$eng" \
+      || die "preflight: could not record Number One's engine."
+    ap_set numberOne.choice "$choice" || die "preflight: could not record Number One's choice."
+    ap_set numberOne.enabled "$recorded_enabled" || die "preflight: could not record Number One's ruling."
+  fi
   if [ -z "$choice" ]; then
     say ""
     if [ -n "$prior_eng" ]; then
@@ -4370,15 +4398,29 @@ cmd_await() {
   while :; do
     used="$(slots_in_use)"
     if [ "$used" -lt "$MAX_SLOTS" ]; then
-      wait_clear
-      say "await: a slot is free ($used/$MAX_SLOTS in use) after $(( $(now) - since ))s — run \`$SELF_CMD next\`."
+      if [ -n "$ECH_AS" ]; then
+        say "await: a slot is free ($used/$MAX_SLOTS in use) — resume driving your own chunk."
+      else
+        wait_clear
+        say "await: a slot is free ($used/$MAX_SLOTS in use) after $(( $(now) - since ))s — run \`$SELF_CMD next\`."
+      fi
       return 0
     fi
     elapsed=$(( $(now) - since ))
     [ "$elapsed" -lt "$limit" ] || break
-    sleep 5
+    if [ -n "$ECH_AS" ]; then
+      local remaining=$((limit - elapsed))
+      [ "$remaining" -le 5 ] || remaining=5
+      sleep "$remaining"
+    else
+      sleep 5
+    fi
   done
   say "await: ${limit}s passed and all $MAX_SLOTS slots are still held. THE WAIT IS OVER."
+  if [ -n "$ECH_AS" ]; then
+    say "  Report the blocked wait with \`$SELF_CMD beat $ECH_AS \"BLOCKED: all $MAX_SLOTS parallel slots held after ${limit}s\"\`; the main ECH owns stalled-driver recovery."
+    return 124
+  fi
   say "  This is NOT a failure of the run, and it is not a question for the captain yet."
   say "  Run \`$SELF_CMD stalled\` now: it reports a driver that ended with nobody picking"
   say "  it up, decided from the RECORDED pid rather than from a log. Act on what it"
@@ -5574,6 +5616,48 @@ cmd_push_gated() {
   say "push-gated: the suite was green but the push itself failed — nothing retried by another route."
   return 1
 }
+
+cmd_refresh() (
+  require_state
+  [ "$#" -eq 1 ] || die "refresh: exactly one Mission id is required."
+  local m="$1" br base tip tc pair wt="" home="" out rc
+  mexists "$m" || die "refresh: no mission $m in $MISSIONS"
+  subech_scope_or_die refresh "$m"
+  [ "$(mstate "$m" stage)" = verify ] || die "refresh: $m must be at verify."
+  br="$(mstate "$m" branch)"
+  base="$(mstate "$m" base)"; base="${base:-main}"
+  [ -n "$br" ] && [ "$br" != "$base" ] \
+    || die "refresh: refusing a missing branch or the base branch."
+  "$GIT_BIN" check-ref-format "refs/heads/$br" >/dev/null \
+    || die "refresh: invalid Mission branch."
+  tip="$("$GIT_BIN" -C "$CWD" rev-parse --verify "refs/heads/$br^{commit}")" \
+    || die "refresh: cannot read the Mission head."
+  tc="$(ap_j testCommand)"
+  [ -n "$tc" ] || tc="$(jfile "$CFG" testCommand)"
+  [ -n "$tc" ] || die "refresh: no recorded testCommand; refusing an ungated push."
+  pair="$(wt_prepare "$m" "$tip")" || exit 1
+  IFS=$'\t' read -r wt home <<<"$pair"
+  trap '"$GIT_BIN" -C "$CWD" worktree remove --force "$wt" >/dev/null 2>&1; rm -rf "$home"' EXIT
+  say "refresh: running the recorded suite on $br at $tip: $tc"
+  out="$(cd "$wt" && HOME="$home" eval "$tc" 2>&1)"; rc=$?
+  printf '%s\n' "$out" | sed 's/^/  | /'
+  [ "$rc" -eq 0 ] || die "refresh: suite FAILED (exit $rc); NOTHING pushed."
+  if grep -qE '(^|[^A-Za-z])(FAILED|FAIL:)([^A-Za-z]|$)' <<<"$out"; then
+    die "refresh: suite reports FAILED despite exit 0; NOTHING pushed."
+  fi
+  [ "$("$GIT_BIN" -C "$wt" rev-parse HEAD)" = "$tip" ] \
+    && "$GIT_BIN" -C "$wt" diff --quiet HEAD -- \
+    || die "refresh: suite changed the tested checkout; NOTHING pushed."
+  [ "$("$GIT_BIN" -C "$CWD" rev-parse "refs/heads/$br")" = "$tip" ] \
+    || die "refresh: Mission head moved during the suite; NOTHING pushed. Re-run."
+  "$GIT_BIN" -C "$CWD" push origin "$tip:refs/heads/$br" \
+    || die "refresh: push failed; no alternate route attempted."
+  if [ -n "$(mstate "$m" prUrl)" ]; then
+    (cd "$CWD" && bash "$RUN_SCRIPT" open-pr --mission "$m") \
+      || die "refresh: head pushed but required PR review failed; retry exec --refresh $m."
+  fi
+  say "refresh: pushed tested head $tip on $br; no merge or stage change."
+)
 
 # ==========================================================================
 # worktree — detached, with a throwaway HOME
@@ -6836,10 +6920,20 @@ cmd_policy() {
   # The verdict can come from Number One's own file rather than a flag, so
   # nobody has to retype what the verifier already wrote.
   if [ -z "$verdict" ] && [ -n "$mission" ]; then
-    verdict="$(jfile "$MISSIONS/$mission/xo/verdict.json" score)"
+    if [ "$(jfile "$CFG" numberOne.enabled)" = false ]; then
+      verdict=off
+    else
+      verdict="$(jfile "$MISSIONS/$mission/xo/verdict.json" score)"
+    fi
   fi
   [ -n "$verdict" ] || die "policy: --verdict <high|medium|low> is required (or --mission <id>, to read Number One's own xo/verdict.json)."
-  case "$verdict" in high|medium|low) ;; *) die "policy: '$verdict' is not a Number One verdict — high, medium or low." ;; esac
+  case "$verdict" in
+    high|medium|low) ;;
+    off)
+      [ -n "$mission" ] && [ "$(jfile "$CFG" numberOne.enabled)" = false ] \
+        || die "policy: OFF requires --mission and an explicit numberOne.enabled: false in the repo config." ;;
+    *) die "policy: '$verdict' is not a Number One verdict — high, medium or low (or off when recorded OFF)." ;;
+  esac
   case "$live" in
     pass|bugs) ;;
     "") die "policy: --live-check <pass|bugs> is required — it is half the table, and on the modelled weekend it decided every merge." ;;
@@ -6916,7 +7010,7 @@ cmd_policy() {
   # before S240, or one naming no recommendation, goes through the table below
   # exactly as it did.
   local rec=""
-  if [ -n "$mission" ]; then
+  if [ -n "$mission" ] && [ "$verdict" != off ]; then
     rec="$(jfile "$MISSIONS/$mission/xo/verdict.json" recommendation)"
   fi
 
@@ -6924,6 +7018,10 @@ cmd_policy() {
   if [ "$live" = bugs ]; then
     action="send-back"
     why="the live check found bugs — that decides it, whatever Number One scored ($verdict)."
+    [ "$verdict" != off ] || why="Number One is OFF and the recorded live check found bugs."
+  elif [ "$verdict" = off ]; then
+    action="merge"
+    why="Number One is OFF by the recorded ruling; the recorded live check passed. No Number One verdict was invented."
   elif [ "$rec" = merge ] || [ "$rec" = merge-with-follow-ups ] || [ "$rec" = send-back ]; then
     action="$(printf '%s' "$rec" | sed 's/merge-with-follow-ups/merge+follow-ups/')"
     local recwhy; recwhy="$(jfile "$MISSIONS/$mission/xo/verdict.json" recommendationWhy)"
@@ -6992,7 +7090,12 @@ policy_then() { # <action> <mission>
   local m="$2"
   case "$1" in
     merge)
-      say "THEN: $SELF land $m"
+      if [ -n "$ECH_AS" ]; then
+        say "THEN: $SELF exec --refresh $m"
+        say "  Report your chunk to the main ECH; only it decides the whole ask's landing."
+      else
+        say "THEN: $SELF land $m"
+      fi
       ;;
     merge+follow-ups)
       say "THEN: file each gap Number One named as its own mission, then land:"
@@ -7020,6 +7123,7 @@ policy_table() {
   say ""
   printf '  %-26s %-12s %s\n' 'NUMBER ONE' 'LIVE CHECK' 'ACTION'
   printf '  %-26s %-12s %s\n' 'any'                      'bugs' 'send-back'
+  printf '  %-26s %-12s %s\n' 'OFF (recorded)'           'pass' 'merge (live check only)'
   printf '  %-26s %-12s %s\n' 'high'                     'pass' 'merge'
   printf '  %-26s %-12s %s\n' 'medium'                   'pass' 'merge+follow-ups'
   printf '  %-26s %-12s %s\n' 'low (product reason)'     'pass' 'send-back'
@@ -7285,8 +7389,13 @@ PY
 #   lcars-ech exec lcars-file/file.sh --prd <path> --engine copilot
 #   lcars-ech exec lcars-file file.sh  --prd <path> --engine copilot
 #
-# It adds NO stage logic: it resolves a path and hands over with `exec`.
+# Script calls add no stage logic. The explicit --refresh / --await modes
+# reuse this seat's existing exec permission without widening its script list.
 cmd_exec() {
+  case "${1:-}" in
+    --refresh) shift; cmd_refresh "$@"; return $? ;;
+    --await) shift; cmd_await "$@"; return $? ;;
+  esac
   local spec="${1:-}" script=""
   [ -n "$spec" ] || die "exec: name a skill script, e.g. \`exec lcars-file/file.sh --prd <path>\`"
   shift

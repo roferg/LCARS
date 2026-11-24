@@ -310,23 +310,21 @@ PY
                 self.run_ech("grant", *args, rc=1)
                 self.assertEqual(self.record(), before)
 
-    def test_08_number_one_preflight_recommends_on_once_without_a_tty(self):
+    def test_08_number_one_preflight_preserves_off_once_without_a_tty(self):
         self.write(self.data / "config.json",
                    {"engine": "claude", "numberOne": {"enabled": False}})
         output = self.run_ech("preflight")
         self.assertIn("proceeding", output)
-        self.assertIn("RECOMMENDED: ON", output)
         decision = self.record()["numberOne"]
-        self.assertTrue(decision["enabled"])
+        self.assertFalse(decision["enabled"])
         self.assertEqual(decision["engine"], "copilot")
-        self.assertTrue(decision["settledAt"])
         self.assertTrue(decision["appliedAt"])
         self.run_ech("preflight")
         self.assertEqual(self.calls.read_text().splitlines(),
-                         ["xo on --engine copilot --sweep"])
+                         ["xo off"])
         section = PLAYBOOK.read_text().split("## 1. The alignment round", 1)[1].split("\n## 2.", 1)[0]
         row = next(line for line in section.splitlines() if line.startswith("| 6 |"))
-        for text in ("Number One", "RECOMMENDED", "ON", "run", "PROCEEDS"):
+        for text in ("Number One", "recorded", "OFF", "PROCEEDS"):
             self.assertIn(text, row)
 
     def test_08b_number_one_applies_to_the_target_checkout(self):

@@ -4,6 +4,29 @@ All notable changes to LCARS are recorded here, newest first. The version
 scheme is `YYYY.M.N` (calendar year, month with no leading zero, per-month
 counter). Every PR into `main` bumps `VERSION` and adds its entry here.
 
+## 2026.11.5 — 2026-11-23
+
+### The four loose ends (S371)
+
+Preflight honours a recorded Number One switch and its sibling settings,
+including an OFF ruling without a `choice` stamp. Fresh init remains OFF.
+Policy has an explicit OFF lane: the recorded live check decides, without
+inventing a score or reading a stale Number One recommendation.
+
+Verify requests declared `prReviewers` through the forge adapter, records the
+review request against the head, and retries failures without duplicating PRs.
+Repos carrying agent instructions must explicitly settle that policy rather
+than silently omitting mandated review.
+
+Driving seats can finish a fix cycle through `exec --refresh <mission>`:
+test the exact detached head, then push only that head, without merge authority.
+`exec --await` gives seats a bounded wait for the two shared Mission slots.
+Existing main-ECH verbs, loose lookups and ordinary briefs are unchanged.
+
+The installer refuses live agent links from linked worktrees; isolated
+destinations remain supported. Install and EEH diagnostics detect dangling
+installed links, including every installed agent.
+
 ## 2026.11.4 — 2026-11-23
 
 ### One reader for whose work it is, and a brief carries its goal (S370)

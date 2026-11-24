@@ -42,6 +42,8 @@ CWD="${LCARS_EEH_CWD:-$PWD}"
 # dest is a farm the caller wants judged, installed CLI or not.
 SKILLS_DEST_EXPLICIT=0; [ -n "${LCARS_SKILLS_DEST:-}" ] && SKILLS_DEST_EXPLICIT=1
 SKILLS_DEST="${LCARS_SKILLS_DEST:-$HOME/.claude/skills}"
+AGENTS_DEST="${LCARS_AGENTS_DEST:-${LCARS_INSTALL_PREFIX:+$LCARS_INSTALL_PREFIX/claude-agents}}"
+AGENTS_DEST="${AGENTS_DEST:-$HOME/.claude/agents}"
 COPILOT_PLUGINS_DIR="${LCARS_COPILOT_PLUGINS_DIR:-$HOME/.copilot/installed-plugins/_direct}"
 CLAUDE_BIN="${LCARS_CLAUDE_BIN:-claude}"
 COPILOT_BIN="${LCARS_COPILOT_BIN:-copilot}"
@@ -398,6 +400,12 @@ for entry in "$SKILLS_DEST"/lcars*; do
     continue
   fi
   installed_names="$installed_names $name"
+  if [ ! -e "$entry" ]; then
+    echo "  DANGLING installed skill: $entry -> $(readlink "$entry")"
+    n_other=$((n_other + 1))
+    [ -n "$first_other" ] || { first_other="$name"; first_other_target="$(readlink "$entry")"; }
+    continue
+  fi
   target="$(readlink "$entry")"
   # A relative symlink target is relative to the LINK's directory, not our cwd.
   case "$target" in /*) ;; *) target="$SKILLS_DEST/$target" ;; esac
@@ -483,6 +491,7 @@ fi
 # install.sh's own rule (its CLI is on PATH).
 cop_link="$COPILOT_PLUGINS_DIR/lcars"
 if [ -L "$cop_link" ] || [ -e "$cop_link" ]; then
+  [ -e "$cop_link" ] || echo "  DANGLING installed plugin: $cop_link -> $(readlink "$cop_link")"
   if [ -L "$cop_link" ]; then
     cop_target="$(readlink "$cop_link")"
     case "$cop_target" in /*) ;; *) cop_target="$COPILOT_PLUGINS_DIR/$cop_target" ;; esac
@@ -502,6 +511,16 @@ elif command -v "$COPILOT_BIN" >/dev/null 2>&1; then
 else
   echo "  Copilot: not installed, nothing to check."
 fi
+
+echo "  AGENT LINKS: $AGENTS_DEST"
+for agent_link in "$AGENTS_DEST"/*; do
+  [ -L "$agent_link" ] || continue
+  if [ -e "$agent_link" ]; then
+    echo "    RESOLVED: $agent_link"
+  else
+    echo "    DANGLING installed agent: $agent_link -> $(readlink "$agent_link") — reinstall from a durable checkout."
+  fi
+done
 
 # ==========================================================================
 # 3) THE CURRENT REPO — the Mission(s) that triggered this

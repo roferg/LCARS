@@ -104,6 +104,7 @@
 #                                                            GitHub sub-issue
 #     pr-create     --head <h> --base <b> --title <t> --body <b2> [--closes <n>…]
 #                                                          → echoes the PR URL
+#     pr-request-review <PR URL> <login|org/team>          → requests review, nonzero on failure
 #     pr-merge      [--number <n>|--head <branch>] [--method <m>] → merges the PR
 #     pr-view       [--number <n>|--head <branch>]        → echoes `state\t<S>` +
 #     (pr-status)                                            `mergedAt\t<v>` lines
@@ -780,6 +781,12 @@ github_pr_create() { # --head <h> --base <b> --title <t> --body <b2> [--closes <
   return 0
 }
 
+github_pr_request_review() { # <PR URL> <reviewer login or org/team>
+  [ "$#" -eq 2 ] || die "pr-request-review: need a PR URL and reviewer."
+  command -v "$GH_BIN" >/dev/null 2>&1 || return 1
+  "$GH_BIN" pr edit "$1" --add-reviewer "$2"
+}
+
 # --- dispatch ---------------------------------------------------------------
 [ $# -ge 1 ] || die "no op — usage: host-adapter.sh <op> [args…]"
 OP="$1"; shift
@@ -808,6 +815,7 @@ case "$OP" in
   issue-closing-prs) github_issue_closing_prs "$@" ;;
   link-subissue) github_link_subissue "$@" ;;
   pr-create)     github_pr_create     "$@" ;;
+  pr-request-review) github_pr_request_review "$@" ;;
   pr-merge)      github_pr_merge      "$@" ;;
   pr-view|pr-status) github_pr_view   "$@" ;;
   pr-close)      github_pr_close      "$@" ;;

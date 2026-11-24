@@ -6480,7 +6480,7 @@ for grant_case in \
   test_06c_lcars_merits_refusal_is_not_overridden_by_a_grant \
   test_02_03_07_granted_reapprove_runs_ledgers_and_never_reasks \
   test_02b_granted_command_executes_in_the_target_checkout \
-  test_08_number_one_preflight_recommends_on_once_without_a_tty \
+  test_08_number_one_preflight_preserves_off_once_without_a_tty \
   test_08b_number_one_applies_to_the_target_checkout \
   test_09_merge_policy_and_landing_agree_that_a_grant_acts \
   test_once_grant_is_consumed_even_across_new_seats \

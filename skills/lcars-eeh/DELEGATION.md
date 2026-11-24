@@ -457,6 +457,8 @@ a live Mission had ended that Mission's run.**
 | its own verify gate | `live-check`, `live-check done` | **yes** — § 6's standing job, per ECH | **refused** |
 | the action for the verdict pair | `policy` | **yes** | **refused** |
 | drives its own fixes | `drive` | **yes** | **refused** |
+| publishes its tested fix head | `exec --refresh <mission>` | **yes**, driving seats only; no merge or stage change | **refused** |
+| waits for a shared slot | `exec --await --limit <seconds>` | **yes**, bounded; no board mutation | n/a |
 | the factory's front door | `exec lcars-file/file.sh`, `lcars-log/log.sh`, `lcars-run/run.sh`, `lcars-respond/respond.sh`, `lcars-resolve-logs/resolve-logs.sh` | **yes** — and a `--mission` outside the chunk is refused | **refused** |
 | every other sibling script | `lcars-approve`, `lcars-answer`, `lcars-feedback`, `lcars-init`, `lcars-xo`, `lcars-eeh` | **never** — `exec` has its own allow-list | **never** |
 | subdivides its own chunk into Missions | `exec lcars-file/file.sh` | **yes** — each one JOINS its chunk | n/a |
@@ -465,6 +467,29 @@ a live Mission had ended that Mission's run.**
 | the landing decision | `land`, `approve`, `push-gated` | **never** | **never** |
 | the ECH's own bookkeeping | `record`, `tier`, `delegate`, `grant`, `answered`, `init` | **never** — this is the escalation chain | **never** |
 | machinery and the ECH's board | `worktree`, `workflow-run`, `heartbeat`, `watch`, `await`, `_waiter`, `status`, `next`, `stalled`, `delegates`, `playbook`, `report`, `engines` | **never** — not on the allow-list | **never** |
+
+### FINISHING A CHUNK, AND THE TWO-MISSION CAP
+
+The shared driver permits **two concurrent Missions**, across all seats, not
+two per seat. When both slots are occupied, use `lcars-ech exec --await --limit
+600` instead of polling. Exit 0 means a slot is free; exit 124 means the bound
+expired: report one `BLOCKED:` beat so the main ECH can inspect its drivers.
+This lane changes neither the main ECH's `await` behavior nor its board.
+
+After `resolve-logs` folds fixes locally, run the chunk's own live check and
+`policy`. With Number One OFF, omit `--verdict`: the recorded live-check
+verdict decides, without inventing a Number One score. On pass, run
+`lcars-ech exec --refresh <mission>`. It tests the exact detached Mission head
+with the recorded `testCommand`, refuses a red suite (including success-shaped
+`FAILED` output) or a moving head, and pushes only that tested commit to that
+Mission's branch. It also retries any required forge review against the new
+head. It never pushes the base, merges, advances the Mission or grants landing
+authority. A validation pass cannot use it: publishing fixes is the driver's
+act. Hand the result back to the main ECH, which still verifies the whole.
+
+These are modes of the existing `exec` verb, not a wider sibling-script
+allow-list. Existing nine-verb briefs remain byte-identical; this section and
+`--help` document the added modes.
 
 ### IT IS A BOUNDARY, NOT A SET OF CHECKS
 

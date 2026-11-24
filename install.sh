@@ -247,6 +247,13 @@ canon_path() {
   ( cd -P "$d" 2>/dev/null && printf '%s/%s' "$(pwd -P)" "$b" ) || printf '%s' "$p"
 }
 
+if [ "$MODE" != uninstall ] && [ -f "$REPO_ROOT/.git" ] \
+    && [ "$(canon_path "$AGENTS_DEST")" = "$(canon_path "$HOME/.claude/agents")" ]; then
+  echo "Refusing to link live agents to a linked worktree ($REPO_ROOT)." >&2
+  echo "Use LCARS_INSTALL_PREFIX or LCARS_AGENTS_DEST for an isolated install, or install from the durable checkout." >&2
+  exit 1
+fi
+
 # same_file <a> <b> — do these two paths name one and the same file?
 same_file() {
   local a="$1" b="$2" ia ib
@@ -764,6 +771,15 @@ install_agents() {
 install_agents
 
 final_note() {
+  local link broken=0
+  for link in "$DEST"/* "$AGENTS_DEST"/* "$COPILOT_PLUGINS_DIR/$PLUGIN_NAME"; do
+    [ -L "$link" ] || continue
+    if [ ! -e "$link" ]; then
+      echo "DANGLING installed link: $link -> $(readlink "$link")" >&2
+      broken=1
+    fi
+  done
+  [ "$broken" -eq 0 ] || return 1
   local verdict=""
   verdict="$(launcher_verdict || true)"
   if [ -n "$verdict" ]; then printf '%s\n' "$verdict"; fi

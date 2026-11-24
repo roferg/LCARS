@@ -1704,7 +1704,8 @@ check "S306-8C. NEGATIVE CONTROL: the \$HOME predicates still go RED on an injec
 # pre-split file. Its sha256 is pinned here, not computed, so a later edit that
 # quietly drops a reason cannot move the goalposts with it.
 S358_HCM="$REPO_ROOT/skills/lcars-eeh/HOLOGRAM-COMMAND-MODE.md"
-S358_SHA='18f684eaefa311aad2060b3849cc728c1f5136cd8b9b986b817726cb8c75624b'
+# S371 intentionally updates the OFF ruling and required-review contract.
+S358_SHA='718a8de97fe0e247990bc9183e9f76464b023d83235ebe67b5f87d88fad99c80'
 S358_WANT='ech-preflight ech-intake ech-drive ech-verify ech-land ech-wait ech-report'
 
 s358_sha() { shasum -a 256 "$1" | awk '{print $1}'; }
