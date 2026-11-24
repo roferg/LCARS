@@ -116,10 +116,10 @@ run("refresh tests the root instead of the Mission", ECH, lambda s: replace(
 run("refresh pushes main as well as the Mission", ECH, lambda s: replace(
     s, '"$tip:refs/heads/$br" \\\n', '"$tip:refs/heads/$br" "main:refs/heads/main" \\\n'), refresh)
 run("seat await is unreachable", ECH, lambda s: replace(
-    s, '    --await) shift; cmd_await "$@"; return $? ;;',
+    s, '    --await) shift; cmd_seat_await "$@"; return $? ;;',
     '    --await) die "mutant: seats cannot await" ;;'), wait)
 run("await reports a full board as free", ECH, lambda s: replace(
-    s, '    if [ "$used" -lt "$MAX_SLOTS" ]; then',
+    s, '    if [ "$held" -lt "$MAX_SLOTS" ]; then',
     '    if true; then'), wait)
 run("worktree install can repoint live agents", "install.sh", lambda s: replace(
     s, 'if [ "$MODE" != uninstall ] && [ -f "$REPO_ROOT/.git" ]',

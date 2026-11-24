@@ -1518,9 +1518,8 @@ check "it still keeps the evidence (0 of 31) that justifies the rule" \
   "printf '%s' \"\$GATE\" | grep -q '0 of 31'"
 check "the three verbs are still named, so the gate is still findable" \
   "printf '%s' \"\$GATE\" | grep -q 'live-check' && printf '%s' \"\$GATE\" | grep -q 'policy' && printf '%s' \"\$GATE\" | grep -q 'file-bug'"
-hcm_removed="$(git -C "$REPO_ROOT" diff main -- skills/lcars-eeh/HOLOGRAM-COMMAND-MODE.md | grep -c '^-[^-]' | tr -d ' ')"
-check "HCM was NOT edited to match — it is the authority, and nothing was removed from it" \
-  "[ \"\$hcm_removed\" = 0 ]"
+check "HCM retires only S371's three unsafe preflight lines; every other line remains" \
+  "python3 '$REPO_ROOT/tests/lib/hcm-preservation.py' '$REPO_ROOT' main"
 
 printf '\n== D10b. every `lcars-eeh docs <name>` this doc prints actually RESOLVES ==\n'
 

@@ -55,6 +55,7 @@ trap 'rm -rf "$TMPROOT"' EXIT
 # of the new farm as well. Cases that are ABOUT the Copilot farm override them.
 export LCARS_COPILOT_PLUGINS_DIR="$TMPROOT/no-copilot-plugins"
 export LCARS_COPILOT_BIN="$TMPROOT/definitely-no-copilot"
+export LCARS_AGENTS_DEST="$TMPROOT/no-claude-agents"
 
 ok()   { printf '  \033[32mPASS\033[0m %s\n' "$1"; pass=$((pass + 1)); }
 bad()  { printf '  \033[31mFAIL\033[0m %s\n' "$1"; fail=$((fail + 1)); }
@@ -720,6 +721,7 @@ cop20="$home20/.copilot/installed-plugins/_direct"; mkdir -p "$cop20"
 ln -snf "$c20" "$cop20/lcars"
 out20="$TMPROOT/out20.txt"
 env -u LCARS_SKILLS_DEST -u LCARS_COPILOT_PLUGINS_DIR -u LCARS_COPILOT_BIN \
+  -u LCARS_AGENTS_DEST -u LCARS_INSTALL_PREFIX \
   HOME="$home20" PATH="/usr/bin:/bin" \
   LCARS_REPO="$c20" GIT_BIN="$GIT_STUB" LCARS_EEH_CWD="$(new_plain_dir)" \
   bash "$SCRIPT" >"$out20" 2>&1
@@ -974,7 +976,9 @@ check "26. the \`exec\` form the doc prints names a script that exists" \
 # before it ever reaches `exec`.
 d26repo="$(mktemp -d "$TMPROOT/d26.XXXX")"
 ( cd "$d26repo" && git init -q 2>/dev/null )
-d26out="$(LCARS_ECH_CWD="$d26repo" bash "$AP277_D2" exec lcars-xo/xo.sh report 2>&1 || true)"
+mkdir -p "$d26repo/.git/lcars"
+printf '{"numberOne":{"enabled":false}}\n' >"$d26repo/.git/lcars/config.json"
+d26out="$(cd "$d26repo" && LCARS_ECH_CWD="$d26repo" bash "$AP277_D2" exec lcars-xo/xo.sh report 2>&1 || true)"
 check "26. running that exact form REACHES xo.sh (its OWN report output comes back)" \
   "printf '%s' \"\$d26out\" | qgrep -qE 'Since you last looked|History:'"
 check "26. and it is not a not-found refusal of any kind" \
@@ -983,7 +987,7 @@ check "26. and it is not a not-found refusal of any kind" \
 # does not exist has to be refused by name. The refusal EXITS 1 and this suite
 # runs with `pipefail`, so the output is captured FIRST (see the same note in
 # § 24): piping it live would report the PRODUCER's code, not the grep's.
-d26bog="$(LCARS_ECH_CWD="$d26repo" bash "$AP277_D2" exec lcars-xo/nope.sh report 2>&1 || true)"
+d26bog="$(cd "$d26repo" && LCARS_ECH_CWD="$d26repo" bash "$AP277_D2" exec lcars-xo/nope.sh report 2>&1 || true)"
 check "26. CONTROL: a BOGUS script in the same form IS refused (the check can fail)" \
   "printf '%s' \"\$d26bog\" | qgrep -qF 'no such script'"
 

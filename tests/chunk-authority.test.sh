@@ -569,15 +569,8 @@ check "4h. the drive refusal names the owner, not just 'denied'" \
 # re-reading must not have quietly weakened the ECH's own look.
 check "4i. HCM § 6 still says the live check is the standing job, not a fallback" \
   "grep -qi 'standing job' '$HCM'"
-HCM_REMOVED="$(git -C "$REPO_ROOT" diff "$BASELINE_REF" -- skills/lcars-eeh/HOLOGRAM-COMMAND-MODE.md | sed -n '/^-[^-]/p')"
-cat >"$TMPROOT/retired-preflight-lines" <<'EOF'
--| 6 | Number One: RECOMMENDED **ON**, using the run's engine | PROCEEDS on the recommended default, ON; runs `xo on --engine <run-engine> --sweep` once and records the choice |
--No tty means proceed on ON without waiting for input; an explicit OFF is
--preserved too. The decision and its engine live in `autopilot.json.numberOne`;
-EOF
-HCM_RETIRED_PREFLIGHT="$(cat "$TMPROOT/retired-preflight-lines")"
 check "4j. only S371's three superseded preflight lines were removed; every other line remains" \
-  "[ \"\$HCM_REMOVED\" = \"\$HCM_RETIRED_PREFLIGHT\" ]"
+  "python3 '$REPO_ROOT/tests/lib/hcm-preservation.py' '$REPO_ROOT' '$BASELINE_REF'"
 echo
 
 # =========================================================================

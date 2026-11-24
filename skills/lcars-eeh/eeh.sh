@@ -512,15 +512,21 @@ else
   echo "  Copilot: not installed, nothing to check."
 fi
 
-echo "  AGENT LINKS: $AGENTS_DEST"
-for agent_link in "$AGENTS_DEST"/*; do
-  [ -L "$agent_link" ] || continue
-  if [ -e "$agent_link" ]; then
-    echo "    RESOLVED: $agent_link"
-  else
-    echo "    DANGLING installed agent: $agent_link -> $(readlink "$agent_link") — reinstall from a durable checkout."
-  fi
-done
+if [ -d "$AGENTS_DEST" ] || [ -L "$AGENTS_DEST" ] \
+    || [ -n "${LCARS_AGENTS_DEST:-}${LCARS_INSTALL_PREFIX:-}" ] \
+    || command -v "$CLAUDE_BIN" >/dev/null 2>&1; then
+  echo "  AGENT LINKS: $AGENTS_DEST"
+  for agent_link in "$AGENTS_DEST"/*; do
+    [ -L "$agent_link" ] || continue
+    if [ -e "$agent_link" ]; then
+      echo "    RESOLVED: $agent_link"
+    else
+      echo "    DANGLING installed agent: $agent_link -> $(readlink "$agent_link") — reinstall from a durable checkout."
+    fi
+  done
+else
+  echo "  Claude Code agents: not installed, nothing to check."
+fi
 
 # ==========================================================================
 # 3) THE CURRENT REPO — the Mission(s) that triggered this

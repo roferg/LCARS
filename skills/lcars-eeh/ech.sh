@@ -4398,29 +4398,15 @@ cmd_await() {
   while :; do
     used="$(slots_in_use)"
     if [ "$used" -lt "$MAX_SLOTS" ]; then
-      if [ -n "$ECH_AS" ]; then
-        say "await: a slot is free ($used/$MAX_SLOTS in use) — resume driving your own chunk."
-      else
-        wait_clear
-        say "await: a slot is free ($used/$MAX_SLOTS in use) after $(( $(now) - since ))s — run \`$SELF_CMD next\`."
-      fi
+      wait_clear
+      say "await: a slot is free ($used/$MAX_SLOTS in use) after $(( $(now) - since ))s — run \`$SELF_CMD next\`."
       return 0
     fi
     elapsed=$(( $(now) - since ))
     [ "$elapsed" -lt "$limit" ] || break
-    if [ -n "$ECH_AS" ]; then
-      local remaining=$((limit - elapsed))
-      [ "$remaining" -le 5 ] || remaining=5
-      sleep "$remaining"
-    else
-      sleep 5
-    fi
+    sleep 5
   done
   say "await: ${limit}s passed and all $MAX_SLOTS slots are still held. THE WAIT IS OVER."
-  if [ -n "$ECH_AS" ]; then
-    say "  Report the blocked wait with \`$SELF_CMD beat $ECH_AS \"BLOCKED: all $MAX_SLOTS parallel slots held after ${limit}s\"\`; the main ECH owns stalled-driver recovery."
-    return 124
-  fi
   say "  This is NOT a failure of the run, and it is not a question for the captain yet."
   say "  Run \`$SELF_CMD stalled\` now: it reports a driver that ended with nobody picking"
   say "  it up, decided from the RECORDED pid rather than from a log. Act on what it"
@@ -4428,6 +4414,36 @@ cmd_await() {
   say "  If it names nothing while the slots stay held, that is an LCARS bug with no"
   say "  verb-level workaround (§ 9's fourth category): raise it with \`$SELF_CMD ask\`"
   say "  and carry on with the other work."
+  return 124
+}
+
+cmd_seat_await() {
+  if [ -z "$ECH_AS" ]; then cmd_await "$@"; return $?; fi
+  require_state
+  local limit="$WAIT_LIMIT" since elapsed held remaining
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --limit)   limit="${2:-}"; shift 2 ;;
+      --limit=*) limit="${1#--limit=}"; shift ;;
+      *) die "await: unknown argument $1" ;;
+    esac
+  done
+  case "$limit" in ''|*[!0-9]*) die "await: --limit takes whole seconds" ;; esac
+  since="$(now)"
+  while :; do
+    held="$(slots_in_use)"
+    if [ "$held" -lt "$MAX_SLOTS" ]; then
+      say "await: a slot is free ($held/$MAX_SLOTS in use) — resume driving your own chunk."
+      return 0
+    fi
+    elapsed=$(( $(now) - since ))
+    [ "$elapsed" -lt "$limit" ] || break
+    remaining=$((limit - elapsed))
+    [ "$remaining" -le 5 ] || remaining=5
+    sleep "$remaining"
+  done
+  say "await: ${limit}s passed and all $MAX_SLOTS slots are still held. THE WAIT IS OVER."
+  say "  Report the blocked wait with \`$SELF_CMD beat $ECH_AS \"BLOCKED: all $MAX_SLOTS parallel slots held after ${limit}s\"\`; the main ECH owns stalled-driver recovery."
   return 124
 }
 
@@ -7394,7 +7410,7 @@ PY
 cmd_exec() {
   case "${1:-}" in
     --refresh) shift; cmd_refresh "$@"; return $? ;;
-    --await) shift; cmd_await "$@"; return $? ;;
+    --await) shift; cmd_seat_await "$@"; return $? ;;
   esac
   local spec="${1:-}" script=""
   [ -n "$spec" ] || die "exec: name a skill script, e.g. \`exec lcars-file/file.sh --prd <path>\`"
