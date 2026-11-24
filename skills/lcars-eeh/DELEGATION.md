@@ -471,10 +471,41 @@ a live Mission had ended that Mission's run.**
 ### FINISHING A CHUNK, AND THE TWO-MISSION CAP
 
 The shared driver permits **two concurrent Missions**, across all seats, not
-two per seat. When both slots are occupied, use `lcars-ech exec --await --limit
-600` instead of polling. Exit 0 means a slot is free; exit 124 means the bound
-expired: report one `BLOCKED:` beat so the main ECH can inspect its drivers.
+two per seat. Two or three sub-ECHs are normal; the third Mission waits, not
+the third seat's entire chunk. A refused drive is **not queued**. When both
+slots are occupied, use `lcars-ech exec --await --limit 600` instead of polling.
+Exit 0 observes a free slot but **does not reserve it**: retry your own drive;
+if another seat wins it, the bounded wait is still the route. Exit 124 ends
+the wait: report ONE `BLOCKED:` beat so the main ECH can inspect its drivers.
+Do not restart the wait or turn it into a polling loop.
 This lane changes neither the main ECH's `await` behavior nor its board.
+
+**This is not a Mission-completion wait.** A free slot does not establish a
+Mission's exit, Verify gate or success. Its waiter records the process exit;
+hand that Mission id back to the main ECH, which owns board inspection and
+stalled-driver recovery. Neither `await` nor `exec --await` queues work,
+reserves capacity or wakes a seat on a particular Mission's completion.
+Subsequent driving-seat briefs carry this parallel contract once another chunk
+has been delegated; an already handed-off brief is not silently rewritten.
+
+### INTEGRATION HANDOFF — THE MAIN ECH OWNS THE COMBINED RESULT
+
+The **MAIN ECH owns cross-chunk integration**, not either chunk and not an
+improvised third seat. A real recovery merge conflict still parks for a human;
+the refusal names this **integration handoff**. The sub-ECH sends ONE
+`BLOCKED:` beat with the Mission id, conflicting paths and the two intents.
+It does not reach into its sibling's chunk or bypass the gate.
+
+There is **no re-integrate verb**. The main ECH reads the recovery diagnosis,
+settles the combined intent (asking the captain only for a product decision),
+and routes any repair through the existing factory front door, as a bounded
+integration Mission if needed. That is a composition repair, not another
+whole-chunk validation and not permission to hand-merge, rebase, force, edit
+control state or grant a seat authority over its sibling. Clear the blocker
+FIRST, then answer the existing recovery gate: answering resumes the drive.
+The main ECH verifies the combined result and retains the landing decision.
+An unresolved human gate stays unresolved; naming an owner is not a new
+automatic conflict resolver.
 
 After `resolve-logs` folds fixes locally, run the chunk's own live check and
 `policy`. With Number One OFF, omit `--verdict`: the recorded live-check

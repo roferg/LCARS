@@ -25716,6 +25716,16 @@ drive_base_recheck() {
       else
         local recovery_rc=$?
         [ -n "$recovery" ] || recovery="Recovery refused: recovery exited with status $recovery_rc; mission commits are untouched. Inspect the repository before retrying."
+        case "$recovery" in
+          "Recovery merge failed;"*)
+            local parallel
+            parallel="$("${LCARS_PYTHON_BIN:-python3}" "$SKILL_DIR/../lcars-eeh/parallel-chunks.py" "$REPO_ROOT/.git/lcars")" \
+              || die "could not read parallel-chunk context; recovery remains refused."
+            if [ "$parallel" = yes ]; then
+              recovery="$recovery
+INTEGRATION HANDOFF: MAIN ECH owns cross-chunk integration. Send ONE BLOCKED: beat naming this Mission and the conflicting paths. There is no re-integrate verb: do not mint a third seat or hand-merge, rebase or force past this refusal. The main ECH settles the combined intent (captain only for a product decision), routes any repair through the factory, and verifies the whole. Clear the blocker FIRST, then answer this gate; answering resumes the drive. The human gate is not bypassed."
+            fi ;;
+        esac
         LCARS_MB_REASON="$recovery"
         local question
         question="$(printf '%s' "$recovery" | tr '\n' ' ') Resolve the recovery blocker, then re-drive; do not rebase or force the mission branch."

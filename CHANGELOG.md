@@ -4,6 +4,21 @@ All notable changes to LCARS are recorded here, newest first. The version
 scheme is `YYYY.M.N` (calendar year, month with no leading zero, per-month
 counter). Every PR into `main` bumps `VERSION` and adds its entry here.
 
+## 2026.11.6 — 2026-11-24
+
+### Parallel chunks: the cap, the wait, and integration's owner (S372)
+
+Parallel driving-seat briefs state the shared two-Mission ceiling and the
+bounded `exec --await` route. A capped seat is told its drive is not queued;
+slot availability is not a reservation or Mission completion. Expiry hands
+one `BLOCKED:` beat to the main ECH instead of restarting a polling loop.
+
+A real cross-chunk recovery conflict names the **integration handoff**, owned
+by the main ECH. It retains the human gate and both branch tips, names the
+existing factory route, and explicitly says there is no re-integrate verb or
+authority for an improvised third seat. The independent recovery resolvers,
+single-chunk briefs and main-ECH wait behavior are unchanged.
+
 ## 2026.11.5 — 2026-11-23
 
 ### The four loose ends (S371)

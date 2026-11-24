@@ -4433,7 +4433,7 @@ cmd_seat_await() {
   while :; do
     held="$(slots_in_use)"
     if [ "$held" -lt "$MAX_SLOTS" ]; then
-      say "await: a slot is free ($held/$MAX_SLOTS in use) — resume driving your own chunk."
+      say "await: a slot is free ($held/$MAX_SLOTS in use) — resume driving your own chunk; this does not reserve a slot."
       return 0
     fi
     elapsed=$(( $(now) - since ))
@@ -4444,6 +4444,7 @@ cmd_seat_await() {
   done
   say "await: ${limit}s passed and all $MAX_SLOTS slots are still held. THE WAIT IS OVER."
   say "  Report the blocked wait with \`$SELF_CMD beat $ECH_AS \"BLOCKED: all $MAX_SLOTS parallel slots held after ${limit}s\"\`; the main ECH owns stalled-driver recovery."
+  say "  Do not restart the wait or poll; hand this block back to the main ECH."
   return 124
 }
 
@@ -4706,6 +4707,9 @@ cmd_drive() {
   fi
   local used; used="$(slots_in_use)"
   if [ "$used" -ge "$MAX_SLOTS" ]; then
+    if [ -n "$ECH_AS" ]; then
+      die "drive: $used/$MAX_SLOTS parallel slots already in use across ALL seats; this drive is not queued. Use \`$SELF_CMD exec --await --limit 600\`: exit 0 observes a free slot, not a reservation; retry your own drive. Exit 124 ends the wait: send one \`$SELF_CMD beat $ECH_AS \"BLOCKED: parallel cap still full\"\` and hand it back to the main ECH, not another wait." 11
+    fi
     die "drive: $used/$MAX_SLOTS parallel slots already in use — two missions at a time is the ceiling (three drove load to 170 and killed workers)." 11
   fi
   mkdir -p "$APDIR"
@@ -8944,6 +8948,40 @@ and the route is a \`BLOCKED:\` beat.
 
 An allowed script still obeys your chunk: a \`--mission\` outside it is refused
 exactly as the verb would be."
+  fi
+  if [ "$validate" != 1 ]; then
+    local parallel
+    parallel="$("$PY" "$SELF_DIR/parallel-chunks.py" "$LCARS_DIR" "$unit")" \
+      || die "delegate: could not read parallel-chunk context."
+    if [ "$parallel" = yes ]; then
+      a_yours="$a_yours
+
+### THE SHARED CAP, AND THE BOUNDED WAIT
+
+The ceiling is **two concurrent Missions across ALL seats**, not two per
+sub-ECH. A third drive is refused, not queued. Use the launcher above:
+
+    bash $SELF exec --await --limit 600
+
+Exit 0 means a slot was observed free; it **does not reserve** that slot.
+Retry your own drive; if another seat wins it, use this bounded wait again.
+Exit **124** ends the wait: send ONE \`BLOCKED:\` beat and hand it back to the
+main ECH; do not loop waits or poll for 25 minutes. This is **not a
+Mission-completion wait**: a free slot says nothing about your Mission's
+Verify gate. For completion, let its waiter record the exit and hand the
+Mission id back to the main ECH.
+
+### INTEGRATION HANDOFF
+
+The **MAIN ECH owns cross-chunk integration**; a chunk owns neither its
+sibling's edits nor the combined result. If recovery reports a real conflict,
+send ONE \`BLOCKED:\` beat naming the Mission and conflicting paths. There is
+**no re-integrate verb**: do not mint a third seat, hand-merge, rebase or force
+past the refusal. The main ECH settles the combined intent (with the captain
+only for a product decision), routes any repair through the factory, and
+verifies the whole. Clear the blocker FIRST, then answer the existing gate:
+answering resumes the drive. The human gate is not bypassed."
+    fi
   fi
   verbs="$verbs
 
