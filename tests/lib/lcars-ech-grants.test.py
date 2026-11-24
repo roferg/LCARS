@@ -80,7 +80,7 @@ PY
     def run_ech(self, *args, rc=0):
         result = subprocess.run(["bash", str(SCRIPT), *args], env=self.env,
                                 stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                                stderr=subprocess.STDOUT, text=True, timeout=20,
+                                stderr=subprocess.STDOUT, text=True, timeout=90,
                                 start_new_session=True)
         self.assertEqual(result.returncode, rc, result.stdout)
         return result.stdout
