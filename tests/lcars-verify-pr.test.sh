@@ -425,6 +425,7 @@ check "2. the heartbeat still reports in review (no false done)" \
 # --- Behaviour 3: a merged PR (on GitHub) → Done; unmerged never → Done -------
 savedMID="$MID"; MID="lcars-20261015-298"
 r3="$(new_repo_verify)"; make_gh_stub "$r3/gh"; make_notify_stub "$r3/notify"
+printf '{"numberOne":{"enabled":false}}\n' >"$r3/.git/lcars/config.json"
 : >"$r3/gh.log"; : >"$r3/notify.log"
 # First pass: open the PR (state OPEN), in review.
 GH_PR_STATE=OPEN run_in "$r3" drive --mission "$MID" >"$r3/o1.txt" 2>&1
