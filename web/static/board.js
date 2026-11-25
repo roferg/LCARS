@@ -3981,10 +3981,13 @@ function cardNode(m) {
   // property OF this Mission (the tree it was cut from), not of the board.
   var bfp = baseFreshnessPill(m.baseFreshness);
   if (bfp) pills.appendChild(bfp);
-  card.appendChild(pills);
   if (m.mergeHealth) {
-    card.appendChild(el("p", "det-stagefailure", m.mergeHealth.message));
+    var mergePill = el("span", "pill basefresh",
+      m.mergeHealth.status === "bypass" ? "MERGE BYPASS" : "MERGE CHECK");
+    mergePill.title = m.mergeHealth.message;
+    pills.appendChild(mergePill);
   }
+  card.appendChild(pills);
 
   /* S278 — WHEN IT SHIPPED, on a mission read back off GitHub.
 

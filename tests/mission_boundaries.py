@@ -150,6 +150,30 @@ class Boundaries(unittest.TestCase):
                      mode, str(payload)], capture_output=True, text=True, timeout=10)
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assert_bypass(result.stdout)
+                tree = json.loads(result.stdout)["node"]
+
+                def descendants(node):
+                    yield node
+                    for child in node["children"]:
+                        yield from descendants(child)
+
+                nodes = list(descendants(tree))
+                visible = " ".join(node["text"] for node in nodes)
+                message = card["mergeHealth"]["message"]
+                if mode == "card":
+                    pills = [child for node in nodes if node["cls"] == "pills"
+                             for child in node["children"]
+                             if child["text"] == "MERGE BYPASS"]
+                    self.assertEqual(len(pills), 1, "card needs one compact merge pill")
+                    self.assertEqual(pills[0]["tag"], "span")
+                    self.assertIn("pill", pills[0]["cls"].split())
+                    self.assertIn("basefresh", pills[0]["cls"].split())
+                    self.assertEqual(pills[0]["title"], message)
+                    self.assertNotIn(message, visible, "long warning belongs in detail")
+                    self.assertFalse(any(node["tag"] == "p" and node["text"] == message
+                                         for node in nodes))
+                else:
+                    self.assertIn(message, visible)
 
     def test_duplicate_bug_requires_explicit_decision(self):
         self.mission(stage="implement")

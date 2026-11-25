@@ -94,8 +94,12 @@ with tempfile.TemporaryDirectory(prefix="s376-mutants-") as temporary:
                    'paths = sorted(source.glob("*/state.json")) if source.is_dir() else [source]'),
                ["test_empty_mission_set_has_no_merge_error"])
     run_mutant("card-warning-removed", "web/static/board.js",
-               lambda t: replace_once(t, '    card.appendChild(el("p", "det-stagefailure", m.mergeHealth.message));',
+               lambda t: replace_once(t, '    pills.appendChild(mergePill);',
                                       "    /* deliberately omit the card warning */"),
+               [tests[3]])
+    run_mutant("card-warning-becomes-paragraph", "web/static/board.js",
+               lambda t: replace_once(t, '    pills.appendChild(mergePill);',
+                                      '    card.appendChild(el("p", "det-stagefailure", m.mergeHealth.message));'),
                [tests[3]])
     run_mutant("detail-warning-removed", "web/static/board.js",
                lambda t: replace_once(t, '    head.appendChild(el("p", "det-stagefailure", mi.mergeHealth.message));',
