@@ -514,7 +514,7 @@ if candidates:
     print("Possible duplicate bugs against %s (not a sameness verdict):" % parent,
           file=sys.stderr)
     for mid, title in candidates:
-        print("  %s  %s" % (mid, title), file=sys.stderr)
+        print("  Candidate: %s  %s" % (mid, title), file=sys.stderr)
     if confirmed != "1":
         print("STOP: review these candidates. Use the existing Mission, or explicitly "
               "re-run with --confirm-distinct to file a separate bug. Nothing was "

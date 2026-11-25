@@ -170,11 +170,15 @@ class Boundaries(unittest.TestCase):
         self.assertIn(first_id, second.stdout)
         self.assertIn("Same symptom", second.stdout)
         self.assertIn("--confirm-distinct", second.stdout)
+        self.assertNotRegex(second.stdout, r"(?m)^  lcars-")
         self.assertEqual(len(list(self.missions.iterdir())), 2)
         self.assertEqual((children[0] / "state.json").read_bytes(), before)
         confirmed = self.run_script(script, "--confirm-distinct", *args)
         self.assertEqual(confirmed.returncode, 0, confirmed.stdout)
         self.assertIn(first_id, confirmed.stdout)
+        self.assertEqual(sum(line.startswith("  lcars-")
+                             for line in confirmed.stdout.splitlines()), 1,
+                         confirmed.stdout)
         later = [p for p in self.missions.iterdir()
                  if p.name not in ("parent", first_id)]
         self.assertEqual(len(later), 1)
