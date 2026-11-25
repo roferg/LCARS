@@ -177,6 +177,10 @@ usage() {
                        proceeds on, or stops deliberately (exit 10) on the one
                        prerequisite nobody can default — nowhere to push
   status               one screen: scope, stages, gates, slots, EVERY open question, next action
+  retire <id> --reason "<why>"
+                       archive intact under .git/lcars/archived-missions and release
+                       only this Mission's chunk claim; never delete or merge
+  retire --list        enumerate canonical and legacy retired Missions, with reasons
   usage <read|gate|config|help> [options]
                        the product Claude allowance reader, from any cwd;
                        gate exits 0 GO / 2 HOLD / 3 ASK / 4 UNKNOWN / 64 bad input
@@ -4272,6 +4276,8 @@ PYRUNWIDE
 }
 
 cmd_next_chunking() {
+  (cd "$CWD" && "$PY" "$SKILLS_DIR/lcars-status/merge-health.py" "$MISSIONS") \
+    || die "could not check PR/Mission consistency."
   require_state
   local chunking_needed
   chunking_needed="$(bash "$SELF_DIR/chunking-gate.sh" "$LCARS_DIR")" \
@@ -4716,6 +4722,63 @@ PY
   delegation_status_lines
   say ""
   cmd_next_chunking
+}
+
+cmd_retire() {
+  if [ "${1:-}" = "--list" ]; then
+    [ "$#" -eq 1 ] || die "retire --list takes no other arguments."
+    "$PY" - "$LCARS_DIR" <<'PY'
+import json, pathlib, sys
+root = pathlib.Path(sys.argv[1])
+found = False
+for name in ("archived-missions", "missions-archived"):
+    for path in sorted((root / name).glob("*/state.json")):
+        found = True
+        record = path.parent / "retirement.json"
+        reason = json.loads(record.read_text())["reason"] if record.exists() else "legacy archive; reason not recorded"
+        print("%s  %s  %s" % (path.parent.name, reason, path.parent))
+if not found:
+    print("No retired Missions.")
+PY
+    return $?
+  fi
+  local m="${1:-}" reason="" source dest
+  [ "$#" -gt 0 ] && shift
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --reason) [ "$#" -ge 2 ] || die "retire: --reason needs a value."
+                reason="$2"; shift 2 ;;
+      *) die "retire: unknown argument '$1'." ;;
+    esac
+  done
+  case "$m" in ''|.|..|*[!a-zA-Z0-9._-]*) die "retire: give an exact Mission id." ;; esac
+  [ -n "$(printf '%s' "$reason" | tr -d '[:space:]')" ] \
+    || die "retire: --reason <why> is required."
+  source="$MISSIONS/$m"
+  dest="$LCARS_DIR/archived-missions/$m"
+  mexists "$m" || die "retire: no active Mission $m; list archives with \`$SELF_CMD retire --list\`."
+  [ ! -e "$dest" ] && [ ! -e "$LCARS_DIR/missions-archived/$m" ] \
+    || die "retire: $m already exists in an archive; inspect it with \`$SELF_CMD retire --list\`. Nothing moved."
+  if mission_work_live "$m" || [ -d "$source/bug-filing.lock" ]; then
+    die "retire: $m still has live work or a bug filing. Pause it and wait for that work to stop before retiring."
+  fi
+  command -v lcars_chunk_forget >/dev/null 2>&1 \
+    || die "retire: chunk ownership library missing; nothing moved."
+  mkdir -p "$LCARS_DIR/archived-missions" || die "retire: cannot create the archive."
+  "$PY" - "$source/retirement.json" "$reason" <<'PY'
+import datetime, json, sys
+with open(sys.argv[1], "x") as stream:
+    json.dump({"reason": sys.argv[2],
+               "retiredAt": datetime.datetime.now(datetime.timezone.utc).isoformat()},
+              stream, indent=2)
+    stream.write("\n")
+PY
+  [ "$?" -eq 0 ] || die "retire: cannot record the reason; nothing moved."
+  mv "$source" "$dest" || die "retire: could not archive $m; its directory and reason remain at $source."
+  lcars_chunk_forget "$LCARS_DIR" "$m" \
+    || die "retire: $m is archived at $dest, but its chunk claim could NOT be released. Inspect $LCARS_DIR/chunk-owners before proceeding."
+  say "RETIRED: $m — $reason"
+  say "  Archived intact at $dest; its chunk ownership is released. No PR was merged or closed."
 }
 
 # ==========================================================================
@@ -6697,6 +6760,7 @@ cmd_file_bug() {
     case "$1" in
       --parent)   parent="${2:-}"; shift 2 ;;
       --parent=*) parent="${1#--parent=}"; shift ;;
+      --confirm-distinct) EXTRA[${#EXTRA[@]}]="$1"; shift ;;
       --prd)      PRDS[$n]="${2:-}"; n=$((n + 1)); shift 2 ;;
       --prd=*)    PRDS[$n]="${1#--prd=}"; n=$((n + 1)); shift ;;
       --attach|--attach=*|--model-override|--model-override=*)
@@ -7214,9 +7278,13 @@ cmd_report() {
   done
   require_state
   [ -n "$out" ] || out="$APDIR/report.html"
+  local merge_health
+  merge_health="$(cd "$CWD" && "$PY" "$SKILLS_DIR/lcars-status/merge-health.py" "$MISSIONS")" \
+    || die "report: could not check PR/Mission consistency."
+  [ -z "$merge_health" ] || printf '%s\n' "$merge_health"
   mkdir -p "$(dirname "$out")"
   "$PY" - "$APJSON" "$MISSIONS" "$LCARS_DIR/autopilot-overrides.jsonl" "$out" \
-        "$LCARS_DIR/lcars-feedback.jsonl" <<'PY'
+        "$LCARS_DIR/lcars-feedback.jsonl" "$merge_health" <<'PY'
 import json, os, sys
 
 apj, missions_dir, ovl, out, fbl = sys.argv[1:6]
@@ -7383,6 +7451,7 @@ html = """<!doctype html>
 </style></head>
 <body>
 <h1 id="report-title">ECH progress</h1>
+%(mergehealth)s
 <p id="report-meta">spec: %(spec)s &middot; started: %(started)s</p>
 <table id="report-milestones">
 <thead><tr><th>Milestone</th><th>Mission</th><th>Stage</th><th>Number One</th><th>Live check</th><th>Shots</th><th>Bugs filed</th><th>Bugs fixed</th></tr></thead>
@@ -7410,6 +7479,7 @@ separate list because it feeds a different fix.</p>
 </body></html>
 """ % {
     "spec": esc(d.get("spec") or "(no spec recorded)"),
+    "mergehealth": '<p role="alert">%s</p>' % esc(sys.argv[6]) if sys.argv[6] else "",
     "started": esc(started_str(d.get("startedAt"))),
     "rows": "\n".join(rows) if rows else '<tr><td colspan="8">nothing in scope yet</td></tr>',
     "shots": ul("shots", shot_items),
@@ -11352,9 +11422,16 @@ ceiling_read
 # what makes this a boundary instead of a twenty-first check.
 subech_boundary_or_die "$SUB"
 case "$SUB" in
+  stalled|delegates)
+    (cd "$CWD" && "$PY" "$SKILLS_DIR/lcars-status/merge-health.py" "$MISSIONS") \
+      || die "could not check PR/Mission consistency."
+    ;;
+esac
+case "$SUB" in
   init)        cmd_init "$@" ;;
   preflight)   cmd_preflight "$@" ;;
   status)      cmd_status "$@" ;;
+  retire)      cmd_retire "$@" ;;
   next)        cmd_next_chunking "$@" ;;
   await)       cmd_await "$@" ;;
   watch)       cmd_watch "$@" ;;

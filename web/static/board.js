@@ -3982,6 +3982,9 @@ function cardNode(m) {
   var bfp = baseFreshnessPill(m.baseFreshness);
   if (bfp) pills.appendChild(bfp);
   card.appendChild(pills);
+  if (m.mergeHealth) {
+    card.appendChild(el("p", "det-stagefailure", m.mergeHealth.message));
+  }
 
   /* S278 — WHEN IT SHIPPED, on a mission read back off GitHub.
 
@@ -10278,6 +10281,9 @@ function renderDetail(mi, wantTab) {
   // when they click the badge's card. Absent entirely for a healthy base.
   var bfBlock = baseFreshnessBlock(mi.baseFreshness, "det-basefresh");
   if (bfBlock) head.appendChild(bfBlock);
+  if (mi.mergeHealth) {
+    head.appendChild(el("p", "det-stagefailure", mi.mergeHealth.message));
+  }
 
   // S218 fix round 1 (F1): the card's failure line, long form.
   var sfBlock = stageFailureBlock(mi);

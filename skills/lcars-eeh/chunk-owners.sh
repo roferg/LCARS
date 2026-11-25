@@ -177,6 +177,21 @@ lcars_chunk_release() {
   return 0
 }
 
+# Release one retired Mission without releasing its seat's other Missions.
+lcars_chunk_forget() {
+  local f tmp line owner
+  [ -n "${1:-}" ] && [ -n "${2:-}" ] || return 1
+  f="$(lcars_chunk_owners_file "$1")"
+  [ -f "$f" ] || return 0
+  tmp="$f.tmp.$$"
+  : >"$tmp" || return 1
+  while IFS=$'\t' read -r line owner || [ -n "${line:-}" ]; do
+    [ "$line" = "$2" ] && continue
+    printf '%s\t%s\n' "$line" "${owner:-}" >>"$tmp" || { rm -f "$tmp"; return 1; }
+  done <"$f"
+  mv -f "$tmp" "$f" || { rm -f "$tmp"; return 1; }
+}
+
 # lcars_chunk_owned <lcars-dir> <delegate-id> → every Mission id it owns —
 # the ones it filed for its chunk and the bugs it is driving. Named for what it
 # returns: it was `..._owned_bugs` while a row could only ever be a bug, and a

@@ -105,6 +105,11 @@ if [ "$MODE" = "snapshot" ] && [ "${#states[@]}" -eq 0 ]; then
 fi
 
 # --- tiny JSON field readers (no jq dependency, same style as file.sh) ----
+if [ "$MODE" != watch ]; then
+  python3 "$(dirname "$0")/merge-health.py" "$MISSIONS_DIR" \
+    || { printf 'lcars status: could not check PR/Mission consistency.\n' >&2; exit 1; }
+fi
+
 # (shared by snapshot + watch/once)
 # json_str  pulls a "key": "value" string; json_raw pulls a bare token
 # (number / true / false / null). Both take the first match.
@@ -645,6 +650,8 @@ printed_lines=0
 render_watch_frame() {
   clear 2>/dev/null || true
   printf 'LCARS — watching %s   (q / Ctrl-C to quit)\n\n' "$MISSION_ID"
+  python3 "$(dirname "$0")/merge-health.py" "$MISSION_DIR/state.json" \
+    || { printf 'lcars status: could not check PR/Mission consistency.\n' >&2; exit 1; }
   render_all
 }
 render_watch_frame

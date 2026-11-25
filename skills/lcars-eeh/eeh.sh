@@ -540,6 +540,8 @@ if [ ! -d "$missions_dir" ]; then
   echo "   can still debug & fix the LCARS source above. Run \`lcars init\` to drive"
   echo "   a Mission from this repo.)"
 else
+  (cd "$CWD" && python3 "$SCRIPT_DIR/../lcars-status/merge-health.py" "$missions_dir") \
+    || { printf 'LCARS EEH: could not check PR/Mission consistency.\n' >&2; exit 1; }
   cfg="$lcars_dir/config.json"
   if [ -f "$cfg" ]; then
     echo "  config:"

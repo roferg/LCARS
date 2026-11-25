@@ -20,6 +20,8 @@ import json
 import os
 import re
 import subprocess
+import sys
+import threading
 import time
 
 from . import board
@@ -187,6 +189,9 @@ class LocalAdapter(object):
         # The write layer is a local-bridge concern (server decides); the
         # adapter is told whether writes are active so meta.mode is truthful.
         self.read_only = read_only
+        self._merge_health = {}
+        self._merge_health_pending = set()
+        self._merge_health_lock = threading.Lock()
         # Worktree-safe repo identity asks `git` for the origin url. The reader
         # is injectable so tests stub it (no real git / network); None → the
         # default shell-git reader.
@@ -1682,6 +1687,38 @@ class LocalAdapter(object):
             self._card_memo.pop(d, None)
         return card
 
+    def _merge_health_warning(self, d, state):
+        if not (state.get("prUrl") or state.get("prNumber")) or state.get("stage") == "done":
+            return None
+        key = json.dumps(state, sort_keys=True)
+        with self._merge_health_lock:
+            cached = self._merge_health.get(d)
+            fresh = cached and cached[0] == key and time.monotonic() - cached[1] < 30
+            if not fresh and d not in self._merge_health_pending:
+                self._merge_health_pending.add(d)
+                threading.Thread(target=self._refresh_merge_health,
+                                 args=(d, key), daemon=True).start()
+        return cached[2] if cached and cached[0] == key else None
+
+    def _refresh_merge_health(self, d, key):
+        # Forge reads stay off the board-build thread, just like owner warming.
+        script = os.path.join(os.path.dirname(__file__), "..", "..", "skills",
+                              "lcars-status", "merge-health.py")
+        try:
+            result = subprocess.run(
+                [sys.executable, script, "--json", os.path.join(d, "state.json")],
+                cwd=self.repo_root, stdin=subprocess.DEVNULL,
+                capture_output=True, text=True, timeout=7, check=True)
+            findings = json.loads(result.stdout)
+            finding = next(iter(findings.values()), None)
+        except (OSError, ValueError, subprocess.SubprocessError) as error:
+            finding = {"status": "unknown", "message":
+                       "MERGE CHECK UNAVAILABLE: %s: %s. Run lcars status."
+                       % (os.path.basename(d), error)}
+        with self._merge_health_lock:
+            self._merge_health[d] = (key, time.monotonic(), finding)
+            self._merge_health_pending.discard(d)
+
     def _card(self, d):
         state = _load_json(os.path.join(d, "state.json"))
         if not isinstance(state, dict):
@@ -2165,6 +2202,9 @@ class LocalAdapter(object):
                             "recommendation"):
                     xo.pop(key, None)
             card["numberOne"] = xo
+        merge_health = self._merge_health_warning(d, state)
+        if merge_health:
+            card["mergeHealth"] = merge_health
         return card
 
     def _activity(self, d):

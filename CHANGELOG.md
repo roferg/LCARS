@@ -4,6 +4,27 @@ All notable changes to LCARS are recorded here, newest first. The version
 scheme is `YYYY.M.N` (calendar year, month with no leading zero, per-month
 counter). Every PR into `main` bumps `VERSION` and adds its entry here.
 
+## 2026.11.8 — 2026-11-25
+
+### Merge through LCARS; surface sibling bugs; retire intact (S376)
+
+Verify names `lcars approve` and warns that hand-merging strands logged bugs.
+The ECH and orchestration contract permit merge initiation only through an
+LCARS verb or web UI. Read surfaces compare recorded PRs with the forge and
+report a merged-PR/unfinished-Mission contradiction, with recovery guidance.
+The drive refuses that contradiction instead of silently marking Done.
+Web checks run off the render thread and refresh on a 30-second cadence.
+Forge failures are reported as unavailable checks, not merge verdicts.
+
+Mission Log surfaces every open sibling bug for the same parent, without a
+prose matcher. Filing stops until an explicit `--confirm-distinct` decision;
+the new bug records the reviewed ids. A per-parent lock serializes filing.
+
+`lcars-ech retire <id> --reason "<why>"` archives the directory intact under
+`.git/lcars/archived-missions/`, records the reason and timestamp, and releases
+only that Mission's chunk claim. `retire --list` includes both archive directory
+names used by older runs. Retirement never merges or closes forge work.
+
 ## 2026.11.7 — 2026-11-24
 
 ### When to split: record the decision before filing (S373)

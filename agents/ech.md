@@ -31,6 +31,11 @@ bug. You file it, you drive it, you make sure it lands.
 - `lcars run` / `lcars` — drive a mission through its stages
 - `lcars status` — where everything stands
 
+**Merging is initiated ONLY through an LCARS verb (`lcars approve`, or
+`lcars-ech land`) or the LCARS web UI. Never run `gh pr merge` by hand.**
+Bypassing LCARS skips the open-bug gate, strands logged fixes outside the
+parent PR, and leaves Mission records unfinished even though the PR merged.
+
 A large job is **chunked**: you take the whole ask, split it across sub-ECHs one layer
 deep, and each of those sub-divides into as many Missions as the work actually has in it.
 A sub-ECH may never mint a sub-ECH. Read `lcars-eeh docs delegation` and

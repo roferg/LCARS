@@ -80,7 +80,8 @@ ESTIMATE_FAIL_BUDGET="${LCARS_LOG_ESTIMATE_FAILURES:-1}"
 # The tally lives in a FILE, not a variable: `file_one_bug` runs inside a
 # command substitution — a subshell — so a counter it increments dies with it.
 ESTIMATE_FAILS_FILE="$(mktemp -t lcars-log-est.XXXXXX)"
-trap 'rm -f "$ESTIMATE_FAILS_FILE"' EXIT
+FILING_LOCK=""
+trap 'rm -f "$ESTIMATE_FAILS_FILE"; if [ -n "$FILING_LOCK" ]; then rmdir "$FILING_LOCK"; fi' EXIT
 printf '0\n' >"$ESTIMATE_FAILS_FILE"
 
 estimate_fails()      { head -1 "$ESTIMATE_FAILS_FILE" 2>/dev/null | tr -dc '0-9'; }
@@ -167,6 +168,7 @@ json_raw() { # file key -> first bare token (number/bool/null)
 # Launch panel). A `--model-override` applies to the MOST RECENT `--prd` so the
 # Mission-Log review panel can steer each bug independently (positional pairing).
 PARENT_SEL=""
+CONFIRM_DISTINCT=0
 PRDS=()
 OVERRIDES=()
 # Durable image attachments (S92 + per-bug routing). The captain's pasted
@@ -184,6 +186,7 @@ GLOBAL_ATTACH=()
 PER_BUG_ATTACH=()
 while [ $# -gt 0 ]; do
   case "$1" in
+    --confirm-distinct) CONFIRM_DISTINCT=1; shift ;;
     --parent)   PARENT_SEL="${2:-}"; shift 2 ;;
     --parent=*) PARENT_SEL="${1#--parent=}"; shift ;;
     --attach|--attach=*)
@@ -373,6 +376,12 @@ xo_lock_or_die() { # <mission-dir>
 owner_lock_or_die "$PARENT_ISSUE"
 xo_lock_or_die "$MISSIONS_DIR/$PARENT_ID"
 
+# Serialize the open-set check and filing, including simultaneous reports.
+lock="$MISSIONS_DIR/$PARENT_ID/bug-filing.lock"
+mkdir "$lock" 2>/dev/null \
+  || die "another bug filing holds $lock. Wait for it to finish, then retry; if it died, inspect that filing before removing its empty lock directory."
+FILING_LOCK="$lock"
+
 # --- resolve the model (config.json wins, else env, else default) ----------
 MODEL=""
 if [ -f "$CONFIG" ]; then
@@ -489,6 +498,33 @@ file_one_bug() { # prd-path [model-override] [per-bug-attach-newline-list]
   [ -n "$title" ] || die "could not read the bug title from $prd."
   type="$(sed -n 's/.*\*\*Type:\*\*[[:space:]]*//p' "$prd" | head -1 | tr 'A-Z' 'a-z' | tr -cd 'a-z')"
   [ "$type" = "bug" ] || die "bug PRD $prd must declare '**Type:** bug' (got: '${type:-empty}')."
+
+  local reviewed
+  reviewed="$(python3 - "$MISSIONS_DIR" "$PARENT_ID" "$CONFIRM_DISTINCT" <<'PY'
+import json, pathlib, sys
+root, parent, confirmed = sys.argv[1:]
+candidates = []
+for path in sorted(pathlib.Path(root).glob("*/state.json")):
+    with path.open() as stream:
+        state = json.load(stream)
+    if (state.get("type") == "bug" and state.get("parentMission") == parent
+            and state.get("stage") != "done"):
+        candidates.append((state.get("id") or path.parent.name, state.get("title", "")))
+if candidates:
+    print("Possible duplicate bugs against %s (not a sameness verdict):" % parent,
+          file=sys.stderr)
+    for mid, title in candidates:
+        print("  %s  %s" % (mid, title), file=sys.stderr)
+    if confirmed != "1":
+        print("STOP: review these candidates. Use the existing Mission, or explicitly "
+              "re-run with --confirm-distinct to file a separate bug. Nothing was "
+              "closed or merged.", file=sys.stderr)
+        sys.exit(1)
+    print("Explicit --confirm-distinct decision: filing separately; reviewed Mission "
+          "ids are recorded on the new bug.", file=sys.stderr)
+print(json.dumps([mid for mid, _ in candidates]))
+PY
+)" || return 1
 
   local id; id="$(next_id)"
   local mdir="$MISSIONS_DIR/$id"
@@ -738,6 +774,7 @@ file_one_bug() { # prd-path [model-override] [per-bug-attach-newline-list]
     printf '  "id": "%s",\n' "$id"
     printf '  "type": "bug",\n'
     printf '  "origin": "log",\n'
+    printf '  "duplicateReview": %s,\n' "$reviewed"
     printf '  "title": "%s",\n' "$title_json"
     printf '  "stage": "align",\n'
     printf '  "created": "%s",\n' "$NOW"

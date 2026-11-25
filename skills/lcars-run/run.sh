@@ -25901,27 +25901,17 @@ drive_pr_merged() { # → 0 if merged, 1 otherwise
   case "$merged" in ''|null|'""') return 1 ;; *) return 0 ;; esac
 }
 
-# --- mark a Mission Done after a merge detected on the board's side (the driver
-# saw the PR merged on GitHub, or directly). Mirrors approve's done transition.
-drive_mark_done() {
-  gh_relabel "lcars:done" "lcars:verify lcars:awaiting-human"
-  set_stage "done"
-  lcars_state_set_string "$STATE" review "merged"
-  . "$SKILL_DIR/../lcars-xo/release-stop.sh" \
-    && lcars_xo_release_completed_stop "$MISSION_DIR" || {
-      printf 'LCARS: PR merged, but Number One'\''s stop could not be released; check %s/xo-stop.\n' "$MISSION_DIR" >&2
-      return 1
-    }
-  emit_event stage_done verify "PR merged — Mission shipped"
+# A merge observed outside approve is a contradiction, never a Done transition.
+drive_report_merge_bypass() {
+  python3 "$SKILL_DIR/../lcars-status/merge-health.py" "$STATE"
+  return 1
 }
 
 # --- S75 Verify: auto-open the PR, then poll for a merge ----------------------
 # Three paths:
 #   • no PR yet      → open it (cmd_open_pr subprocess), record prUrl, fire ONE
-#                      notification, halt "in review". Sets nothing in
-#                      $DRIVE_VERIFY_DONE → the driver STOPS.
-#   • PR open, merged (here or on GitHub) → mark Done. Sets $DRIVE_VERIFY_DONE=1
-#                      so the driver continues (next pass: stage=done → terminal).
+#                      notification, halt "in review".
+#   • PR open, merged outside approve → report bypass, leave the record alone.
 #   • PR open, unmerged → halt "in review" WITHOUT re-notifying (the ping fires
 #                      ONCE, when the PR is first opened). Driver STOPS.
 drive_verify() { # accumulated-summary
@@ -25992,11 +25982,8 @@ drive_verify() { # accumulated-summary
     http*|*/pull/*)
       # A PR exists — has it merged (here or on GitHub)?
       if drive_pr_merged; then
-        drive_mark_done || return 1
-        drive_line_done_inline="$(printf 'verify       ✓  PR merged — Mission shipped')"
-        printf '%s\n' "$drive_line_done_inline"
-        DRIVE_VERIFY_DONE=1
-        return 0
+        drive_report_merge_bypass
+        return 1
       fi
       local review_out
       review_out="$(LCARS_GH_BIN="$GH_BIN" LCARS_GIT_BIN="$GIT_BIN" bash "$SELF" open-pr --mission "$MISSION_ID" 2>&1)" || {
@@ -26056,7 +26043,7 @@ drive_verify() { # accumulated-summary
   esac
 
   # PR opened — fire the ONE notification and halt "in review".
-  emit_event gate verify "PR opened — review & merge"
+  emit_event gate verify "PR opened — approve with lcars approve $MISSION_ID; merging by hand strands any logged bugs"
   # S203 — the first officer's look starts HERE, on the pass that opened the PR,
   # and detached (see drive_number_one_verify): the notification and the halt
   # below must not wait on a browser.
@@ -26065,7 +26052,7 @@ drive_verify() { # accumulated-summary
   drive_print_summary "$summary"
   printf 'verify       ✓  PR opened — %s\n' "$pr2"
   local title; title="$(json_str "$STATE" title)"; title="${title:-$MISSION_ID}"
-  notify_gate verify "PR open — review & merge: $pr2"
+  notify_gate verify "PR open — approve with lcars approve $MISSION_ID; merging by hand strands any logged bugs: $pr2"
   drive_halt_in_review "$pr2"
   return 0
 }
@@ -26075,7 +26062,7 @@ drive_verify() { # accumulated-summary
 drive_halt_in_review() { # pr-url
   printf '⏹ stopped at: verify  (in review — PR open)\n'
   printf 'PR is open for review: %s\n' "$1"
-  printf 'Review & merge, then:\n'
+  printf 'Approve through LCARS; merging by hand strands any logged bugs:\n'
   printf '  lcars approve %s    — merge the PR (ship it)\n' "$MISSION_ID"
   printf '  lcars feedback %s   — send back with feedback (closes the PR)\n' "$MISSION_ID"
 }
@@ -26824,6 +26811,8 @@ drive_number_one_verify() {
 
 cmd_drive() {
   locate_mission "$MISSION_ID"
+  python3 "$SKILL_DIR/../lcars-status/merge-health.py" --refuse-bypass "$STATE" \
+    || return 1
   # A parked mission (prdPending) is NOT drivable — the driver never runs a
   # PRD-less mission. Refuse before taking the lock, naming the align command.
   refuse_if_parked
@@ -26909,13 +26898,11 @@ cmd_drive() {
     # is spawned, no worker is killed mid-step (none is running). It stays put
     # until `lcars resume` clears the flag.
     if [ "$paused" = "true" ]; then
-      # A pause prevents new work, not recording a merge that already happened.
+      # A paused Mission still surfaces a merge that raced the entry check.
       if [ "$stage" = verify ] && [ -n "$(json_str "$STATE" prUrl)" ] \
          && drive_pr_merged; then
-        drive_mark_done || return 1
-        drive_print_summary "$summary"
-        printf 'verify       ✓  PR merged — Mission shipped\n'
-        return 0
+        drive_report_merge_bypass
+        return 1
       fi
       emit_event paused "$stage" "paused by the captain — halted at the $stage boundary"
       mirror_comments || true
@@ -26948,14 +26935,9 @@ cmd_drive() {
       drive_print_summary "$summary"; drive_halt_awaiting "$stage"; return 0
     fi
     case "$stage" in
-      verify) # S75: Verify auto-opens the PR, then parks "in review — PR open"
-              # and polls for a merge (here or on GitHub) → Done. drive_verify
-              # owns the open/poll/halt; it returns 0 to STOP the driver (in
-              # review or a hard open failure) or non-empty $DRIVE_VERIFY_DONE to
-              # signal "merged → continue the loop" (the next pass sees stage=done).
-              DRIVE_VERIFY_DONE=""
+      verify) # Verify opens the PR and parks; an outside merge is a refusal,
+              # not a Done transition. Only approve records completion.
               drive_verify "$summary" || return 1
-              [ -n "$DRIVE_VERIFY_DONE" ] && continue
               return 0 ;;
       done)   emit_event gate done "Mission shipped — the PR is merged"
               mirror_comments || true
@@ -27116,7 +27098,6 @@ cmd_drive() {
         if [ "$new_stage" = "verify" ]; then
           # Stepping INTO verify auto-opens the PR (same path as auto mode), then
           # parks in review. drive_verify prints its own summary + banner.
-          DRIVE_VERIFY_DONE=""
           drive_verify "$summary" || return 1
         else
           drive_print_summary "$summary"

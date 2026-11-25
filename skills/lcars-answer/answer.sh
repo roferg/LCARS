@@ -117,6 +117,8 @@ cmd_list() {
   fi
 
   local found=0 s id title stage awaiting issue pend pq q pr_url parent
+  python3 "$SKILL_DIR/../lcars-status/merge-health.py" "$MISSIONS_DIR" \
+    || die "could not check PR/Mission consistency."
   shopt -s nullglob
   for s in "$MISSIONS_DIR"/*/state.json; do
     id="$(json_str "$s" id)"; [ -n "$id" ] || id="$(basename "$(dirname "$s")")"

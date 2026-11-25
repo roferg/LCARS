@@ -88,6 +88,16 @@ temp file per bug.
 
 Pass every bug PRD with a repeated `--prd`, plus the resolved `--parent`:
 
+Before creating each bug, `log.sh` surfaces **every open sibling bug for that
+parent** as a possible duplicate. It does not infer sameness from titles or
+prose. It stops before filing unless the caller explicitly decides to file a
+separate bug with `--confirm-distinct`; the reviewed Mission ids are recorded
+as `duplicateReview` on the new bug. Read the candidates first: never retry
+blindly with that flag. This also applies between bugs in a batch: a batch
+without that decision stops when its first newly filed sibling is encountered.
+Concurrent filings for one parent are serialized; a busy filing asks you to
+wait and retry rather than letting both callers observe an empty set.
+
 ```bash
 bash ~/.claude/skills/lcars-log/log.sh \
   --parent lcars-20260530-001 \

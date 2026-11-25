@@ -126,6 +126,12 @@ Run these **after** the go-ahead and **before** any sub-agent.
 
 ## The loop
 
+**A merge is initiated ONLY through an LCARS verb (`lcars approve` or
+`lcars-ech land`) or the LCARS web UI, never `gh pr merge` by hand.**
+The LCARS gate keeps logged bugs with their parent PR and records completion.
+Bypassing it strands their fixes outside the merged PR and leaves the Mission
+record unfinished. A passing review is not permission to bypass that gate.
+
 The orchestrator half spawns sub-agents and is run from Claude Code today; the ride-along brief and the ECH run from either CLI.
 
 Each piece of work is driven by ONE **orchestrator**. **The orchestrator writes
