@@ -11,6 +11,7 @@ ROOT = Path(__file__).resolve().parents[2]
 ECH = "lcars-eeh/ech.sh"
 DOC = "lcars-eeh/DELEGATION.md"
 HCM = "lcars-eeh/HOLOGRAM-COMMAND-MODE.md"
+GATE = "lcars-eeh/chunking-gate.sh"
 
 
 def replace(text, old, new):
@@ -97,8 +98,43 @@ selected_run("filing playbook never asks for a decision", HCM,
 selected_run("ordinary driving-seat mint changes", ECH,
              '  say "MINTED: $did for $unit at tier $tier"',
              '  say "MINTED (broken): $did for $unit at tier $tier"', baseline)
-selected_run("legacy main ECH unexpectedly demands a decision", ECH,
+selected_run("legacy main ECH unexpectedly demands a decision", GATE,
              '"chunkingBaseline" in d and not d.get("chunking")',
              'not d.get("chunking")',
              "legacy_main_ech_next_is_unchanged_without_a_decision")
 print("20/20 broken variants rejected by their designated controls", flush=True)
+
+selected_run("next dispatch independently bypasses checkpoint", ECH,
+             'next)        cmd_next_chunking "$@" ;;',
+             'next)        cmd_next "$@" ;;', checkpoint)
+selected_run("init independently bypasses checkpoint", ECH,
+             "  cmd_next_chunking\n}\n\n# ==========================================================================\n# grant",
+             "  cmd_next\n}\n\n# ==========================================================================\n# grant",
+             "init_itself_asks_after_preflight_can_proceed")
+selected_run("status independently bypasses checkpoint", ECH,
+             '  delegation_status_lines\n  say ""\n  cmd_next_chunking',
+             '  delegation_status_lines\n  say ""\n  cmd_next',
+             "status_uses_the_same_checkpoint")
+selected_run("watch human wake independently bypasses checkpoint", ECH,
+             '      cmd_next_chunking --all\n      return 10',
+             '      cmd_next --all\n      return 10',
+             "watch_human_wake_also_surfaces_missing_decision")
+selected_run("watch slot wake independently bypasses checkpoint", ECH,
+             '      cmd_next_chunking --all\n    fi',
+             '      cmd_next --all\n    fi',
+             "watch_slot_wake_uses_the_same_checkpoint")
+selected_run("existing undecided run falls silent again", ECH,
+             '  if [ "$chunking_needed" = late ]; then',
+             '  if false; then', "existing_undecided_mission_keeps_asking")
+selected_run("record can forge decision and ledger again", ECH,
+             'chunking|chunking.*|chunkingLedger|chunkingLedger.*)',
+             'unused-chunking-key)',
+             "general_record_cannot_forge_or_rewrite_a_chunking_decision")
+filing = "filing_act_requires_a_decision_on_every_entry"
+for name, file, prefix in (
+        ("normal file", "lcars-file/file.sh", '\nbash "$FILE_SKILL_DIR/../lcars-eeh/'),
+        ("park file", "lcars-file/file.sh", '\n  bash "$FILE_SKILL_DIR/../lcars-eeh/'),
+        ("logged bug", "lcars-log/log.sh", '\nbash "$(dirname "$SELF")/../lcars-eeh/')):
+    old = prefix + 'chunking-gate.sh" "$LCARS_DIR" --filing >/dev/null || exit $?'
+    selected_run(name + " independently skips act gate", file, old, "\n:", filing)
+print("30/30 broken variants rejected by their designated controls", flush=True)

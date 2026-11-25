@@ -78,14 +78,32 @@ counts and a large diff do not establish any of these conditions.
 The ECH makes this judgement; the driver does not infer a split from the spec
 or force one on every run. The current decision is `chunking` in
 `autopilot.json`; `chunkingLedger` retains each pre-filing revision, with the
-count, trigger, reason, spec and timestamp. A late decision is refused rather
-than backfilled as though it preceded filing. `init` snapshots the IDs of
+count, trigger, reason, spec filename and timestamp. Only `chunking` writes
+the decision and ledger; the general `record` verb refuses both, including
+their nested fields. Filing itself checks the decision in the producers
+(`lcars file`, including parking, and `lcars log`), so both `exec` spellings
+and direct filing share the same gate. `init`, `next`, `status` and both
+`watch` wakes use the same checkpoint.
+
+A late decision is refused rather
+than backfilled as though it preceded filing. A run that already missed the
+decision keeps asking instead of silently continuing. Inspect that run before
+using `init --force` to begin a new one: this discards run records and releases
+seats, but preserves Missions. `init` snapshots the IDs of
 pre-existing Missions as `chunkingBaseline`, so a new run still decides even
 in a repo with older Missions. Legacy runs without that snapshot continue
 unchanged; this does not retroactively invent their missing judgement.
 Chunk count is not a worker count or permission for
 recursive delegation: choose each chunk's tier separately and hand its goal
 through `delegate --goal`.
+
+This is a recorder, not a judgement engine: it does not read the spec, verify
+that a reason actually establishes the named axis, or reject size reasoning
+hidden behind a valid trigger. It has no model-reading seam. The declared
+count has no arbitrary upper bound and is not assigned to seat ordinals.
+Changing the spec does not invalidate the decision; re-decide before filing
+or start a new run for a changed spec. Neither the pair of recorder tests nor
+the gate proves that the ECH made the right judgement.
 
 ---
 

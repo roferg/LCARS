@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+import time
 import unittest
 
 
@@ -36,6 +37,41 @@ class ChunkingDecision(unittest.TestCase):
     def decide(self, chunks, trigger, why):
         return self.ech("chunking", "--chunks", str(chunks),
                         "--trigger", trigger, "--why", why)
+
+    def test_filing_act_requires_a_decision_on_every_entry(self):
+        self.ready_to_file()
+        self.write(self.data / "missions/m-older/state.json",
+                   {"id": "m-older", "stage": "research"})
+        self.succeeds(self.ech("record", "chunkingBaseline", '["m-older"]'))
+        bug = self.repo / "bug.md"
+        bug.write_text(self.prd.read_text().replace("**Type:** feature", "**Type:** bug"))
+        calls = [
+            ["bash", str(self.skills / "lcars-eeh/ech.sh"), "exec",
+             "lcars-file/file.sh", "--prd", str(self.prd)],
+            ["bash", str(self.skills / "lcars-eeh/ech.sh"), "exec",
+             "lcars-file", "file.sh", "--prd", str(self.prd)],
+            ["bash", str(self.skills / "lcars-file/file.sh"), "--prd", str(self.prd)],
+            ["bash", str(self.skills / "lcars-file/file.sh"), "--park", "A new river"],
+            ["bash", str(self.skills / "lcars-log/log.sh"),
+             "--parent", "m-older", "--prd", str(bug)],
+        ]
+        before = (self.data / "autopilot.json").read_bytes()
+        for args in calls:
+            with self.subTest(args=args):
+                result = subprocess.run(args, cwd=self.repo, env=self.env,
+                                        stdin=subprocess.DEVNULL, capture_output=True,
+                                        text=True, timeout=180)
+                self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+                self.assertIn("chunking", result.stdout + result.stderr)
+                self.assertEqual(list((self.data / "missions").glob("*/state.json")),
+                                 [self.data / "missions/m-older/state.json"])
+                self.assertEqual((self.data / "autopilot.json").read_bytes(), before)
+        self.succeeds(self.decide(1, "none", "One existing river behaviour needs repair."))
+        result = subprocess.run(calls[-1], cwd=self.repo, env=self.env,
+                                stdin=subprocess.DEVNULL, capture_output=True,
+                                text=True, timeout=180)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(len(list((self.data / "missions").glob("*/state.json"))), 2)
 
     def test_pair_records_split_and_single_slice_before_real_filing(self):
         self.ready_to_file()
@@ -100,6 +136,82 @@ No new workflow, persistence behaviour, module or independent delivery.
         after = self.succeeds(self.ech("next", "--all"))
         self.assertIn("NEXT: file", after)
         self.assertNotIn("NEXT: chunking", after)
+
+    def test_status_uses_the_same_checkpoint(self):
+        self.ready_to_file()
+        output = self.succeeds(self.ech("status"))
+        self.assertIn("NEXT: chunking", output)
+        self.assertNotIn("NEXT: file", output)
+
+    def watch_output(self):
+        path = self.repo / "watch-output"
+        with path.open("w") as out:
+            process = subprocess.Popen(
+                ["bash", str(self.skills / "lcars-eeh/ech.sh"), "watch"],
+                cwd=self.repo, env=dict(self.env, LCARS_ECH_WATCH_INTERVAL="0.1"),
+                stdin=subprocess.DEVNULL, stdout=out, stderr=subprocess.STDOUT)
+            self.addCleanup(self.finish_process, process)
+            deadline = time.monotonic() + 120
+            while "NEXT:" not in path.read_text() and process.poll() is None:
+                self.assertLess(time.monotonic(), deadline, path.read_text())
+                time.sleep(0.1)
+            if process.poll() is None:
+                process.terminate()
+            process.wait(timeout=10)
+        return path.read_text()
+
+    def test_watch_slot_wake_uses_the_same_checkpoint(self):
+        self.ready_to_file()
+        output = self.watch_output()
+        self.assertIn("WAKE:", output)
+        self.assertIn("NEXT: chunking", output)
+        self.assertNotIn("NEXT: file", output)
+
+    def test_existing_undecided_mission_keeps_asking(self):
+        self.ready_to_file()
+        self.write(self.data / "missions/m-existing/state.json",
+                   {"id": "m-existing", "stage": "research"})
+        output = self.succeeds(self.ech("next"))
+        self.assertIn("NEXT: chunking", output)
+        self.assertIn("not evidence", output)
+        self.assertIn("init --force", output)
+
+    def test_watch_human_wake_also_surfaces_missing_decision(self):
+        self.ready_to_file()
+        self.write(self.data / "missions/m-existing/state.json",
+                   {"id": "m-existing", "stage": "research"})
+        self.succeeds(self.ech("record", "questions.q1",
+                              '{"id":"q1","what":"Need a ruling","mission":"-"}'))
+        output = self.watch_output()
+        self.assertIn("HUMAN NEEDED:", output)
+        self.assertIn("NEXT: chunking", output)
+
+    def test_init_itself_asks_after_preflight_can_proceed(self):
+        self.git("remote", "add", "origin", "https://github.com/example/test.git")
+        output = self.succeeds(self.ech("init", "--force", "--spec", "spec.md",
+                                       "--scope", "fish", "--engine", "copilot"))
+        self.assertIn("preflight:", output)
+        self.assertIn("NEXT: chunking", output)
+        self.assertNotIn("NEXT: file", output)
+
+    def test_general_record_cannot_forge_or_rewrite_a_chunking_decision(self):
+        self.ready_to_file()
+        for key, value in (
+                ("chunking", '{"chunks":1,"trigger":"size","why":""}'),
+                ("chunking.chunks", "1"), ("chunkingLedger", "{}"),
+                ("chunkingLedger.c1", '{"chunks":1}')):
+            with self.subTest(key=key):
+                before = (self.data / "autopilot.json").read_bytes()
+                result = self.ech("record", key, value)
+                self.assertNotEqual(result.returncode, 0, result.stdout)
+                self.assertIn("chunking --chunks", result.stdout)
+                self.assertEqual((self.data / "autopilot.json").read_bytes(), before)
+        self.assertIn("NEXT: chunking", self.succeeds(self.ech("next")))
+        self.succeeds(self.decide(1, "none", "One heading is a single slice."))
+        before = (self.data / "autopilot.json").read_bytes()
+        result = self.ech("record", "chunking.why", "Forged revision.")
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        self.assertEqual((self.data / "autopilot.json").read_bytes(), before)
 
     def test_only_the_five_declared_triggers_and_explicit_one_chunk_are_accepted(self):
         for trigger in ("not-estimable", "unit-of-work", "module-boundary",

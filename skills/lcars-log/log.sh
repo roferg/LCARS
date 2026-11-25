@@ -271,6 +271,7 @@ case "$GIT_DIR" in /*) : ;; *) GIT_DIR="$PWD/$GIT_DIR" ;; esac
 LCARS_DIR="$GIT_DIR/lcars"
 MISSIONS_DIR="$LCARS_DIR/missions"
 CONFIG="$LCARS_DIR/config.json"
+bash "$(dirname "$SELF")/../lcars-eeh/chunking-gate.sh" "$LCARS_DIR" --filing >/dev/null || exit $?
 [ -d "$MISSIONS_DIR" ] || die "no missions yet — run \`lcars init\` and file a parent Mission first."
 
 # --- the active Mission table (id, title, stage, issue) for resolve/listing -

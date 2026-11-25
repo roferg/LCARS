@@ -546,6 +546,7 @@ do_park() {
   fi
 
   _lcars_dirs
+  bash "$FILE_SKILL_DIR/../lcars-eeh/chunking-gate.sh" "$LCARS_DIR" --filing >/dev/null || exit $?
   local ID; ID="$(_mint_id)"
   local MISSION_DIR="$MISSIONS_DIR/$ID"
   mkdir -p "$MISSION_DIR"
@@ -1197,6 +1198,8 @@ case "$GIT_DIR" in /*) : ;; *) GIT_DIR="$PWD/$GIT_DIR" ;; esac
 LCARS_DIR="$GIT_DIR/lcars"
 MISSIONS_DIR="$LCARS_DIR/missions"
 CONFIG="$LCARS_DIR/config.json"
+
+bash "$FILE_SKILL_DIR/../lcars-eeh/chunking-gate.sh" "$LCARS_DIR" --filing >/dev/null || exit $?
 
 # S183 — no foundation, no normal mission. Checked before the PRD is even read,
 # so the captain hears about the repo rather than about his PRD — and, fix round

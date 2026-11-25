@@ -4073,6 +4073,9 @@ cmd_record() {
   require_state
   local r=""   # S352 — the role named inside an `engines.<role>.…` key
   case "$1" in
+    chunking|chunking.*|chunkingLedger|chunkingLedger.*)
+      die "record: the decision and its ledger have one writer: \`$SELF_CMD chunking --chunks <n> --trigger <axis|none> --why \"<reason>\"\`. Nothing was written."
+      ;;
     claudeCeilingPct)
       local ceiling
       ceiling="$(ceiling_number "${2-}")" \
@@ -4271,15 +4274,16 @@ PYRUNWIDE
 cmd_next_chunking() {
   require_state
   local chunking_needed
-  chunking_needed="$("$PY" - "$APJSON" "$MISSIONS" <<'PY'
-import glob, json, os, sys
-d = json.load(open(sys.argv[1]))
-baseline = set(d.get("chunkingBaseline", []))
-filed = any(os.path.basename(os.path.dirname(p)) not in baseline for p in
-            glob.glob(os.path.join(sys.argv[2], "*", "state.json")))
-print("yes" if "chunkingBaseline" in d and not d.get("chunking") and not filed else "no")
-PY
-)" || die "next: cannot read the chunking decision."
+  chunking_needed="$(bash "$SELF_DIR/chunking-gate.sh" "$LCARS_DIR")" \
+    || die "next: cannot read the chunking decision."
+  if [ "$chunking_needed" = late ]; then
+    say "NEXT: chunking"
+    say "CHUNKING MISSING: a Mission was already filed without a decision; silence is not evidence."
+    say "A retrospective decision is not evidence and cannot be backfilled."
+    say "Inspect this run, then use init --force to start a new run and decide before filing."
+    say "WARNING: init --force discards run records and releases seats; it preserves Missions."
+    return 0
+  fi
   if [ "$chunking_needed" = yes ]; then
     local plan action
     plan="$(build_plan)" || return $?
@@ -4558,7 +4562,7 @@ cmd_watch() {
   while :; do
     if [ -n "$(open_questions)" ]; then
       say "HUMAN NEEDED: $(open_questions)"
-      cmd_next --all
+      cmd_next_chunking --all
       return 10
     fi
     event=""
@@ -4606,7 +4610,7 @@ $plan"
     if [ -n "$event" ] && [ "$event" != "$previous" ]; then
       say "WAKE: $event"
       [ -z "$failures$silents" ] || cmd_stalled
-      cmd_next --all
+      cmd_next_chunking --all
     fi
     previous="$event"
     sleep "$interval" </dev/null &
@@ -4711,7 +4715,7 @@ PY
   # no opinion about the tier, so its output must not move.
   delegation_status_lines
   say ""
-  cmd_next
+  cmd_next_chunking
 }
 
 # ==========================================================================

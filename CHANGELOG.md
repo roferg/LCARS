@@ -15,8 +15,16 @@ an explicit, reasoned answer, not an omitted decision.
 
 The split axes are not-estimable, unit-of-work, module-boundary, parallelism
 and independence; size-as-proxy is excluded. Shared files require sequencing
-rather than silently collapsing independent outcomes. Existing filed runs,
-driving-seat briefs, validator rules and Mission lookup are unchanged.
+rather than silently collapsing independent outcomes.
+
+Fix round 1 guards filing in the producers, including parked Missions and
+logged bugs, not just `next`. `status` and both `watch` wakes use the same
+checkpoint; `init`'s first ask is independently pinned. An already-filed run
+missing its decision keeps asking, without permitting retrospective backfill.
+The general `record` writer cannot forge the decision or its ledger.
+Legacy runs without a baseline, driving-seat briefs, validator rules and
+Mission lookup are unchanged. This records a judgement; it neither reads the
+spec nor checks the judgement's semantic validity or freshness.
 
 ## 2026.11.6 — 2026-11-24
 
