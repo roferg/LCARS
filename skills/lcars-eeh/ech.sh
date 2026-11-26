@@ -5308,7 +5308,7 @@ PY
       ;;
   esac
   [ -n "$qid" ] || qid="?"
-  notify "$1" "awaiting-human" "$2"
+  notify "$1" "awaiting-human" "$2 — run: bash $(printf '%q' "$SELF") answered $qid \"<what he said>\""
   say ""
   say "QUESTION FOR THE CAPTAIN [$qid] (recorded in $APJSON .questions, mirrored in .pending):"
   say "  what:     $2"

@@ -211,9 +211,18 @@ die() { printf 'lcars run: %s\n' "$1" >&2; exit 1; }
 # repo. The frontmatter `description:` of each skill still says "lcars respond" —
 # that is the phrase the captain SAYS to his CLI, and it is correct.
 RESPOND_SCRIPT="${LCARS_RESPOND_SCRIPT:-$SKILL_DIR/../lcars-respond/respond.sh}"
-respond_hint() { printf 'bash %s answer --mission %s --answer "<your answer>"' \
+respond_hint() { printf 'bash %q answer --mission %q --answer "<your answer>"' \
                    "$RESPOND_SCRIPT" "$MISSION_ID"; }
-drive_hint()   { printf 'bash %s drive --mission %s' "$SELF" "$MISSION_ID"; }
+drive_hint()   { printf 'bash %q drive --mission %q' "$SELF" "$MISSION_ID"; }
+approve_hint() {
+  printf 'bash %q --mission %q%s' \
+    "${LCARS_APPROVE_SCRIPT:-$SKILL_DIR/../lcars-approve/approve.sh}" "$MISSION_ID" "${1:+ --reapprove}"
+}
+resolve_logs_hint() {
+  printf 'bash %q --parent %q' \
+    "${RESOLVE_LOGS_SCRIPT:-$SKILL_DIR/../lcars-resolve-logs/resolve-logs.sh}" "${1:-$MISSION_ID}"
+}
+research_hint() { printf 'bash %q research --mission %q' "$SELF" "$MISSION_ID"; }
 # S311 — THE SANCTIONED RE-OPEN, AS A COMMAND SOMEBODY CAN ACTUALLY RUN.
 # Every undeclared-drift refusal used to end on "Restore the test or re-open the
 # ticket." There is no `lcars reopen`, so that sentence named a verb that does
@@ -3485,7 +3494,7 @@ cmd_save() {
     # cmd_validate lists research/*.json to the Validator as findings.
     cp "$claim_q" "$MISSION_DIR/claim-check.txt"
     gh_relabel "lcars:validate lcars:awaiting-human" "lcars:align lcars:research"
-    emit_event gate research "a finding's negative-existence claim was refuted by the repository"
+    emit_event gate research "a finding's negative-existence claim was refuted by the repository — run: $(respond_hint)"
     echo "SAVE: $n responses"
     echo "  Saved $n research response(s) to research/."
     echo "  REFUTED: $cq_n finding claim(s) that a name is absent from this repository"
@@ -4728,7 +4737,7 @@ anchor_park_awaiting() { # reason-file "t-002" "v-board …"
   echo "  Stage:  plan (awaiting-human)"
   echo "  Answer with:  $(respond_hint)"
   [ -n "$RELABEL_NOTE" ] && echo "$RELABEL_NOTE"
-  notify_gate awaiting-human "Plan needs an anchor — ${first:-answer it with: $(respond_hint)}"
+  notify_gate awaiting-human "Plan needs an anchor — $first — run: $(respond_hint)"
   rm -f "$qf"
 }
 
@@ -17238,7 +17247,7 @@ $summary"
   # the parked card sits squarely in the Implement column (mirror validate-pause).
   gh_relabel "lcars:implement lcars:awaiting-human" ""
 
-  emit_event gate implement "$what, awaiting your answer: $summary" \
+  emit_event gate implement "$what, awaiting your answer: $summary — run: $(respond_hint)" \
     "phase=full-suite-gate"
 
   echo "IMPLEMENT: $what, flagged the human"
@@ -18849,8 +18858,9 @@ EOF
   fi
 
   echo "  Review the changes and run the app if needed."
-  echo "    lcars approve $MISSION_ID    — merge the PR (ship it)"
-  echo "    lcars feedback $MISSION_ID   — send back with feedback"
+  echo "  Merge through lcars approve $MISSION_ID — run: $(approve_hint)"
+  printf '  Send back with feedback — run: bash %q --mission %q --feedback "<what to change>"\n' \
+    "$SKILL_DIR/../lcars-feedback/feedback.sh" "$MISSION_ID"
   exit 0
 }
 
@@ -18907,7 +18917,7 @@ cmd_open_pr() {
   emit_event pr_opened verify "PR opened — $PR_URL"
 
   echo "OPEN-PR: opened — $PR_URL"
-  echo "  Stage:  verify (in review — PR open)"
+  echo "  Stage: verify (in review — PR open); review, then lcars approve $MISSION_ID — run: $(approve_hint)"
   exit 0
 }
 
@@ -19386,9 +19396,9 @@ reconcile_escalate() { # diagnosis-text  [design]
   lcars_state_refusal_die "lcars run"   # S207 D2: no gate written ⇒ no gate
   rm -f "$qf"
   gh_relabel "lcars:verify lcars:awaiting-human" ""
-  emit_event reconcile_escalated verify "reconcile exhausted ${RECONCILE_MAX} round(s) — escalated to the human"
-  notify_gate awaiting-human "Reconcile with $BASE failed after $RECONCILE_MAX rounds — needs your call"
-  printf 'RECONCILE: escalated — %s rounds exhausted; awaiting human.\n' "$RECONCILE_MAX"
+  emit_event reconcile_escalated verify "reconcile exhausted ${RECONCILE_MAX} round(s) — run: $(respond_hint)"
+  notify_gate awaiting-human "Reconcile with $BASE failed after $RECONCILE_MAX rounds — run: $(respond_hint)"
+  printf 'RECONCILE: escalated — %s rounds exhausted; answer the pending question — run: %s\n' "$RECONCILE_MAX" "$(respond_hint)"
 }
 
 # S97 — did the reconcile RETEST go red because the RUNNER could not START, rather
@@ -19426,7 +19436,7 @@ reconcile_retest_env_blocked() { # capture-dir-or-log-or-text → 0 if env-block
 reconcile_retest_env_escalate() { # failed-ids  captured-output
   local ids="$1" cap_out="$2"
   lcars_state_set_string "$STATE" reconcileStatus "env-blocked"
-  local note="Reconcile with $BASE merged CLEANLY, but the re-test could not RUN — the reconcile merge worktree was not provisioned (no node_modules / the testCommand binary was not found), so the mission's ticket suite(s) errored at startup. This is NOT a code conflict. Set \`worktreeSetupCommand\` in .git/lcars/config.json (see \`lcars update\`) so the retest environment matches the build, then re-run \`lcars approve\` / \`lcars run\`."
+  local note="Reconcile with $BASE merged CLEANLY, but the re-test could not RUN — the reconcile merge worktree was not provisioned (no node_modules / the testCommand binary was not found), so the mission's ticket suite(s) errored at startup. This is NOT a code conflict. Set \`worktreeSetupCommand\` in .git/lcars/config.json so the retest environment matches the build, then answer the gate — run: $(respond_hint)"
   local qf; qf="$(mktemp)"
   {
     printf '%s\n\nSuite(s) that could not run: %s\n' "$note" "${ids:-all}"
@@ -19441,9 +19451,9 @@ reconcile_retest_env_escalate() { # failed-ids  captured-output
   lcars_state_refusal_die "lcars run"   # S207 D2: no gate written ⇒ no gate
   rm -f "$qf"
   gh_relabel "lcars:verify lcars:awaiting-human" ""
-  emit_event reconcile_env_blocked verify "reconcile merged $BASE cleanly but the retest could not run — the merge worktree was not provisioned; set worktreeSetupCommand (NOT a code conflict)"
+  emit_event reconcile_env_blocked verify "reconcile merged $BASE cleanly but the retest could not run — set worktreeSetupCommand, then answer the gate — run: $(respond_hint)"
   notify_gate awaiting-human "$note"
-  printf 'RECONCILE: env-blocked — merged %s cleanly but the retest could not run (worktree not provisioned); set worktreeSetupCommand and re-run.\n' "$BASE"
+  printf 'RECONCILE: env-blocked — merged %s cleanly but the retest could not run; set worktreeSetupCommand, then answer the gate — run: %s\n' "$BASE" "$(respond_hint)"
 }
 
 # reconcile_unpushed_count <branch> — how many commits <branch> has that
@@ -19587,7 +19597,7 @@ reconcile_gate() {
   # the BUG-045 earlier (post-heal) design-question escalation. (BUG-041/045)
   if [ "$(json_str "$STATE" reconcileStatus)" = "escalated" ] \
      && [ "$(json_raw "$STATE" awaitingHuman)" = "true" ]; then
-    echo "RECONCILE: escalated — awaiting the captain's answer; not re-asking."
+    echo "RECONCILE: escalated — awaiting the captain's answer; not re-asking — run: $(respond_hint)"
     return 20
   fi
 
@@ -19674,7 +19684,7 @@ reconcile_gate() {
             $0==b{print p; exit}' )"
       local wt_diag="Can't reconcile with '$BASE' — the mission branch '$BRANCH' is checked out at ${rc_holder:-another worktree}${rc_holder:+ (likely your own checkout)}. Switch that checkout to another branch (or \`git worktree remove\` a stale tree, then \`git worktree prune\`) and re-run. LCARS reconciles in its own worktree and never touches your checkout."
       reconcile_escalate "$wt_diag"
-      echo "RECONCILE: cannot reconcile — the mission branch is checked out in another worktree or a stale worktree exists; free it and re-run."
+      echo "RECONCILE: cannot reconcile — the mission branch is checked out in another worktree or a stale worktree exists; free it, then answer the gate — run: $(respond_hint)"
       return 20
     fi
   fi
@@ -19858,7 +19868,7 @@ ${base_log:-(no log available)}"
         total="$(printf '%s\n' "$ordered" | tr ' ' '\n' | grep -c .)"
         [ -n "$total" ] && [ "$total" != 0 ] || total=1
         local short; short="$(printf '%s' "$merge_sha" | cut -c1-7)"
-        local note="Reconciled $BASE into the branch ($short) and re-tested green ($total/$total). Reapprove to merge."
+        local note="Reconciled $BASE into the branch ($short) and re-tested green ($total/$total). Reapprove through lcars approve $MISSION_ID --reapprove — run: $(approve_hint reapprove)"
         lcars_state_set_string "$STATE" reconcileStatus "awaiting-reapprove"
         lcars_state_set_string "$STATE" reconcileNote "$note"
         lcars_state_set_string "$STATE" reconcileMergeSha "$merge_sha"
@@ -19866,13 +19876,13 @@ ${base_log:-(no log available)}"
         lcars_state_set_string "$STATE" pendingQuestion "$note"
         lcars_state_refusal_die "lcars run"   # S207 D2: no gate written ⇒ no gate
         local qf; qf="$(mktemp)"
-        printf '%s\nReapprove to merge the reconciled branch, or send it back.\n' "$note" >"$qf"
+        printf '%s\n' "$note" >"$qf"
         write_pending "$qf" "verify"
         rm -f "$qf"
         gh_relabel "lcars:verify lcars:awaiting-human" ""
-        emit_event reconcile_reapprove verify "merged $BASE and re-test is green ($total/$total) — awaiting your reapprove before merging"
+        emit_event reconcile_reapprove verify "merged $BASE and re-test is green ($total/$total) — run: $(approve_hint reapprove)"
         notify_gate awaiting-human "$note"
-        echo "RECONCILE: awaiting-reapprove — merged $BASE; re-test green ($total/$total); reapprove to merge ($short)."
+        echo "RECONCILE: awaiting-reapprove — merged $BASE; re-test green ($total/$total) at $short — run: $(approve_hint reapprove)"
         return 30 ;;
     esac
 
@@ -22813,7 +22823,7 @@ cmd_validate() {
   require_stage validate
   require_worker
   [ "$(json_raw "$STATE" awaitingHuman)" = "true" ] \
-    && die "mission is awaiting a human answer — run '$(respond_hint)' first; the Validator does not re-run until the gate clears."
+    && die "mission is awaiting a human answer; the Validator does not re-run until the gate clears — run: $(respond_hint)"
   [ -f "$MISSION_DIR/prd.md" ] || die "no prd.md."
 
   # S166 — make the branch pin STRUCTURAL, and do it BEFORE `extra` is assembled.
@@ -23961,7 +23971,7 @@ cmd_plan_review() {
   require_stage plan-review
   require_worker
   [ "$(json_raw "$STATE" awaitingHuman)" = "true" ] \
-    && die "mission is awaiting a human answer — run '$(respond_hint)' first; the reviewer does not re-run until the gate clears."
+    && die "mission is awaiting a human answer; the reviewer does not re-run until the gate clears — run: $(respond_hint)"
   [ -f "$MISSION_DIR/plan.json" ] || die "no plan.json — Plan has not run."
 
   # S166 — structural pin, before `extra` (see cmd_validate for the ordering
@@ -24868,7 +24878,8 @@ cmd_implement() {
       emit_event paused implement "paused by the captain — halted between waves"
       printf '⏸ paused at: implement  (paused by the captain — halted between waves)\n'
       printf 'The Mission is paused; no further tickets will run until you resume it.\n'
-      printf 'Resume with `lcars resume %s`.\n' "$MISSION_ID"
+      printf 'Resume (lcars resume %s) — run: bash %q resume %q\n' \
+        "$MISSION_ID" "$SKILL_DIR/../lcars-pause/pause.sh" "$MISSION_ID"
       exit 0
     fi
 
@@ -25739,7 +25750,7 @@ INTEGRATION HANDOFF: MAIN ECH owns cross-chunk integration. Send ONE BLOCKED: be
         drive_persist_base_freshness "$branch"
         drive_emit_base_stale "$stage"
         emit_event selfheal_refused "$stage" "$question" || :
-        emit_event gate "$stage" "base recovery needs a human; no Stage worker was dispatched" || :
+        emit_event gate "$stage" "base recovery needs a human; no Stage worker was dispatched — run: $(respond_hint)" || :
         printf '%s\n' "$recovery"
         return 1
       fi
@@ -25940,10 +25951,10 @@ drive_verify() { # accumulated-summary
   # at verify with no PR affordance and no degraded gate.
   local parent; parent="$(json_str "$STATE" parentMission)"
   if [ -n "$parent" ] && [ "$parent" != "null" ]; then
-    emit_event gate verify "bug fix folds onto parent $parent — no per-bug PR"
+    emit_event gate verify "bug fix folds onto parent $parent — run: $(resolve_logs_hint "$parent")"
     drive_print_summary "$summary"
     printf 'verify       ◇  bug fix folds onto parent %s — no per-bug PR (parent carries it)\n' "$parent"
-    printf '⏹ stopped at: verify  (folds onto the parent — accept via the parent'"'"'s re-verify gate)\n'
+    printf '⏹ stopped at: verify (folds onto the parent) — run: %s\n' "$(resolve_logs_hint "$parent")"
     return 0
   fi
 
@@ -25988,11 +25999,11 @@ drive_verify() { # accumulated-summary
       local review_out
       review_out="$(LCARS_GH_BIN="$GH_BIN" LCARS_GIT_BIN="$GIT_BIN" bash "$SELF" open-pr --mission "$MISSION_ID" 2>&1)" || {
         printf '%s\n' "$review_out"
-        emit_event gate verify "required PR review unresolved"
+        emit_event gate verify "required PR review unresolved; fix the review failure, then retry — run: $(drive_hint)"
         return 1
       }
       # Still open — in review. Halt, but do NOT re-ping (one ping at open time).
-      emit_event gate verify "in review — PR open"
+      emit_event gate verify "in review — PR open; review, then lcars approve $MISSION_ID — run: $(approve_hint)"
       # S203 — …and if Number One has the conn and has not looked yet, it looks
       # now, DETACHED, so this halt still returns the terminal immediately.
       drive_number_one_verify || true
@@ -26012,7 +26023,7 @@ drive_verify() { # accumulated-summary
     http*|*/pull/*)
       if [ "$rc" -ne 0 ]; then
         printf '%s\n' "$out"
-        emit_event gate verify "required PR review failed"
+        emit_event gate verify "required PR review failed; fix the review failure, then retry — run: $(drive_hint)"
         return 1
       fi ;;
     *) # PR-open degraded (no gh / unauthed / create failed). This is STILL a
@@ -26020,7 +26031,7 @@ drive_verify() { # accumulated-summary
        # must fire EXACTLY ONE walk-away notification (never a false Done), and
        # only once: a guard flag makes a later retry not re-ping. The driver
        # STOPS here.
-       emit_event gate verify "parked at verify — PR open degraded; needs attention"
+       emit_event gate verify "parked at verify — PR open degraded; fix push/auth/gh, then retry — run: $(drive_hint)"
        drive_print_summary "$summary"
        printf '⏹ stopped at: verify  (could not open the PR)\n'
        printf '%s\n' "$out"
@@ -26036,14 +26047,14 @@ drive_verify() { # accumulated-summary
          printf 'Fix the cause (push/auth/gh), then retry the open with:\n  %s\n' "$(drive_hint)"
        fi
        if [ "$(json_str "$STATE" verifyDegradedNotified)" != "1" ]; then
-         notify_gate verify "Mission parked at verify — review needed (PR could not be opened automatically)"
+         notify_gate verify "Mission parked at verify — PR could not be opened automatically; fix push/auth/gh, then retry — run: $(drive_hint)"
          lcars_state_set_string "$STATE" verifyDegradedNotified "1"
        fi
        return 1 ;;
   esac
 
   # PR opened — fire the ONE notification and halt "in review".
-  emit_event gate verify "PR opened — approve with lcars approve $MISSION_ID; merging by hand strands any logged bugs"
+  emit_event gate verify "PR opened — merging by hand strands logged bugs; review, then lcars approve $MISSION_ID — run: $(approve_hint)"
   # S203 — the first officer's look starts HERE, on the pass that opened the PR,
   # and detached (see drive_number_one_verify): the notification and the halt
   # below must not wait on a browser.
@@ -26052,7 +26063,7 @@ drive_verify() { # accumulated-summary
   drive_print_summary "$summary"
   printf 'verify       ✓  PR opened — %s\n' "$pr2"
   local title; title="$(json_str "$STATE" title)"; title="${title:-$MISSION_ID}"
-  notify_gate verify "PR open — approve with lcars approve $MISSION_ID; merging by hand strands any logged bugs: $pr2"
+  notify_gate verify "PR open: $pr2 — merging by hand strands logged bugs; review, then lcars approve $MISSION_ID — run: $(approve_hint)"
   drive_halt_in_review "$pr2"
   return 0
 }
@@ -26063,8 +26074,9 @@ drive_halt_in_review() { # pr-url
   printf '⏹ stopped at: verify  (in review — PR open)\n'
   printf 'PR is open for review: %s\n' "$1"
   printf 'Approve through LCARS; merging by hand strands any logged bugs:\n'
-  printf '  lcars approve %s    — merge the PR (ship it)\n' "$MISSION_ID"
-  printf '  lcars feedback %s   — send back with feedback (closes the PR)\n' "$MISSION_ID"
+  printf '  Merge the PR (lcars approve %s) — run: %s\n' "$MISSION_ID" "$(approve_hint)"
+  printf '  Send back with feedback (closes the PR) — run: bash %q --mission %q --feedback "<what to change>"\n' \
+    "$SKILL_DIR/../lcars-feedback/feedback.sh" "$MISSION_ID"
 }
 
 drive_halt_awaiting() { # stage
@@ -26078,7 +26090,7 @@ drive_halt_awaiting() { # stage
   fi
   printf 'Answer with:\n  %s\n' "$(respond_hint)"
   local first; first="$(json_str "$STATE" pendingQuestion)"
-  notify_gate awaiting-human "Needs your answer — ${first:-answer it with: $(respond_hint)}"
+  notify_gate awaiting-human "Needs your answer — $first — run: $(respond_hint)"
 }
 
 drive_halt_paused() { # stage
@@ -26088,14 +26100,15 @@ drive_halt_paused() { # stage
   fi
   printf '⏸ paused at: %s  (paused by the captain — halted at a safe boundary)\n' "$1"
   printf 'The Mission is paused; no Stage will advance until you resume it.\n'
-  printf 'Resume with `lcars resume %s`.\n' "$MISSION_ID"
+  printf 'Resume (lcars resume %s) — run: bash %q resume %q\n' \
+    "$MISSION_ID" "$SKILL_DIR/../lcars-pause/pause.sh" "$MISSION_ID"
 }
 
 drive_halt_align() {
   printf '⏹ stopped at: align  (interactive Align re-grill required)\n'
   printf 'This Mission was sent back from Verify (feedback.md is present). Align is a\n'
   printf 'human grilling session, not automatable: re-grill it in your session and\n'
-  printf 'rewrite the PRD, then it auto-advances from Research.\n'
+  printf 'rewrite the PRD, then start Research — run: %s\n' "$(research_hint)"
 }
 
 # === Per-mission driver lock (BUG-A: single-instance `drive`) ===============
@@ -26930,7 +26943,7 @@ cmd_drive() {
       if drive_number_one_gate; then
         continue
       fi
-      emit_event gate "$stage" "awaiting your answer"
+      emit_event gate "$stage" "awaiting your answer — run: $(respond_hint)"
       mirror_comments || true
       drive_print_summary "$summary"; drive_halt_awaiting "$stage"; return 0
     fi
@@ -26944,7 +26957,7 @@ cmd_drive() {
               drive_print_summary "$summary"
               printf '⏹ stopped at: done  (Mission shipped — the PR is merged)\n'; return 0 ;;
       align)  if [ -f "$MISSION_DIR/feedback.md" ]; then
-                emit_event gate align "interactive Align re-grill required"
+                emit_event gate align "interactive Align re-grill required; rewrite the PRD first — run: $(research_hint)"
                 mirror_comments || true
                 drive_print_summary "$summary"; drive_halt_align; return 0
               fi ;;
@@ -27028,7 +27041,7 @@ cmd_drive() {
       local wd_stage wd_await
       wd_stage="$(json_str "$STATE" stage)"; wd_await="$(json_raw "$STATE" awaitingHuman)"
       if [ "$wd_stage" = "$stage" ] && [ "$wd_await" != "true" ]; then
-        local wdq="The $action stage exceeded the ${stage_timeout}s watchdog and was stopped to avoid a silent freeze (see BUG-020). Re-run '$(drive_hint)' to resume; if it recurs, inspect the worker/heartbeat for a leaked child."
+        local wdq="The $action stage exceeded the ${stage_timeout}s watchdog and was stopped to avoid a silent freeze (see BUG-020). Inspect the worker/heartbeat for a leaked child, then answer the gate to resume — run: $(respond_hint)"
         local wq; wq="$(mktemp)"; printf '%s\n' "$wdq" >"$wq"
         write_pending "$wq" "$stage"; rm -f "$wq"
         lcars_state_set "$STATE" awaitingHuman true
@@ -27039,15 +27052,15 @@ cmd_drive() {
         # sentence (S214 fix round 1, D2). It used to be `$stage`, where the
         # Mission sits, so a Research timeout banded itself ALIGN on the board
         # while the sentence beside it said Research.
-        emit_event error "$action" "$action timed out under the stage watchdog (${stage_timeout}s) — escalated to awaiting-human" stageFailure=1
+        emit_event error "$action" "$action timed out under the stage watchdog (${stage_timeout}s) — escalated to awaiting-human — run: $(respond_hint)" stageFailure=1
         # S312 — the SAME fact, in state.json, for the readers that ask mission
         # state rather than the event log. A timeout IS a failed attempt; it is
         # awaiting-human AS WELL, and those are two facts, not one.
         drive_mark_stage_failed "$action" \
-          "$action timed out under the stage watchdog (${stage_timeout}s) — escalated to awaiting-human"
+          "$action timed out under the stage watchdog (${stage_timeout}s) — escalated to awaiting-human — run: $(respond_hint)"
         drive_print_summary "$summary"
-        printf '⏱ stopped: %s timed out under the watchdog — flagged the human (resolve with: %s).\n' "$action" "$(respond_hint)"
         printf '%s\n' "$out"
+        printf '⏱ stopped: %s timed out under the watchdog — answer the gate — run: %s\n' "$action" "$(respond_hint)"
         return 0
       fi
     fi
@@ -27154,7 +27167,7 @@ cmd_drive() {
       && fail_log_size1="$(wc -c <"$MISSION_DIR/$action/worker-failure.log" 2>/dev/null | tr -d ' ')"
     [ -n "$fail_log_size1" ] && [ "$fail_log_size1" != "${fail_log_size0:-}" ] \
       && fail_log_kv+=("log=$fail_log_rel")
-    emit_event error "$action" "$action failed${err_tail:+: $err_tail}" "${fail_log_kv[@]}"
+    emit_event error "$action" "$action failed${err_tail:+: $err_tail} — run: $(drive_hint)" "${fail_log_kv[@]}"
     # S312 — AND THE SAME FACT IN MISSION STATE. This is the exact arm the real
     # mission took at 01:36: the driver then exited 0-ish and normally, the
     # event log knew, and state.json said `"stage": "align"` — indistinguishable
@@ -27164,10 +27177,11 @@ cmd_drive() {
     # when THIS run actually wrote to it (fail_log_kv carries `log=` iff so).
     local fail_log_rec=""
     case " ${fail_log_kv[*]} " in *" log=$fail_log_rel "*) fail_log_rec="$fail_log_rel" ;; esac
-    drive_mark_stage_failed "$action" "$action failed${err_tail:+: $err_tail}" "$fail_log_rec"
+    drive_mark_stage_failed "$action" "$action failed${err_tail:+: $err_tail} — run: $(drive_hint)" "$fail_log_rec"
     drive_print_summary "$summary"
     printf '⏹ stopped: %s failed\n' "$action"
     printf '%s\n' "$out"
+    printf 'Fix the reported cause, then retry — run: %s\n' "$(drive_hint)"
     return "${rc:-1}"
   done
 }

@@ -4,6 +4,23 @@ All notable changes to LCARS are recorded here, newest first. The version
 scheme is `YYYY.M.N` (calendar year, month with no leading zero, per-month
 counter). Every PR into `main` bumps `VERSION` and adds its entry here.
 
+## 2026.11.9 — 2026-11-25
+
+### Refuse unsafe merges at the adapter; name runnable next steps (S377)
+
+The host adapter checks the Mission's logged bugs immediately before invoking
+`gh pr merge`, resolving PR numbers through their head branch. Approve and the
+adapter share one guard and one refusal. Closed and folded bugs, live chunk
+owners, and non-LCARS PRs retain their existing merge authority.
+
+Driver gates, walk-away notifications, Verify/reconcile refusals, inbox actions,
+and consolidated logged-bug decisions end with concrete shell commands.
+The messages retain the skill names, but print the bundled script invocation
+that actually runs; they no longer suggest bypassing approve.
+
+Scoped controls drive the real adapter with git and Mission records, render
+the audited instructions, and resolve their commands through the real parsers.
+
 ## 2026.11.8 — 2026-11-25
 
 ### Merge through LCARS; surface sibling bugs; retire intact (S376)

@@ -701,21 +701,41 @@ github_pr_merge() { # [--number <n>] [--head <branch>] [--method <m>]
   [ -n "$sel" ] || die "pr-merge: need --number or --head to identify the PR."
   command -v "$GH_BIN" >/dev/null 2>&1 || return 1
   local margs=(--"${method:-merge}")
+  local merge_head="$sel"
+  case "$merge_head" in
+    lcars/*) : ;;
+    *) merge_head="$(github_pr_view --number "$sel" --head-ref)" ;;
+  esac
+  github_mission_merge_guard "$merge_head" || return $?
   "$GH_BIN" pr merge "$sel" "${margs[@]}" >/dev/null 2>&1
   return $?
 }
 
+github_mission_merge_guard() (
+  local head="${1:-}" gitdir
+  case "$head" in lcars/*) ;; *) return 0 ;; esac
+  MISSION_ID="${head#lcars/}"
+  case "$MISSION_ID" in ''|*/*|.|..) return 0 ;; esac
+  gitdir="$(git rev-parse --git-common-dir 2>/dev/null)" || return 0
+  MISSION_DIR="$gitdir/lcars/missions/$MISSION_ID"
+  [ -d "$MISSION_DIR" ] || return 0
+  . "$(dirname "${BASH_SOURCE[0]}")/merge-guard.sh" || return 1
+  refuse_if_open_logged_children
+)
+
 # github_pr_view — read a PR's merge state. Identify it by --number or --head.
+# --head-ref instead prints only the branch for the local pre-merge guard.
 # Echoes two lines: `state\t<STATE>` and `mergedAt\t<value>` parsed jq-free from
 # `gh pr view <sel> --json state,mergedAt`, so the caller can decide "merged" =
 # state == MERGED or mergedAt non-null. Best-effort: gh absent/failing → echo
 # nothing (the caller keys off empty output, like create), never a die.
-github_pr_view() { # [--number <n>] [--head <branch>]
-  local number="" head="" sel="" out st merged
+github_pr_view() { # [--number <n>] [--head <branch>] [--head-ref]
+  local number="" head="" sel="" out st merged head_ref=""
   while [ $# -gt 0 ]; do
     case "$1" in
       --number) number="${2:-}"; shift 2 ;;
       --head)   head="${2:-}";   shift 2 ;;
+      --head-ref) head_ref=1; shift ;;
       -*) die "pr-view: unknown flag: $1" ;;
       *)  sel="$1"; shift ;;
     esac
@@ -724,6 +744,10 @@ github_pr_view() { # [--number <n>] [--head <branch>]
   [ -n "$sel" ] || sel="$head"
   [ -n "$sel" ] || die "pr-view: need --number or --head to identify the PR."
   command -v "$GH_BIN" >/dev/null 2>&1 || return 0
+  if [ -n "$head_ref" ]; then
+    "$GH_BIN" pr view "$sel" --json headRefName --jq .headRefName 2>/dev/null
+    return $?
+  fi
   out="$("$GH_BIN" pr view "$sel" --json state,mergedAt 2>/dev/null)" || return 0
   # jq-free: split the single-line JSON so each field lands alone, then pluck.
   st="$(printf '%s' "$out" | tr ',{}' '\n\n\n' \
