@@ -9,7 +9,7 @@ import unittest
 from unittest.mock import patch
 
 
-ROOT = Path(os.environ.get("LCARS_BOUNDARIES_ROOT", Path(__file__).resolve().parents[1]))
+ROOT = Path(os.environ.get("LCARS_BOUNDARIES_ROOT", Path(__file__).resolve().parents[2]))
 
 
 class Boundaries(unittest.TestCase):

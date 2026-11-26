@@ -210,6 +210,38 @@ the floor finally running work it had produced, rather than work handed to it.
 check here; they land with the release that carries them. They also produced
 most of the open items in the next section, which is the honest half of it.
 
+### November — the rule that lived in the wrong place
+
+A large ask now splits. The ECH divides it, hands each part to a sub-ECH one
+layer deep, and that one may not divide again — a depth cap, because the thing
+I actually wanted was a supervisor with helpers, not a tree that grows while
+nobody is looking.
+
+The honest half is better than the feature. On a capstone the supervisor merged
+eleven pull requests by hand. The proper verb had always refused that exact
+case, and said why: merge a Mission while bugs are still logged against it and
+those bugs can never be attached to it again. It never saw the refusal, because
+the gate printed *"PR opened — review & merge"* — so it reviewed, and merged.
+Four bug reports were stranded and had to be re-typed from scratch.
+
+It found this itself, and not by reasoning: asked whether the rule or its own
+conduct was wrong, **it ran the sanctioned verb on something it had already
+merged and let the refusal answer.** Then it declined to quietly correct the
+records its shortcut had left wrong — *"bypassing the state machine once, then
+writing the entry it would have written, is the same error twice."* Twelve
+Missions still say unmerged. I would rather have that than a tidy number.
+
+So the fix was not a warning. **The refusal moved to where the merge actually
+happens** — one shared guard, called by both the approve verb and the forge
+seam, so the two can no longer disagree about what blocks a merge. And every
+message that tells a worker what to do next now ends in a command it can run,
+because *"review & merge"* describes an action, and the obvious way to do that
+action was the wrong one.
+
+The lesson underneath it is the same one this project keeps relearning, and it
+is now written down: **a boundary placed at a verb's name bounds nothing, when
+the same act is reachable another way.**
+
 ### Then and now
 
 The same board, July and October of the same year:

@@ -1,6 +1,6 @@
 <!DOCTYPE html>
-<!-- lcars-docs-src: README.md sha256:e702be60f5fa2e4ad4b8d73deb0e0c776cc73eef7acde4f5c3a2d25b00a460d6 -->
-<!-- lcars-docs-src: vision.md sha256:d8976e9cfab2a421744d4b0bd76e30a734d4c4e82ce0d0e85813e4b453a05035 -->
+<!-- lcars-docs-src: README.md sha256:65ffa3a2613aa5c849cb0eeccad139c982de5489df37bff7e200c32066bd9e32 -->
+<!-- lcars-docs-src: vision.md sha256:266ff0e86c7a70bd60e6e09219710b3b8c8636f21f0c5a3e7fa950048e6cc3dd -->
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
@@ -472,6 +472,20 @@ lcars init          # one-time: per-repo state + the GitHub labels</pre>
         real bugs a fully green suite had passed</strong>. A human still ran the
         final landing — it is not claimed to ship a round with nobody there.</div>
       </div>
+
+      <p>A job too big for one shift gets <strong>split</strong>. The ECH
+      divides the ask, hands each part to a helper one layer deep, and that
+      helper may not divide again — so you get a supervisor with a team, not a
+      tree that keeps growing while nobody is watching. Each helper runs its own
+      Missions through the same floor and reports back; the supervisor does the
+      integration itself.</p>
+
+      <p>And finished work <strong>cannot be merged while a bug is still logged
+      against it</strong>. That is not advice printed somewhere: the refusal
+      sits in the one place a merge actually happens, so it holds whichever
+      route you take. It matters because a bug filed against open work rides
+      along with it — merge early and the fix is orphaned with no way home. The
+      refusal names the bug that is blocking and the command that clears it.</p>
 
       <figure class="screenshot">
         <img src="assets/ech-status.png" alt="The ECH's own status in a terminal: the spec it is working to, the missions in scope with their stages and gates, the parallel slots in use, and the one question it has parked for you." />

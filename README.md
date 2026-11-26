@@ -245,6 +245,19 @@ tool, a page and a CI workflow, needed its operator **once** (the opening
 alignment round), and **found two real bugs a fully green suite had passed**. A
 human still ran the final landing; it is not claimed to ship with nobody there.
 
+A job too big for one shift gets **split**. The ECH divides the ask, hands each
+part to a helper one layer deep, and that helper may not divide again — so you
+get a supervisor with a team, not a tree that keeps growing while nobody is
+watching. Each helper runs its own Missions through the same floor and reports
+back; the supervisor does the integration itself.
+
+And finished work **cannot be merged while a bug is still logged against it**.
+That is not advice printed somewhere — the refusal sits in the one place a merge
+actually happens, so it holds whichever route you take. It matters because a bug
+filed against open work rides along with it; merge early and the fix is orphaned
+with no way home. The refusal names the bug that is blocking and the command
+that clears it.
+
 ![The ECH's own status in a terminal — the spec it is working to, the missions in scope with their stages and gates, the parallel slots in use, and the one question it has parked for you.](docs/assets/ech-status.png)
 
 ### Knowing the cost before you spend it
