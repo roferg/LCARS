@@ -2895,6 +2895,30 @@ new_mission "$RPO" lcars-20261001-020 verify
 # exist is the `deploy succeeded` of overrides.
 LCEVOK="$TMPROOT/override-evidence.txt"
 printf 'ran the step by hand: python3 missing on the runner\n' >"$LCEVOK"
+# THE FIXTURE NOW STATES ITS OWN PRECONDITION (S353). `policy --mission <m>`
+# reads the RECORDED live-check verdict (`liveChecks.<m>.verdict`, written by
+# `live-check done`) and REFUSES a `--live-check` flag that disagrees with it or
+# that has no record behind it at all — the cure for the measured route by which
+# a delegate's cheerful "all green", typed as `--live-check pass`, reached a
+# merge. NOT ONE ASSERTION IN THIS BLOCK CHANGED: the rows below still assert the
+# same table, the same refusals and the same recorded override. What changed is
+# that a mission-named call is now a CHECKED call, so these fixtures record the
+# live check their calls claim — the same way the rest of this suite writes the
+# record it drives. The flagless and mission-less rows are untouched: with no
+# mission there is nothing to look up (see `policy`'s own UNVERIFIED line).
+lc_recorded() { # <repo> <mission> <verdict>
+  python3 - "$1/.git/lcars/autopilot.json" "$2" "$3" <<'LCREC_PY'
+import json, sys
+f, mission, verdict = sys.argv[1:]
+d = json.load(open(f))
+rec = d.setdefault("liveChecks", {}).setdefault(mission, {})
+rec["verdict"] = verdict
+rec["evidence"] = "/dev/null"
+json.dump(d, open(f, "w"), indent=2)
+LCREC_PY
+}
+lc_recorded "$RPO" lcars-20261001-020 pass
+
 polact() { # <args…> → the ACTION line's value
   ap "$RPO" policy "$@" 2>&1 | sed -n 's/^ACTION: //p'
 }
@@ -2931,6 +2955,9 @@ RPO2="$(new_repo)"
 ap "$RPO2" init --spec "$TMPROOT/spec.md" --scope M0 >/dev/null 2>&1
 new_mission "$RPO2" lcars-20261001-020 verify
 OVL="$RPO2/.git/lcars/autopilot-overrides.jsonl"
+# …and the same precondition for the ledger fixture: POLOV below names the
+# mission, so it is a checked call now (S353).
+lc_recorded "$RPO2" lcars-20261001-020 pass
 POLNOE="$(ap "$RPO2" policy --verdict low --reason infrastructure --live-check pass 2>&1)"; polnerc=$?
 check "an OVERRIDE with no --evidence is REFUSED (an unevidenced override is a shrug)" \
   "[ $polnerc -ne 0 ]"
@@ -3061,6 +3088,21 @@ cat >"$GOLDEN" <<GOLDENEOF
 <h2 id="overrides-title">Overrides recorded</h2>
 <ul id="overrides">
 <li>lcars-20261001-002 &mdash; low / infrastructure &mdash; the runner had no python3 &mdash; evidence: live-check/09-override.txt</li>
+</ul>
+<h2 id="ech-shortfalls-title">Where the ECH fell short</h2>
+<p class="none">What a delegate (or the ECH itself) recorded as the ECH&rsquo;s own
+shortfall: a vague brief, a boundary it had to guess, a question the ECH should
+have answered. An explicit &ldquo;nothing found&rdquo; is a legal entry; silence
+is not.</p>
+<ul id="ech-shortfalls">
+<li>none yet</li>
+</ul>
+<h2 id="lcars-bugs-title">Where LCARS fell short</h2>
+<p class="none">What the same hand-backs recorded against the FACTORY: a verb
+that refused wrongly, a stage that lied, a message nobody could act on. A
+separate list because it feeds a different fix.</p>
+<ul id="lcars-bugs">
+<li>none yet</li>
 </ul>
 </body></html>
 GOLDENEOF
@@ -6438,7 +6480,7 @@ for grant_case in \
   test_06c_lcars_merits_refusal_is_not_overridden_by_a_grant \
   test_02_03_07_granted_reapprove_runs_ledgers_and_never_reasks \
   test_02b_granted_command_executes_in_the_target_checkout \
-  test_08_number_one_preflight_recommends_on_once_without_a_tty \
+  test_08_number_one_preflight_preserves_off_once_without_a_tty \
   test_08b_number_one_applies_to_the_target_checkout \
   test_09_merge_policy_and_landing_agree_that_a_grant_acts \
   test_once_grant_is_consumed_even_across_new_seats \

@@ -250,6 +250,28 @@ sub_issues() {
   ' "$waves"
 }
 
+pr_reviewers() {
+  local root config
+  root="$("$GIT_BIN" rev-parse --show-toplevel)" || return 1
+  config="${LCARS_CFG:-$("$GIT_BIN" rev-parse --git-path lcars/config.json)}"
+  "${LCARS_PYTHON_BIN:-python3}" "$(dirname "${BASH_SOURCE[0]}")/pr-reviewers.py" "$root" "$config"
+}
+
+pr_request_reviews() {
+  local url="$1" reviewers key reviewer tip
+  reviewers="$(pr_reviewers)" || die "required PR review policy is unresolved; Mission stays at verify."
+  [ -n "$reviewers" ] || return 0
+  tip="$("$GIT_BIN" rev-parse --verify "refs/heads/$BRANCH^{commit}")" \
+    || die "cannot read the PR head for its required review."
+  key="$tip:$(printf '%s' "$reviewers" | tr '\n' ',')"
+  [ "$(json_str "$STATE" prReviewRequest)" != "$key" ] || return 0
+  while IFS= read -r reviewer; do
+    host pr-request-review "$url" "$reviewer" \
+      || die "required review request for $reviewer failed; retry open-pr --mission $MISSION_ID. Mission stays at verify."
+  done <<<"$reviewers"
+  lcars_state_set_string "$STATE" prReviewRequest "$key"
+}
+
 # --- open_pr: checkout + push + gh pr create, recording the result -----------
 # The full PR-open orchestration shared by Verify (auto-open) and approve. It is
 # IDEMPOTENT: if state.json already records a prUrl it opens NO second PR and
@@ -269,6 +291,8 @@ open_pr() {
   [ -n "${BRANCH:-}" ] || BRANCH="$(json_str "$STATE" branch)"
   [ -n "${BASE:-}" ]   || BASE="$(json_str "$STATE" base)"
   BASE="${BASE:-main}"
+  local reviewers
+  reviewers="$(pr_reviewers)" || die "resolve prReviewers before opening the PR. Mission stays at verify."
   if [ -z "$BRANCH" ]; then
     local missing_branch_tip; missing_branch_tip="$(json_str "$STATE" rejectedTip)"
     [ -z "$missing_branch_tip" ] \
@@ -279,7 +303,7 @@ open_pr() {
   # Idempotency: a recorded prUrl means the PR already exists → no second PR.
   local existing; existing="$(json_str "$STATE" prUrl)"
   case "$existing" in
-    http*|*/pull/*) PR_URL="$existing"; return 0 ;;
+    http*|*/pull/*) PR_URL="$existing"; pr_request_reviews "$PR_URL"; return 0 ;;
   esac
 
   # S111 (root-tree sovereignty): the branch must EXIST, but it is NEVER checked
@@ -353,5 +377,6 @@ open_pr() {
     ''|*[!0-9]*) : ;;
     *) lcars_state_set_string "$STATE" prNumber "$PR_NUM" ;;
   esac
+  pr_request_reviews "$PR_URL"
   return 0
 }

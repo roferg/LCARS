@@ -95,6 +95,9 @@ $msg"
 # throttled version check in ASK mode. Fully guarded (`|| true`) + honours the
 # LCARS_VERSION_CHECK=0 kill switch, so it can never fail the filing.
 FILE_SKILL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+drive_hint() { printf 'bash %q drive --mission %q' "$FILE_SKILL_DIR/../lcars-run/run.sh" "$ID"; }
+complete_hint() { printf 'bash %q --complete %q --prd %q' "$FILE_SKILL_DIR/file.sh" "${ID:-<id>}" "${PRD_SRC:-<path>}"; }
+park_hint() { printf 'bash %q --park %q' "$FILE_SKILL_DIR/file.sh" '<idea>'; }
 VERSION_CHECK="${LCARS_VERSION_CHECK_BIN:-$FILE_SKILL_DIR/../lcars-version/check.sh}"
 [ -f "$VERSION_CHECK" ] && bash "$VERSION_CHECK" ask || true
 
@@ -546,6 +549,7 @@ do_park() {
   fi
 
   _lcars_dirs
+  bash "$FILE_SKILL_DIR/../lcars-eeh/chunking-gate.sh" "$LCARS_DIR" --filing >/dev/null || exit $?
   local ID; ID="$(_mint_id)"
   local MISSION_DIR="$MISSIONS_DIR/$ID"
   mkdir -p "$MISSION_DIR"
@@ -615,6 +619,9 @@ do_park() {
     } >"$MISSION_DIR/state.json"
   }
   write_park_state null
+  if [ -n "${LCARS_FILING_RECEIPT:-}" ]; then
+    printf '%s\n' "$ID" >>"$LCARS_FILING_RECEIPT" || die "cannot write the filing receipt for $ID."
+  fi
 
   # Open the GitHub issue — labels lcars:align + lcars:mission ONLY (NO type
   # label; type is unknown until the grill). Body = the idea + a standby note.
@@ -660,7 +667,7 @@ do_park() {
   echo "  GitHub issue:   $issue_line"
   echo "  Branch:         $BRANCH (off ${BRANCH_SOURCE:-$BASE})"
   echo "  Stage:          align  ◇ STANDBY — awaiting alignment"
-  echo "  Next:           run \`lcars file $ID\` to align it (the Align grill), then it flows the pipeline"
+  echo "  Next:           run \`lcars file $ID\` to align it (the Align grill), then it flows the pipeline. Shell, after Align (replace <path> with the PRD): — run: $(complete_hint)"
   return 0
 }
 
@@ -757,14 +764,14 @@ _complete_reentry() {
   if ! lcars_state_set_string "$STATE" realignedAt "$(date -u +%Y-%m-%dT%H:%M:%SZ)"; then
     echo "  PRD written:     $MISSION_DIR/prd.md" >&2
     [ -n "$KEPT" ] && echo "  Previous PRD:    $KEPT  (kept — nothing prior is deleted)" >&2
-    die "the re-grilled PRD was written, but the re-alignment was NOT recorded in ${STATE#$MISSION_DIR/} (${LCARS_STATE_REFUSED:-the state writer refused it}) — repair that file, then run \`lcars file --complete $ID --prd <path>\` again."
+    die "the re-grilled PRD was written, but the re-alignment was NOT recorded in ${STATE#$MISSION_DIR/} (${LCARS_STATE_REFUSED:-the state writer refused it}) — repair that file, then run \`lcars file --complete $ID --prd <path>\` again. — run: $(complete_hint)"
   fi
 
   echo "  Mission re-aligned: $ID"
   echo "  PRD written:     $MISSION_DIR/prd.md"
   [ -n "$KEPT" ] && echo "  Previous PRD:    $KEPT  (kept — nothing prior is deleted)"
   echo "  Stage:           align  (re-grilled PRD written — ready for Research)"
-  echo "  Next:            run \`lcars run $ID\` to continue"
+  echo "  Next:            run \`lcars run $ID\` to continue — run: $(drive_hint)"
   return 0
 }
 
@@ -776,7 +783,7 @@ _complete_reentry() {
 # --------------------------------------------------------------------------
 do_complete() {
   local ID="$COMPLETE_ID"
-  [ -n "$ID" ] || die "no mission id — usage: lcars file --complete <id> --prd <path>."
+  [ -n "$ID" ] || die "no mission id — usage: lcars file --complete <id> --prd <path>. Supply the Mission id and PRD path — run: $(complete_hint)"
   [ -n "$PRD_SRC" ] || die "no PRD given — pass --prd <path> to complete the alignment."
   [ -f "$PRD_SRC" ] || die "PRD file not found: $PRD_SRC"
 
@@ -801,7 +808,7 @@ do_complete() {
   _lcars_dirs
   local MISSION_DIR="$MISSIONS_DIR/$ID"
   local STATE="$MISSION_DIR/state.json"
-  [ -d "$MISSION_DIR" ] || die "no mission '$ID' under .git/lcars/missions/ — check the id (or park one with \`lcars file --park\`)."
+  [ -d "$MISSION_DIR" ] || die "no mission '$ID' under .git/lcars/missions/ — check the id (or park one with \`lcars file --park\`). Replace <idea> with your idea — run: $(park_hint)"
   [ -f "$STATE" ]       || die "mission '$ID' has no state.json — its state is corrupt."
 
   # Only a PARKED mission can be completed — UNLESS this is a feedback
@@ -822,7 +829,7 @@ do_complete() {
       _complete_reentry "$ID" "$MISSION_DIR" "$STATE"
       return $?
     fi
-    die "mission '$ID' is already aligned — nothing to complete (run \`lcars run $ID\` to advance it)."
+    die "mission '$ID' is already aligned — nothing to complete (run \`lcars run $ID\` to advance it). — run: $(drive_hint)"
   fi
 
   # Validate the PRD (and ADR when given) BEFORE any write — a bad PRD leaves the
@@ -961,7 +968,7 @@ do_complete() {
         # transfer point cannot silently delete a section off this issue.
         lcars_issue_body_record "$MISSION_DIR" "$BODY_FILE"
       else
-        GH_FAILED=1; GH_NOTE="  ⚠ gh issue edit failed — mission left PARKED (NOT aligned). Re-run \`lcars file --complete $ID --prd <path>\` after fixing gh."
+        GH_FAILED=1; GH_NOTE="  ⚠ gh issue edit failed — mission left PARKED (NOT aligned). Re-run \`lcars file --complete $ID --prd <path>\` after fixing gh. — run: $(complete_hint)"
       fi
     else
       # No issue was opened at park time (gh was down) — create it now, grill-first
@@ -971,7 +978,7 @@ do_complete() {
               --label "lcars:align,lcars:$TYPE,lcars:mission" 2>/dev/null)"
       num="${url##*/}"
       case "$num" in
-        ''|*[!0-9]*) GH_FAILED=1; GH_NOTE="  ⚠ gh issue create failed — mission left PARKED (NOT aligned). Re-run \`lcars file --complete $ID --prd <path>\` after fixing gh." ;;
+        ''|*[!0-9]*) GH_FAILED=1; GH_NOTE="  ⚠ gh issue create failed — mission left PARKED (NOT aligned). Re-run \`lcars file --complete $ID --prd <path>\` after fixing gh. — run: $(complete_hint)" ;;
         *) ISSUE="$num"; lcars_issue_body_record "$MISSION_DIR" "$BODY_FILE" ;;
       esac
     fi
@@ -1055,7 +1062,7 @@ do_complete() {
   echo "  Type:            $TYPE"
   echo "  Stage:           align  (PRD written — ready for Research)"
   [ -n "$EST_CLI" ] && printf '%s\n' "$EST_CLI"
-  echo "  Next:            run \`lcars run $ID\` to continue"
+  echo "  Next:            run \`lcars run $ID\` to continue — run: $(drive_hint)"
   return 0
 }
 
@@ -1194,6 +1201,8 @@ case "$GIT_DIR" in /*) : ;; *) GIT_DIR="$PWD/$GIT_DIR" ;; esac
 LCARS_DIR="$GIT_DIR/lcars"
 MISSIONS_DIR="$LCARS_DIR/missions"
 CONFIG="$LCARS_DIR/config.json"
+
+bash "$FILE_SKILL_DIR/../lcars-eeh/chunking-gate.sh" "$LCARS_DIR" --filing >/dev/null || exit $?
 
 # S183 — no foundation, no normal mission. Checked before the PRD is even read,
 # so the captain hears about the repo rather than about his PRD — and, fix round
@@ -1422,6 +1431,9 @@ write_state() { # issue-json (a number or the literal `null`)
   } >"$MISSION_DIR/state.json"
 }
 write_state null
+if [ -n "${LCARS_FILING_RECEIPT:-}" ]; then
+  printf '%s\n' "$ID" >>"$LCARS_FILING_RECEIPT" || die "cannot write the filing receipt for $ID."
+fi
 
 # --- run the end-of-Align estimator (session 59) --------------------------
 # REORDERED in session 61 to run BEFORE the issue is created, so estimate.json
@@ -1532,4 +1544,4 @@ echo "  Stage:         align"
 # The estimate readout (S61): the compact Estimate summary + model mix + rationale,
 # in the active CLI's native cost unit. Empty when no estimate.json was produced.
 [ -n "$EST_CLI" ] && printf '%s\n' "$EST_CLI"
-echo "  Next:          run \`lcars run $ID\` to continue"
+echo "  Next:          run \`lcars run $ID\` to continue — run: $(drive_hint)"

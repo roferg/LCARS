@@ -52,6 +52,9 @@ DEFAULT_MODEL="${LCARS_MODEL:-}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$SCRIPT_DIR/lcars-common.sh"
 
+update_hint() { printf 'bash %q' "$SCRIPT_DIR/../lcars-update/update.sh"; [ "$#" -eq 0 ] || printf ' %q' "$@"; }
+file_hint() { printf 'bash %q --prd %q' "$SCRIPT_DIR/../lcars-file/file.sh" '<path>'; }
+
 # --- the running LCARS version (stamped into the repo's config) ------------
 # `lcars_running_version` is lcars-common.sh's (sourced above) — S207 moved the
 # byte-identical copies init and update each carried into the one place all
@@ -287,7 +290,7 @@ if [ -n "$TEST_CMD" ] && [ -z "${LCARS_TEST_CMD:-}" ] \
   printf '    LCARS found no test files, no test framework and no runner in this repo, so the\n' >&2
   printf '    detected command would prove nothing. Establish Vision lays the foundation; if\n' >&2
   printf '    this repo DOES have a test system LCARS cannot see, name it yourself:\n' >&2
-  printf '    lcars update --test-command '"'"'<command>'"'"'\n' >&2
+  printf '    lcars update --test-command '"'"'<command>'"'"' — run: %s\n' "$(update_hint --test-command '<command>')" >&2
   TEST_CMD=""
 fi
 
@@ -379,7 +382,7 @@ else
       else
         printf '  ⚠ dotnet stack detected but no test project was found — no testCommand seeded.\n' >&2
         printf '    A test project is a *.csproj referencing Microsoft.NET.Test.Sdk (what\n' >&2
-        printf '    `dotnet new xunit` scaffolds). Add one, then re-run `lcars update`.\n' >&2
+        printf '    `dotnet new xunit` scaffolds). Add one, then re-run `lcars update`. — run: %s\n' "$(update_hint)" >&2
       fi
       ;;
     ruby)
@@ -431,7 +434,7 @@ if [ -n "$TEST_CMD" ] && [ "$WTSETUP_VALUE" = 'null' ] && runner_is_local_dep "$
   printf '    inside an isolated git worktree; a runner resolvable only from\n' >&2
   printf '    node_modules/venv will be MISSING there unless worktreeSetupCommand\n' >&2
   printf '    provisions it. Set worktreeSetupCommand in .git/lcars/config.json (see the\n' >&2
-  printf '    S82 ecosystem default) or run `lcars update` to backfill it, so the gate\n' >&2
+  printf '    S82 ecosystem default) or run `lcars update` to backfill it, so the gate — run: %s\n' "$(update_hint)" >&2
   printf '    worktree has the test runner installed.\n' >&2
 fi
 
@@ -566,7 +569,7 @@ if [ -z "${LCARS_MODEL:-}" ] && [ -z "$ENGINE_RECORDED" ] \
     this repo's run record names '$ENGINE_RECORD_RAW', but '$ENGINE_RECORD_RAW' is not on this machine
     (looked for '$(lcars_engine_bin "$ENGINE_RECORD_RAW")'). The record stands and was NOT obeyed:
     init seeded the model for $ENGINE_CHOSEN, the engine that IS installed here.
-    Install $ENGINE_RECORD_RAW, or record the engine this repo should run on:  lcars update --engine <engine>"
+    Install $ENGINE_RECORD_RAW, or record the engine this repo should run on:  lcars update --engine <engine> — run: $(update_hint --engine "$ENGINE_CHOSEN")"
         ;;
       *)
     MODEL_SEED_NOTE="  ◇ RECORDED ENGINE NOT RECOGNISED — model seeded as \"$DEFAULT_MODEL\" for $ENGINE_CHOSEN:
@@ -574,7 +577,7 @@ if [ -z "${LCARS_MODEL:-}" ] && [ -z "$ENGINE_RECORDED" ] \
     it knows $(printf '%s' "$LCARS_ENGINES" | sed 's/ / and /'). There is nothing to install.
     The record stands and was NOT obeyed: init seeded the model for $ENGINE_CHOSEN,
     the engine that IS installed here.
-    Record the engine this repo should run on:  lcars update --engine <engine>"
+    Record the engine this repo should run on:  lcars update --engine <engine> — run: $(update_hint --engine "$ENGINE_CHOSEN")"
         ;;
     esac
   else
@@ -586,7 +589,7 @@ if [ -z "${LCARS_MODEL:-}" ] && [ -z "$ENGINE_RECORDED" ] \
     MODEL_SEED_NOTE="  ◇ NO ENGINE RECORDED — model seeded as \"$DEFAULT_MODEL\" for $ENGINE_CHOSEN:
     $MODEL_SEED_WHY.
     If this repo should run on another engine, record it rather than letting a
-    mission re-guess it:  lcars update --engine <engine>"
+    mission re-guess it:  lcars update --engine <engine> — run: $(update_hint --engine "$ENGINE_CHOSEN")"
   fi
 fi
 [ -n "$MODEL_SEED_NOTE" ] && printf '%s\n' "$MODEL_SEED_NOTE"
@@ -621,8 +624,8 @@ if [ -n "$WORKERBIN_LINE" ] && [ -n "$ENGINE_CHOSEN" ] && [ -n "$EXISTING_MODEL"
   ENGINE_MODEL_NOTE="  ◇ ENGINE AND MODEL DISAGREE — engine recorded as \"$ENGINE_CHOSEN\", model left as \"$EXISTING_MODEL\":
     a model this repo already records is never clobbered, so init kept yours, and $ENGINE_CHOSEN
     runs \"$(lcars_default_model_for_engine "$ENGINE_CHOSEN")\". Align them when you want to —
-    \`lcars update --engine $ENGINE_CHOSEN\` records the engine and moves the model with it;
-    \`lcars update --model '<model>'\` sets the model alone."
+    \`lcars update --engine $ENGINE_CHOSEN\` records the engine and moves the model with it; — run: $(update_hint --engine "$ENGINE_CHOSEN")
+    \`lcars update --model '<model>'\` sets the model alone. — run: $(update_hint --model "$(lcars_default_model_for_engine "$ENGINE_CHOSEN")")"
 fi
 [ -n "$ENGINE_MODEL_NOTE" ] && printf '%s\n' "$ENGINE_MODEL_NOTE"
 
@@ -782,7 +785,29 @@ if [ "${LCARS_TESTREADY_STATUS:-}" = "ready" ] && [ -z "${LCARS_INIT_SKIP_PROBE:
   fi
   report_probe
   case "$PROBE_OUTCOME" in
-    pass) echo "  ✓ TEST SYSTEMS ONLINE — verified by a live run; missions will be proof-gated with: $LCARS_TESTREADY_TESTCMD"
+    pass)
+          # S364 — A PASSING SUITE IS NOT YET A USABLE PROOF INSTRUMENT. The
+          # command also has to be able to NARROW: the Implement proof gates
+          # hand it ONE ticket's test file(s) in $LCARS_TESTS_DIR, and a command
+          # that APPENDS that scope to its own fixed selection runs the whole
+          # repository on every leg. Measured on the capstone of 18 Nov 2026:
+          # 7,400 tests where 53 were declared, ~6 minutes a leg, one ticket
+          # consuming 114 minutes and all three of its sessions — and the
+          # flip-flop's parent half silently disabled while its rejection power
+          # stayed live. Nothing in the command's TEXT says which it is, so it
+          # is MEASURED here, once, at setup. See lcars_probe_narrowing.
+          lcars_check_narrowing "$LCARS_TESTREADY_TESTCMD" "$CONFIG" \
+            || die "could not record suiteSize in .git/lcars/config.json."
+          if [ "${NARROW_OUTCOME:-}" = cannot-narrow ]; then
+            # The certification is WITHHELD, not softened: a command that cannot
+            # narrow cannot prove a ticket, so "TEST SYSTEMS ONLINE" would be
+            # false. Setup itself still stands (config, labels) — the refusal is
+            # a report, never a stop.
+            echo "    Missions can be filed, but the Implement proof gates will refuse every leg"
+            echo "    until this command narrows."
+          else
+            echo "  ✓ TEST SYSTEMS ONLINE — verified by a live run; missions will be proof-gated with: $LCARS_TESTREADY_TESTCMD"
+          fi
           # S308: the probe just TIMED this repo's whole suite. If it is slower
           # than the proof-gate timeout, record that here rather than leave every
           # Implement leg to be killed mid-run and recorded INCONCLUSIVE.
@@ -792,11 +817,11 @@ if [ "${LCARS_TESTREADY_STATUS:-}" = "ready" ] && [ -z "${LCARS_INIT_SKIP_PROBE:
           lcars_seed_gate_timeout "$CONFIG" "$PROBE_TIMEOUT" timeout \
             || die "could not record gateTimeout in .git/lcars/config.json."
           echo "    The suite may be slow or hung; the new budget does not verify it."
-          echo "    Recheck with LCARS_PROBE_TIMEOUT=<seconds> lcars update --probe-tests."
+          echo "    Recheck with LCARS_PROBE_TIMEOUT=<seconds> lcars update --probe-tests. — run: $(update_hint --probe-tests)"
           echo "    Missions are proof-gated on this command, so fix it before relying on the"
-          echo "    Implement gates: \`lcars update --fix-tests\` repairs the common causes." ;;
+          echo "    Implement gates: \`lcars update --fix-tests\` repairs the common causes. — run: $(update_hint --fix-tests)" ;;
     *)    echo "    Missions are proof-gated on this command, so fix it before relying on the"
-          echo "    Implement gates: \`lcars update --fix-tests\` repairs the common causes." ;;
+          echo "    Implement gates: \`lcars update --fix-tests\` repairs the common causes. — run: $(update_hint --fix-tests)" ;;
   esac
 fi
 # THE LAST LINE IS THE CALL TO ACTION, so it has to be true (S183 fix round 1,
@@ -807,9 +832,9 @@ fi
 case "${LCARS_TESTREADY_FOUNDATION:-}" in
   greenfield|untested)
     echo "  LCARS ready — this repo has no test foundation yet, so start with Establish Vision;"
-    echo "  normal missions (\`lcars file\`) unlock the moment the initialization mission lands."
+    echo "  normal missions (\`lcars file\`) unlock the moment the initialization mission lands. Shell, after Align (replace <path> with the PRD): — run: $(file_hint)"
     ;;
   *)
-    echo "  LCARS ready — run \`lcars file\` to start your first Mission."
+    echo "  LCARS ready — run \`lcars file\` to start your first Mission. Shell, after Align (replace <path> with the PRD): — run: $(file_hint)"
     ;;
 esac

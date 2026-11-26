@@ -245,6 +245,9 @@ tool, a page and a CI workflow, needed its operator **once** (the opening
 alignment round), and **found two real bugs a fully green suite had passed**. A
 human still ran the final landing; it is not claimed to ship with nobody there.
 
+A big ask gets **split** across helpers one layer deep, and finished work
+**cannot merge while a bug is logged against it** — merging early orphans the fix.
+
 ![The ECH's own status in a terminal — the spec it is working to, the missions in scope with their stages and gates, the parallel slots in use, and the one question it has parked for you.](docs/assets/ech-status.png)
 
 ### Knowing the cost before you spend it

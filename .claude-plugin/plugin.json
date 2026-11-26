@@ -18,6 +18,7 @@
     "./skills/lcars-run",
     "./skills/lcars-status",
     "./skills/lcars-update",
+    "./skills/lcars-usage",
     "./skills/lcars-version",
     "./skills/lcars-viewscreen",
     "./skills/lcars-xo"

@@ -70,6 +70,17 @@ XO_SCRIPT="${LCARS_XO_SCRIPT:-$SKILL_DIR/../lcars-xo/xo.sh}"
 RUN_SCRIPT="${LCARS_RUN_SCRIPT:-$SKILL_DIR/../lcars-run/run.sh}"
 NOW="${LCARS_NOW:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"
 
+resolve_retry_hint() {
+  printf 'bash %q%s --parent %q' "$SELF" "${1:+ complete}" "$PARENT_ID"
+}
+resolve_answer_hint() {
+  printf 'bash %q answer --mission %q --answer "<your answer>"' \
+    "$SKILL_DIR/../lcars-respond/respond.sh" "${1:-$PARENT_ID}"
+}
+resolve_drive_hint() {
+  printf 'bash %q drive --mission %q' "$RUN_SCRIPT" "$1"
+}
+
 # The host-integration adapter — the ONE place that speaks to a forge. It lives in
 # the sibling lcars-run skill dir; $LCARS_HOST_ADAPTER overrides that path so
 # tests and drives can stub the forge at the seam LCARS already owns. Same shape
@@ -89,6 +100,12 @@ VERSION_CHECK="${LCARS_VERSION_CHECK_BIN:-$SKILL_DIR/../lcars-version/check.sh}"
 # --- tiny JSON readers (no jq; same decoding as log.sh / run.sh) -----------
 json_str() { sed -n "s/.*\"$2\"[[:space:]]*:[[:space:]]*\"\([^\"]*\)\".*/\1/p" "$1" | head -1; }
 json_raw() { sed -n "s/.*\"$2\"[[:space:]]*:[[:space:]]*\([^,}\"[:space:]]*\).*/\1/p" "$1" | head -1; }
+child_parent_matches() {
+  python3 - "$1" "$PARENT_ID" <<'PY'
+import json, sys
+sys.exit(0 if json.load(open(sys.argv[1])).get("parentMission") == sys.argv[2] else 1)
+PY
+}
 # JSON-string-safe escape (no surrounding quotes): backslash/quote via bash,
 # then awk escapes every control char (newline/tab/CR → \n \t \r, rest \u00XX)
 # so any multi-line value yields VALID JSON. jq-free. Order: backslash first.
@@ -166,35 +183,16 @@ if [ -z "$PARENT_SEL" ]; then
   exit 1
 fi
 
-SEL="${PARENT_SEL#\#}"
-lsel="$(printf '%s' "$SEL" | tr '[:upper:]' '[:lower:]')"
-PARENT_ID=""; PARENT_TITLE=""; PARENT_ISSUE=""
-matches=0
-while IFS=$'\t' read -r id title stage issue; do
-  [ -n "$id" ] || continue
-  hid="$(printf '%s' "$id" | tr '[:upper:]' '[:lower:]')"
-  hti="$(printf '%s' "$title" | tr '[:upper:]' '[:lower:]')"
-  hit=0
-  [ "$hid" = "$lsel" ] && hit=1
-  [ "$issue" = "$SEL" ] && hit=1
-  case "$hid" in *"$lsel"*) hit=1 ;; esac
-  case "$hti" in *"$lsel"*) hit=1 ;; esac
-  if [ "$hit" -eq 1 ]; then
-    PARENT_ID="$id"; PARENT_TITLE="$title"; PARENT_ISSUE="$issue"
-    matches=$((matches + 1))
-  fi
-done < <(active_table)
-
-if [ "$matches" -eq 0 ]; then
-  echo "lcars resolve-logs: no active Mission matches \"$PARENT_SEL\"." >&2
+PARENT_RESOLUTION="$("${LCARS_PYTHON_BIN:-python3}" "$SKILL_DIR/../lcars-eeh/mission-selector.py" \
+  "$MISSIONS_DIR" active "$PARENT_SEL")" || {
   list_active
   exit 1
-fi
-if [ "$matches" -gt 1 ]; then
-  echo "lcars resolve-logs: \"$PARENT_SEL\" matches more than one active Mission — be specific." >&2
-  list_active
-  exit 1
-fi
+}
+unset LCARS_MISSION_RESOLUTION
+PARENT_ID="$(printf '%s' "$PARENT_RESOLUTION" | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"], end=".")')"
+PARENT_ID="${PARENT_ID%.}"
+PARENT_TITLE="$(printf '%s' "$PARENT_RESOLUTION" | python3 -c 'import json,sys; print(json.load(sys.stdin)["mission"].get("title", ""))')"
+PARENT_ISSUE="$(printf '%s' "$PARENT_RESOLUTION" | python3 -c 'import json,sys; print(json.load(sys.stdin)["mission"].get("githubIssue") or "")')"
 
 PARENT_DIR="$MISSIONS_DIR/$PARENT_ID"
 PARENT_STATE="$PARENT_DIR/state.json"
@@ -268,18 +266,17 @@ PARENT_ENGINE="$(json_str "$PARENT_STATE" workerBin)"
 # one "<bug-id>\t<stage>" line per linked, non-done child (type bug, parentMission
 # == PARENT_ID), in id order.
 linked_children() { # -> id<TAB>stage
-  local s bid type parent stage
-  while IFS= read -r s; do
-    [ -n "$s" ] || continue
+  local s bid type stage
+  for s in "$MISSIONS_DIR"/*/state.json; do
+    [ -f "$s" ] || continue
     bid="$(json_str "$s" id)"; [ -n "$bid" ] || bid="$(basename "$(dirname "$s")")"
     type="$(json_str "$s" type)"
-    parent="$(json_str "$s" parentMission)"
     stage="$(json_str "$s" stage)"
     [ "$type" = "bug" ] || continue
-    [ "$parent" = "$PARENT_ID" ] || continue
+    child_parent_matches "$s" || continue
     [ "$stage" = "done" ] && continue
     printf '%s\t%s\n' "$bid" "$stage"
-  done < <(ls -1 "$MISSIONS_DIR"/*/state.json 2>/dev/null | sort)
+  done
 }
 
 # === S73: dependency-aware PARALLEL wave scheduling ========================
@@ -632,7 +629,7 @@ reraise_incomplete_gate() { # $1 = "<id>\t<stage>" lines (the undriven set)
     idlist="$idlist
   • $bid (stage $stage)"
   done <<<"$1"
-  local ask="Cannot accept $PARENT_ID ($PARENT_TITLE) yet — one or more logged bugs have NOT reached their Verify gate and would be silently dropped. Drive them with \`lcars resolve-logs $PARENT_ID\`, then re-accept. Still unresolved:$idlist"
+  local ask="Cannot accept $PARENT_ID ($PARENT_TITLE) yet — one or more logged bugs have NOT reached their Verify gate and would be silently dropped. Still unresolved:$idlist — run: $(resolve_retry_hint)"
   {
     echo '{'
     printf '  "stage": "%s",\n' "$(json_str "$PARENT_STATE" stage)"
@@ -677,7 +674,7 @@ reraise_stranded_gate() { # <stranded-id> <stranded-stage> <n-waiting>
     local wnoun="logs"; [ "$nwait" -eq 1 ] && wnoun="log"
     waiting=" $nwait more $wnoun on this mission are queued behind it and have not started."
   fi
-  ask="One of the logged bugs on $PARENT_ID ($PARENT_TITLE) stopped before it could be fixed, so there is nothing to re-verify yet. It is $bid (${btitle:-no title}), and it is stuck at the $bstage step.$waiting Pick it up with \`lcars run $bid\` — answer whatever it is asking — then re-run \`lcars resolve-logs $PARENT_ID\` to take the batch the rest of the way. Nothing has been folded and nothing has been shipped."
+  ask="One of the logged bugs on $PARENT_ID ($PARENT_TITLE) stopped before it could be fixed, so there is nothing to re-verify yet. It is $bid (${btitle:-no title}), and it is stuck at the $bstage step.$waiting Nothing has been folded and nothing has been shipped; retry the child — run: $(resolve_drive_hint "$bid")"
   {
     echo '{'
     printf '  "stage": "%s",\n' "$(json_str "$PARENT_STATE" stage)"
@@ -826,7 +823,7 @@ reraise_paused_gate() { # <paused-id> <n-queued-behind>
   elif [ "$nwait" -gt 1 ]; then
     waiting=" $nwait more logs on this mission are queued behind it and have not started."
   fi
-  ask="One of the logged bugs on $PARENT_ID ($PARENT_TITLE) is waiting on YOU, so the rest of the batch cannot go forward. It is $bid (${btitle:-no title}), and what it needs is: ${bq:-it recorded no question}.$waiting Answer it in the inbox (\`lcars answer\`), then re-run \`lcars resolve-logs $PARENT_ID\` to take the batch the rest of the way. Nothing has been folded and nothing has been shipped."
+  ask="One of the logged bugs on $PARENT_ID ($PARENT_TITLE) is waiting on YOU, so the rest of the batch cannot go forward. It is $bid (${btitle:-no title}), and what it needs is: ${bq:-it recorded no question}.$waiting Nothing has been folded and nothing has been shipped; answer the child — run: $(resolve_answer_hint "$bid")"
   {
     echo '{'
     printf '  "stage": "%s",\n' "$(json_str "$PARENT_STATE" stage)"
@@ -859,7 +856,7 @@ reraise_paused_gate() { # <paused-id> <n-queued-behind>
 # Mirrors the bottom gate-raise; folds nothing. $1 = branch, $2 = push output.
 reraise_push_failure_gate() {
   local branch="$1" out="$2"
-  local ask="Cannot accept $PARENT_ID ($PARENT_TITLE) — pushing the parent branch \`$branch\` to origin FAILED, so the open PR does NOT reflect the accepted logged-bug fixes. Nothing was shipped and no logged bug was folded to Done. Fix the push (auth / network / non-fast-forward), then re-run \`lcars resolve-logs complete --parent $PARENT_ID\` to retry the push and fold. git push said: $out"
+  local ask="Cannot accept $PARENT_ID ($PARENT_TITLE) — pushing the parent branch \`$branch\` to origin FAILED, so the open PR does NOT reflect the accepted logged-bug fixes. Nothing was shipped and no logged bug was folded to Done. git push said: $out; fix the push (auth / network / non-fast-forward), then retry the push and fold — run: $(resolve_retry_hint complete)"
   {
     echo '{'
     printf '  "stage": "%s",\n' "$(json_str "$PARENT_STATE" stage)"
@@ -887,7 +884,7 @@ reraise_push_failure_gate() {
 # parent's gate via STATE with an ask making clear the parent records NO branch so
 # its open PR cannot be brought current and the batch was NOT folded. Folds nothing.
 reraise_no_branch_gate() {
-  local ask="Cannot accept $PARENT_ID ($PARENT_TITLE) — an origin is configured (its open PR must be kept current) but the parent records NO branch, so its open PR cannot be brought current to reflect the accepted logged-bug fixes. Nothing was shipped and no logged bug was folded to Done. Record the parent's working branch in its state.json, then re-run \`lcars resolve-logs complete --parent $PARENT_ID\`."
+  local ask="Cannot accept $PARENT_ID ($PARENT_TITLE) — an origin is configured (its open PR must be kept current) but the parent records NO branch, so its open PR cannot be brought current to reflect the accepted logged-bug fixes. Nothing was shipped and no logged bug was folded to Done. Record the parent's working branch in its state.json, then retry — run: $(resolve_retry_hint complete)"
   {
     echo '{'
     printf '  "stage": "%s",\n' "$(json_str "$PARENT_STATE" stage)"
@@ -921,7 +918,7 @@ cmd_complete_single() { # bug-id
   cparent="$(json_str "$MISSIONS_DIR/$bid/state.json" parentMission)"
   ctype="$(json_str "$MISSIONS_DIR/$bid/state.json" type)"
   [ "$ctype" = "bug" ] || die "$bid is not a bug Mission."
-  [ "$cparent" = "$PARENT_ID" ] \
+  child_parent_matches "$MISSIONS_DIR/$bid/state.json" \
     || die "$bid is not linked to parent $PARENT_ID (parentMission=$cparent)."
 
   fold_one_child "$bid"; fold_rc=$?
@@ -1018,7 +1015,7 @@ cmd_complete() {
     if [ -z "$branch" ]; then
       reraise_no_branch_gate
       echo "lcars resolve-logs: NOT completing $PARENT_ID — an origin is configured but the parent records NO branch, so its open PR cannot be brought current; nothing was folded. Re-raised the consolidated gate." >&2
-      echo "  Record the parent's branch in its state.json, then re-run \`lcars resolve-logs complete --parent $PARENT_ID\`." >&2
+      echo "  Record the parent's branch in its state.json, then retry — run: $(resolve_retry_hint complete)" >&2
       exit 1
     fi
     local push_out push_rc=0
@@ -1027,7 +1024,7 @@ cmd_complete() {
       reraise_push_failure_gate "$branch" "$push_out"
       echo "lcars resolve-logs: NOT completing $PARENT_ID — pushing branch '$branch' to origin failed; the PR would not reflect the fixes, so nothing was folded. Re-raised the consolidated gate." >&2
       echo "  git push: $push_out" >&2
-      echo "  Fix the push, then re-run \`lcars resolve-logs complete --parent $PARENT_ID\`." >&2
+      echo "  Fix the push, then retry — run: $(resolve_retry_hint complete)" >&2
       exit 1
     fi
   fi
@@ -1078,15 +1075,14 @@ work=()             # open bugs still needing driving (stage != verify)
 resolved=()         # open bugs already at verify
 paused_existing=""  # an open bug already parked at awaiting-human (prior run)
 
-while IFS= read -r s; do
-  [ -n "$s" ] || continue
+for s in "$MISSIONS_DIR"/*/state.json; do
+  [ -f "$s" ] || continue
   bid="$(json_str "$s" id)"; [ -n "$bid" ] || bid="$(basename "$(dirname "$s")")"
   type="$(json_str "$s" type)"
-  parent="$(json_str "$s" parentMission)"
   stage="$(json_str "$s" stage)"
   awaiting="$(json_raw "$s" awaitingHuman)"
   [ "$type" = "bug" ] || continue
-  [ "$parent" = "$PARENT_ID" ] || continue
+  child_parent_matches "$s" || continue
   [ "$stage" = "done" ] && continue
   linked_open+=("$bid")
   if [ "$awaiting" = "true" ]; then
@@ -1096,7 +1092,7 @@ while IFS= read -r s; do
   else
     work+=("$bid")
   fi
-done < <(ls -1 "$MISSIONS_DIR"/*/state.json 2>/dev/null | sort)
+done
 
 if [ "${#linked_open[@]}" -eq 0 ]; then
   case "$PARENT_ISSUE" in ''|null) plabel="$PARENT_ID" ;; *) plabel="#$PARENT_ISSUE" ;; esac
@@ -1244,8 +1240,8 @@ pause_at() { # id
   first="$(json_str "$MISSIONS_DIR/$id/state.json" pendingQuestion)"
   echo "lcars resolve-logs: paused at $id — it needs your answer before the batch can continue."
   [ -n "$first" ] && echo "  • $first"
-  echo "  Answer it in the inbox (\`lcars answer\`), then re-run \`lcars resolve-logs $PARENT_ID\`."
   echo "  Already-resolved bugs are untouched."
+  echo "  Answer this child's gate, then retry the batch — run: $(resolve_answer_hint "$id")"
 }
 
 # A bug already parked at awaiting-human blocks the batch up front.
@@ -1421,7 +1417,7 @@ if [ -n "$WAVE_ERRORED" ]; then
     lcars_state_refusal_die "lcars resolve-logs"
     exit 1
   fi
-  STUCK_NOTE="One logged bug did NOT reach its Verify gate and still needs attention: $WAVE_ERRORED (stage '$(json_str "$MISSIONS_DIR/$WAVE_ERRORED/state.json" stage)'). Resolve it with \`lcars run $WAVE_ERRORED\`, then re-run \`lcars resolve-logs $PARENT_ID\` to fold it in."
+  STUCK_NOTE="One logged bug did NOT reach its Verify gate and still needs attention: $WAVE_ERRORED (stage '$(json_str "$MISSIONS_DIR/$WAVE_ERRORED/state.json" stage)'). Retry it — run: $(resolve_drive_hint "$WAVE_ERRORED")"
 fi
 
 # --- THE SINGLE RE-VERIFY ASK ----------------------------------------------
@@ -1440,8 +1436,7 @@ noun="logged bugs"; [ "$n" -eq 1 ] && noun="logged bug"
 # — there is NO per-bug PR. The captain re-verifies the parent ONCE; ACCEPTING
 # this gate (answer it in the inbox) folds the children to Done. Sending the
 # parent back uses the parent's own feedback loop.
-ASK="$n $noun resolved on $PARENT_ID ($PARENT_TITLE)'s branch — ready for your single re-verify. Re-inspect the fixes (they ride this Mission's PR — no per-bug PR), then ANSWER this gate to accept them (each logged bug is folded to Done) or send the Mission back with \`lcars feedback $PARENT_ID\`."
-[ -n "$STUCK_NOTE" ] && ASK="$ASK $STUCK_NOTE"
+ASK="$n $noun resolved on $PARENT_ID ($PARENT_TITLE)'s branch — ready for your single re-verify. Re-inspect the fixes (they ride this Mission's PR — no per-bug PR), then ANSWER this gate to accept them (each logged bug is folded to Done). $STUCK_NOTE — run: $(resolve_answer_hint)"
 
 # pending.json on the PARENT (the answer inbox reads this).
 #
@@ -1492,9 +1487,9 @@ echo
 lcars_state_refusal_die "lcars resolve-logs"
 echo "Raised ONE consolidated re-verify gate on $PARENT_ID and pinged you once."
 echo "The fixes ride this Mission's PR — there is NO per-bug PR. Re-inspect them, then:"
-echo "  lcars answer respond --mission $PARENT_ID --answer \"…\"   — accept (folds each logged bug to Done)"
-echo "  lcars feedback $PARENT_ID \"…\"                            — send the Mission back"
-echo "Open the inbox with \`lcars answer\` to act on the consolidated card."
+echo "  Accept (folds each logged bug to Done) — run: $(resolve_answer_hint)"
+printf '  Send the Mission back — run: bash %q --mission %q --feedback "<what to change>"\n' \
+  "$SKILL_DIR/../lcars-feedback/feedback.sh" "$PARENT_ID"
 
 # --- AND NUMBER ONE IS TOLD (S222 BREAK A) ---------------------------------
 # THE HEADLINE DEFECT. The captain switches Number One on because he is stepping

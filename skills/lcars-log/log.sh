@@ -80,7 +80,8 @@ ESTIMATE_FAIL_BUDGET="${LCARS_LOG_ESTIMATE_FAILURES:-1}"
 # The tally lives in a FILE, not a variable: `file_one_bug` runs inside a
 # command substitution — a subshell — so a counter it increments dies with it.
 ESTIMATE_FAILS_FILE="$(mktemp -t lcars-log-est.XXXXXX)"
-trap 'rm -f "$ESTIMATE_FAILS_FILE"' EXIT
+FILING_LOCK=""
+trap 'rm -f "$ESTIMATE_FAILS_FILE"; if [ -n "$FILING_LOCK" ]; then rmdir "$FILING_LOCK"; fi' EXIT
 printf '0\n' >"$ESTIMATE_FAILS_FILE"
 
 estimate_fails()      { head -1 "$ESTIMATE_FAILS_FILE" 2>/dev/null | tr -dc '0-9'; }
@@ -99,6 +100,8 @@ estimate_breaker_tripped() {
 # it so tests can stub the whole adapter.
 SELF="${BASH_SOURCE[0]}"
 SKILL_DIR="$(cd "$(dirname "$SELF")" && pwd)"
+init_hint() { printf 'bash %q' "$SKILL_DIR/../lcars-init/init.sh"; }
+drive_hint() { printf 'bash %q drive --mission %q' "$SKILL_DIR/../lcars-run/run.sh" "$first_id"; }
 HOST_ADAPTER="${LCARS_HOST_ADAPTER:-$SKILL_DIR/../lcars-run/host-adapter.sh}"
 host() { LCARS_GH_BIN="$GH_BIN" bash "$HOST_ADAPTER" "$@"; }
 
@@ -167,6 +170,7 @@ json_raw() { # file key -> first bare token (number/bool/null)
 # Launch panel). A `--model-override` applies to the MOST RECENT `--prd` so the
 # Mission-Log review panel can steer each bug independently (positional pairing).
 PARENT_SEL=""
+CONFIRM_DISTINCT=0
 PRDS=()
 OVERRIDES=()
 # Durable image attachments (S92 + per-bug routing). The captain's pasted
@@ -184,6 +188,7 @@ GLOBAL_ATTACH=()
 PER_BUG_ATTACH=()
 while [ $# -gt 0 ]; do
   case "$1" in
+    --confirm-distinct) CONFIRM_DISTINCT=1; shift ;;
     --parent)   PARENT_SEL="${2:-}"; shift 2 ;;
     --parent=*) PARENT_SEL="${1#--parent=}"; shift ;;
     --attach|--attach=*)
@@ -271,7 +276,8 @@ case "$GIT_DIR" in /*) : ;; *) GIT_DIR="$PWD/$GIT_DIR" ;; esac
 LCARS_DIR="$GIT_DIR/lcars"
 MISSIONS_DIR="$LCARS_DIR/missions"
 CONFIG="$LCARS_DIR/config.json"
-[ -d "$MISSIONS_DIR" ] || die "no missions yet — run \`lcars init\` and file a parent Mission first."
+bash "$(dirname "$SELF")/../lcars-eeh/chunking-gate.sh" "$LCARS_DIR" --filing >/dev/null || exit $?
+[ -d "$MISSIONS_DIR" ] || die "no missions yet — run \`lcars init\` and file a parent Mission first. — run: $(init_hint)"
 
 # --- the active Mission table (id, title, stage, issue) for resolve/listing -
 # A bug is logged against an active (pre-merge) Mission, so "done" is excluded.
@@ -309,35 +315,16 @@ if [ -z "$PARENT_SEL" ]; then
   exit 1
 fi
 
-SEL="${PARENT_SEL#\#}"                 # tolerate a leading '#'
-lsel="$(printf '%s' "$SEL" | tr '[:upper:]' '[:lower:]')"
-PARENT_ID=""; PARENT_TITLE=""; PARENT_ISSUE=""
-matches=0
-while IFS=$'\t' read -r id title stage issue; do
-  [ -n "$id" ] || continue
-  hid="$(printf '%s' "$id" | tr '[:upper:]' '[:lower:]')"
-  hti="$(printf '%s' "$title" | tr '[:upper:]' '[:lower:]')"
-  hit=0
-  [ "$hid" = "$lsel" ] && hit=1
-  [ "$issue" = "$SEL" ] && hit=1
-  case "$hid" in *"$lsel"*) hit=1 ;; esac
-  case "$hti" in *"$lsel"*) hit=1 ;; esac
-  if [ "$hit" -eq 1 ]; then
-    PARENT_ID="$id"; PARENT_TITLE="$title"; PARENT_ISSUE="$issue"
-    matches=$((matches + 1))
-  fi
-done < <(active_table)
-
-if [ "$matches" -eq 0 ]; then
-  echo "lcars log: no active Mission matches \"$PARENT_SEL\"." >&2
+PARENT_RESOLUTION="$("${LCARS_PYTHON_BIN:-python3}" "$SKILL_DIR/../lcars-eeh/mission-selector.py" \
+  "$MISSIONS_DIR" active "$PARENT_SEL")" || {
   list_active
   exit 1
-fi
-if [ "$matches" -gt 1 ]; then
-  echo "lcars log: \"$PARENT_SEL\" matches more than one active Mission — be specific." >&2
-  list_active
-  exit 1
-fi
+}
+unset LCARS_MISSION_RESOLUTION
+PARENT_ID="$(printf '%s' "$PARENT_RESOLUTION" | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"], end=".")')"
+PARENT_ID="${PARENT_ID%.}"
+PARENT_TITLE="$(printf '%s' "$PARENT_RESOLUTION" | python3 -c 'import json,sys; print(json.load(sys.stdin)["mission"].get("title", ""))')"
+PARENT_ISSUE="$(printf '%s' "$PARENT_RESOLUTION" | python3 -c 'import json,sys; print(json.load(sys.stdin)["mission"].get("githubIssue") or "")')"
 
 
 # --- S189: solo ownership, the light lock ----------------------------------
@@ -390,6 +377,12 @@ xo_lock_or_die() { # <mission-dir>
 # is extracted or any issue is opened.
 owner_lock_or_die "$PARENT_ISSUE"
 xo_lock_or_die "$MISSIONS_DIR/$PARENT_ID"
+
+# Serialize the open-set check and filing, including simultaneous reports.
+lock="$MISSIONS_DIR/$PARENT_ID/bug-filing.lock"
+mkdir "$lock" 2>/dev/null \
+  || die "another bug filing holds $lock. Wait for it to finish, then retry; if it died, inspect that filing before removing its empty lock directory."
+FILING_LOCK="$lock"
 
 # --- resolve the model (config.json wins, else env, else default) ----------
 MODEL=""
@@ -507,6 +500,33 @@ file_one_bug() { # prd-path [model-override] [per-bug-attach-newline-list]
   [ -n "$title" ] || die "could not read the bug title from $prd."
   type="$(sed -n 's/.*\*\*Type:\*\*[[:space:]]*//p' "$prd" | head -1 | tr 'A-Z' 'a-z' | tr -cd 'a-z')"
   [ "$type" = "bug" ] || die "bug PRD $prd must declare '**Type:** bug' (got: '${type:-empty}')."
+
+  local reviewed
+  reviewed="$(python3 - "$MISSIONS_DIR" "$PARENT_ID" "$CONFIRM_DISTINCT" <<'PY'
+import json, pathlib, sys
+root, parent, confirmed = sys.argv[1:]
+candidates = []
+for path in sorted(pathlib.Path(root).glob("*/state.json")):
+    with path.open() as stream:
+        state = json.load(stream)
+    if (state.get("type") == "bug" and state.get("parentMission") == parent
+            and state.get("stage") != "done"):
+        candidates.append((state.get("id") or path.parent.name, state.get("title", "")))
+if candidates:
+    print("Possible duplicate bugs against %s (not a sameness verdict):" % parent,
+          file=sys.stderr)
+    for mid, title in candidates:
+        print("  Candidate: %s  %s" % (mid, title), file=sys.stderr)
+    if confirmed != "1":
+        print("STOP: review these candidates. Use the existing Mission, or explicitly "
+              "re-run with --confirm-distinct to file a separate bug. Nothing was "
+              "closed or merged.", file=sys.stderr)
+        sys.exit(1)
+    print("Explicit --confirm-distinct decision: filing separately; reviewed Mission "
+          "ids are recorded on the new bug.", file=sys.stderr)
+print(json.dumps([mid for mid, _ in candidates]))
+PY
+)" || return 1
 
   local id; id="$(next_id)"
   local mdir="$MISSIONS_DIR/$id"
@@ -756,6 +776,7 @@ file_one_bug() { # prd-path [model-override] [per-bug-attach-newline-list]
     printf '  "id": "%s",\n' "$id"
     printf '  "type": "bug",\n'
     printf '  "origin": "log",\n'
+    printf '  "duplicateReview": %s,\n' "$reviewed"
     printf '  "title": "%s",\n' "$title_json"
     printf '  "stage": "align",\n'
     printf '  "created": "%s",\n' "$NOW"
@@ -764,12 +785,15 @@ file_one_bug() { # prd-path [model-override] [per-bug-attach-newline-list]
     [ -n "$override_line" ] && printf '%s\n' "$override_line"
     [ -n "$attach_line" ] && printf '%s\n' "$attach_line"
     printf '  "githubIssue": %s,\n' "$issue_json"
-    printf '  "parentMission": "%s",\n' "$PARENT_ID"
+    printf '  "parentMission": %s,\n' "$(python3 -c 'import json,sys; print(json.dumps(sys.argv[1]))' "$PARENT_ID")"
     printf '  "parentIssue": %s,\n' "${PARENT_ISSUE:-null}"
     printf '  "branch": "%s",\n' "$branch"
     printf '  "base": "%s"\n' "$BASE"
     printf '}\n'
   } >"$mdir/state.json"
+  if [ -n "${LCARS_FILING_RECEIPT:-}" ]; then
+    printf '%s\n' "$id" >>"$LCARS_FILING_RECEIPT" || die "cannot write the filing receipt for $id."
+  fi
 
   # --- run the dynamic estimator on the child (S74) ------------------------
   # Now that prd.md + state.json exist, give this bug Mission the SAME dynamic
@@ -849,7 +873,7 @@ for r in "${ROWS[@]}"; do
 done
 
 if [ "$n" -gt 1 ]; then
-  printf 'Run `lcars run %s` (or any of the above) to begin.\n' "$first_id"
+  printf 'Run `lcars run %s` (or any of the above) to begin. — run: %s\n' "$first_id" "$(drive_hint)"
 else
-  printf 'Run `lcars run %s` to begin.\n' "$first_id"
+  printf 'Run `lcars run %s` to begin. — run: %s\n' "$first_id" "$(drive_hint)"
 fi

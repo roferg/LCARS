@@ -23,28 +23,42 @@
 #
 # Paths may not contain spaces.
 
-100644 tests/lib/MANIFEST                          doc        this file — the allow-list itself
-100644 tests/lib/README.md                         doc        what lives here, and the equipment-vs-rig line
-100644 tests/lib/cage.py                           exercised  harness, lcars-eeh, lcars-xo-observe/-press/-phone/-evidence/-render-gate
-100644 tests/lib/declared-inputs.py                exercised  declared-inputs — temporary Schedule/Respond fixtures
-100644 tests/lib/drive-reanchor.py                exercised  drive-reanchor — real drive boundary with local git and fake workers
-100755 tests/lib/drive-rig.sh                      exercised  establish-vision, foundation-gate
-100644 tests/lib/evaluate_prompt_guard.py          exercised  lcars-xo-drives, lcars-xo-eyes
-100644 tests/lib/front-door-findings.test.py            exercised  front-door-findings
-100644 tests/lib/home_marks_guard.py               exercised  lcars-xo-selfrun
-100644 tests/lib/landing_forbidden_cures.py        exercised  lcars-xo-landing
-100644 tests/lib/lcars-ech-continuity.test.py           exercised  lcars-ech
-100644 tests/lib/lcars-ech-grants.test.py               exercised  lcars-ech
-100644 tests/lib/optional_runner.py                exercised  optional-runner, gate-execution-findings, settings-findings
-100644 tests/lib/phone-mkfixture.py                exercised  lcars-xo-phone
-100644 tests/lib/ptyreply.py                       exercised  version-check — interactive version-check pty replies
-100755 tests/lib/ptyrun.py                         exercised  harness, lcars-ech
-100755 tests/lib/real-worker.sh                    exercised  real-worker-resolution
-100644 tests/lib/skill_frontmatter.py              exercised  skill-frontmatter — the strict SKILL.md frontmatter reader
-100755 tests/lib/stdin_guard.py                    exercised  harness (as "$DIR/lib/stdin_guard.py")
-100755 tests/lib/shims/align-heal-faultinj/copilot exercised  lcars-worker-guard
-100755 tests/lib/shims/deploy-watcher/claude       unused     claude half of the deploy-watcher shim pair; kept as the engine sibling
-100755 tests/lib/shims/deploy-watcher/copilot      exercised  lcars-worker-guard
-100644 tests/lib/shims/holodeck/README.md          doc        how to drive the holodeck shims by hand
-100755 tests/lib/shims/holodeck/claude             unused     claude half of the holodeck shim pair; kept as the engine sibling
-100755 tests/lib/shims/holodeck/copilot            exercised  lcars-worker-guard
+100644 tests/lib/MANIFEST                           doc        this file — the allow-list itself
+100644 tests/lib/README.md                          doc        what lives here, and the equipment-vs-rig line
+100644 tests/lib/cage.py                            exercised  harness, lcars-eeh, lcars-xo-observe/-press/-phone/-evidence/-render-gate
+100644 tests/lib/chunk-handoff-mutations.py         exercised  chunk-handoff — broken variants for the hand-off controls
+100644 tests/lib/chunk-handoff.test.py              exercised  chunk-handoff — the suite body
+100644 tests/lib/chunking-decision-mutations.py     exercised  chunking-decision — broken variants, one designated control each
+100644 tests/lib/chunking-decision.test.py          exercised  chunking-decision — the suite body
+100644 tests/lib/declared-inputs.py                 exercised  declared-inputs — temporary Schedule/Respond fixtures
+100644 tests/lib/doc_claims.py                      exercised  doc-claims — the claim reader
+100644 tests/lib/drive-reanchor.py                  exercised  drive-reanchor — real drive boundary with local git and fake workers
+100755 tests/lib/drive-rig.sh                       exercised  establish-vision, foundation-gate
+100644 tests/lib/evaluate_prompt_guard.py           exercised  lcars-xo-drives, lcars-xo-eyes
+100644 tests/lib/front-door-findings.test.py        exercised  front-door-findings
+100644 tests/lib/hcm-preservation.py                exercised  chunk-authority, delegation — HCM section preservation
+100644 tests/lib/home_marks_guard.py                exercised  lcars-xo-selfrun
+100644 tests/lib/landing_forbidden_cures.py         exercised  lcars-xo-landing
+100644 tests/lib/lcars-ech-continuity.test.py       exercised  lcars-ech
+100644 tests/lib/lcars-ech-grants.test.py           exercised  lcars-ech
+100644 tests/lib/loose-ends-mutations.py            exercised  loose-ends — broken variants
+100644 tests/lib/loose-ends.test.py                 exercised  loose-ends — the suite body
+100644 tests/lib/mission-boundaries.test.py         exercised  mission-boundaries — the suite body
+100644 tests/lib/mission-selector-mutations.py      exercised  mission-selector — broken variants
+100644 tests/lib/mission-selector.test.py           exercised  mission-selector — the suite body
+100644 tests/lib/optional_runner.py                 exercised  optional-runner, gate-execution-findings, settings-findings
+100644 tests/lib/parallel-chunks-mutations.py       exercised  parallel-chunks — broken variants
+100644 tests/lib/parallel-chunks.test.py            exercised  parallel-chunks — the suite body
+100644 tests/lib/phone-mkfixture.py                 exercised  lcars-xo-phone
+100644 tests/lib/ptyreply.py                        exercised  version-check — interactive version-check pty replies
+100755 tests/lib/ptyrun.py                          exercised  harness, lcars-ech
+100755 tests/lib/real-worker.sh                     exercised  real-worker-resolution
+100755 tests/lib/shims/align-heal-faultinj/copilot  exercised  lcars-worker-guard
+100755 tests/lib/shims/deploy-watcher/claude        unused     claude half of the deploy-watcher shim pair; kept as the engine sibling
+100755 tests/lib/shims/deploy-watcher/copilot       exercised  lcars-worker-guard
+100644 tests/lib/shims/holodeck/README.md           doc        how to drive the holodeck shims by hand
+100755 tests/lib/shims/holodeck/claude              unused     claude half of the holodeck shim pair; kept as the engine sibling
+100755 tests/lib/shims/holodeck/copilot             exercised  lcars-worker-guard
+100644 tests/lib/skill_frontmatter.py               exercised  skill-frontmatter — the strict SKILL.md frontmatter reader
+100755 tests/lib/stdin_guard.py                     exercised  harness (as "$DIR/lib/stdin_guard.py")
+100644 tests/lib/test_doc_claims.py                 exercised  doc-claims — the reader's own unit tests

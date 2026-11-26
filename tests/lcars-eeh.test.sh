@@ -55,6 +55,7 @@ trap 'rm -rf "$TMPROOT"' EXIT
 # of the new farm as well. Cases that are ABOUT the Copilot farm override them.
 export LCARS_COPILOT_PLUGINS_DIR="$TMPROOT/no-copilot-plugins"
 export LCARS_COPILOT_BIN="$TMPROOT/definitely-no-copilot"
+export LCARS_AGENTS_DEST="$TMPROOT/no-claude-agents"
 
 ok()   { printf '  \033[32mPASS\033[0m %s\n' "$1"; pass=$((pass + 1)); }
 bad()  { printf '  \033[31mFAIL\033[0m %s\n' "$1"; fail=$((fail + 1)); }
@@ -720,6 +721,7 @@ cop20="$home20/.copilot/installed-plugins/_direct"; mkdir -p "$cop20"
 ln -snf "$c20" "$cop20/lcars"
 out20="$TMPROOT/out20.txt"
 env -u LCARS_SKILLS_DEST -u LCARS_COPILOT_PLUGINS_DIR -u LCARS_COPILOT_BIN \
+  -u LCARS_AGENTS_DEST -u LCARS_INSTALL_PREFIX \
   HOME="$home20" PATH="/usr/bin:/bin" \
   LCARS_REPO="$c20" GIT_BIN="$GIT_STUB" LCARS_EEH_CWD="$(new_plain_dir)" \
   bash "$SCRIPT" >"$out20" 2>&1
@@ -974,7 +976,9 @@ check "26. the \`exec\` form the doc prints names a script that exists" \
 # before it ever reaches `exec`.
 d26repo="$(mktemp -d "$TMPROOT/d26.XXXX")"
 ( cd "$d26repo" && git init -q 2>/dev/null )
-d26out="$(LCARS_ECH_CWD="$d26repo" bash "$AP277_D2" exec lcars-xo/xo.sh report 2>&1 || true)"
+mkdir -p "$d26repo/.git/lcars"
+printf '{"numberOne":{"enabled":false}}\n' >"$d26repo/.git/lcars/config.json"
+d26out="$(cd "$d26repo" && LCARS_ECH_CWD="$d26repo" bash "$AP277_D2" exec lcars-xo/xo.sh report 2>&1 || true)"
 check "26. running that exact form REACHES xo.sh (its OWN report output comes back)" \
   "printf '%s' \"\$d26out\" | qgrep -qE 'Since you last looked|History:'"
 check "26. and it is not a not-found refusal of any kind" \
@@ -983,7 +987,7 @@ check "26. and it is not a not-found refusal of any kind" \
 # does not exist has to be refused by name. The refusal EXITS 1 and this suite
 # runs with `pipefail`, so the output is captured FIRST (see the same note in
 # § 24): piping it live would report the PRODUCER's code, not the grep's.
-d26bog="$(LCARS_ECH_CWD="$d26repo" bash "$AP277_D2" exec lcars-xo/nope.sh report 2>&1 || true)"
+d26bog="$(cd "$d26repo" && LCARS_ECH_CWD="$d26repo" bash "$AP277_D2" exec lcars-xo/nope.sh report 2>&1 || true)"
 check "26. CONTROL: a BOGUS script in the same form IS refused (the check can fail)" \
   "printf '%s' \"\$d26bog\" | qgrep -qF 'no such script'"
 
@@ -1676,6 +1680,361 @@ check "S306-8C. and the launch lines still carry no blanket switch" \
   "! s306_join \"\$(s306_fence '$S306_PB')\" | qgrep -qE -- '--allow-all-paths|COPILOT_ALLOW_ALL=true|--dangerously-skip-permissions'"
 check "S306-8C. NEGATIVE CONTROL: the \$HOME predicates still go RED on an injected copy" \
   "[ \"\$(s306_bare_home '$S306_INJ')\" = yes ] && [ \"\$(s306_grants_home '$S306_INJ' copilot)\" = yes ]"
+
+# ==========================================================================
+# S358 — THE PLAYBOOK IS SPLIT BY READER AND MOMENT, AND LOSES NOTHING
+# ==========================================================================
+# HOLOGRAM-COMMAND-MODE.md is 1,512 lines and a supervisor read ALL of them to
+# learn the one thing it needed at the moment it needed it. S358 splits it BY
+# READER AND MOMENT — preflight, intake, drive, the verify gate, land, waiting,
+# reporting — so `lcars-eeh docs ech-verify` hands a seat standing at the gate
+# only the gate.
+#
+# WHY THE SPLIT IS A RESOLVER PARTITION AND NOT SEVEN NEW FILES. Two tracked
+# guards in this repo forbid moving the lines themselves, and they are RIGHT to:
+#   - tests/delegation.test.sh D10 asserts `git diff main -- HOLOGRAM-COMMAND-MODE.md`
+#     removes ZERO lines ("it is the authority, and nothing was removed from it").
+#   - tests/delegation.test.sh S354/10 asserts the file is UNTOUCHED at HEAD.
+# Cutting the file into seven would read as 1,512 removed lines to the first and
+# would trip the second. More to the point, the bulk of those lines is the REASON
+# behind a rule, and this project's doctrine is that a rule without its reason
+# gets undone. So the file is not edited AT ALL: the parts are a declared,
+# exhaustive, in-order PARTITION of it, anchored to headings it already has, and
+# the resolver prints one part's byte range. That makes the invariant below true
+# BY CONSTRUCTION as well as by assertion, and it is why every one of the ~20
+# existing readers that greps the playbook by path still sees the whole thing.
+#
+# THE INVARIANT: the parts, concatenated in order, are BYTE-IDENTICAL to the
+# pre-split file. Its sha256 is pinned here, not computed, so a later edit that
+# quietly drops a reason cannot move the goalposts with it.
+S358_HCM="$REPO_ROOT/skills/lcars-eeh/HOLOGRAM-COMMAND-MODE.md"
+# S371 intentionally updates the OFF ruling and required-review contract.
+S358_SHA='718a8de97fe0e247990bc9183e9f76464b023d83235ebe67b5f87d88fad99c80'
+S358_WANT='ech-preflight ech-intake ech-drive ech-verify ech-land ech-wait ech-report'
+
+s358_sha() { shasum -a 256 "$1" | awk '{print $1}'; }
+
+printf '\n== S358. the playbook resolves in parts that rejoin byte-identically ==\n'
+
+# A FOREIGN CWD, THROUGH A SYMLINKED FARM — the supervisor's real posture. It is
+# never sitting in the LCARS checkout; it reaches the skill through whatever
+# mount its CLI installed, from the product repo it is working in.
+S358_FARM="$TMPROOT/s358-farm"; mkdir -p "$S358_FARM"
+ln -sfn "$REPO_ROOT/skills/lcars-eeh" "$S358_FARM/lcars-eeh"
+S358_FOREIGN="$TMPROOT/s358-foreign"; mkdir -p "$S358_FOREIGN"
+s358_docs() { ( cd "$S358_FOREIGN" && bash "$S358_FARM/lcars-eeh/eeh.sh" docs "$@" ); }
+
+# The names come from the PRODUCT's own listing, so a part silently dropped from
+# the manifest cannot hide behind a hardcoded loop here; the pinned list is then
+# asserted against it, so one silently ADDED cannot hide either.
+S358_LIST="$(s358_docs 2>/dev/null | sed -n 's/^ *parts: *//p' | tr -s ' \t|' ' ' | sed 's/^ //; s/ $//')"
+check "S358/2. \`docs\` advertises the parts, and they are exactly the seven moments" \
+  "[ \"\$S358_LIST\" = '$S358_WANT' ]"
+check "S358/2. ...and the old \`names:\` line is untouched, so every existing reader still reads" \
+  "s358_docs 2>/dev/null | sed -n 's/^ *names: *//p' | qgrep -q 'delegation'"
+
+S358_DIR="$TMPROOT/s358-parts"; mkdir -p "$S358_DIR"
+S358_JOINED="$TMPROOT/s358-joined.md"; : >"$S358_JOINED"
+s358_allrc=0; s358_i=0; s358_counts=''
+for s358_p in $S358_WANT; do
+  s358_i=$((s358_i + 1))
+  if s358_docs "$s358_p" >"$S358_DIR/$(printf '%02d' "$s358_i")-$s358_p.md" 2>/dev/null; then :; else s358_allrc=1; fi
+  cat "$S358_DIR/$(printf '%02d' "$s358_i")-$s358_p.md" >>"$S358_JOINED"
+  s358_counts="$s358_counts $s358_p=$(grep -c '' "$S358_DIR/$(printf '%02d' "$s358_i")-$s358_p.md" | tr -d ' ')"
+done
+printf '  (part line counts:%s)\n' "$s358_counts"
+
+check "S358/2. every part resolves by name from a foreign cwd, exit 0" "[ $s358_allrc -eq 0 ]"
+check "S358/2. every part is non-empty, and every one is SMALLER than the whole" \
+  "( for f in '$S358_DIR'/*.md; do [ -s \"\$f\" ] || exit 1; [ \"\$(grep -c '' \"\$f\")\" -lt \"\$(grep -c '' '$S358_HCM')\" ] || exit 1; done )"
+check "S358/2. each part opens with its OWN anchor heading, so a reader knows where it is" \
+  "( for f in '$S358_DIR'/*.md; do head -1 \"\$f\" | qgrep -qE '^#{1,2} ' || exit 1; done )"
+
+# --- behaviour 1: BYTE IDENTITY, the whole reason to split rather than edit ---
+check "S358/1. the parts concatenated in order match the PINNED pre-split sha256" \
+  "[ \"\$(s358_sha '$S358_JOINED')\" = '$S358_SHA' ]"
+check "S358/1. ...and the file on disk still carries that same sha (the split edited nothing)" \
+  "[ \"\$(s358_sha '$S358_HCM')\" = '$S358_SHA' ]"
+check "S358/1. CONTROL: a single line dropped from the join DOES break the identity" \
+  "sed '400d' '$S358_JOINED' >'$TMPROOT/s358-lossy.md' && [ \"\$(s358_sha '$TMPROOT/s358-lossy.md')\" != '$S358_SHA' ]"
+
+# --- behaviour 3: `docs ech` still hands over the whole document -------------
+s358_docs ech >"$TMPROOT/s358-whole.md" 2>/dev/null
+check "S358/3. \`docs ech\` still returns the WHOLE playbook, byte for byte" \
+  "[ \"\$(s358_sha '$TMPROOT/s358-whole.md')\" = '$S358_SHA' ]"
+check "S358/3. \`docs --path ech\` still resolves to a file that exists" \
+  "[ -f \"\$(s358_docs --path ech)\" ]"
+check "S358/3. a part's --path points at the playbook it lives in, so no pointer dangles" \
+  "[ \"\$(s358_docs --path ech-verify)\" = '$S358_HCM' ]"
+
+# --- behaviour 4 + 5: every existing § pointer still resolves, to ONE part ----
+# A pointer is only as good as its last execution (D10b's lesson: the first draft
+# of a `lcars-eeh docs` pointer exited 1 and nobody noticed). So every `§`
+# reference at an HCM section in every doc that makes one is resolved against the
+# PARTS, and the checker is proved able to fail by planting a section that is not
+# there. Without that control a checker that matches nothing reads as green.
+cat >"$TMPROOT/s358-pointers.py" <<'S358_PY'
+import pathlib, re, sys
+
+parts_dir, docs = pathlib.Path(sys.argv[1]), [pathlib.Path(p) for p in sys.argv[2:]]
+parts = sorted(parts_dir.glob("*.md"))
+assert parts, "no parts to check against"
+
+# heading token -> the part that holds it. "## 6a. The merge policy" -> "6a".
+owner, headings = {}, []
+for part in parts:
+    for line in part.read_text().splitlines():
+        m = re.match(r"^## +([0-9]+[a-z]?)\. ", line)
+        if m:
+            assert m.group(1) not in owner, f"section {m.group(1)} is in two parts"
+            owner[m.group(1)] = part.name
+        if line.startswith("## "):
+            headings.append((line[3:], part.name))
+
+bad = []
+for doc in docs:
+    text = doc.read_text()
+    for m in re.finditer(r"HOLOGRAM-COMMAND-MODE\.md`?\s*(?:\\?[^\n]{0,4}?)?(§{1,2}|section)\s*([^\n]{0,40})", text):
+        tail = m.group(2)
+        # §§ 1–2 / §§ 1-2 — a RANGE; every section in it must resolve.
+        rng = re.match(r"^([0-9]+)\s*[–-]\s*([0-9]+)", tail)
+        if m.group(1) == "§§" and rng:
+            toks = [str(n) for n in range(int(rng.group(1)), int(rng.group(2)) + 1)]
+        elif re.match(r"^\*", tail):                  # § *Some heading name*
+            name = tail[1:].split("*", 1)[0]
+            if not any(name in h for h, _ in headings):
+                bad.append(f"{doc.name}: § *{name}* matches no playbook heading")
+            continue
+        else:
+            t = re.match(r"^([0-9]+[a-z]?)", tail)
+            if not t:
+                continue                              # prose, not a pointer
+            toks = [t.group(1)]
+        for tok in toks:
+            if tok not in owner:
+                bad.append(f"{doc.name}: § {tok} is not a section of the playbook")
+
+    # `HOLOGRAM-COMMAND-MODE.md:75,133` — pointers at LINE numbers.
+    whole = sum(len(p.read_text().splitlines()) for p in parts)
+    for m in re.finditer(r"HOLOGRAM-COMMAND-MODE\.md:([0-9,]+)", text):
+        for n in [x for x in m.group(1).split(",") if x]:
+            if not 1 <= int(n) <= whole:
+                bad.append(f"{doc.name}: line pointer :{n} is past the end")
+
+print(f"checked {len(docs)} docs against {len(parts)} parts, {len(owner)} sections")
+if bad:
+    print("\n".join("  UNRESOLVED " + b for b in bad))
+    sys.exit(1)
+S358_PY
+
+S358_DOCS="$REPO_ROOT/skills/lcars-eeh/DELEGATION.md $REPO_ROOT/skills/lcars-eeh/SKILL.md $REPO_ROOT/skills/lcars-eeh/delegate-brief.md $REPO_ROOT/skills/lcars-eeh/ORCHESTRATION.md $REPO_ROOT/skills/lcars-ech/SKILL.md $REPO_ROOT/skills/lcars-run/live-check/README.md $REPO_ROOT/skills/lcars-xo/xo-run.py $REPO_ROOT/skills/lcars-eeh/ech.sh"
+check "S358/4. every \`§\` pointer at a playbook section in skills/ resolves to exactly one part" \
+  "python3 '$TMPROOT/s358-pointers.py' '$S358_DIR' $S358_DOCS"
+check "S358/5. CONTROL: a PLANTED pointer at a section that is not there REDS" \
+  "cp '$REPO_ROOT/skills/lcars-eeh/DELEGATION.md' '$TMPROOT/s358-planted.md' && printf 'see \`HOLOGRAM-COMMAND-MODE.md\` § 99 for this.\n' >>'$TMPROOT/s358-planted.md' && ! python3 '$TMPROOT/s358-pointers.py' '$S358_DIR' '$TMPROOT/s358-planted.md'"
+check "S358/5. CONTROL: a planted pointer at a NAMED heading that is not there also REDS" \
+  "cp '$REPO_ROOT/skills/lcars-eeh/SKILL.md' '$TMPROOT/s358-planted2.md' && printf 'see \`HOLOGRAM-COMMAND-MODE.md\` § *No Such Heading At All*.\n' >>'$TMPROOT/s358-planted2.md' && ! python3 '$TMPROOT/s358-pointers.py' '$S358_DIR' '$TMPROOT/s358-planted2.md'"
+
+# Every `lcars-eeh docs <name>` written in prose anywhere in skills/ must RUN —
+# part names included, now that prose points at them.
+s358_prc=0
+for s358_n in $(grep -rhoE 'lcars-eeh docs (--path )?[a-z][a-z-]*' "$REPO_ROOT/skills" 2>/dev/null \
+                | sed 's/.*docs //; s/--path //' | sort -u); do
+  [ "$s358_n" = "name" ] && continue
+  s358_docs "$s358_n" >/dev/null 2>&1 || { s358_prc=1; printf '  (unresolved: docs %s)\n' "$s358_n"; }
+done
+check "S358/4. every \`lcars-eeh docs <name>\` pointer written in skills/ actually resolves" \
+  "[ $s358_prc -eq 0 ]"
+# The refusal is CAPTURED, not piped: this file runs under `set -o pipefail`, so
+# `s358_docs … | qgrep` carries the REFUSAL's own exit 1 out of the pipeline and
+# the assertion fails however well the message reads. (That is how this check
+# first went red: a scoped rig without pipefail passed it.)
+s358_eout="$(s358_docs ech-nosuchpart 2>&1)"; s358_erc=$?
+check "S358/5. CONTROL: an unknown part name still refuses, and the refusal lists the parts" \
+  "[ $s358_erc -ne 0 ] && printf '%s' \"\$s358_eout\" | qgrep -q 'ech-verify'"
+
+# --- behaviour 6: the playbook-heading lock still holds ----------------------
+# ech.sh's PB_* table is the contract between the driver and the prose: `next`
+# prints a heading and the seat looks it up. Every one of those headings must
+# still be findable, and must now sit in a part a reader can ask for by name.
+s358_pbrc=0; s358_pbn=0
+while IFS= read -r s358_h; do
+  s358_pbn=$((s358_pbn + 1))
+  grep -qFx "$s358_h" "$S358_HCM" || { s358_pbrc=1; printf '  (missing from the playbook: %s)\n' "$s358_h"; }
+  grep -qFxh "$s358_h" "$S358_DIR"/*.md || { s358_pbrc=1; printf '  (missing from every part: %s)\n' "$s358_h"; }
+done <<S358_PB
+$(grep -E "^PB_[a-z_]+='## " "$REPO_ROOT/skills/lcars-eeh/ech.sh" | sed "s/^PB_[a-z_]*='//; s/'\$//" | sort -u)
+S358_PB
+check "S358/6. all of ech.sh's PLAYBOOK headings are still in the playbook AND in a part" \
+  "[ $s358_pbrc -eq 0 ] && [ $s358_pbn -ge 10 ]"
+
+
+# ==========================================================================
+# S358 FIX ROUND 1 — A RULE IS SERVED WITH ITS REASON, AND THE DRIVER SAYS
+#                    WHICH PART TO READ
+# ==========================================================================
+# Two defects a fresh tester found in the partition above. Neither is a mistake
+# in the byte ranges — they tile correctly — so neither is cured by moving a
+# line of the playbook. Both are cured in the MANIFEST and in the one surface
+# that tells a supervisor where to look.
+#
+# DEFECT 1 — A RULE WAS SEPARATED FROM ITS REASON, which is the exact failure
+# this split was built to avoid. `ech-drive` served § 5, whose opening paragraph
+# carries **Do not re-sequence stages yourself** — and nothing else. The REASON
+# is § 4a, sixty lines that carry the captain's 2026-10-13 ruling, the measured
+# S291 evidence (five worker-fence breaches in one run, across both engines) and
+# the DO / DO-NOT list — and it was served 427 lines earlier, by `ech-intake`,
+# which a seat about to drive has no reason to load. A seat reading the 33-line
+# part learned the rule with no argument behind it, and this project's whole
+# doctrine is that such a rule gets undone.
+#
+# THE AUTHOR'S OWN TYPOGRAPHY SAYS SO, and it is the objective corroboration
+# rather than a reader's taste: every section break in the playbook is marked
+# with a `---` rule, and five of the six cuts landed immediately after one. The
+# intake->drive cut was the single exception — it fell mid-flow, directly after
+# § 4a's closing blockquote. The cure is to move that ONE anchor up to § 4a, so
+# the cut lands on a `---` like every other, and the rule arrives with its
+# reason. NOTHING MOVES IN THE FILE: the join must stay byte-identical, which is
+# what the pinned sha above re-proves after the boundary shifts.
+#
+# DEFECT 2 — NOTHING ROUTED A READER TO A PART, so the feature could not be
+# used. The driver's one "where to look" surface prints `PLAYBOOK: ## 6. The
+# Verify gate — …`: a HEADING, in a 1,512-line file. It named no part, so the
+# seat that could have loaded 289 lines loaded all of them, and `ech.sh` carried
+# not one mention of a part name. The PLAYBOOK line now also names the part, and
+# the part is DERIVED FROM THE SAME MANIFEST (`docs --part-of <heading>`) rather
+# than from a second copy of the mapping in the driver — two copies of a mapping
+# is how they drift, and the drift would be silent.
+
+printf '\n== S358 fix round 1. the rule arrives with its reason, and the line names the part ==\n'
+
+# --- defect 1: the rule and its reason are served together -----------------
+S358R_4A='## 4a. Drive through the HUMAN interfaces — never hand-step the stage machine'
+S358R_5='## 5. Drive it — backgrounded, with a waiter that watches the process'
+S358R_LAND='## 7. Land it — approve, then the hygiene that always follows'
+S358R_DRIVE="$(echo "$S358_DIR"/*-ech-drive.md)"
+S358R_INTAKE="$(echo "$S358_DIR"/*-ech-intake.md)"
+
+check "S358/7. \`ech-drive\` carries the RULE — the driver owns the stage order" \
+  "qgrep -q 'Do not re-sequence' '$S358R_DRIVE'"
+check "S358/7. ...and the REASON behind it, § 4a, in the SAME part" \
+  "qgrep -qFx '$S358R_4A' '$S358R_DRIVE'"
+check "S358/7. ...including § 4a's measured evidence, not just its heading" \
+  "qgrep -q 'fired five times in one' '$S358R_DRIVE' && qgrep -q \"captain's rule, 2026-10-13\" '$S358R_DRIVE'"
+check "S358/7. ...and § 5 itself is still there, so the part gained prose and lost none" \
+  "qgrep -qFx '$S358R_5' '$S358R_DRIVE'"
+check "S358/7. the cut MOVED and did not COPY — \`ech-intake\` no longer serves § 4a" \
+  "! qgrep -qFx '$S358R_4A' '$S358R_INTAKE'"
+# The author marks every section break with a `---`. Five of six cuts already
+# landed right after one; this is the sixth, and it is the objective reading of
+# where the author thought the block ended.
+s358_break_before() { # <a part's opening heading> -> 0 iff the nearest non-blank
+  # line above it in the playbook is the author's own `---` section rule.
+  local n; n="$(grep -nFx -- "$1" "$S358_HCM" | head -1 | cut -d: -f1)"
+  [ -n "$n" ] || return 1
+  n=$((n - 1))
+  while [ "$n" -gt 0 ] && [ -z "$(sed -n "${n}p" "$S358_HCM")" ]; do n=$((n - 1)); done
+  [ "$(sed -n "${n}p" "$S358_HCM")" = '---' ]
+}
+check "S358/7. every cut now lands on a section break — the author's own \`---\` rule" \
+  "( first=1; for f in '$S358_DIR'/*.md; do if [ \"\$first\" = 1 ]; then first=0; continue; fi; h=\"\$(head -1 \"\$f\")\"; s358_break_before \"\$h\" || { printf '  (not on a break: %s)\n' \"\$h\"; exit 1; }; done )"
+
+# --- defect 1 regression guard: the partition is still a partition ----------
+# Byte identity is asserted above against the pinned sha, on the SAME join these
+# parts were written into — moving a boundary cannot pass it by accident. These
+# two add the tiling statement in its own words, so a future gap or overlap is
+# named as one instead of showing up only as a changed hash.
+check "S358/7. the parts still TILE the whole file — the join has exactly its line count" \
+  "[ \"\$(grep -c '' '$S358_JOINED')\" = \"\$(grep -c '' '$S358_HCM')\" ]"
+check "S358/7. ...and DISJOINTLY — every part's opening anchor occurs exactly once in the join" \
+  "( for f in '$S358_DIR'/*.md; do h=\"\$(head -1 \"\$f\")\"; [ \"\$(grep -cFx \"\$h\" '$S358_JOINED')\" = 1 ] || exit 1; done )"
+
+# --- defect 2: the driver's PLAYBOOK line names the part -------------------
+# `docs --part-of <a whole heading line>` is the ONE mapping, read out of the
+# manifest. The driver asks it; it does not keep a copy.
+s358_partof() { ( cd "$S358_FOREIGN" && bash "$S358_FARM/lcars-eeh/eeh.sh" docs --part-of "$1" 2>/dev/null ); }
+
+check "S358/8. \`docs --part-of\` answers which part serves a heading, from the manifest" \
+  "[ \"\$(s358_partof '$S358R_4A')\" = ech-drive ] && [ \"\$(s358_partof '## 6. The Verify gate — Number One, then the live check')\" = ech-verify ]"
+check "S358/8. CONTROL: \`--part-of\` a line that is not in the playbook REFUSES" \
+  "! ( cd '$S358_FOREIGN' && bash '$S358_FARM/lcars-eeh/eeh.sh' docs --part-of '## 99. No Such Section' >/dev/null 2>&1 )"
+
+# EVERY PLAYBOOK LINE ech.sh CAN EMIT, checked statically out of its own PB_*
+# table — the same table S358/6 locks — so no branch of `next` or `policy` can
+# print a heading whose part does not resolve. Taking the file as an argument is
+# what makes the planted control below possible.
+s358_pb_parts() { # <ech.sh path> -> 0 iff every heading it can emit names a resolving part
+  local h p rc=0 n=0
+  while IFS= read -r h; do
+    [ -n "$h" ] || continue
+    n=$((n + 1))
+    p="$(s358_partof "$h")"
+    if [ -z "$p" ]; then printf '  (no part serves: %s)\n' "$h"; rc=1; continue; fi
+    grep -qFxh -- "$h" "$S358_DIR"/*-"$p".md \
+      || { printf '  (part %s does not carry: %s)\n' "$p" "$h"; rc=1; }
+  done <<EOF
+$(grep -E "^PB_[a-z_]+='## " "$1" | sed "s/^PB_[a-z_]*='//; s/'\$//" | sort -u)
+EOF
+  [ "$n" -ge 10 ] || { printf '  (only %d headings found — the table moved)\n' "$n"; rc=1; }
+  return $rc
+}
+check "S358/8. every PLAYBOOK heading ech.sh can emit names a part that RESOLVES" \
+  "s358_pb_parts '$REPO_ROOT/skills/lcars-eeh/ech.sh'"
+# THE KNOWN-GOOD CONTROL. A check that cannot fail is worthless: this plants a
+# heading in a COPY of the driver that no part serves, and the checker must say
+# so. It is a copy — the shipped driver is not touched.
+sed "s/^PB_land='.*/PB_land='## 77. A section that is not in the playbook'/" \
+  "$REPO_ROOT/skills/lcars-eeh/ech.sh" >"$TMPROOT/s358-ech-planted.sh"
+check "S358/8. CONTROL: a PLANTED bad mapping in the driver REDS" \
+  "qgrep -q '## 77\. A section' '$TMPROOT/s358-ech-planted.sh' && ! s358_pb_parts '$TMPROOT/s358-ech-planted.sh'"
+
+# AND THE LINE IS ACTUALLY PRINTED. The static check above proves the mapping;
+# this drives the real driver and reads what a supervisor would see. `policy` is
+# used because it reaches a PLAYBOOK line from both of its branches with nothing
+# but a config and an autopilot record on disk.
+S358_RIG="$TMPROOT/s358-rig"
+mkdir -p "$S358_RIG"
+( cd "$S358_RIG" \
+  && git init -q -b main . \
+  && git config user.email t@example.com && git config user.name Tester \
+  && echo seed >README.md && git add -A && git commit -qm seed ) >/dev/null 2>&1
+mkdir -p "$S358_RIG/.git/lcars/missions"
+printf '{"testCommand":"true","engine":"copilot"}\n' >"$S358_RIG/.git/lcars/config.json"
+printf '{}\n' >"$S358_RIG/.git/lcars/autopilot.json"
+s358_pol() { LCARS_ECH_CWD="$S358_RIG" bash "$REPO_ROOT/skills/lcars-eeh/ech.sh" policy "$@" 2>&1 </dev/null; }
+S358_POL_MERGE="$(s358_pol --verdict high --live-check pass | grep '^PLAYBOOK: ')"
+S358_POL_BACK="$(s358_pol --verdict high --live-check bugs | grep '^PLAYBOOK: ')"
+printf '  (PLAYBOOK lines: %s | %s)\n' "$S358_POL_MERGE" "$S358_POL_BACK"
+
+check "S358/8. the PLAYBOOK line the driver PRINTS names the part to read" \
+  "printf '%s\n' \"\$S358_POL_MERGE\" | qgrep -qE '^PLAYBOOK: ## .+ \(lcars-eeh docs ech-[a-z]+\)\$'"
+check "S358/8. ...on the other branch too, and with the part that matches that heading" \
+  "printf '%s\n' \"\$S358_POL_BACK\" | qgrep -qF '(lcars-eeh docs ech-verify)' && printf '%s\n' \"\$S358_POL_MERGE\" | qgrep -qF '(lcars-eeh docs ech-land)'"
+check "S358/8. ...and the part it names RESOLVES to prose, through the real resolver" \
+  "s358_docs \"\$(printf '%s\n' \"\$S358_POL_MERGE\" | sed -n 's/.*(lcars-eeh docs \\([a-z-]*\\)).*/\\1/p')\" | qgrep -qFx '$S358R_LAND'"
+check "S358/8. ...and the heading itself is still byte-identical to the playbook's own line" \
+  "qgrep -qFx \"\$(printf '%s\n' \"\$S358_POL_MERGE\" | sed 's/^PLAYBOOK: //; s/ (lcars-eeh docs [a-z-]*)\$//')\" '$S358_HCM'"
+
+# ---------------------------------------------------------------------------
+# S358 FIX ROUND 2 — THE SURFACE BUILT TO ROUTE READERS IS IN THE HELP
+# ---------------------------------------------------------------------------
+# `docs --part-of` exists to tell a reader WHICH part serves the line they are
+# holding. It was undiscoverable: the help listed the part names and `--path`
+# and never named the flag. A routing surface nobody can find routes nobody.
+printf '\n== S358 fix round 2. the help names the flag that routes readers ==\n'
+
+S358F_HELP="$TMPROOT/s358-help.txt"
+s358_docs >"$S358F_HELP" 2>/dev/null
+
+check "S358/9. \`docs\` help names \`--part-of\`, so the routing flag is discoverable" \
+  "qgrep -q -- '--part-of' '$S358F_HELP'"
+check "S358/9. ...in the same shape as \`--path\` — its own line, saying what it does" \
+  "qgrep -qE '^  --part-of .+' '$S358F_HELP' && qgrep -qE '^  --path .+' '$S358F_HELP'"
+check "S358/9. ...and the help still carries the names, the parts and the resolved dir" \
+  "qgrep -q '^  names: ' '$S358F_HELP' && qgrep -q '^  parts: ' '$S358F_HELP' && qgrep -q '^  resolved from: ' '$S358F_HELP'"
+# The flag the help now advertises must actually work when a reader runs it.
+check "S358/9. ...and what it advertises is real — the flag answers for a live heading" \
+  "[ \"\$(s358_partof '$S358R_LAND')\" = ech-land ]"
 
 # --- summary --------------------------------------------------------------
 printf '\nlcars eeh: %d passed, %d failed\n' "$pass" "$fail"

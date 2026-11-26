@@ -7916,7 +7916,7 @@ check "X5. (control) …and the drive it is switched off inside still ran" \
 check "X6. the pass that finds a PR already open calls the hook" \
   "qgrep -q 'drive_number_one_verify' <(sed -n '/in review — PR open\"/,/return 0/p' '$SCRIPT')"
 check "X6. the pass that just OPENED the PR calls it too" \
-  "qgrep -q 'drive_number_one_verify' <(sed -n '/PR opened — review & merge\"/,/drive_halt_in_review/p' '$SCRIPT')"
+  "qgrep -q 'drive_number_one_verify' <(sed -n '/emit_event gate verify \"PR opened/,/drive_halt_in_review/p' '$SCRIPT')"
 check "X6. the spawn is detached (setsid where there is one, nohup where there is not)" \
   "qgrep -qE 'setsid bash \"\\\$XO_SCRIPT\"' '$SCRIPT' && qgrep -qE 'nohup bash \"\\\$XO_SCRIPT\"' '$SCRIPT'"
 

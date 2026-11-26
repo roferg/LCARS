@@ -1,0 +1,7 @@
+{
+  "id": "t-002",
+  "missionId": "@MISSION_ID@",
+  "wave": 2,
+  "status": "pending",
+  "attempts": 0
+}

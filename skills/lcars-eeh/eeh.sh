@@ -42,6 +42,8 @@ CWD="${LCARS_EEH_CWD:-$PWD}"
 # dest is a farm the caller wants judged, installed CLI or not.
 SKILLS_DEST_EXPLICIT=0; [ -n "${LCARS_SKILLS_DEST:-}" ] && SKILLS_DEST_EXPLICIT=1
 SKILLS_DEST="${LCARS_SKILLS_DEST:-$HOME/.claude/skills}"
+AGENTS_DEST="${LCARS_AGENTS_DEST:-${LCARS_INSTALL_PREFIX:+$LCARS_INSTALL_PREFIX/claude-agents}}"
+AGENTS_DEST="${AGENTS_DEST:-$HOME/.claude/agents}"
 COPILOT_PLUGINS_DIR="${LCARS_COPILOT_PLUGINS_DIR:-$HOME/.copilot/installed-plugins/_direct}"
 CLAUDE_BIN="${LCARS_CLAUDE_BIN:-claude}"
 COPILOT_BIN="${LCARS_COPILOT_BIN:-copilot}"
@@ -67,32 +69,148 @@ REPO="${LCARS_REPO:-$DEFAULT_REPO}"
 #   lcars-eeh docs                 list the documents
 #   lcars-eeh docs orchestration   print ORCHESTRATION.md
 #   lcars-eeh docs --path ech        print its absolute path only
+#   lcars-eeh docs ech-verify      print ONE PART of the playbook
+#
+# --- THE PLAYBOOK IS ALSO READABLE IN PARTS, BY READER AND MOMENT --------
+# HOLOGRAM-COMMAND-MODE.md is 1,512 lines, and a supervisor used to read all of
+# them to learn the one thing it needed at the moment it needed it. The parts
+# below cut it by READER AND MOMENT — what you need at preflight, at intake,
+# while driving, at the verify gate, at land, while waiting, and when you report
+# — so a seat standing at the gate can ask for the gate.
+#
+# IT IS A PARTITION, NOT A COPY, AND THE FILE IS NEVER EDITED. The parts are
+# consecutive byte ranges of the ONE file, anchored to headings it already has,
+# so THE PARTS CONCATENATED IN ORDER ARE BYTE-IDENTICAL TO IT — by construction,
+# and asserted in tests/lcars-eeh.test.sh against a pinned sha256. That matters
+# for two reasons:
+#   1. THE REASONS SURVIVE. Most of those 1,512 lines are the REASON behind a
+#      rule, and a rule without its reason gets undone here — with named
+#      sessions as the evidence. A split that moves no bytes cannot lose one.
+#   2. EVERY EXISTING READER STILL READS. Around twenty tracked readers grep the
+#      playbook by its path, and two tracked guards (tests/delegation.test.sh
+#      D10 and S354/10) exist precisely to fail if a line is removed from it or
+#      the file is touched at all. Seven new files would have tripped both; a
+#      resolver partition trips neither, and `docs ech` still prints the whole.
+# Anchors are matched as WHOLE LINES and each appears exactly once, so renaming
+# a part's heading breaks the part loudly rather than silently re-cutting it.
 if [ "${1:-}" = "docs" ]; then
   shift
   want_path=0
-  case "${1:-}" in --path|-p) want_path=1; shift ;; esac
+  part_of=0
+  # --part-of <a WHOLE line of the playbook> -> the name of the part that serves
+  # it. THIS IS WHY ech.sh KEEPS NO MAPPING OF ITS OWN: the driver already knows
+  # the heading it is citing, and asking here derives the part from the manifest
+  # below. A second copy of that mapping in the driver is how the two drift, and
+  # the drift would be silent — the driver would go on naming a part that moved.
+  #
+  # THE ARMS STAY ON ONE LINE, and that is load-bearing: `tests/lib/doc_claims.py`
+  # models which flags this subcommand accepts by matching the literal
+  # `in --path|-p)` in this source, so breaking the `case` across lines made it
+  # read `docs` as taking NO flags and failed every `lcars-eeh docs --path`
+  # written in DELEGATION.md and ORCHESTRATION.md. Measured, not predicted.
+  case "${1:-}" in --path|-p) want_path=1; shift ;; --part-of) part_of=1; shift ;; esac
   name="${1:-}"
+  # WHERE THE intake->drive CUT GOES, AND WHY IT IS § 4a AND NOT § 5. A seat
+  # about to drive needs **Do not re-sequence stages yourself** — and that rule
+  # lives in § 5's opening paragraph with no argument behind it. Its argument is
+  # § 4a: the captain's 2026-10-13 ruling, the measured S291 evidence (five
+  # worker-fence breaches in one run, across both engines) and the DO / DO-NOT
+  # list. Anchored at § 5 this part served the rule and left the reason 427
+  # lines away in `ech-intake`, which is the ONE failure mode this whole split
+  # exists to avoid. THE AUTHOR'S OWN TYPOGRAPHY AGREES: every section break in
+  # the playbook is marked with a `---`, and with the anchor at § 5 this was the
+  # only cut of the six that did not land on one — it fell directly after § 4a's
+  # closing blockquote, mid-block. At § 4a all six land on a break.
+  # <part-name>\t<the WHOLE LINE in the playbook that opens it>, in document
+  # order. Exhaustive: part N runs to the line before part N+1's anchor, and the
+  # last part runs to EOF, which is what makes the concatenation the whole file.
+  hcm_manifest() {
+    cat <<'HCM_PARTS'
+ech-preflight	# HOLOGRAM-COMMAND-MODE.md — how to run LCARS *for* the captain
+ech-intake	## 1. The alignment round — one batch of questions, then walk away
+ech-drive	## 4a. Drive through the HUMAN interfaces — never hand-step the stage machine
+ech-verify	## 6. The Verify gate — Number One, then the live check
+ech-land	## 7. Land it — approve, then the hygiene that always follows
+ech-wait	## 8. Waiting, two missions at a time, and the crontab heartbeat
+ech-report	## 9. The interrupt budget — what actually reaches the captain
+HCM_PARTS
+  }
+  hcm_part_names() { hcm_manifest | cut -f1 | tr '\n' ' ' | sed 's/ $//'; }
+  hcm_is_part()    { hcm_manifest | cut -f1 | grep -qxF "$1"; }
+  hcm_part_of() { # <a whole line of the playbook> -> the part serving it
+    # The LAST anchor at or above the line wins, which is exactly the partition
+    # the printer walks, so the two can never disagree. Whole-line equality, for
+    # the same reason `hcm_print_part` uses it: an anchor carries `.`, `*` and
+    # `—`, and a regex over those matches lines it was never meant to.
+    awk -F'\t' -v target="$1" '
+      NR == FNR { n += 1; pname[n] = $1; anchor[n] = $2; next }
+      { for (i = 1; i <= n; i++) if ($0 == anchor[i]) cur = pname[i]
+        if ($0 == target && cur != "") { print cur; found = 1; exit } }
+      END { if (!found) exit 1 }
+    ' <(hcm_manifest) "$SCRIPT_DIR/HOLOGRAM-COMMAND-MODE.md"
+  }
+  hcm_print_part() { # <part-name> -> that part's bytes, on stdout
+    local start end
+    start="$(hcm_manifest | awk -F'\t' -v n="$1" '$1 == n { print $2; exit }')"
+    end="$(hcm_manifest | awk -F'\t' -v n="$1" 'f { print $2; exit } $1 == n { f = 1 }')"
+    [ -n "$start" ] || return 1
+    # Whole-line equality, not a regex: an anchor carries `.`, `*` and `—`, and
+    # a regex over those would match lines it was never meant to.
+    awk -v s="$start" -v e="$end" '
+      on == 0 { if ($0 == s) { on = 1; print } ; next }
+      e != "" && $0 == e { exit }
+      { print }
+    ' "$SCRIPT_DIR/HOLOGRAM-COMMAND-MODE.md"
+  }
+
+  if [ "$part_of" -eq 1 ]; then
+    if [ -z "$name" ] || ! hcm_part_of "$name"; then
+      echo "lcars eeh: --part-of needs a WHOLE heading line from the playbook; '${name}' is not one of its lines." >&2
+      echo "  parts: $(hcm_part_names)" >&2
+      exit 1
+    fi
+    exit 0
+  fi
+
   resolve_doc() { # <name> -> filename beside this script, or empty
     case "$1" in
       orchestration|ORCHESTRATION|ORCHESTRATION.md) printf 'ORCHESTRATION.md\n' ;;
       ech|ECH|HOLOGRAM-COMMAND-MODE.md)             printf 'HOLOGRAM-COMMAND-MODE.md\n' ;;
       skill|SKILL|SKILL.md)                         printf 'SKILL.md\n' ;;
       bug-prd|bug-prd.md)                           printf 'bug-prd.md\n' ;;
+      delegation|DELEGATION|DELEGATION.md)          printf 'DELEGATION.md\n' ;;
+      delegate-brief|delegate-brief.md)             printf 'delegate-brief.md\n' ;;
       *) printf '\n' ;;
     esac
   }
   if [ -z "$name" ]; then
     echo "lcars-eeh docs <name> — print one of this skill's documents."
-    echo "  names: orchestration | ech | skill | bug-prd"
+    echo "  names: orchestration | delegation | ech | skill | bug-prd | delegate-brief"
+    # The playbook is 1,512 lines; these are its parts by READER AND MOMENT, so
+    # a reader can load the moment it is at instead of the whole file. `ech`
+    # still prints all of it, and the parts in this order ARE all of it.
+    echo "  parts: $(hcm_part_names)"
     echo "  --path prints the resolved absolute path instead of the contents."
+    echo "  --part-of <a WHOLE playbook line> names the part that serves it."
     echo "  resolved from: $SCRIPT_DIR"
+    exit 0
+  fi
+  if hcm_is_part "$name"; then
+    # --path on a PART answers with the playbook's own path, truthfully: that is
+    # the file the part's bytes live in. A pointer printed here always opens.
+    if [ "$want_path" -eq 1 ]; then
+      printf '%s\n' "$SCRIPT_DIR/HOLOGRAM-COMMAND-MODE.md"
+    else
+      hcm_print_part "$name"
+    fi
     exit 0
   fi
   file="$(resolve_doc "$name")"
   if [ -z "$file" ] || [ ! -f "$SCRIPT_DIR/$file" ]; then
     {
       echo "lcars eeh: no such document '$name'."
-      echo "  names: orchestration | ech | skill | bug-prd"
+      echo "  names: orchestration | delegation | ech | skill | bug-prd | delegate-brief"
+      echo "  parts: $(hcm_part_names)"
     } >&2
     exit 1
   fi
@@ -282,6 +400,12 @@ for entry in "$SKILLS_DEST"/lcars*; do
     continue
   fi
   installed_names="$installed_names $name"
+  if [ ! -e "$entry" ]; then
+    echo "  DANGLING installed skill: $entry -> $(readlink "$entry")"
+    n_other=$((n_other + 1))
+    [ -n "$first_other" ] || { first_other="$name"; first_other_target="$(readlink "$entry")"; }
+    continue
+  fi
   target="$(readlink "$entry")"
   # A relative symlink target is relative to the LINK's directory, not our cwd.
   case "$target" in /*) ;; *) target="$SKILLS_DEST/$target" ;; esac
@@ -367,6 +491,7 @@ fi
 # install.sh's own rule (its CLI is on PATH).
 cop_link="$COPILOT_PLUGINS_DIR/lcars"
 if [ -L "$cop_link" ] || [ -e "$cop_link" ]; then
+  [ -e "$cop_link" ] || echo "  DANGLING installed plugin: $cop_link -> $(readlink "$cop_link")"
   if [ -L "$cop_link" ]; then
     cop_target="$(readlink "$cop_link")"
     case "$cop_target" in /*) ;; *) cop_target="$COPILOT_PLUGINS_DIR/$cop_target" ;; esac
@@ -387,6 +512,22 @@ else
   echo "  Copilot: not installed, nothing to check."
 fi
 
+if [ -d "$AGENTS_DEST" ] || [ -L "$AGENTS_DEST" ] \
+    || [ -n "${LCARS_AGENTS_DEST:-}${LCARS_INSTALL_PREFIX:-}" ] \
+    || command -v "$CLAUDE_BIN" >/dev/null 2>&1; then
+  echo "  AGENT LINKS: $AGENTS_DEST"
+  for agent_link in "$AGENTS_DEST"/*; do
+    [ -L "$agent_link" ] || continue
+    if [ -e "$agent_link" ]; then
+      echo "    RESOLVED: $agent_link"
+    else
+      echo "    DANGLING installed agent: $agent_link -> $(readlink "$agent_link") — reinstall from a durable checkout."
+    fi
+  done
+else
+  echo "  Claude Code agents: not installed, nothing to check."
+fi
+
 # ==========================================================================
 # 3) THE CURRENT REPO — the Mission(s) that triggered this
 # ==========================================================================
@@ -399,6 +540,8 @@ if [ ! -d "$missions_dir" ]; then
   echo "   can still debug & fix the LCARS source above. Run \`lcars init\` to drive"
   echo "   a Mission from this repo.)"
 else
+  (cd "$CWD" && python3 "$SCRIPT_DIR/../lcars-status/merge-health.py" "$missions_dir") \
+    || { printf 'LCARS EEH: could not check PR/Mission consistency.\n' >&2; exit 1; }
   cfg="$lcars_dir/config.json"
   if [ -f "$cfg" ]; then
     echo "  config:"

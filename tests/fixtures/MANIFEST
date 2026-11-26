@@ -44,6 +44,13 @@
 100644 tests/fixtures/decisions/no-questions-prd.md
 100644 tests/fixtures/declared-input-worker.py
 100644 tests/fixtures/lcars-state-writer-last.py
+100644 tests/fixtures/mission/README.md
+100644 tests/fixtures/mission/plan.json
+100644 tests/fixtures/mission/prd.md
+100644 tests/fixtures/mission/state.json
+100644 tests/fixtures/mission/tickets/t-001/result.json
+100644 tests/fixtures/mission/tickets/t-002/result.json
+100644 tests/fixtures/mission/tickets/t-003/result.json
 100644 tests/fixtures/mkflatrepo.sh
 100644 tests/fixtures/plan-mockup/bypass-buried-marker.json
 100644 tests/fixtures/plan-mockup/bypass-junk-anchor.json

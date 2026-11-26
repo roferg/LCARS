@@ -72,6 +72,29 @@ The proof gate also accepts valid JSON whitespace around `gateTimeout`'s
 colon (including separate key, colon, and value lines) and JSON-escaped
 spellings of that key, such as `"gate\u0054imeout"`.
 
+`suiteSize` is the number of tests the repo's whole suite executed the last
+time a probe ran it. Unlike `gateTimeout` it is a **measurement, not a
+setting**, so every probe path replaces it — its only job is to be current.
+The Implement proof gate's narrowing control reads it: a control run and a
+proof leg that both execute at or above that number excluded nothing, however
+far apart the two numbers are. The gate judges against the LARGER of the
+recorded size and its own control count, because the control is itself a fresh
+measurement of the whole suite and nothing refreshes the record on its own — a
+stale-low `suiteSize` must not park an honestly narrowed leg.
+
+Every path that records a `testCommand` — `--probe-tests`, `--test-command`
+and both `--fix-tests` recording paths — also runs the **narrowing probe**,
+so the verb a refusal prescribes verifies what it records. `--test-command`
+records the command whatever the probe then says (the captain's explicit order
+stands), but a command that cannot narrow is refused rather than certified, and
+it exits non-zero. The probe runs the command once with the scope pointed at an
+**empty directory** and, if that changed nothing, once more with a **single
+tracked test file** in `$LCARS_TESTS_DIR`; it reports — by name, with every
+measured count and the corrected form — a command that runs the whole suite
+whatever scope it is handed. It never refuses on a file it cannot show the
+default run executes: that case is reported as *narrowing not measured* and
+keeps `TEST SYSTEMS ONLINE`.
+
 Settings writers parse complete JSON values, including multiline objects,
 and validate read-back before atomically replacing the file. Invalid JSON
 is an explicit failure and leaves the original settings untouched.

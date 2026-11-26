@@ -3981,6 +3981,12 @@ function cardNode(m) {
   // property OF this Mission (the tree it was cut from), not of the board.
   var bfp = baseFreshnessPill(m.baseFreshness);
   if (bfp) pills.appendChild(bfp);
+  if (m.mergeHealth) {
+    var mergePill = el("span", "pill basefresh",
+      m.mergeHealth.status === "bypass" ? "MERGE BYPASS" : "MERGE CHECK");
+    mergePill.title = m.mergeHealth.message;
+    pills.appendChild(mergePill);
+  }
   card.appendChild(pills);
 
   /* S278 — WHEN IT SHIPPED, on a mission read back off GitHub.
@@ -10278,6 +10284,9 @@ function renderDetail(mi, wantTab) {
   // when they click the badge's card. Absent entirely for a healthy base.
   var bfBlock = baseFreshnessBlock(mi.baseFreshness, "det-basefresh");
   if (bfBlock) head.appendChild(bfBlock);
+  if (mi.mergeHealth) {
+    head.appendChild(el("p", "det-stagefailure", mi.mergeHealth.message));
+  }
 
   // S218 fix round 1 (F1): the card's failure line, long form.
   var sfBlock = stageFailureBlock(mi);

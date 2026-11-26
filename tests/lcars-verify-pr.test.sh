@@ -10,7 +10,7 @@
 #      body); a re-run is IDEMPOTENT (no second PR — prUrl already recorded).
 #   2. The Mission lands "in review — PR open": prUrl recorded in state.json,
 #      review="open", EXACTLY ONE notification fired, stage still verify (NOT done).
-#   3. The driver detects a merge (here or on GitHub via gh pr view) → marks Done;
+#   3. A merge outside approve is surfaced without rewriting the Mission;
 #      an UNMERGED/open PR never → Done (stays in review, no repeat notification).
 #
 # Git repos and bare remotes are real; gh/notifications are stubbed (no network).
@@ -40,7 +40,7 @@ qgrep() {
 }
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-RUN_SH="$REPO_ROOT/skills/lcars-run/run.sh"
+RUN_SH="${LCARS_RUN_SCRIPT:-$REPO_ROOT/skills/lcars-run/run.sh}"
 PR_LIB="$REPO_ROOT/skills/lcars-approve/pr-lib.sh"
 HOST_ADAPTER="$REPO_ROOT/skills/lcars-run/host-adapter.sh"
 
@@ -236,6 +236,7 @@ WAVES
   echo "$repo"
 }
 
+if [ "${LCARS_VERIFY_PR_FOCUS:-}" != boundaries ] && [ "${LCARS_VERIFY_PR_FOCUS:-}" != gate ]; then
 # --- No hosted origin: explain the prerequisite, not a push/auth retry -------
 missing="$(new_repo_verify)"
 make_gh_stub "$missing/gh"; make_notify_stub "$missing/notify"
@@ -378,6 +379,7 @@ echo "lcars verify-pr (S75)"
 [ -f "$RUN_SH" ] || { echo "run.sh not found at $RUN_SH"; exit 1; }
 [ -f "$PR_LIB" ] || { echo "pr-lib.sh not found at $PR_LIB"; exit 1; }
 
+fi
 # --- Behaviour 1: open-pr opens exactly one PR; re-run is idempotent ----------
 r1="$(new_repo_verify)"; make_gh_stub "$r1/gh"; make_notify_stub "$r1/notify"
 : >"$r1/gh.log"; : >"$r1/notify.log"
@@ -410,10 +412,17 @@ check "2. records review=open" "grep -q '\"review\": *\"open\"' '$s2'"
 check "2. stays at verify, NOT done" "grep -q '\"stage\": *\"verify\"' '$s2'"
 check "2. fired EXACTLY ONE notification" \
   "[ \"\$(grep -c NOTIFY '$r2/notify.log')\" -eq 1 ]"
-check "2. the notification says PR open — review & merge" \
-  "grep -qi 'review' '$r2/notify.log' && grep -q 'pull/77' '$r2/notify.log'"
+check "2. the gate and notification name approve and the cost of bypassing it" \
+  "grep -Fq 'lcars approve $MID' '$r2/notify.log' &&
+   grep -Fq 'lcars approve $MID' '${s2%/state.json}/events.jsonl' &&
+   grep -qi 'strands.*logged bugs' '$r2/notify.log' &&
+   grep -qi 'strands.*logged bugs' '${s2%/state.json}/events.jsonl'"
 check "2. the banner shows the in-review state" \
   "grep -qi 'in review' '$r2/out.txt'"
+if [ "${LCARS_VERIFY_PR_FOCUS:-}" = gate ]; then
+  printf 'lcars verify-pr gate: %d passed, %d failed\n' "$pass" "$fail"
+  [ "$fail" -eq 0 ]; exit $?
+fi
 # A SECOND drive pass on the open PR must NOT re-notify (one ping at open time).
 : >"$r2/notify.log"
 run_in "$r2" drive --mission "$MID" >"$r2/out3.txt" 2>&1
@@ -422,9 +431,10 @@ check "2. a heartbeat on an open PR does NOT re-notify" \
 check "2. the heartbeat still reports in review (no false done)" \
   "grep -q '\"stage\": *\"verify\"' '$s2'"
 
-# --- Behaviour 3: a merged PR (on GitHub) → Done; unmerged never → Done -------
+# --- Behaviour 3: a merged PR outside approve is surfaced, never repaired ----
 savedMID="$MID"; MID="lcars-20261015-298"
 r3="$(new_repo_verify)"; make_gh_stub "$r3/gh"; make_notify_stub "$r3/notify"
+printf '{"numberOne":{"enabled":false}}\n' >"$r3/.git/lcars/config.json"
 : >"$r3/gh.log"; : >"$r3/notify.log"
 # First pass: open the PR (state OPEN), in review.
 GH_PR_STATE=OPEN run_in "$r3" drive --mission "$MID" >"$r3/o1.txt" 2>&1
@@ -440,17 +450,17 @@ check "3. opened + in review on first pass" \
 check "3. xo stand-down pauses the open-PR mission before a GitHub merge" \
   "grep -q '\"paused\": *true' '$s3' &&
    grep -q '^self paused-by-us$' '${s3%/state.json}/xo-stop'"
-# Now the PR is merged on GitHub: the next heartbeat detects it → Done.
-GH_PR_STATE=MERGED run_in "$r3" drive --mission "$MID" >"$r3/o2.txt" 2>&1
-check "3. a merged-on-GitHub PR is detected → stage done" \
-  "grep -q '\"stage\": *\"done\"' '$s3'"
-check "3. records review=merged on a detected merge" \
-  "grep -q '\"review\": *\"merged\"' '$s3'"
-check "3. relabels to lcars:done on a detected merge" \
-  "grep -q 'add-label lcars:done' '$r3/gh.log'"
-check "3. detected merge releases only the xo-owned pause and marker" \
-  "python3 -c 'import json,sys; assert not json.load(open(sys.argv[1])).get(\"paused\",False)' '$s3' &&
-   [ ! -e '${s3%/state.json}/xo-stop' ]"
+# Now the PR is merged on GitHub: refuse without changing state or pause ownership.
+cp "$s3" "$r3/state.before"
+merged_rc=0
+GH_PR_STATE=MERGED run_in "$r3" drive --mission "$MID" >"$r3/o2.txt" 2>&1 || merged_rc=$?
+check "3. merged-on-GitHub contradiction refuses with actionable warning" \
+  "[ '$merged_rc' -ne 0 ] && grep -q 'MERGE BYPASS' '$r3/o2.txt' &&
+   grep -q 'lcars approve $MID' '$r3/o2.txt'"
+check "3. detected bypass never changes Mission state, labels or xo stop" \
+  "cmp -s '$s3' '$r3/state.before' &&
+   ! grep -q 'add-label lcars:done' '$r3/gh.log' &&
+   [ -e '${s3%/state.json}/xo-stop' ]"
 MID="$savedMID"
 
 # Contrast: an UNMERGED PR never flips to done (re-uses r2 from above).
@@ -463,9 +473,11 @@ check "3. an unmerged/open PR never reaches done" \
 GH_PR_STATE=OPEN run_in "$r2" drive --mission "$MID" >"$r2/paused-open.txt" 2>&1
 check "3. captain-paused open PR stays paused at verify" \
   "python3 -c 'import json,sys; s=json.load(open(sys.argv[1])); assert s[\"stage\"]==\"verify\"; assert s[\"paused\"] is True' '$s2'"
-GH_PR_STATE=MERGED run_in "$r2" drive --mission "$MID" >"$r2/paused-merged.txt" 2>&1
-check "3. captain-paused merged PR reaches done without releasing its own pause" \
-  "python3 -c 'import json,sys; s=json.load(open(sys.argv[1])); assert s[\"stage\"]==\"done\"; assert s[\"review\"]==\"merged\"; assert s[\"paused\"] is True' '$s2'"
+paused_merged_rc=0
+GH_PR_STATE=MERGED run_in "$r2" drive --mission "$MID" >"$r2/paused-merged.txt" 2>&1 || paused_merged_rc=$?
+check "3. captain-paused merged PR is surfaced without repairing the record" \
+  "[ '$paused_merged_rc' -ne 0 ] && grep -q 'MERGE BYPASS' '$r2/paused-merged.txt' &&
+   python3 -c 'import json,sys; s=json.load(open(sys.argv[1])); assert s[\"stage\"]==\"verify\"; assert s[\"review\"]==\"open\"; assert s[\"paused\"] is True' '$s2'"
 
 # A retained pause is historical on Done, but still live before that boundary.
 for pause_stage in done implement; do
@@ -501,6 +513,7 @@ for pause_stage in done implement; do
   fi
 done
 
+if [ "${LCARS_VERIFY_PR_FOCUS:-}" != boundaries ]; then
 # --- Behaviour 4 (S111 root-tree sovereignty): open-pr NEVER moves HEAD -------
 # The old open_pr checked the mission branch out in the shared checkout before
 # pushing — the last site that yanked the captain's working tree onto a mission
@@ -698,6 +711,7 @@ check "9. the heading-form Goal stops before the next section" \
 check "9. a heading-form PRD's criteria bullets still list" \
   "grep -q 'A toggle persists the choice' '$r9/gh.log'"
 
+fi
 # ==========================================================================
 echo
 printf 'lcars verify-pr: %d passed, %d failed\n' "$pass" "$fail"

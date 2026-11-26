@@ -1,0 +1,11 @@
+{
+  "id": "@MISSION_ID@",
+  "stage": "implement",
+  "type": "feature",
+  "title": "Shareable page links and a neighbours rail",
+  "branch": "lcars/@MISSION_ID@",
+  "base": "main",
+  "issue": "4711",
+  "createdAt": 1762000000,
+  "verdict": ""
+}

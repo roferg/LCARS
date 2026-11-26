@@ -4,6 +4,143 @@ All notable changes to LCARS are recorded here, newest first. The version
 scheme is `YYYY.M.N` (calendar year, month with no leading zero, per-month
 counter). Every PR into `main` bumps `VERSION` and adds its entry here.
 
+## 2026.11.9 — 2026-11-25
+
+### Refuse unsafe merges at the adapter; name runnable next steps (S377)
+
+The host adapter checks the Mission's logged bugs immediately before invoking
+`gh pr merge`, resolving PR numbers through their head branch. Approve and the
+adapter share one guard and one refusal. Closed and folded bugs, live chunk
+owners, and non-LCARS PRs retain their existing merge authority.
+
+Driver gates, walk-away notifications, Verify/reconcile refusals, inbox actions,
+and consolidated logged-bug decisions end with concrete shell commands.
+The messages retain the skill names, but print the bundled script invocation
+that actually runs; they no longer suggest bypassing approve.
+
+Scoped controls drive the real adapter with git and Mission records, render
+the audited instructions, and resolve their commands through the real parsers.
+
+## 2026.11.8 — 2026-11-25
+
+### Merge through LCARS; surface sibling bugs; retire intact (S376)
+
+Verify names `lcars approve` and warns that hand-merging strands logged bugs.
+The ECH and orchestration contract permit merge initiation only through an
+LCARS verb or web UI. Read surfaces compare recorded PRs with the forge and
+report a merged-PR/unfinished-Mission contradiction, with recovery guidance.
+The drive refuses that contradiction instead of silently marking Done.
+Web checks run off the render thread and refresh on a 30-second cadence.
+Forge failures are reported as unavailable checks, not merge verdicts.
+
+Mission Log surfaces every open sibling bug for the same parent, without a
+prose matcher. Filing stops until an explicit `--confirm-distinct` decision;
+the new bug records the reviewed ids. A per-parent lock serializes filing.
+
+`lcars-ech retire <id> --reason "<why>"` archives the directory intact under
+`.git/lcars/archived-missions/`, records the reason and timestamp, and releases
+only that Mission's chunk claim. `retire --list` includes both archive directory
+names used by older runs. Retirement never merges or closes forge work.
+
+## 2026.11.7 — 2026-11-24
+
+### When to split: record the decision before filing (S373)
+
+Before offering the first Mission, including a foundation or spike, `next`
+asks the ECH for its chunking decision. `chunking` records the count, declared
+trigger and reason, retaining pre-filing revisions in a ledger. One chunk is
+an explicit, reasoned answer, not an omitted decision.
+
+The split axes are not-estimable, unit-of-work, module-boundary, parallelism
+and independence; size-as-proxy is excluded. Shared files require sequencing
+rather than silently collapsing independent outcomes.
+
+Fix round 1 guards filing in the producers, including parked Missions and
+logged bugs, not just `next`. `status` and both `watch` wakes use the same
+checkpoint; `init`'s first ask is independently pinned. An already-filed run
+missing its decision keeps asking, without permitting retrospective backfill.
+The general `record` writer cannot forge the decision or its ledger.
+Legacy runs without a baseline, driving-seat briefs, validator rules and
+Mission lookup are unchanged. This records a judgement; it neither reads the
+spec nor checks the judgement's semantic validity or freshness.
+
+## 2026.11.6 — 2026-11-24
+
+### Parallel chunks: the cap, the wait, and integration's owner (S372)
+
+Parallel driving-seat briefs state the shared two-Mission ceiling and the
+bounded `exec --await` route. A capped seat is told its drive is not queued;
+slot availability is not a reservation or Mission completion. Expiry hands
+one `BLOCKED:` beat to the main ECH instead of restarting a polling loop.
+
+A real cross-chunk recovery conflict names the **integration handoff**, owned
+by the main ECH. It retains the human gate and both branch tips, names the
+existing factory route, and explicitly says there is no re-integrate verb or
+authority for an improvised third seat. The independent recovery resolvers,
+single-chunk briefs and main-ECH wait behavior are unchanged.
+
+## 2026.11.5 — 2026-11-23
+
+### The four loose ends (S371)
+
+Preflight honours a recorded Number One switch and its sibling settings,
+including an OFF ruling without a `choice` stamp. Fresh init remains OFF.
+Policy has an explicit OFF lane: the recorded live check decides, without
+inventing a score or reading a stale Number One recommendation.
+
+Verify requests declared `prReviewers` through the forge adapter, records the
+review request against the head, and retries failures without duplicating PRs.
+Repos carrying agent instructions must explicitly settle that policy rather
+than silently omitting mandated review.
+
+Driving seats can finish a fix cycle through `exec --refresh <mission>`:
+test the exact detached head, then push only that head, without merge authority.
+`exec --await` gives seats a bounded wait for the two shared Mission slots.
+Existing main-ECH verbs, loose lookups and ordinary briefs are unchanged.
+
+The installer refuses live agent links from linked worktrees; isolated
+destinations remain supported. Install and EEH diagnostics detect dangling
+installed links, including every installed agent.
+
+## 2026.11.4 — 2026-11-23
+
+### One reader for whose work it is, and a brief carries its goal (S370)
+
+A seedless driving seat can receive its sibling validator after filing:
+validator selection asks the same chunk ownership reader as the authority
+gates, instead of requiring a Mission that existed when the seat was minted.
+
+Concurrent filing no longer transfers a sibling's Mission to the seat that
+finishes last. File and log report their own new ids through a per-invocation
+receipt, replacing the shared-directory before/after attribution window.
+
+`delegate <unit> --goal <file>` carries a chunk goal at T1 or T2, including
+before any Mission exists. The goal is snapshotted beside the brief, recorded
+as `chunk-goal`, rendered inert, and inherited by a sibling validator.
+Without that flag, existing Mission-derived briefs are unchanged.
+
+## 2026.11.3 — 2026-11-22
+
+### One resolver for a Mission name (S369)
+
+Narrowed validators resolve a filing selector once, bound the resolved Mission,
+and hand that same resolution to `lcars log`. Log and resolve-logs share the
+resolver; zero or ambiguous matches are refused. Drivers and the main ECH keep
+their existing lookup rules.
+
+Re-check scopes travel as JSON instead of line lists, including empty scopes.
+Ancestry and child checks preserve trailing newlines, linked parents are JSON
+escaped, and revalidation reports cannot invent entries through shell splitting.
+Delegate existence, run-wide questions, and heartbeat ownership no longer use
+line-pattern matching as identifier equality.
+
+Resolve-logs compares decoded parent links at all three consumer gates and
+enumerates state paths without newline splitting, so imported parent IDs cannot
+hide open bugs or bypass the bulk-accept completeness guard. The run-wide
+question reader lives outside `cmd_next`, retaining its bounded shape.
+Agent installation now honors `LCARS_AGENTS_DEST` and `LCARS_INSTALL_PREFIX`;
+installer and delegation controls check that fenced agent symlinks resolve.
+
 ## 2026.11.2 — 2026-11-05
 
 A hands-off Mission can no longer land half-missing work, and a Mission you

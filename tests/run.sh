@@ -27,6 +27,7 @@ suites_run=0
 suites_failed=0
 run_started="$(date +%s)"
 
+# Includes doc-claims.test.sh: written command contracts are a merge gate too.
 for t in "$TESTS_DIR"/*.test.sh; do
   [ -f "$t" ] || continue
   suite="$(basename "$t")"

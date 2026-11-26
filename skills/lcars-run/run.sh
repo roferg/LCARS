@@ -211,9 +211,18 @@ die() { printf 'lcars run: %s\n' "$1" >&2; exit 1; }
 # repo. The frontmatter `description:` of each skill still says "lcars respond" —
 # that is the phrase the captain SAYS to his CLI, and it is correct.
 RESPOND_SCRIPT="${LCARS_RESPOND_SCRIPT:-$SKILL_DIR/../lcars-respond/respond.sh}"
-respond_hint() { printf 'bash %s answer --mission %s --answer "<your answer>"' \
+respond_hint() { printf 'bash %q answer --mission %q --answer "<your answer>"' \
                    "$RESPOND_SCRIPT" "$MISSION_ID"; }
-drive_hint()   { printf 'bash %s drive --mission %s' "$SELF" "$MISSION_ID"; }
+drive_hint()   { printf 'bash %q drive --mission %q' "$SELF" "$MISSION_ID"; }
+approve_hint() {
+  printf 'bash %q --mission %q%s' \
+    "${LCARS_APPROVE_SCRIPT:-$SKILL_DIR/../lcars-approve/approve.sh}" "$MISSION_ID" "${1:+ --reapprove}"
+}
+resolve_logs_hint() {
+  printf 'bash %q --parent %q' \
+    "${RESOLVE_LOGS_SCRIPT:-$SKILL_DIR/../lcars-resolve-logs/resolve-logs.sh}" "${1:-$MISSION_ID}"
+}
+research_hint() { printf 'bash %q research --mission %q' "$SELF" "$MISSION_ID"; }
 # S311 — THE SANCTIONED RE-OPEN, AS A COMMAND SOMEBODY CAN ACTUALLY RUN.
 # Every undeclared-drift refusal used to end on "Restore the test or re-open the
 # ticket." There is no `lcars reopen`, so that sentence named a verb that does
@@ -3485,7 +3494,7 @@ cmd_save() {
     # cmd_validate lists research/*.json to the Validator as findings.
     cp "$claim_q" "$MISSION_DIR/claim-check.txt"
     gh_relabel "lcars:validate lcars:awaiting-human" "lcars:align lcars:research"
-    emit_event gate research "a finding's negative-existence claim was refuted by the repository"
+    emit_event gate research "a finding's negative-existence claim was refuted by the repository — run: $(respond_hint)"
     echo "SAVE: $n responses"
     echo "  Saved $n research response(s) to research/."
     echo "  REFUTED: $cq_n finding claim(s) that a name is absent from this repository"
@@ -4728,7 +4737,7 @@ anchor_park_awaiting() { # reason-file "t-002" "v-board …"
   echo "  Stage:  plan (awaiting-human)"
   echo "  Answer with:  $(respond_hint)"
   [ -n "$RELABEL_NOTE" ] && echo "$RELABEL_NOTE"
-  notify_gate awaiting-human "Plan needs an anchor — ${first:-answer it with: $(respond_hint)}"
+  notify_gate awaiting-human "Plan needs an anchor — $first — run: $(respond_hint)"
   rm -f "$qf"
 }
 
@@ -12621,6 +12630,116 @@ proof_control_budget() { # tree leg-secs → seconds on stdout
   [ "$t" -le "$GATE_TIMEOUT_MAX" ] 2>/dev/null || t="$GATE_TIMEOUT_MAX"
   printf '%s' "$t"
 }
+
+# === THE ONE COMPARISON THE CONTROL NEVER MADE (S364) ======================
+# MEASURED ON THE LIVE CAPSTONE, 18 Nov 2026. The narrowing control recorded
+#   scopeControl: { executed: "7393", narrowingProven: true, narrowing: "proven" }
+# against a leg that executed 7,400 — and a full suite of 7,381. BOTH numbers
+# were the WHOLE SUITE. The control had faithfully measured that nothing was
+# excluded and the gate read the 7-test delta as a narrowing, because the one
+# number that gives those two their meaning was never consulted: HOW BIG IS
+# THIS REPO'S SUITE?
+#
+# `lcars init` / `lcars update --probe-tests` now MEASURE that number and record
+# it as `suiteSize` in .git/lcars/config.json, the same way `gateTimeout` is
+# seeded from the probe's measured wall clock. It is a MEASUREMENT, not a
+# setting: nothing infers it, and when it is absent the comparison below is
+# INERT — every repo initialized before this session behaves exactly as it did.
+#
+# WHY THE CONTROL'S NUMBER CANNOT DECIDE ALONE, and this is the trap that would
+# have turned the cure into a regression. "The empty-scope control ran the whole
+# suite, so nothing was excluded" is FALSE as a standalone rule, measured
+# 20 Nov 2026 against this repo's own known-good fixture
+# (tests/fixtures/mkflatrepo.sh): its control reads `executed: 10` against a
+# 10-test suite — an empty scope leaves `find` with nothing and `node --test`
+# falls back to its own discovery — while the leg honestly executed 2. That
+# narrowing is REAL, and a control-only rule parks it.
+#
+# So the comparison is BOTH numbers, which is the capstone's exact evidence:
+# the control executed at least the whole suite AND SO DID THE LEG. When the
+# leg itself ran everything, there is nothing left for the scope to have
+# excluded, whatever the delta between the two says. That is the narrowest
+# tightening that catches it, and it is a tightening: the leg moves from a
+# confident verdict to INCONCLUSIVE, which is never a pass.
+proof_suite_size_read() { # config reader → suiteSize scalar
+  # Same shape as gate_timeout_config_read: decode key tokens, allow JSON
+  # whitespace either side of the colon, keep the legacy scalar readers.
+  "${LCARS_PYTHON_BIN:-python3}" - "$1" <<'PY' | "$2" /dev/stdin suiteSize
+import json, re, sys
+with open(sys.argv[1]) as stream:
+    text = stream.read()
+string = r'"(?:[^"\\]|\\.)*"'
+for token in re.finditer(string, text):
+    if json.loads(token.group()) != "suiteSize":
+        continue
+    scalar = re.match(r'\s*:\s*(' + string + r'|[^,}\s]+)', text[token.end():])
+    if scalar:
+        print('{"suiteSize": ' + scalar.group(1) + '}')
+        break
+PY
+}
+proof_suite_size() { # [tree] → the repo's RECORDED full-suite size, or ""
+  local cfg raw
+  cfg="$(gate_cfg_file "${1:-}")"
+  [ -n "$cfg" ] || return 0
+  raw="$(proof_suite_size_read "$cfg" json_raw 2>/dev/null)"
+  case "$raw" in null) raw="" ;; esac
+  [ -n "$raw" ] || raw="$(proof_suite_size_read "$cfg" json_str 2>/dev/null)"
+  raw="$(printf '%s' "$raw" | tr -d '[:space:]')"
+  # 10# forces decimal for the same reason resolve_gate_timeout does: a leading
+  # zero read as octal is how the 010s gate died at 7997ms.
+  case "$raw" in ''|*[!0-9]*) return 0 ;; *) raw="$(( 10#$raw ))" ;; esac
+  [ "$raw" -gt 0 ] 2>/dev/null || return 0
+  printf '%s' "$raw"
+}
+proof_ran_whole_suite() { # executed suiteSize → 0 when this run excluded NOTHING
+  local n="${1:-}" s="${2:-}"
+  case "$n" in ''|*[!0-9]*) return 1 ;; esac
+  case "$s" in ''|*[!0-9]*) return 1 ;; esac
+  [ "$s" -gt 0 ] 2>/dev/null || return 1
+  [ "$n" -ge "$s" ] 2>/dev/null
+}
+# === AND THE RECORDED NUMBER IS NEVER TRUSTED OVER A FRESH ONE (S364 fix 1) ==
+# DEFECT C, MEASURED 20 Nov 2026 on this repo's own mkflatrepo fixture, with
+# `suiteSize` set to EXACTLY what a probe would have recorded:
+#
+#   suiteSize when probed   control ran   leg ran   verdict
+#            2                   4           2      inconclusive  ← honest 2x
+#            3                   5           2      pass             narrowing,
+#            5                   7           2      pass             PARKED
+#
+# Because the empty-scope control nearly always runs the WHOLE CURRENT SUITE
+# (measured: 22 of 22, 4 of 4 — an empty scope leaves the selection with
+# nothing and the runner falls back to its own discovery), the "both numbers"
+# rule collapsed to a SINGLE test of the leg against a number NOTHING
+# REFRESHES. No probe runs again on its own, so stale-low is the permanent
+# steady state of a growing repo: confirmed at 10x, a suite grown to 22 with
+# `suiteSize` still 2 turned an honest 2-test leg inconclusive.
+#
+# THE CONTROL IS ITSELF A FRESH MEASUREMENT of the whole suite in exactly the
+# case this comparison fires — the runner ignored an empty scope and ran
+# everything. So when the control EXCEEDS the record, the control is the better
+# number, and the rule is kept against the larger of the two.
+#
+#   case                      suiteSize  control   leg   effective   verdict
+#   the capstone shape             7381     7393  7400        7393   unproven
+#   a genuinely narrowed leg       7381        0    53        7381   proven
+#   Defect C                          2        4     2           4   proven
+#   Defect C, suite grown             2       22     2          22   proven
+#
+# It is a TIGHTENING OF THE RECORD, NEVER OF THE VERDICT: the effective size is
+# >= the recorded one, so every leg this rule calls `unproven` was already
+# called `unproven` by the recorded number alone. Nothing that passed before
+# can start failing; only a stale record stops parking honest work. With NO
+# `suiteSize` recorded it still prints nothing and the comparison stays inert.
+proof_effective_suite() { # recorded control → the size to judge against, or ""
+  local rec="${1:-}" ctl="${2:-}"
+  case "$rec" in ''|*[!0-9]*) return 0 ;; esac
+  [ "$rec" -gt 0 ] 2>/dev/null || return 0
+  case "$ctl" in ''|*[!0-9]*) printf '%s' "$rec"; return 0 ;; esac
+  [ "$ctl" -gt "$rec" ] 2>/dev/null && { printf '%s' "$ctl"; return 0; }
+  printf '%s' "$rec"
+}
 PROOF_SCOPE_CONTROL=""   # "<runner> <executed>" | "" when it could not be read
 # PROOF_SCOPE_CONTROL_ZERO (S308 fix round 3) — the control run COLLECTED NO
 # TESTS AT ALL, in its runner's OWN words. This is NOT a nicety: it is what
@@ -14831,7 +14950,7 @@ flip_flop_gate() { # ticket parent-sha worktree
         # of declared files; a leg that stopped early on a red file runs fewer
         # and is the one shape this comparison can miss (it ends in a FAIL,
         # which blocks, never in a pass).
-        local ctl_n=1 ctl_want ctl_hit="" ctl_one
+        local ctl_n=1 ctl_want ctl_hit="" ctl_one ff_suite="" ff_suite_rec=""
         case "$FF_GATE_SCOPE_KIND" in
           files) ctl_n="$(printf '%s\n' "$rels" | grep -c . | tr -d '[:space:]')"
                  case "$ctl_n" in ''|*[!0-9]*) ctl_n=1 ;; esac ;;
@@ -14892,9 +15011,38 @@ flip_flop_gate() { # ticket parent-sha worktree
   what the TIP leg ran: $FF_TIP_CMD
 Nothing is wrong with the ticket's code: the repo's testCommand cannot SEE a test file at the path it was handed, so the runner received an EMPTY argument list and fell back to discovering its own tests. Either widen the command's own selection so it matches the ticket's test file(s), hand \"\$LCARS_TESTS_DIR\" to the runner directly (\`lcars update --fix-tests\`), or name the ticket's test files the way the existing selection expects." "$rels"
           return $?
+        elif ff_suite_rec="$(proof_suite_size "$wt")"; \
+             ff_suite="$(proof_effective_suite "$ff_suite_rec" "${PROOF_SCOPE_CONTROL##* }")"; \
+             [ -n "$ff_suite" ] \
+           && proof_ran_whole_suite "${PROOF_SCOPE_CONTROL##* }" "$ff_suite" \
+           && proof_ran_whole_suite "${FF_TIP_EXEC##* }" "$ff_suite"; then
+          # S364 — THE COMPARISON THE CONTROL NEVER MADE. See
+          # proof_suite_size/proof_ran_whole_suite for the capstone measurement
+          # and for why BOTH numbers have to be the whole suite before this
+          # fires, and proof_effective_suite for why the RECORDED size is never
+          # trusted over the control's fresh one (fix round 1, DEFECT C — a
+          # stale-low record parked honest work). Reached only when the two
+          # counts DIFFER (the same-count branch above owns the equal case) —
+          # the capstone's 7393 vs 7400 against a suite of 7381, which read as
+          # a narrowing and was not one.
+          FF_GATE_SCOPE_NARROWING=unproven
+          # WHERE THE SIZE CAME FROM, in the record: the recorded suiteSize, or
+          # the control's own fresh count when that is the larger of the two.
+          local ff_suite_src=" (suiteSize in .git/lcars/config.json)"
+          if [ "$ff_suite" != "$ff_suite_rec" ]; then
+            ff_suite_src=" (the control itself measured that, against a recorded suiteSize of ${ff_suite_rec}; the larger of the two is the one judged against)"
+          fi
+          FF_GATE_SCOPE_NARROW_WHY="the control run executed ${PROOF_SCOPE_CONTROL##* } test(s) with an EMPTY scope and this leg executed ${FF_TIP_EXEC##* } with the ticket's file(s)${FF_GATE_TIP_EXEC_EACH:+ (per invocation: $FF_GATE_TIP_EXEC_EACH)}, and BOTH are the repo's whole suite of ${ff_suite} tests${ff_suite_src} — so the scope excluded NOTHING and the difference between the two numbers is not a narrowing"
         else
           FF_GATE_SCOPE_NARROWING=proven
-          FF_GATE_SCOPE_NARROW_WHY="the control run executed ${PROOF_SCOPE_CONTROL##* } test(s) with the scope pointed at an EMPTY directory while this leg executed ${FF_TIP_EXEC##* }${FF_GATE_TIP_EXEC_EACH:+ (per invocation: $FF_GATE_TIP_EXEC_EACH)} under the same runner — handing the ticket's test file(s) over demonstrably changed what ran (measured under a ${FF_GATE_SCOPE_CONTROL_SECS}s control budget)"
+          # The same sizing clause as the unproven arm, built the same way, so
+          # a passing record names the number it was judged against too.
+          local ff_suite_note=""
+          if [ -n "$ff_suite" ]; then
+            ff_suite_note=", and fewer than the ${ff_suite} tests this repo's whole suite runs"
+            [ "$ff_suite" = "$ff_suite_rec" ] || ff_suite_note="${ff_suite_note} as measured by that control, against a recorded suiteSize of ${ff_suite_rec}"
+          fi
+          FF_GATE_SCOPE_NARROW_WHY="the control run executed ${PROOF_SCOPE_CONTROL##* } test(s) with the scope pointed at an EMPTY directory while this leg executed ${FF_TIP_EXEC##* }${FF_GATE_TIP_EXEC_EACH:+ (per invocation: $FF_GATE_TIP_EXEC_EACH)} under the same runner — handing the ticket's test file(s) over demonstrably changed what ran (measured under a ${FF_GATE_SCOPE_CONTROL_SECS}s control budget)${ff_suite_note}"
         fi
       fi ;;
     *)
@@ -17099,7 +17247,7 @@ $summary"
   # the parked card sits squarely in the Implement column (mirror validate-pause).
   gh_relabel "lcars:implement lcars:awaiting-human" ""
 
-  emit_event gate implement "$what, awaiting your answer: $summary" \
+  emit_event gate implement "$what, awaiting your answer: $summary — run: $(respond_hint)" \
     "phase=full-suite-gate"
 
   echo "IMPLEMENT: $what, flagged the human"
@@ -18710,8 +18858,9 @@ EOF
   fi
 
   echo "  Review the changes and run the app if needed."
-  echo "    lcars approve $MISSION_ID    — merge the PR (ship it)"
-  echo "    lcars feedback $MISSION_ID   — send back with feedback"
+  echo "  Merge through lcars approve $MISSION_ID — run: $(approve_hint)"
+  printf '  Send back with feedback — run: bash %q --mission %q --feedback "<what to change>"\n' \
+    "$SKILL_DIR/../lcars-feedback/feedback.sh" "$MISSION_ID"
   exit 0
 }
 
@@ -18755,6 +18904,8 @@ cmd_open_pr() {
   local existing; existing="$(json_str "$STATE" prUrl)"
   case "$existing" in
     http*|*/pull/*)
+      pr_request_reviews "$existing"
+      lcars_state_set_string "$STATE" review "open"
       echo "OPEN-PR: already open — $existing"
       exit 0 ;;
   esac
@@ -18766,7 +18917,7 @@ cmd_open_pr() {
   emit_event pr_opened verify "PR opened — $PR_URL"
 
   echo "OPEN-PR: opened — $PR_URL"
-  echo "  Stage:  verify (in review — PR open)"
+  echo "  Stage: verify (in review — PR open); review, then lcars approve $MISSION_ID — run: $(approve_hint)"
   exit 0
 }
 
@@ -19245,9 +19396,9 @@ reconcile_escalate() { # diagnosis-text  [design]
   lcars_state_refusal_die "lcars run"   # S207 D2: no gate written ⇒ no gate
   rm -f "$qf"
   gh_relabel "lcars:verify lcars:awaiting-human" ""
-  emit_event reconcile_escalated verify "reconcile exhausted ${RECONCILE_MAX} round(s) — escalated to the human"
-  notify_gate awaiting-human "Reconcile with $BASE failed after $RECONCILE_MAX rounds — needs your call"
-  printf 'RECONCILE: escalated — %s rounds exhausted; awaiting human.\n' "$RECONCILE_MAX"
+  emit_event reconcile_escalated verify "reconcile exhausted ${RECONCILE_MAX} round(s) — run: $(respond_hint)"
+  notify_gate awaiting-human "Reconcile with $BASE failed after $RECONCILE_MAX rounds — run: $(respond_hint)"
+  printf 'RECONCILE: escalated — %s rounds exhausted; answer the pending question — run: %s\n' "$RECONCILE_MAX" "$(respond_hint)"
 }
 
 # S97 — did the reconcile RETEST go red because the RUNNER could not START, rather
@@ -19285,7 +19436,7 @@ reconcile_retest_env_blocked() { # capture-dir-or-log-or-text → 0 if env-block
 reconcile_retest_env_escalate() { # failed-ids  captured-output
   local ids="$1" cap_out="$2"
   lcars_state_set_string "$STATE" reconcileStatus "env-blocked"
-  local note="Reconcile with $BASE merged CLEANLY, but the re-test could not RUN — the reconcile merge worktree was not provisioned (no node_modules / the testCommand binary was not found), so the mission's ticket suite(s) errored at startup. This is NOT a code conflict. Set \`worktreeSetupCommand\` in .git/lcars/config.json (see \`lcars update\`) so the retest environment matches the build, then re-run \`lcars approve\` / \`lcars run\`."
+  local note="Reconcile with $BASE merged CLEANLY, but the re-test could not RUN — the reconcile merge worktree was not provisioned (no node_modules / the testCommand binary was not found), so the mission's ticket suite(s) errored at startup. This is NOT a code conflict. Set \`worktreeSetupCommand\` in .git/lcars/config.json so the retest environment matches the build, then answer the gate — run: $(respond_hint)"
   local qf; qf="$(mktemp)"
   {
     printf '%s\n\nSuite(s) that could not run: %s\n' "$note" "${ids:-all}"
@@ -19300,9 +19451,9 @@ reconcile_retest_env_escalate() { # failed-ids  captured-output
   lcars_state_refusal_die "lcars run"   # S207 D2: no gate written ⇒ no gate
   rm -f "$qf"
   gh_relabel "lcars:verify lcars:awaiting-human" ""
-  emit_event reconcile_env_blocked verify "reconcile merged $BASE cleanly but the retest could not run — the merge worktree was not provisioned; set worktreeSetupCommand (NOT a code conflict)"
+  emit_event reconcile_env_blocked verify "reconcile merged $BASE cleanly but the retest could not run — set worktreeSetupCommand, then answer the gate — run: $(respond_hint)"
   notify_gate awaiting-human "$note"
-  printf 'RECONCILE: env-blocked — merged %s cleanly but the retest could not run (worktree not provisioned); set worktreeSetupCommand and re-run.\n' "$BASE"
+  printf 'RECONCILE: env-blocked — merged %s cleanly but the retest could not run; set worktreeSetupCommand, then answer the gate — run: %s\n' "$BASE" "$(respond_hint)"
 }
 
 # reconcile_unpushed_count <branch> — how many commits <branch> has that
@@ -19446,7 +19597,7 @@ reconcile_gate() {
   # the BUG-045 earlier (post-heal) design-question escalation. (BUG-041/045)
   if [ "$(json_str "$STATE" reconcileStatus)" = "escalated" ] \
      && [ "$(json_raw "$STATE" awaitingHuman)" = "true" ]; then
-    echo "RECONCILE: escalated — awaiting the captain's answer; not re-asking."
+    echo "RECONCILE: escalated — awaiting the captain's answer; not re-asking — run: $(respond_hint)"
     return 20
   fi
 
@@ -19533,7 +19684,7 @@ reconcile_gate() {
             $0==b{print p; exit}' )"
       local wt_diag="Can't reconcile with '$BASE' — the mission branch '$BRANCH' is checked out at ${rc_holder:-another worktree}${rc_holder:+ (likely your own checkout)}. Switch that checkout to another branch (or \`git worktree remove\` a stale tree, then \`git worktree prune\`) and re-run. LCARS reconciles in its own worktree and never touches your checkout."
       reconcile_escalate "$wt_diag"
-      echo "RECONCILE: cannot reconcile — the mission branch is checked out in another worktree or a stale worktree exists; free it and re-run."
+      echo "RECONCILE: cannot reconcile — the mission branch is checked out in another worktree or a stale worktree exists; free it, then answer the gate — run: $(respond_hint)"
       return 20
     fi
   fi
@@ -19717,7 +19868,7 @@ ${base_log:-(no log available)}"
         total="$(printf '%s\n' "$ordered" | tr ' ' '\n' | grep -c .)"
         [ -n "$total" ] && [ "$total" != 0 ] || total=1
         local short; short="$(printf '%s' "$merge_sha" | cut -c1-7)"
-        local note="Reconciled $BASE into the branch ($short) and re-tested green ($total/$total). Reapprove to merge."
+        local note="Reconciled $BASE into the branch ($short) and re-tested green ($total/$total). Reapprove through lcars approve $MISSION_ID --reapprove — run: $(approve_hint reapprove)"
         lcars_state_set_string "$STATE" reconcileStatus "awaiting-reapprove"
         lcars_state_set_string "$STATE" reconcileNote "$note"
         lcars_state_set_string "$STATE" reconcileMergeSha "$merge_sha"
@@ -19725,13 +19876,13 @@ ${base_log:-(no log available)}"
         lcars_state_set_string "$STATE" pendingQuestion "$note"
         lcars_state_refusal_die "lcars run"   # S207 D2: no gate written ⇒ no gate
         local qf; qf="$(mktemp)"
-        printf '%s\nReapprove to merge the reconciled branch, or send it back.\n' "$note" >"$qf"
+        printf '%s\n' "$note" >"$qf"
         write_pending "$qf" "verify"
         rm -f "$qf"
         gh_relabel "lcars:verify lcars:awaiting-human" ""
-        emit_event reconcile_reapprove verify "merged $BASE and re-test is green ($total/$total) — awaiting your reapprove before merging"
+        emit_event reconcile_reapprove verify "merged $BASE and re-test is green ($total/$total) — run: $(approve_hint reapprove)"
         notify_gate awaiting-human "$note"
-        echo "RECONCILE: awaiting-reapprove — merged $BASE; re-test green ($total/$total); reapprove to merge ($short)."
+        echo "RECONCILE: awaiting-reapprove — merged $BASE; re-test green ($total/$total) at $short — run: $(approve_hint reapprove)"
         return 30 ;;
     esac
 
@@ -22672,7 +22823,7 @@ cmd_validate() {
   require_stage validate
   require_worker
   [ "$(json_raw "$STATE" awaitingHuman)" = "true" ] \
-    && die "mission is awaiting a human answer — run '$(respond_hint)' first; the Validator does not re-run until the gate clears."
+    && die "mission is awaiting a human answer; the Validator does not re-run until the gate clears — run: $(respond_hint)"
   [ -f "$MISSION_DIR/prd.md" ] || die "no prd.md."
 
   # S166 — make the branch pin STRUCTURAL, and do it BEFORE `extra` is assembled.
@@ -23820,7 +23971,7 @@ cmd_plan_review() {
   require_stage plan-review
   require_worker
   [ "$(json_raw "$STATE" awaitingHuman)" = "true" ] \
-    && die "mission is awaiting a human answer — run '$(respond_hint)' first; the reviewer does not re-run until the gate clears."
+    && die "mission is awaiting a human answer; the reviewer does not re-run until the gate clears — run: $(respond_hint)"
   [ -f "$MISSION_DIR/plan.json" ] || die "no plan.json — Plan has not run."
 
   # S166 — structural pin, before `extra` (see cmd_validate for the ordering
@@ -24727,7 +24878,8 @@ cmd_implement() {
       emit_event paused implement "paused by the captain — halted between waves"
       printf '⏸ paused at: implement  (paused by the captain — halted between waves)\n'
       printf 'The Mission is paused; no further tickets will run until you resume it.\n'
-      printf 'Resume with `lcars resume %s`.\n' "$MISSION_ID"
+      printf 'Resume (lcars resume %s) — run: bash %q resume %q\n' \
+        "$MISSION_ID" "$SKILL_DIR/../lcars-pause/pause.sh" "$MISSION_ID"
       exit 0
     fi
 
@@ -25575,6 +25727,16 @@ drive_base_recheck() {
       else
         local recovery_rc=$?
         [ -n "$recovery" ] || recovery="Recovery refused: recovery exited with status $recovery_rc; mission commits are untouched. Inspect the repository before retrying."
+        case "$recovery" in
+          "Recovery merge failed;"*)
+            local parallel
+            parallel="$("${LCARS_PYTHON_BIN:-python3}" "$SKILL_DIR/../lcars-eeh/parallel-chunks.py" "$REPO_ROOT/.git/lcars")" \
+              || die "could not read parallel-chunk context; recovery remains refused."
+            if [ "$parallel" = yes ]; then
+              recovery="$recovery
+INTEGRATION HANDOFF: MAIN ECH owns cross-chunk integration. Send ONE BLOCKED: beat naming this Mission and the conflicting paths. There is no re-integrate verb: do not mint a third seat or hand-merge, rebase or force past this refusal. The main ECH settles the combined intent (captain only for a product decision), routes any repair through the factory, and verifies the whole. Clear the blocker FIRST, then answer this gate; answering resumes the drive. The human gate is not bypassed."
+            fi ;;
+        esac
         LCARS_MB_REASON="$recovery"
         local question
         question="$(printf '%s' "$recovery" | tr '\n' ' ') Resolve the recovery blocker, then re-drive; do not rebase or force the mission branch."
@@ -25588,7 +25750,7 @@ drive_base_recheck() {
         drive_persist_base_freshness "$branch"
         drive_emit_base_stale "$stage"
         emit_event selfheal_refused "$stage" "$question" || :
-        emit_event gate "$stage" "base recovery needs a human; no Stage worker was dispatched" || :
+        emit_event gate "$stage" "base recovery needs a human; no Stage worker was dispatched — run: $(respond_hint)" || :
         printf '%s\n' "$recovery"
         return 1
       fi
@@ -25750,27 +25912,17 @@ drive_pr_merged() { # → 0 if merged, 1 otherwise
   case "$merged" in ''|null|'""') return 1 ;; *) return 0 ;; esac
 }
 
-# --- mark a Mission Done after a merge detected on the board's side (the driver
-# saw the PR merged on GitHub, or directly). Mirrors approve's done transition.
-drive_mark_done() {
-  gh_relabel "lcars:done" "lcars:verify lcars:awaiting-human"
-  set_stage "done"
-  lcars_state_set_string "$STATE" review "merged"
-  . "$SKILL_DIR/../lcars-xo/release-stop.sh" \
-    && lcars_xo_release_completed_stop "$MISSION_DIR" || {
-      printf 'LCARS: PR merged, but Number One'\''s stop could not be released; check %s/xo-stop.\n' "$MISSION_DIR" >&2
-      return 1
-    }
-  emit_event stage_done verify "PR merged — Mission shipped"
+# A merge observed outside approve is a contradiction, never a Done transition.
+drive_report_merge_bypass() {
+  python3 "$SKILL_DIR/../lcars-status/merge-health.py" "$STATE"
+  return 1
 }
 
 # --- S75 Verify: auto-open the PR, then poll for a merge ----------------------
 # Three paths:
 #   • no PR yet      → open it (cmd_open_pr subprocess), record prUrl, fire ONE
-#                      notification, halt "in review". Sets nothing in
-#                      $DRIVE_VERIFY_DONE → the driver STOPS.
-#   • PR open, merged (here or on GitHub) → mark Done. Sets $DRIVE_VERIFY_DONE=1
-#                      so the driver continues (next pass: stage=done → terminal).
+#                      notification, halt "in review".
+#   • PR open, merged outside approve → report bypass, leave the record alone.
 #   • PR open, unmerged → halt "in review" WITHOUT re-notifying (the ping fires
 #                      ONCE, when the PR is first opened). Driver STOPS.
 drive_verify() { # accumulated-summary
@@ -25799,10 +25951,10 @@ drive_verify() { # accumulated-summary
   # at verify with no PR affordance and no degraded gate.
   local parent; parent="$(json_str "$STATE" parentMission)"
   if [ -n "$parent" ] && [ "$parent" != "null" ]; then
-    emit_event gate verify "bug fix folds onto parent $parent — no per-bug PR"
+    emit_event gate verify "bug fix folds onto parent $parent — run: $(resolve_logs_hint "$parent")"
     drive_print_summary "$summary"
     printf 'verify       ◇  bug fix folds onto parent %s — no per-bug PR (parent carries it)\n' "$parent"
-    printf '⏹ stopped at: verify  (folds onto the parent — accept via the parent'"'"'s re-verify gate)\n'
+    printf '⏹ stopped at: verify (folds onto the parent) — run: %s\n' "$(resolve_logs_hint "$parent")"
     return 0
   fi
 
@@ -25841,14 +25993,17 @@ drive_verify() { # accumulated-summary
     http*|*/pull/*)
       # A PR exists — has it merged (here or on GitHub)?
       if drive_pr_merged; then
-        drive_mark_done || return 1
-        drive_line_done_inline="$(printf 'verify       ✓  PR merged — Mission shipped')"
-        printf '%s\n' "$drive_line_done_inline"
-        DRIVE_VERIFY_DONE=1
-        return 0
+        drive_report_merge_bypass
+        return 1
       fi
+      local review_out
+      review_out="$(LCARS_GH_BIN="$GH_BIN" LCARS_GIT_BIN="$GIT_BIN" bash "$SELF" open-pr --mission "$MISSION_ID" 2>&1)" || {
+        printf '%s\n' "$review_out"
+        emit_event gate verify "required PR review unresolved; fix the review failure, then retry — run: $(drive_hint)"
+        return 1
+      }
       # Still open — in review. Halt, but do NOT re-ping (one ping at open time).
-      emit_event gate verify "in review — PR open"
+      emit_event gate verify "in review — PR open; review, then lcars approve $MISSION_ID — run: $(approve_hint)"
       # S203 — …and if Number One has the conn and has not looked yet, it looks
       # now, DETACHED, so this halt still returns the terminal immediately.
       drive_number_one_verify || true
@@ -25865,13 +26020,18 @@ drive_verify() { # accumulated-summary
   out="$(LCARS_GH_BIN="$GH_BIN" LCARS_GIT_BIN="$GIT_BIN" bash "$SELF" open-pr --mission "$MISSION_ID" 2>&1)" || rc=$?
   local pr2; pr2="$(json_str "$STATE" prUrl)"
   case "$pr2" in
-    http*|*/pull/*) : ;;
+    http*|*/pull/*)
+      if [ "$rc" -ne 0 ]; then
+        printf '%s\n' "$out"
+        emit_event gate verify "required PR review failed; fix the review failure, then retry — run: $(drive_hint)"
+        return 1
+      fi ;;
     *) # PR-open degraded (no gh / unauthed / create failed). This is STILL a
        # human gate — the Mission is parked at verify needing attention — so we
        # must fire EXACTLY ONE walk-away notification (never a false Done), and
        # only once: a guard flag makes a later retry not re-ping. The driver
        # STOPS here.
-       emit_event gate verify "parked at verify — PR open degraded; needs attention"
+       emit_event gate verify "parked at verify — PR open degraded; fix push/auth/gh, then retry — run: $(drive_hint)"
        drive_print_summary "$summary"
        printf '⏹ stopped at: verify  (could not open the PR)\n'
        printf '%s\n' "$out"
@@ -25887,14 +26047,14 @@ drive_verify() { # accumulated-summary
          printf 'Fix the cause (push/auth/gh), then retry the open with:\n  %s\n' "$(drive_hint)"
        fi
        if [ "$(json_str "$STATE" verifyDegradedNotified)" != "1" ]; then
-         notify_gate verify "Mission parked at verify — review needed (PR could not be opened automatically)"
+         notify_gate verify "Mission parked at verify — PR could not be opened automatically; fix push/auth/gh, then retry — run: $(drive_hint)"
          lcars_state_set_string "$STATE" verifyDegradedNotified "1"
        fi
        return 1 ;;
   esac
 
   # PR opened — fire the ONE notification and halt "in review".
-  emit_event gate verify "PR opened — review & merge"
+  emit_event gate verify "PR opened — merging by hand strands logged bugs; review, then lcars approve $MISSION_ID — run: $(approve_hint)"
   # S203 — the first officer's look starts HERE, on the pass that opened the PR,
   # and detached (see drive_number_one_verify): the notification and the halt
   # below must not wait on a browser.
@@ -25903,7 +26063,7 @@ drive_verify() { # accumulated-summary
   drive_print_summary "$summary"
   printf 'verify       ✓  PR opened — %s\n' "$pr2"
   local title; title="$(json_str "$STATE" title)"; title="${title:-$MISSION_ID}"
-  notify_gate verify "PR open — review & merge: $pr2"
+  notify_gate verify "PR open: $pr2 — merging by hand strands logged bugs; review, then lcars approve $MISSION_ID — run: $(approve_hint)"
   drive_halt_in_review "$pr2"
   return 0
 }
@@ -25913,9 +26073,10 @@ drive_verify() { # accumulated-summary
 drive_halt_in_review() { # pr-url
   printf '⏹ stopped at: verify  (in review — PR open)\n'
   printf 'PR is open for review: %s\n' "$1"
-  printf 'Review & merge, then:\n'
-  printf '  lcars approve %s    — merge the PR (ship it)\n' "$MISSION_ID"
-  printf '  lcars feedback %s   — send back with feedback (closes the PR)\n' "$MISSION_ID"
+  printf 'Approve through LCARS; merging by hand strands any logged bugs:\n'
+  printf '  Merge the PR (lcars approve %s) — run: %s\n' "$MISSION_ID" "$(approve_hint)"
+  printf '  Send back with feedback (closes the PR) — run: bash %q --mission %q --feedback "<what to change>"\n' \
+    "$SKILL_DIR/../lcars-feedback/feedback.sh" "$MISSION_ID"
 }
 
 drive_halt_awaiting() { # stage
@@ -25929,7 +26090,7 @@ drive_halt_awaiting() { # stage
   fi
   printf 'Answer with:\n  %s\n' "$(respond_hint)"
   local first; first="$(json_str "$STATE" pendingQuestion)"
-  notify_gate awaiting-human "Needs your answer — ${first:-answer it with: $(respond_hint)}"
+  notify_gate awaiting-human "Needs your answer — $first — run: $(respond_hint)"
 }
 
 drive_halt_paused() { # stage
@@ -25939,14 +26100,15 @@ drive_halt_paused() { # stage
   fi
   printf '⏸ paused at: %s  (paused by the captain — halted at a safe boundary)\n' "$1"
   printf 'The Mission is paused; no Stage will advance until you resume it.\n'
-  printf 'Resume with `lcars resume %s`.\n' "$MISSION_ID"
+  printf 'Resume (lcars resume %s) — run: bash %q resume %q\n' \
+    "$MISSION_ID" "$SKILL_DIR/../lcars-pause/pause.sh" "$MISSION_ID"
 }
 
 drive_halt_align() {
   printf '⏹ stopped at: align  (interactive Align re-grill required)\n'
   printf 'This Mission was sent back from Verify (feedback.md is present). Align is a\n'
   printf 'human grilling session, not automatable: re-grill it in your session and\n'
-  printf 'rewrite the PRD, then it auto-advances from Research.\n'
+  printf 'rewrite the PRD, then start Research — run: %s\n' "$(research_hint)"
 }
 
 # === Per-mission driver lock (BUG-A: single-instance `drive`) ===============
@@ -26662,6 +26824,8 @@ drive_number_one_verify() {
 
 cmd_drive() {
   locate_mission "$MISSION_ID"
+  python3 "$SKILL_DIR/../lcars-status/merge-health.py" --refuse-bypass "$STATE" \
+    || return 1
   # A parked mission (prdPending) is NOT drivable — the driver never runs a
   # PRD-less mission. Refuse before taking the lock, naming the align command.
   refuse_if_parked
@@ -26747,13 +26911,11 @@ cmd_drive() {
     # is spawned, no worker is killed mid-step (none is running). It stays put
     # until `lcars resume` clears the flag.
     if [ "$paused" = "true" ]; then
-      # A pause prevents new work, not recording a merge that already happened.
+      # A paused Mission still surfaces a merge that raced the entry check.
       if [ "$stage" = verify ] && [ -n "$(json_str "$STATE" prUrl)" ] \
          && drive_pr_merged; then
-        drive_mark_done || return 1
-        drive_print_summary "$summary"
-        printf 'verify       ✓  PR merged — Mission shipped\n'
-        return 0
+        drive_report_merge_bypass
+        return 1
       fi
       emit_event paused "$stage" "paused by the captain — halted at the $stage boundary"
       mirror_comments || true
@@ -26781,26 +26943,21 @@ cmd_drive() {
       if drive_number_one_gate; then
         continue
       fi
-      emit_event gate "$stage" "awaiting your answer"
+      emit_event gate "$stage" "awaiting your answer — run: $(respond_hint)"
       mirror_comments || true
       drive_print_summary "$summary"; drive_halt_awaiting "$stage"; return 0
     fi
     case "$stage" in
-      verify) # S75: Verify auto-opens the PR, then parks "in review — PR open"
-              # and polls for a merge (here or on GitHub) → Done. drive_verify
-              # owns the open/poll/halt; it returns 0 to STOP the driver (in
-              # review or a hard open failure) or non-empty $DRIVE_VERIFY_DONE to
-              # signal "merged → continue the loop" (the next pass sees stage=done).
-              DRIVE_VERIFY_DONE=""
+      verify) # Verify opens the PR and parks; an outside merge is a refusal,
+              # not a Done transition. Only approve records completion.
               drive_verify "$summary" || return 1
-              [ -n "$DRIVE_VERIFY_DONE" ] && continue
               return 0 ;;
       done)   emit_event gate done "Mission shipped — the PR is merged"
               mirror_comments || true
               drive_print_summary "$summary"
               printf '⏹ stopped at: done  (Mission shipped — the PR is merged)\n'; return 0 ;;
       align)  if [ -f "$MISSION_DIR/feedback.md" ]; then
-                emit_event gate align "interactive Align re-grill required"
+                emit_event gate align "interactive Align re-grill required; rewrite the PRD first — run: $(research_hint)"
                 mirror_comments || true
                 drive_print_summary "$summary"; drive_halt_align; return 0
               fi ;;
@@ -26884,7 +27041,7 @@ cmd_drive() {
       local wd_stage wd_await
       wd_stage="$(json_str "$STATE" stage)"; wd_await="$(json_raw "$STATE" awaitingHuman)"
       if [ "$wd_stage" = "$stage" ] && [ "$wd_await" != "true" ]; then
-        local wdq="The $action stage exceeded the ${stage_timeout}s watchdog and was stopped to avoid a silent freeze (see BUG-020). Re-run '$(drive_hint)' to resume; if it recurs, inspect the worker/heartbeat for a leaked child."
+        local wdq="The $action stage exceeded the ${stage_timeout}s watchdog and was stopped to avoid a silent freeze (see BUG-020). Inspect the worker/heartbeat for a leaked child, then answer the gate to resume — run: $(respond_hint)"
         local wq; wq="$(mktemp)"; printf '%s\n' "$wdq" >"$wq"
         write_pending "$wq" "$stage"; rm -f "$wq"
         lcars_state_set "$STATE" awaitingHuman true
@@ -26895,15 +27052,15 @@ cmd_drive() {
         # sentence (S214 fix round 1, D2). It used to be `$stage`, where the
         # Mission sits, so a Research timeout banded itself ALIGN on the board
         # while the sentence beside it said Research.
-        emit_event error "$action" "$action timed out under the stage watchdog (${stage_timeout}s) — escalated to awaiting-human" stageFailure=1
+        emit_event error "$action" "$action timed out under the stage watchdog (${stage_timeout}s) — escalated to awaiting-human — run: $(respond_hint)" stageFailure=1
         # S312 — the SAME fact, in state.json, for the readers that ask mission
         # state rather than the event log. A timeout IS a failed attempt; it is
         # awaiting-human AS WELL, and those are two facts, not one.
         drive_mark_stage_failed "$action" \
-          "$action timed out under the stage watchdog (${stage_timeout}s) — escalated to awaiting-human"
+          "$action timed out under the stage watchdog (${stage_timeout}s) — escalated to awaiting-human — run: $(respond_hint)"
         drive_print_summary "$summary"
-        printf '⏱ stopped: %s timed out under the watchdog — flagged the human (resolve with: %s).\n' "$action" "$(respond_hint)"
         printf '%s\n' "$out"
+        printf '⏱ stopped: %s timed out under the watchdog — answer the gate — run: %s\n' "$action" "$(respond_hint)"
         return 0
       fi
     fi
@@ -26954,7 +27111,6 @@ cmd_drive() {
         if [ "$new_stage" = "verify" ]; then
           # Stepping INTO verify auto-opens the PR (same path as auto mode), then
           # parks in review. drive_verify prints its own summary + banner.
-          DRIVE_VERIFY_DONE=""
           drive_verify "$summary" || return 1
         else
           drive_print_summary "$summary"
@@ -27011,7 +27167,7 @@ cmd_drive() {
       && fail_log_size1="$(wc -c <"$MISSION_DIR/$action/worker-failure.log" 2>/dev/null | tr -d ' ')"
     [ -n "$fail_log_size1" ] && [ "$fail_log_size1" != "${fail_log_size0:-}" ] \
       && fail_log_kv+=("log=$fail_log_rel")
-    emit_event error "$action" "$action failed${err_tail:+: $err_tail}" "${fail_log_kv[@]}"
+    emit_event error "$action" "$action failed${err_tail:+: $err_tail} — run: $(drive_hint)" "${fail_log_kv[@]}"
     # S312 — AND THE SAME FACT IN MISSION STATE. This is the exact arm the real
     # mission took at 01:36: the driver then exited 0-ish and normally, the
     # event log knew, and state.json said `"stage": "align"` — indistinguishable
@@ -27021,10 +27177,11 @@ cmd_drive() {
     # when THIS run actually wrote to it (fail_log_kv carries `log=` iff so).
     local fail_log_rec=""
     case " ${fail_log_kv[*]} " in *" log=$fail_log_rel "*) fail_log_rec="$fail_log_rel" ;; esac
-    drive_mark_stage_failed "$action" "$action failed${err_tail:+: $err_tail}" "$fail_log_rec"
+    drive_mark_stage_failed "$action" "$action failed${err_tail:+: $err_tail} — run: $(drive_hint)" "$fail_log_rec"
     drive_print_summary "$summary"
     printf '⏹ stopped: %s failed\n' "$action"
     printf '%s\n' "$out"
+    printf 'Fix the reported cause, then retry — run: %s\n' "$(drive_hint)"
     return "${rc:-1}"
   done
 }

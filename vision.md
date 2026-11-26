@@ -210,6 +210,23 @@ the floor finally running work it had produced, rather than work handed to it.
 check here; they land with the release that carries them. They also produced
 most of the open items in the next section, which is the honest half of it.
 
+### November — the rule that lived in the wrong place
+
+A large ask now splits: the ECH divides it and hands each part to a sub-ECH one
+layer deep, which may not divide again — a supervisor with helpers, not a tree
+that grows unwatched.
+
+The honest half is better than the feature. On a capstone the supervisor merged
+eleven pull requests by hand, stranding four bug reports that can never be
+re-attached once their Mission is done. The proper verb had always refused that,
+but it never saw the refusal, because the gate printed *"PR opened — review &
+merge"*. It found this itself, and not by reasoning: **it ran the sanctioned verb
+on something it had already merged and let the refusal answer.**
+
+So the fix was not a warning. **The refusal moved to where the merge actually
+happens**, in one guard shared by the approve verb and the forge seam. **A
+boundary at a verb's name bounds nothing when the act is reachable another way.**
+
 ### Then and now
 
 The same board, July and October of the same year:

@@ -143,7 +143,7 @@ rc1=0
 (
   cd "$repo"
   LCARS_GH_BIN="$repo/gh" LCARS_GIT_BIN="$(command -v git)" LCARS_DATE="20260530" \
-    bash "$SCRIPT" --parent lcars-20260530-001 --prd "$bug1" --prd "$bug2" >out.txt 2>&1
+    bash "$SCRIPT" --confirm-distinct --parent lcars-20260530-001 --prd "$bug1" --prd "$bug2" >out.txt 2>&1
 ) || rc1=$?
 check "1. exits zero on a clean two-bug log" "[ '$rc1' -eq 0 ]"
 check "1. mints the first bug mission lcars-20260530-002-c10e" \
@@ -288,7 +288,7 @@ rc8=0
   cd "$repo8"
   LCARS_GH_BIN="$repo8/gh" LCARS_GIT_BIN="$(command -v git)" LCARS_DATE="20260530" \
     LCARS_HOST_ADAPTER="$repo8/adapter" \
-    bash "$SCRIPT" --parent lcars-20260530-001 --prd "$bug8a" --prd "$bug8b" >out8.txt 2>&1
+    bash "$SCRIPT" --confirm-distinct --parent lcars-20260530-001 --prd "$bug8a" --prd "$bug8b" >out8.txt 2>&1
 ) || rc8=$?
 check "7. exits zero when nesting via the host adapter" "[ '$rc8' -eq 0 ]"
 check "7. invokes the host adapter's link-subissue op" \
@@ -622,7 +622,7 @@ rc20=0
   LCARS_GH_BIN="$repo20/gh" LCARS_GIT_BIN="$(command -v git)" LCARS_DATE="20260530" \
     LCARS_RUN_BIN="$repo20/no-run.sh" \
     bash "$SCRIPT" --parent lcars-20260530-001 \
-      --prd "$bug20a" --model-override "all:opus" \
+      --confirm-distinct --prd "$bug20a" --model-override "all:opus" \
       --prd "$bug20b" --model-override "" >out20.txt 2>&1
 ) || rc20=$?
 B20A="$repo20/.git/lcars/missions/lcars-20260530-002-c10e"
@@ -670,7 +670,7 @@ rc22=0
   cd "$repo22"
   LCARS_GH_BIN="$repo22/gh" LCARS_GIT_BIN="$(command -v git)" LCARS_DATE="20260530" \
     bash "$SCRIPT" --parent lcars-20260530-001 --attach "$img22" \
-      --prd "$bug22a" --prd "$bug22b" >out22.txt 2>&1
+      --confirm-distinct --prd "$bug22a" --prd "$bug22b" >out22.txt 2>&1
 ) || rc22=$?
 B22A="$repo22/.git/lcars/missions/lcars-20260530-002-c10e"
 B22B="$repo22/.git/lcars/missions/lcars-20260530-003-c10e"
@@ -784,7 +784,7 @@ rc25=0
   cd "$repo25"
   LCARS_GH_BIN="$repo25/gh" LCARS_GIT_BIN="$(command -v git)" LCARS_DATE="20260530" \
     bash "$SCRIPT" --parent lcars-20260530-001 --attach "$imgG" \
-      --prd "$bug25a" --prd "$bug25b" >out25.txt 2>&1
+      --confirm-distinct --prd "$bug25a" --prd "$bug25b" >out25.txt 2>&1
 ) || rc25=$?
 B25A="$repo25/.git/lcars/missions/lcars-20260530-002-c10e"
 B25B="$repo25/.git/lcars/missions/lcars-20260530-003-c10e"
@@ -805,7 +805,7 @@ rc26=0
   cd "$repo26"
   LCARS_GH_BIN="$repo26/gh" LCARS_GIT_BIN="$(command -v git)" LCARS_DATE="20260530" \
     bash "$SCRIPT" --parent lcars-20260530-001 \
-      --prd "$bug26a" --attach "$img1" \
+      --confirm-distinct --prd "$bug26a" --attach "$img1" \
       --prd "$bug26b" --attach "$img2" >out26.txt 2>&1
 ) || rc26=$?
 B26A="$repo26/.git/lcars/missions/lcars-20260530-002-c10e"
@@ -829,7 +829,7 @@ rc27=0
   cd "$repo27"
   LCARS_GH_BIN="$repo27/gh" LCARS_GIT_BIN="$(command -v git)" LCARS_DATE="20260530" \
     bash "$SCRIPT" --parent lcars-20260530-001 --attach "$imgOrphan" \
-      --prd "$bug27a" --attach "$imgOwn" \
+      --confirm-distinct --prd "$bug27a" --attach "$imgOwn" \
       --prd "$bug27b" >out27.txt 2>&1
 ) || rc27=$?
 B27A="$repo27/.git/lcars/missions/lcars-20260530-002-c10e"
@@ -852,7 +852,7 @@ rc28=0
   cd "$repo28"
   LCARS_GH_BIN="$repo28/gh" LCARS_GIT_BIN="$(command -v git)" LCARS_DATE="20260530" \
     bash "$SCRIPT" --parent lcars-20260530-001 \
-      --prd "$bug28a" --attach "$img28" \
+      --confirm-distinct --prd "$bug28a" --attach "$img28" \
       --prd "$bug28b" >out28.txt 2>&1
 ) || rc28=$?
 B28A="$repo28/.git/lcars/missions/lcars-20260530-002-c10e"
@@ -1099,7 +1099,7 @@ rc35=0
   cd "$repo35"
   LCARS_GH_BIN="$repo35/gh" LCARS_GIT_BIN="$(command -v git)" LCARS_DATE="20260530" \
     bash "$SCRIPT" --parent lcars-20260530-001 \
-      --prd "$b35a" --prd "$b35b" --prd "$b35c" >out35.txt 2>&1
+      --confirm-distinct --prd "$b35a" --prd "$b35b" --prd "$b35c" >out35.txt 2>&1
 ) || rc35=$?
 check "25e. a multi-bug filing succeeds" "[ '$rc35' -eq 0 ]"
 M35="$repo35/.git/lcars/missions"
@@ -1311,7 +1311,7 @@ rc34=0
   cd "$repo34"
   LCARS_GH_BIN="$repo34/gh" LCARS_GIT_BIN="$(command -v git)" LCARS_DATE="20260530" \
     bash "$SCRIPT" --parent lcars-20260530-001 \
-      --prd "$repo34/xo/logs/1.md" --attach "$repo34/xo/shots/shot-01.png" \
+      --confirm-distinct --prd "$repo34/xo/logs/1.md" --attach "$repo34/xo/shots/shot-01.png" \
       --prd "$repo34/xo/logs/2.md" --attach "$repo34/xo/shots/shot-02.png" >out34.txt 2>&1
 ) || rc34=$?
 B34a="$repo34/.git/lcars/missions/lcars-20260530-002-c10e"
@@ -1687,7 +1687,7 @@ rc49=0
     LCARS_GH_BIN="$repo49/gh" LCARS_GIT_BIN="$(command -v git)" LCARS_DATE="20260530" \
     LCARS_RUN_BIN="$RUN_BIN_REAL" STUB_ESTIMATE="NONE" \
     bash "$SCRIPT" --parent lcars-20260530-001 \
-      --prd "$repo49/b1.md" --prd "$repo49/b2.md" --prd "$repo49/b3.md" \
+      --confirm-distinct --prd "$repo49/b1.md" --prd "$repo49/b2.md" --prd "$repo49/b3.md" \
       >out49.txt 2>&1
 ) || rc49=$?
 N49="$(shim_count "$C49")"
@@ -1720,7 +1720,7 @@ rc50=0
     LCARS_GH_BIN="$repo50/gh" LCARS_GIT_BIN="$(command -v git)" LCARS_DATE="20260530" \
     LCARS_RUN_BIN="$RUN_BIN_REAL" STUB_ESTIMATE="$EST_TRIVIAL" \
     bash "$SCRIPT" --parent lcars-20260530-001 \
-      --prd "$repo50/b1.md" --prd "$repo50/b2.md" --prd "$repo50/b3.md" \
+      --confirm-distinct --prd "$repo50/b1.md" --prd "$repo50/b2.md" --prd "$repo50/b3.md" \
       >out50.txt 2>&1
 ) || rc50=$?
 N50="$(shim_count "$C50")"
@@ -1748,7 +1748,7 @@ rc51=0
     LCARS_RUN_BIN="$RUN_BIN_REAL" STUB_ESTIMATE="NONE" \
     LCARS_LOG_ESTIMATE_FAILURES=0 \
     bash "$SCRIPT" --parent lcars-20260530-001 \
-      --prd "$repo51/b1.md" --prd "$repo51/b2.md" >out51.txt 2>&1
+      --confirm-distinct --prd "$repo51/b1.md" --prd "$repo51/b2.md" >out51.txt 2>&1
 ) || rc51=$?
 N51="$(shim_count "$C51")"
 check "31c. breaker off restores the unbounded legacy fan-out (saw $N51, want 6)" \

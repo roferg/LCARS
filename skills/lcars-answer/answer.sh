@@ -117,6 +117,8 @@ cmd_list() {
   fi
 
   local found=0 s id title stage awaiting issue pend pq q pr_url parent
+  python3 "$SKILL_DIR/../lcars-status/merge-health.py" "$MISSIONS_DIR" \
+    || die "could not check PR/Mission consistency."
   shopt -s nullglob
   for s in "$MISSIONS_DIR"/*/state.json; do
     id="$(json_str "$s" id)"; [ -n "$id" ] || id="$(basename "$(dirname "$s")")"
@@ -155,7 +157,7 @@ cmd_list() {
       if [ "$xo_status" = "escalated" ] && [ -n "$xo_note" ]; then
         printf '    ◈ Number One handed this one back to you: %s\n' "$xo_note"
       fi
-      printf '    → answer:  lcars answer respond --mission %s --answer "…"\n' "$id"
+      printf '    → answer (lcars answer respond) — run: bash %q answer --mission %q --answer "<your answer>"\n' "$RESPOND_SCRIPT" "$id"
     elif [ "$stage" = "verify" ]; then
       # The Verify gate — ship or send back.
       found=$((found + 1)); [ "$found" -eq 1 ] && echo "LCARS — Inbox (decisions waiting on you)"
@@ -165,16 +167,16 @@ cmd_list() {
       pr_url="$(json_str "$s" prUrl)"
       case "$pr_url" in
         http*|*/pull/*)
-          printf '    → approve:   lcars answer approve --mission %s\n' "$id" ;;
+          printf '    → approve (lcars approve %s) — run: bash %q --mission %q\n' "$id" "$APPROVE_SCRIPT" "$id" ;;
         *)
           parent="$(json_str "$s" parentMission)"
           if [ -n "$parent" ]; then
-            printf '    → approve: unavailable — no open PR recorded; this logged bug ships via parent %s. Run `lcars resolve-logs %s` for the consolidated parent review.\n' "$parent" "$parent"
+            printf '    → approve: unavailable — this logged bug ships via parent %s; gather the consolidated parent review — run: bash %q --parent %q\n' "$parent" "$SKILL_DIR/../lcars-resolve-logs/resolve-logs.sh" "$parent"
           else
-            printf '    → approve: unavailable — no open PR recorded; run `lcars run %s` so Verify opens the PR first.\n' "$id"
+            printf '    → approve: unavailable — no open PR recorded; retry Verify to open it — run: bash %q drive --mission %q\n' "$SKILL_DIR/../lcars-run/run.sh" "$id"
           fi ;;
       esac
-      printf '    → send back: lcars answer send-back --mission %s --feedback "…"\n' "$id"
+      printf '    → send back (lcars answer send-back) — run: bash %q --mission %q --feedback "<what to change>"\n' "$FEEDBACK_SCRIPT" "$id"
     fi
   done
   shopt -u nullglob

@@ -18,6 +18,11 @@ checks, writing bug PRDs and the merge call. Everything sequenceable is
 > hits an LCARS bug it works around it with another verb and ledgers it, or it
 > stops and asks. Fixing LCARS is `lcars eeh` § 2, under `ORCHESTRATION.md`.
 
+> **WHO does a unit of work is not in this file.** The tier judgement
+> (T0/T1/T2), what a delegate must absorb, and what a hand-off brief must say
+> live in `DELEGATION.md` — `lcars-eeh docs delegation`. It is the authority;
+> § 6's standing live-check job below applies at every tier, unchanged.
+
 ## Unattended Copilot setup: no blanket trust is required
 
 **An unattended EEH or ECH run does not require `COPILOT_ALLOW_ALL=true`, and
@@ -435,18 +440,35 @@ settle for itself later:
 | 3 | somewhere to push — and whether that remote **answers**, probed with a bounded `git ls-remote` | STOPS |
 | 4 | the forge login a pull request needs (`gh auth status`) | STOPS |
 | 5 | the engine's unattended permission — whatever `COPILOT_ALLOW_ALL` the environment carries, on a copilot run | PROCEEDS: reported, never required (see the setup section above) |
-| 6 | Number One: RECOMMENDED **ON**, using the run's engine | PROCEEDS on the recommended default, ON; runs `xo on --engine <run-engine> --sweep` once and records the choice |
+| 6 | Number One: preserve the recorded ruling, including **OFF** | PROCEEDS without asking; only an entirely unrecorded legacy run gets the RECOMMENDED ON choice |
 
 1, 2 and 6 carry a RECOMMENDED default, so `yes` answers the block. Re-run
 `lcars-ech preflight` any time; a prerequisite already recorded is not
 asked about again.
 
 Number One is asked for **once, at preflight**, never later at a merge gate.
-No tty means proceed on ON without waiting for input; an explicit OFF is
-preserved too. The decision and its engine live in `autopilot.json.numberOne`;
+An explicit `numberOne.enabled` is a ruling, even without `choice`: preflight
+preserves it and its sibling fields. The run record wins, then its recorded
+choice, then the repo config. Only a legacy run with none of those gets the
+ON recommendation. The decision and its engine live in `autopilot.json.numberOne`;
 the real `xo` verb applies it. A refused verb is reported, not called success.
 This is a run choice, **not** a change to `lcars init`: its
 `numberOne.enabled` default stays **false**.
+That default is intentional: new repos do not opt into billed verification
+without a recorded decision, and preflight no longer undoes it.
+
+**Required forge review is separate from Number One.** Read the target repo's
+`AGENTS.md` / `CLAUDE.md` and record `prReviewers` in `.git/lcars/config.json`,
+for example `["@copilot"]` or `["owner/team", "reviewer"]`. Use `[]` only when
+its contract requires no review. Verify refuses to open a PR in a repo with
+either instruction file until that decision exists; it does not guess policy
+from prose. It requests every declared reviewer through the forge adapter,
+records success against the head, and retries failed requests on `open-pr`
+without opening another PR. A failed request is a failed Verify gate, never
+"in review" success. This requests review; it does not claim a review completed
+or an approval was granted.
+Copilot's `@copilot` reviewer alias requires GitHub CLI 2.88 or later; a forge
+that cannot request it fails explicitly rather than substituting a user login.
 
 3 is a **reachability** check, not a name check: a deleted repo, a typo'd host
 and revoked auth all leave `origin` in the config and die at the pull-request
@@ -605,6 +627,13 @@ actually wants.
 ---
 
 ## 4. File a milestone through the front door
+
+**CHUNKING DECISION FIRST, before any Mission is filed.** Follow
+`DELEGATION.md` § *THE CHUNKING DECISION*: decide how many chunks, declare the
+trigger and record the reason with `lcars-ech chunking`. ONE chunk is a
+legitimate, reasoned answer, not an omitted decision. `next` asks before
+offering this filing step (including a foundation Mission); the decision is
+the ECH's, not an automatic size rule.
 
 **`file.sh` requires six sections** and refuses the PRD without any one of them.
 Write all six before you call it — they are, exactly: **Mission title**, **Type**,
@@ -1104,6 +1133,7 @@ prints the whole table.
 | Number One | Live check | Action |
 |---|---|---|
 | any | **bugs** | **send-back** |
+| explicitly OFF in repo config | pass | **merge** on the recorded live check alone; no Number One score is fabricated |
 | high | pass | **merge** |
 | medium | pass | **merge+follow-ups** — merge, and file the gaps it named as their own missions |
 | low, for a **product** reason | pass | **send-back** |
@@ -1113,6 +1143,11 @@ prints the whole table.
 running the mission decides within LCARS's gates and the captain's recorded
 authority. **The hologram's own live check is REQUIRED before every merge.**
 **Number One's recommendation is not a substitute for having looked.**
+When Number One is explicitly OFF, omit `--verdict`: `policy` reads that
+ruling before any old `xo/verdict.json`, requires the same recorded live-check
+verdict, and ignores stale Number One recommendations. An absent config value
+is not an OFF ruling. Explicit historical score flags retain their table-reading
+meaning; `--verdict off` requires a Mission and the recorded repo switch.
 Read the actual live evidence, record pass or bugs, and take the table's action;
 a grant never turns bugs into pass.
 

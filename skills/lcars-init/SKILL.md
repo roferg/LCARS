@@ -69,6 +69,35 @@ unset, stating only the exceeded bound, not a measured suite duration or a
 passing verdict. Adjust it with `lcars update --gate-timeout <seconds>`
 (1–3600), then re-probe with a suitable `LCARS_PROBE_TIMEOUT`.
 
+A passing suite is not yet a usable proof instrument, so a passing probe is
+followed by a **narrowing probe** of up to two more bounded runs. The first
+points the scope at an **empty directory**: a command that then runs fewer
+tests than the whole suite APPLIES its scope, which is the narrowing the
+Implement gates need, and nothing further is measured. If that changed nothing
+the command is run once more with a **single tracked test file** in
+`$LCARS_TESTS_DIR`; running fewer tests than the whole suite is again a
+narrowing (the shape whose selection is built with `find`, which falls back to
+the runner's own discovery when it comes back empty).
+
+A command is **refused by name at setup** — `TEST SYSTEMS CANNOT NARROW` —
+only when BOTH scopes took nothing away, because the project's own test script
+already selects everything and the per-ticket scope is appended rather than
+applied. The refusal carries every measured count, the consequence, and the
+corrected form (the scope REPLACING the selection, e.g.
+`node --test "${LCARS_TESTS_DIR:-tests/**/*.test.js}"`) plus the
+`lcars update --test-command` line that records it — a verb that now probes
+what it records. `TEST SYSTEMS ONLINE` is withheld, but setup itself still
+completes: config and labels are done and correct.
+
+The measured full-suite size is recorded as `suiteSize`, which the Implement
+proof gate's narrowing control reads. A command is **never refused on a file
+the probe cannot show the default run executes** — the measuring file is chosen
+from the files the whole-suite run named in its own output where a runner names
+them, and an unresolved case is reported as *narrowing not measured* with the
+certification kept. A repo whose runner can only be handed a directory
+(`unittest discover -s`), or that tracks fewer than two test files, is likewise
+reported as not measured rather than refused.
+
 Python detection reuses an existing interpreter from the shared git directory's
 `lcars/testenv`, `.venv`, or `venv`, in that order, before falling back to
 `python3`/`pytest`. It records an absolute interpreter path so isolated gate

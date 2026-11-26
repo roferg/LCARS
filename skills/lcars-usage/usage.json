@@ -1,0 +1,13 @@
+{
+  "_note": "Thresholds for the session chain's capacity gate. Captain's ruling, 2026-09-11 (Max 5x). Edit here; usage.sh reads this file on every call.",
+  "_healthNote": "Thresholds for chain.sh's machine-health guard (health/beat/status), added S204 (2026-09-15) after the night of 2026-09-14 lost roughly eight hours to a fork bomb nobody could see: a test rig ran the machine to 5,538 processes until the shell could not fork, and a sub-agent that cannot run a command simply goes quiet. healthMaxProcs=2000 sits well above the normal ~750 processes this box carries (Defender, WindowServer, and every live Copilot's MCP servers all included) and well below the 5,538 that was actually measured pathological, so it separates the two cleanly without tripping on an ordinary busy moment. Both are validated exactly like the four above: a bad value falls back to the shipped default and says so on stderr.",
+  "_healthStaleNote": "healthStaleMinutes=75, fix round 2026-09-15 (same day, one round later): the first cut (60) was tuned against CHAIN-LOG age and cried wolf on every ordinary session, because a session legitimately logs nothing for one to three hours — that answers 'has it made progress', not 'is it alive'. Liveness is now driven by a BEAT STAMP that `beat` overwrites every ~30 minutes, healthy or not, which IS proof of life (a wedged run never calls beat again). 75 is tuned against THAT clock: two full missed beat intervals (60m) plus one interval's worth of slack for a timer that fires a little late or an orchestrator momentarily busy (15m). A beat-driven run is never stale before ~75 minutes of true silence; a log-only caller (no beat ever run) never gets a guessed STALE at all — it reads liveness UNKNOWN instead, honestly, per compute_liveness in chain.sh.",
+  "thresholds": {
+    "fiveHourGo": 70,
+    "fiveHourGrace": 80,
+    "graceMinutes": 45,
+    "weeklyAsk": 95,
+    "healthMaxProcs": 2000,
+    "healthStaleMinutes": 75
+  }
+}

@@ -15,6 +15,11 @@ description: >-
 at every active Mission in this repo, the Stage each sits at, and any pending
 human action. It is **read-only** — it scans `.git/lcars/missions/`, loads each
 `state.json`, and renders a table. It writes nothing and changes no state.
+For unfinished Missions with a recorded PR, it also makes a bounded,
+read-only forge query. A merged PR with an unfinished record prints
+**MERGE BYPASS**, names the Mission and the stranded-bug risk, and says what
+to inspect. It never silently marks the Mission Done; an unavailable forge
+check is reported as unavailable, not as evidence of a merge.
 
 Unlike the conversational skills, there's no Claude-driven half — the whole
 thing is the bundled `status.sh`. Just run it and show the captain its output

@@ -40,6 +40,10 @@ Three consumers, one file:
 - **`lcars eeh`** (this skill) — orchestrates one **fix** to LCARS, driven from
   whatever foreign repo the captain happens to be in.
 
+**Its sibling: `DELEGATION.md`** (`lcars-eeh docs delegation`) — the same three
+consumers read it for **who does a unit of work** (the T0/T1/T2 tier judgement
+and the hand-off brief); this file stays the authority on **the loop**.
+
 Read it with the command `install.sh` puts on your PATH. It resolves this file
 beside whichever copy of `eeh.sh` ran, so it is stable from any cwd and under
 either install symlink farm (`~/.claude/skills/` for Claude Code, `~/.copilot/installed-plugins/_direct/lcars` for Copilot):
@@ -121,6 +125,12 @@ Run these **after** the go-ahead and **before** any sub-agent.
 ---
 
 ## The loop
+
+**A merge is initiated ONLY through an LCARS verb (`lcars approve` or
+`lcars-ech land`) or the LCARS web UI, never `gh pr merge` by hand.**
+The LCARS gate keeps logged bugs with their parent PR and records completion.
+Bypassing it strands their fixes outside the merged PR and leaves the Mission
+record unfinished. A passing review is not permission to bypass that gate.
 
 The orchestrator half spawns sub-agents and is run from Claude Code today; the ride-along brief and the ECH run from either CLI.
 

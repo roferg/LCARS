@@ -819,6 +819,29 @@ around them (see vision.md → *Implement*):
   `unproven` leg is INCONCLUSIVE with the reason naming why
   (`proof_scope_narrowing_unproven`), never a confident PASS or FAIL.
 
+  **The control also consults the repo's FULL-SUITE SIZE.** Two counts that
+  merely DIFFER are not a narrowing: on the live capstone of 18 Nov 2026 the
+  control recorded `executed: 7393` with `narrowingProven: true` against a leg
+  that executed 7,400 — and a full suite of 7,381. Both numbers were the whole
+  suite. `lcars init` and `lcars update --probe-tests` now measure that suite
+  and record it as `suiteSize` in `.git/lcars/config.json`, and when the
+  control's count **and** the leg's count are both at or above it, the narrowing
+  is `unproven`: the scope excluded nothing, whatever the delta says. **Both**
+  numbers are required, because an empty scope can degenerate into the runner's
+  own discovery in a repo whose command narrows perfectly well — a control-only
+  rule parks honest tickets. With no `suiteSize` recorded the comparison is
+  inert and the gate behaves exactly as it did.
+
+  **And the record is never trusted over a fresher number.** The comparison is
+  made against the LARGER of the recorded `suiteSize` and the control's own
+  count, because in exactly the case it fires the control has just measured the
+  whole suite itself. Nothing refreshes `suiteSize` automatically, so a growing
+  repo's record is permanently stale-low: measured 20 Nov 2026, a suite grown to
+  22 tests with `suiteSize` still 2 turned an honest 2-test leg `inconclusive`.
+  Taking the larger of the two is a tightening of the RECORD and never of the
+  verdict — the effective size is never below the recorded one, so no leg that
+  passed before can start failing.
+
   **Zero executed is never evidence, on EITHER leg.** A run that exits green
   while its own runner reports executing zero tests is INCONCLUSIVE
   (`proof_leg_zero_executed`) — on the tip because a green on nothing is not a

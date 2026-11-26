@@ -37,6 +37,14 @@ It works from anywhere because `install.sh` installs it globally into the instal
 
 The orchestrator half spawns sub-agents and is run from Claude Code today; the ride-along brief and the ECH run from either CLI.
 
+For a stuck Mission, use `lcars-ech retire <id> --reason "<why>"`, never an
+ad-hoc move or deletion. It archives the Mission intact to the one write
+location, `.git/lcars/archived-missions/`, records the reason and timestamp in
+`retirement.json`, and releases that Mission's chunk ownership without releasing
+its seat's other work. Stop live work first. `lcars-ech retire --list` enumerates
+that location **and** legacy `.git/lcars/missions-archived/` records. It does not
+delete branches, close issues/PRs, merge, or decide how to re-file the work.
+
 The brief opens by announcing itself as the Emergency Engineering Hologram.
 `LCARS_EEH_QUIET=1` turns that one line off (and `LCARS_ECH_QUIET=1` does the
 same for the ECH's); every other value, including `0`, leaves it on.
@@ -254,6 +262,24 @@ change, a standing-rule conflict, or an LCARS bug with no workaround.
 ```bash
 lcars-eeh docs ech              # prints HOLOGRAM-COMMAND-MODE.md — the full playbook
 ```
+
+**Or read only the moment you are at.** The playbook is 1,512 lines, most of them
+the REASON behind a rule — which is why none of them is ever cut. It is instead
+readable in parts, split by READER AND MOMENT, and the parts in this order ARE
+the whole file, byte for byte:
+
+```bash
+lcars-eeh docs ech-preflight    # before you start: the grants, the command shape, the state
+lcars-eeh docs ech-intake       # the alignment round, the captain-only steps, filing a milestone
+lcars-eeh docs ech-drive        # driving it backgrounded, with a waiter
+lcars-eeh docs ech-verify       # the Verify gate and the merge policy
+lcars-eeh docs ech-land         # approving, and the hygiene that follows
+lcars-eeh docs ech-wait         # waiting, two missions at a time, the heartbeat
+lcars-eeh docs ech-report       # the interrupt budget and the wrap-up
+```
+
+Read the part for the moment you are at, not the file. `lcars-ech next` names the
+heading, and `lcars-eeh docs` lists the parts.
 
 The token-free driver that sequences it (and spends nothing) sits beside it:
 

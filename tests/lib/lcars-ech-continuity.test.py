@@ -245,7 +245,20 @@ class Continuity(unittest.TestCase):
         cron = self.repo / "crontab"
         cron.write_text('#!/bin/bash\necho "crontab: permission denied" >&2\nexit 1\n')
         cron.chmod(0o755)
-        self.env.update(LCARS_CRONTAB_BIN=str(cron), LCARS_ECH_CRONTAB_TIMEOUT="1")
+        # THE BOUND HERE IS NOT THE THING UNDER TEST, and it must not be tight.
+        # This stub REFUSES INSTANTLY, so the timeout should never fire — all it
+        # has to do is outlast the fork+exec of a 3-line script. It was "1", and
+        # under the load of the full suite the fork alone took longer than that:
+        # the bound killed the stub, the product correctly reported a TIMEOUT
+        # instead of the refusal, and this assertion went red with nothing wrong.
+        # Measured 2026-11-12: red twice in a full run, 5/5 when run alone, and
+        # identical on a pristine main — i.e. the constant was the defect.
+        # 10 matches the product's own documented default (ech.sh CRONTAB_TIMEOUT)
+        # and costs nothing, because a stub that exits immediately never waits.
+        # Contrast test_refused_heartbeat_starts_timerless_fallback above, whose
+        # stub is `exec sleep 60`: THAT one needs a tight bound on purpose, and
+        # keeps it.
+        self.env.update(LCARS_CRONTAB_BIN=str(cron), LCARS_ECH_CRONTAB_TIMEOUT="10")
         self.addCleanup(self.stop_recorded_watch)
         out = self.run_ech("heartbeat", "install", rc=11)
         self.assertIn("crontab: permission denied", out)

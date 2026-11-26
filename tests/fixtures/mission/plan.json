@@ -1,0 +1,28 @@
+{
+  "schemaVersion": 2,
+  "missionId": "@MISSION_ID@",
+  "tickets": [
+    {
+      "id": "t-001",
+      "title": "Derive and emit the canonical URL at publish time",
+      "wave": 1,
+      "dependsOn": [],
+      "acceptance": ["AC1", "AC2"]
+    },
+    {
+      "id": "t-002",
+      "title": "Copy link and Copy for Slack, plain-text only",
+      "wave": 2,
+      "dependsOn": ["t-001"],
+      "acceptance": ["AC3", "AC4", "AC5", "AC6", "AC7", "AC8", "AC9"]
+    },
+    {
+      "id": "t-003",
+      "title": "The neighbours rail, built at publish time on the shared renderer",
+      "wave": 2,
+      "dependsOn": ["t-001"],
+      "acceptance": ["AC10", "AC11", "AC12", "AC13", "AC14", "AC15", "AC16"]
+    }
+  ],
+  "waves": [["t-001"], ["t-002", "t-003"]]
+}
