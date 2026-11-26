@@ -18,6 +18,49 @@ APPROVE = Path(os.environ.get("LCARS_APPROVE_SCRIPT", "skills/lcars-approve/appr
 RESOLVE = Path(os.environ.get("LCARS_RESOLVE_LOGS_SCRIPT", "skills/lcars-resolve-logs/resolve-logs.sh")).resolve()
 ECH = Path(os.environ.get("LCARS_ECH_SCRIPT", "skills/lcars-eeh/ech.sh")).resolve()
 ANSWER = Path(os.environ.get("LCARS_ANSWER_SCRIPT", "skills/lcars-answer/answer.sh")).resolve()
+ENTRY_POINTS = tuple(Path(os.environ.get(env, path)).resolve() for env, path in (
+    ("LCARS_INIT_SCRIPT", "skills/lcars-init/init.sh"),
+    ("LCARS_FILE_SCRIPT", "skills/lcars-file/file.sh"),
+    ("LCARS_LOG_SCRIPT", "skills/lcars-log/log.sh"),
+))
+
+
+def entry_calls(source):
+    lines = source.splitlines()
+    for i, line in enumerate(lines):
+        text = line.strip()
+        if text.startswith("#") or re.match(r'\w+\(\)', text):
+            continue
+        if re.match(r'(MODEL_SEED_NOTE|ENGINE_MODEL_NOTE)=".+', text):
+            block = [text]
+            while not block[-1].endswith('"'):
+                i += 1
+                block.append(lines[i])
+            text = "\n".join(block)
+            if "lcars " in text:
+                yield i + 1, text + '; printf "%s\\n" "${MODEL_SEED_NOTE}${ENGINE_MODEL_NOTE}"'
+        elif re.search(r'lcars (?:init|update|file|run)\b(?!:)', text):
+            match = re.search(r'(?:printf |echo |die "|GH_NOTE=")', text)
+            if match:
+                text = re.sub(r'\s*;;$', '', text[match.start():])
+                if text.startswith('GH_NOTE='):
+                    text += '; printf "%s\\n" "$GH_NOTE"'
+                yield i + 1, text
+
+
+def runnable_commands(test, message):
+    commands = []
+    for line in message.splitlines():
+        if not re.search(r'lcars (?:init|update|file|run)\b', line):
+            continue
+        test.assertIn(" — run: bash ", line, line)
+        command = line.rsplit(" — run: ", 1)[-1]
+        args = shlex.split(command)
+        test.assertEqual(args[0], "bash")
+        test.assertTrue(Path(args[1]).is_file(), command)
+        commands.append(args)
+    test.assertTrue(commands, message)
+    return commands
 
 
 def calls(source, path):
@@ -77,6 +120,56 @@ def hint_functions(source):
 
 
 class Instructions(unittest.TestCase):
+    def test_entry_point_instructions_resolve(self):
+        rendered = 0
+        dispatched = set()
+        with tempfile.TemporaryDirectory(prefix=".s379-audit-", dir=".") as scratch:
+            subprocess.run(["git", "init", "-q", scratch], check=True)
+            for path in ENTRY_POINTS:
+                for number, call in entry_calls(path.read_text()):
+                    with self.subTest(path=path.name, line=number):
+                        env = dict(os.environ, SCRIPT_DIR=str(path.parent),
+                                   FILE_SKILL_DIR=str(path.parent), SKILL_DIR=str(path.parent),
+                                   ID="lcars-audit", first_id="lcars-audit",
+                                   PRD_SRC="prd.md", ENGINE_CHOSEN="copilot",
+                                   ENGINE_RECORD_RAW="gpt5", DEFAULT_MODEL="gpt-5",
+                                   MODEL_SEED_WHY="No engine recorded", LCARS_ENGINES="claude copilot",
+                                   EXISTING_MODEL="claude-sonnet", STATE="state.json",
+                                   MISSION_DIR="mission", MODEL_SEED_NOTE="", ENGINE_MODEL_NOTE="")
+                        script = """
+die() { printf '%s\\n' "$1"; }
+lcars_engine_bin() { printf '%s' "$1"; }
+lcars_default_model_for_engine() { printf 'gpt-5'; }
+""" + "\n".join(hint_functions(path.read_text())) + "\n" + call
+                        result = subprocess.run(["bash", "-uc", script], env=env,
+                                                text=True, capture_output=True)
+                        self.assertEqual(result.returncode, 0, result.stderr)
+                        message = (result.stdout + result.stderr).strip()
+                        commands = runnable_commands(self, message)
+                        with self.assertRaises(AssertionError):
+                            runnable_commands(self, re.sub(r" — run: .*", "", message))
+                        with self.assertRaises(AssertionError):
+                            runnable_commands(self, re.sub(r" — run: .*", " — run: bash .s379-command-does-not-exist", message))
+                        for args in commands:
+                            if tuple(args) in dispatched:
+                                continue
+                            dispatched.add(tuple(args))
+                            # Dispatch the exact rendered argv, not --help or a
+                            # substitute command, in an uninitialized repository.
+                            result = subprocess.run(args, cwd=scratch,
+                                                    env=dict(env, LCARS_VERSION_CHECK="0",
+                                                             LCARS_GH_BIN="false",
+                                                             LCARS_WORKER_BIN="false",
+                                                             LCARS_CLAUDE_BIN="s379-no-worker-installed",
+                                                             LCARS_COPILOT_BIN="s379-no-worker-installed"),
+                                                    text=True, capture_output=True, timeout=15)
+                            output = result.stdout + result.stderr
+                            self.assertNotRegex(output, r"unknown (?:subcommand|argument|option)|unexpected argument|command not found|No such file")
+                            self.assertRegex(output.lower(), r"mission|not initialized|lcars init|prd|lcars update")
+                        rendered += len(commands)
+        self.assertGreaterEqual(rendered, 25, "entry-point audit lost instructions")
+        print(f"Audited {rendered} entry-point instructions; paste-dispatched {len(dispatched)} distinct commands; caught missing-form and missing-command mutations at every call site")
+
     def test_every_audited_message_ends_in_runnable_command(self):
         source = RUN.read_text()
         # These are the product's real hint functions, not a test's command list.

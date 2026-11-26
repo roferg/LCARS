@@ -100,6 +100,8 @@ estimate_breaker_tripped() {
 # it so tests can stub the whole adapter.
 SELF="${BASH_SOURCE[0]}"
 SKILL_DIR="$(cd "$(dirname "$SELF")" && pwd)"
+init_hint() { printf 'bash %q' "$SKILL_DIR/../lcars-init/init.sh"; }
+drive_hint() { printf 'bash %q drive --mission %q' "$SKILL_DIR/../lcars-run/run.sh" "$first_id"; }
 HOST_ADAPTER="${LCARS_HOST_ADAPTER:-$SKILL_DIR/../lcars-run/host-adapter.sh}"
 host() { LCARS_GH_BIN="$GH_BIN" bash "$HOST_ADAPTER" "$@"; }
 
@@ -275,7 +277,7 @@ LCARS_DIR="$GIT_DIR/lcars"
 MISSIONS_DIR="$LCARS_DIR/missions"
 CONFIG="$LCARS_DIR/config.json"
 bash "$(dirname "$SELF")/../lcars-eeh/chunking-gate.sh" "$LCARS_DIR" --filing >/dev/null || exit $?
-[ -d "$MISSIONS_DIR" ] || die "no missions yet — run \`lcars init\` and file a parent Mission first."
+[ -d "$MISSIONS_DIR" ] || die "no missions yet — run \`lcars init\` and file a parent Mission first. — run: $(init_hint)"
 
 # --- the active Mission table (id, title, stage, issue) for resolve/listing -
 # A bug is logged against an active (pre-merge) Mission, so "done" is excluded.
@@ -871,7 +873,7 @@ for r in "${ROWS[@]}"; do
 done
 
 if [ "$n" -gt 1 ]; then
-  printf 'Run `lcars run %s` (or any of the above) to begin.\n' "$first_id"
+  printf 'Run `lcars run %s` (or any of the above) to begin. — run: %s\n' "$first_id" "$(drive_hint)"
 else
-  printf 'Run `lcars run %s` to begin.\n' "$first_id"
+  printf 'Run `lcars run %s` to begin. — run: %s\n' "$first_id" "$(drive_hint)"
 fi
