@@ -266,7 +266,7 @@ done <<EOF
 $(find "$REPO_ROOT/skills" -mindepth 1 -maxdepth 1 -type d | LC_ALL=C sort)
 EOF
 n_skills="${#SKILL_DIRS[@]}"
-check "2. there are 20 skill directories (found $n_skills)" "[ $n_skills -eq 20 ]"
+check "2. there are 21 skill directories (found $n_skills)" "[ $n_skills -eq 21 ]"
 
 out="$(python3 "$CHECK" "${SKILL_DIRS[@]}" 2>&1)"; rc=$?
 if [ "$rc" -eq 0 ]; then
@@ -337,8 +337,8 @@ check "3. the tracked manifest exists" "[ -f \"$MANIFEST\" ]"
 LCARS_PLUGIN_OUT="$TMPROOT/plugin.json" bash "$GEN" >/dev/null 2>&1
 check "3. regenerating the manifest produces a byte-identical file" \
   "cmp -s \"$MANIFEST\" \"$TMPROOT/plugin.json\""
-check "3. and it lists all 20 skills" \
-  "[ \"\$(qgrep -c '\"./skills/' \"$MANIFEST\")\" -eq 20 ]"
+check "3. and it lists all 21 skills" \
+  "[ \"\$(qgrep -c '\"./skills/' \"$MANIFEST\")\" -eq 21 ]"
 
 echo
 echo "== section 4: the LIVE probe — the real copilot binary =="
